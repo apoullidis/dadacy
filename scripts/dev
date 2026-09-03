@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+#
+# scripts/dev — run ONE toolchain command in the pinned toolbox container.
+#
+# There is no node, pnpm or terraform on this host and there must not be
+# (DOCKER.md §0.1). This script is how every agent runs one.
+#
+#   scripts/dev pnpm install
+#   scripts/dev pnpm -w typecheck
+#   scripts/dev terraform -chdir=infra validate
+#
+# Properties this script is responsible for (DOCKER.md §4.2, §7):
+#   * the repo is bind-mounted at its REAL host path, so paths in output and
+#     in tsconfig/turbo caches mean the same thing inside and outside;
+#   * the container runs as the invoking uid:gid, so nothing lands root-owned;
+#   * the pnpm store is a named volume, so installs are not re-downloaded;
+#   * the container is attached to kinvara-build (egress) and to NOTHING else.
+#     No service is ever reachable from here. A command that needs a service
+#     runs under `scripts/svc run <ticket> -- ...`, which gets services and no
+#     egress. The two never overlap — that is what makes "no live credentials"
+#     structural rather than a rule someone has to remember.
+#   * no arguments is an error, not a shell.
+
+set -euo pipefail
+
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+REPO_ROOT="$(cd "$(dirname "${SCRIPT_PATH}")/.." && pwd)"
+TOOL_VERSIONS="${REPO_ROOT}/.tool-versions"
+DOCKERFILE="${REPO_ROOT}/docker/toolbox.Dockerfile"
+
+BUILD_NETWORK="kinvara-build"
+PNPM_STORE_VOLUME="kinvara-pnpm-store"
+
+die() { printf 'scripts/dev: %s\n' "$*" >&2; exit 1; }
+
+usage() {
+    cat >&2 <<'USAGE'
+usage: scripts/dev [--build] [--playwright] <command> [args...]
+
+Runs exactly one command inside the pinned Kinvara toolbox container
+(docker/toolbox.Dockerfile, versions from .tool-versions). No services are
+attached; the container has egress and nothing else.
+
+  --build       rebuild the toolbox image even if it already exists
+  --playwright  use the Playwright variant (browsers included; heavy gates only)
+  -h, --help    this message
+
+examples:
+  scripts/dev node --version
+  scripts/dev pnpm install
+  scripts/dev pnpm -w typecheck
+  scripts/dev terraform -chdir=infra validate
+
+A command that needs a running service is NOT run here — use
+  scripts/svc run <ticket> -- <command>
+USAGE
+}
+
+# --- pins ------------------------------------------------------------------
+[[ -f "${TOOL_VERSIONS}" ]] || die "missing ${TOOL_VERSIONS}"
+[[ -f "${DOCKERFILE}" ]]    || die "missing ${DOCKERFILE}"
+
+pin() {
+    local key="$1" value
+    value="$(awk -v k="${key}" '$1 == k { print $2; exit }' "${TOOL_VERSIONS}")"
+    [[ -n "${value}" ]] || die "no pin for '${key}' in ${TOOL_VERSIONS}"
+    printf '%s' "${value}"
+}
+
+NODE_VERSION="$(pin nodejs)"
+PNPM_VERSION="$(pin pnpm)"
+TERRAFORM_VERSION="$(pin terraform)"
+PLAYWRIGHT_VERSION="$(pin playwright)"
+
+# --- arguments -------------------------------------------------------------
+FORCE_BUILD=0
+TARGET="toolbox"
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --build)       FORCE_BUILD=1; shift ;;
+        --playwright)  TARGET="toolbox-playwright"; shift ;;
+        -h|--help)     usage; exit 0 ;;
+        --)            shift; break ;;
+        -*)            die "unknown option '$1' (see --help)" ;;
+        *)             break ;;
+    esac
+done
+
+# The gate: no command means usage and a non-zero exit. Never a shell.
+if [[ $# -eq 0 ]]; then
+    printf 'scripts/dev: no command given.\n\n' >&2
+    usage
+    exit 2
+fi
+
+# --- image -----------------------------------------------------------------
+# The tag encodes the pins, so changing .tool-versions forces a new image
+# rather than silently reusing the old one.
+IMAGE="kinvara-toolbox:node${NODE_VERSION}-pnpm${PNPM_VERSION}-tf${TERRAFORM_VERSION}"
+if [[ "${TARGET}" == "toolbox-playwright" ]]; then
+    IMAGE="${IMAGE}-pw${PLAYWRIGHT_VERSION}"
+fi
+
+command -v docker >/dev/null 2>&1 || die "docker is not installed"
+
+if [[ "${FORCE_BUILD}" -eq 1 ]] || ! docker image inspect "${IMAGE}" >/dev/null 2>&1; then
+    printf 'scripts/dev: building %s (target %s) ...\n' "${IMAGE}" "${TARGET}" >&2
+    DOCKER_BUILDKIT=1 docker build \
+        --file "${DOCKERFILE}" \
+        --target "${TARGET}" \
+        --tag "${IMAGE}" \
+        --build-arg "NODE_VERSION=${NODE_VERSION}" \
+        --build-arg "PNPM_VERSION=${PNPM_VERSION}" \
+        --build-arg "TERRAFORM_VERSION=${TERRAFORM_VERSION}" \
+        --build-arg "PLAYWRIGHT_VERSION=${PLAYWRIGHT_VERSION}" \
+        "${REPO_ROOT}/docker" >&2
+fi
+
+# --- the one permitted egress network (DOCKER.md §7) -----------------------
+if ! docker network inspect "${BUILD_NETWORK}" >/dev/null 2>&1; then
+    docker network create \
+        --label io.kinvara.network=build \
+        --label io.kinvara.egress=permitted \
+        "${BUILD_NETWORK}" >/dev/null
+fi
+
+docker volume inspect "${PNPM_STORE_VOLUME}" >/dev/null 2>&1 || \
+    docker volume create --label io.kinvara.volume=pnpm-store "${PNPM_STORE_VOLUME}" >/dev/null
+
+# --- working directory -----------------------------------------------------
+# Mirror the caller's cwd when it is inside the repo; otherwise the repo root.
+HOST_CWD="$(pwd -P)"
+if [[ "${HOST_CWD}" == "${REPO_ROOT}" || "${HOST_CWD}" == "${REPO_ROOT}/"* ]]; then
+    WORKDIR="${HOST_CWD}"
+else
+    WORKDIR="${REPO_ROOT}"
+fi
+
+# A TTY only when the caller actually has one on both ends: otherwise docker
+# rewrites LF as CRLF and captured output stops being byte-comparable.
+TTY_FLAGS=()
+if [[ -t 0 && -t 1 ]]; then
+    TTY_FLAGS=(--tty)
+fi
+
+exec docker run \
+    --rm \
+    --interactive \
+    "${TTY_FLAGS[@]}" \
+    --network "${BUILD_NETWORK}" \
+    --user "$(id -u):$(id -g)" \
+    --volume "${REPO_ROOT}:${REPO_ROOT}" \
+    --volume "${PNPM_STORE_VOLUME}:/pnpm-store" \
+    --workdir "${WORKDIR}" \
+    --env "HOME=/home/toolbox" \
+    --env "CI=1" \
+    --env "TZ=UTC" \
+    --env "LANG=C.UTF-8" \
+    --label "io.kinvara.toolbox=1" \
+    "${IMAGE}" "$@"

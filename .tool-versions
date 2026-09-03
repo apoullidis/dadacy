@@ -1,0 +1,20 @@
+# Kinvara pinned toolchain — THE single source of truth (DOCKER.md §4.2).
+#
+# asdf-format: one "<tool> <exact-version>" per line. Exact versions only —
+# never a floating tag. Changing a line here changes what every agent's
+# evidence means, so it is a ticket (owner: platform-infrastructure), not a
+# convenience edit.
+#
+# Consumed by:
+#   app/docker/toolbox.Dockerfile  (build args NODE_VERSION / PNPM_VERSION /
+#                                   TERRAFORM_VERSION / PLAYWRIGHT_VERSION)
+#   app/scripts/dev                (image tag + --build-arg values)
+#
+# The Playwright browser image tag is DERIVED, never written separately:
+#   mcr.microsoft.com/playwright:v<playwright>-noble
+# Any package.json in this repo must declare "packageManager": "pnpm@<pnpm>"
+# to match the corepack pin below.
+nodejs 24.20.0
+pnpm 11.25.0
+terraform 1.16.1
+playwright 1.62.0
