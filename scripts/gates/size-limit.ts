@@ -90,12 +90,16 @@ for (const [i, e] of entries.entries()) {
 
   const kb = limitKb(e.limit);
   if (kb === null) {
-    failures.push(`"${name}": "limit" must be a string like "45 KB" (got ${JSON.stringify(e.limit)})`);
+    failures.push(
+      `"${name}": "limit" must be a string like "45 KB" (got ${JSON.stringify(e.limit)})`,
+    );
     continue;
   }
   const ceiling = SD_CEILING_KB.get(name);
   if (ceiling === undefined) {
-    console.log(`  ?  ${name.padEnd(24)} ${String(kb).padStart(4)} KB   (not in the SD table — allowed, but unbudgeted by the spec)`);
+    console.log(
+      `  ?  ${name.padEnd(24)} ${String(kb).padStart(4)} KB   (not in the SD table — allowed, but unbudgeted by the spec)`,
+    );
     continue;
   }
   if (kb > ceiling) {
@@ -105,7 +109,9 @@ for (const [i, e] of entries.entries()) {
     );
     console.log(`  X  ${name.padEnd(24)} ${String(kb).padStart(4)} KB  > SD ${String(ceiling)} KB`);
   } else {
-    console.log(`  ok ${name.padEnd(24)} ${String(kb).padStart(4)} KB  <= SD ${String(ceiling)} KB`);
+    console.log(
+      `  ok ${name.padEnd(24)} ${String(kb).padStart(4)} KB  <= SD ${String(ceiling)} KB`,
+    );
   }
 }
 

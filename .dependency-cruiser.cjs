@@ -25,7 +25,8 @@ module.exports = {
     {
       name: 'not-to-unresolvable',
       severity: 'error',
-      comment: "An import that does not resolve. Usually a typo or a dependency that was never declared.",
+      comment:
+        'An import that does not resolve. Usually a typo or a dependency that was never declared.',
       from: {},
       to: { couldNotResolve: true },
     },

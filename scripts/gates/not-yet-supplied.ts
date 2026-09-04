@@ -25,11 +25,7 @@ const owner = OWED.get(name);
 
 console.error(`GATE NOT YET SUPPLIED  ${name}`);
 console.error(`  Owed by: ${owner ?? 'unknown — this name is not in the T-001 contract'}`);
-console.error(
-  '  The name is published (state/EP-1/T-001.md § Published contract) so downstream',
-);
-console.error(
-  '  tickets can cite it; the implementation is not. This exits non-zero on purpose:',
-);
+console.error('  The name is published (state/EP-1/T-001.md § Published contract) so downstream');
+console.error('  tickets can cite it; the implementation is not. This exits non-zero on purpose:');
 console.error('  a stub that exits 0 is a gate that is wired but does not block.');
 process.exit(1);

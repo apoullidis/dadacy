@@ -49,11 +49,37 @@ interface Probe {
 const first = (s: string): string => s.split('\n')[0] ?? '';
 
 const PROBES: readonly Probe[] = [
-  { tool: 'node', pinKey: 'nodejs', argv: ['node', '--version'], extract: (o) => first(o).trim().replace(/^v/, '') },
+  {
+    tool: 'node',
+    pinKey: 'nodejs',
+    argv: ['node', '--version'],
+    extract: (o) => first(o).trim().replace(/^v/, ''),
+  },
   { tool: 'pnpm', pinKey: 'pnpm', argv: ['pnpm', '--version'], extract: (o) => first(o).trim() },
-  { tool: 'terraform', pinKey: 'terraform', argv: ['terraform', 'version'], extract: (o) => first(o).trim().replace(/^Terraform v/, '') },
-  { tool: 'gitleaks', pinKey: 'gitleaks', argv: ['gitleaks', 'version'], extract: (o) => first(o).trim() },
-  { tool: 'trivy', pinKey: 'trivy', argv: ['trivy', '--version'], extract: (o) => first(o).replace(/^Version:\s*/, '').trim() },
+  {
+    tool: 'terraform',
+    pinKey: 'terraform',
+    argv: ['terraform', 'version'],
+    extract: (o) =>
+      first(o)
+        .trim()
+        .replace(/^Terraform v/, ''),
+  },
+  {
+    tool: 'gitleaks',
+    pinKey: 'gitleaks',
+    argv: ['gitleaks', 'version'],
+    extract: (o) => first(o).trim(),
+  },
+  {
+    tool: 'trivy',
+    pinKey: 'trivy',
+    argv: ['trivy', '--version'],
+    extract: (o) =>
+      first(o)
+        .replace(/^Version:\s*/, '')
+        .trim(),
+  },
 ];
 
 for (const p of PROBES) {
@@ -99,7 +125,9 @@ for (const p of PROBES) {
       `determinism '${label}': exit codes ${String(a.code)}/${String(b.code)}, expected 0/0. ` +
         'Two identical FAILURES are byte-identical too — that is why this asserts the status (PROTOCOL §5.1).',
     );
-    console.log(`  X  ${label.padEnd(22)} exit ${String(a.code)}/${String(b.code)} — not a pass, whatever the bytes say`);
+    console.log(
+      `  X  ${label.padEnd(22)} exit ${String(a.code)}/${String(b.code)} — not a pass, whatever the bytes say`,
+    );
     continue;
   }
   const same = a.stdout === b.stdout && a.stderr === b.stderr;
@@ -108,7 +136,9 @@ for (const p of PROBES) {
     console.log(`  X  ${label.padEnd(22)} exit 0/0, bytes DIFFER`);
     continue;
   }
-  console.log(`  ok ${label.padEnd(22)} exit 0/0, ${String(Buffer.byteLength(a.stdout))} identical bytes`);
+  console.log(
+    `  ok ${label.padEnd(22)} exit 0/0, ${String(Buffer.byteLength(a.stdout))} identical bytes`,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -132,8 +162,12 @@ for (const [key, want] of REQUIRED_ENV) {
       key === 'CHECKPOINT_DISABLE'
         ? ' Without it `terraform version` phones home and appends an upgrade notice, and the determinism check above stops meaning anything.'
         : '';
-    failures.push(`${key} is ${got === undefined ? 'UNSET' : `'${got}'`}, expected '${want}'.${why}`);
-    console.log(`  X  ${key.padEnd(20)} = ${got === undefined ? '(unset)' : got}  — expected ${want}`);
+    failures.push(
+      `${key} is ${got === undefined ? 'UNSET' : `'${got}'`}, expected '${want}'.${why}`,
+    );
+    console.log(
+      `  X  ${key.padEnd(20)} = ${got === undefined ? '(unset)' : got}  — expected ${want}`,
+    );
   }
 }
 
@@ -151,10 +185,14 @@ try {
   fs.writeFileSync(probe, 'ownership probe\n');
   fs.writeFileSync(inRepoProbe, 'ownership probe\n');
   const s = fs.statSync(inRepoProbe);
-  console.log(`  .tool-versions (written on the host) uid:gid = ${String(refStat.uid)}:${String(refStat.gid)}`);
+  console.log(
+    `  .tool-versions (written on the host) uid:gid = ${String(refStat.uid)}:${String(refStat.gid)}`,
+  );
   console.log(`  probe file (written in the toolbox) uid:gid = ${String(s.uid)}:${String(s.gid)}`);
   if (s.uid === 0) {
-    failures.push('the toolbox wrote a root-owned file into the bind mount (--user is not being passed)');
+    failures.push(
+      'the toolbox wrote a root-owned file into the bind mount (--user is not being passed)',
+    );
   } else if (s.uid !== refStat.uid || s.gid !== refStat.gid) {
     failures.push(
       `toolbox-written file is ${String(s.uid)}:${String(s.gid)} but host files are ` +

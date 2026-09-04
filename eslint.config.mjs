@@ -31,6 +31,24 @@ export default tseslint.config(
   ...tseslint.configs.recommended,
   prettier,
   {
+    // CommonJS tool configuration files. `.dependency-cruiser.cjs` is the one
+    // file in the repo that is legitimately CJS: dependency-cruiser loads it
+    // with require().
+    files: ['**/*.cjs'],
+    languageOptions: {
+      sourceType: 'commonjs',
+      globals: {
+        module: 'writable',
+        require: 'readonly',
+        exports: 'writable',
+        __dirname: 'readonly',
+        __filename: 'readonly',
+        process: 'readonly',
+        console: 'readonly',
+      },
+    },
+  },
+  {
     rules: {
       // SD §DH-2: "`any` is a lint error everywhere; in packages/policy it is
       // a Semgrep failure." The Semgrep half is T-005's.

@@ -49,9 +49,7 @@ for (const r of results) {
   if (r.code !== 0) failed += 1;
   console.log(`  ${status.padEnd(16)} ${r.name}`);
 }
-console.log(
-  `\n  ${String(results.length - failed)}/${String(results.length)} gates passed.`,
-);
+console.log(`\n  ${String(results.length - failed)}/${String(results.length)} gates passed.`);
 
 if (failed > 0) {
   console.error(`\nGATE FAIL  gate:pr — ${String(failed)} gate(s) failed`);

@@ -13,9 +13,7 @@ import { REPO_ROOT, bin, stream, finish } from './lib/run.ts';
 
 const failures: string[] = [];
 
-const roots = ['apps', 'packages', 'scripts'].filter((d) =>
-  fs.existsSync(path.join(REPO_ROOT, d)),
-);
+const roots = ['apps', 'packages', 'scripts'].filter((d) => fs.existsSync(path.join(REPO_ROOT, d)));
 console.log(`$ depcruise --config .dependency-cruiser.cjs ${roots.join(' ')}`);
 const code = stream(bin('depcruise'), ['--config', '.dependency-cruiser.cjs', ...roots]);
 if (code !== 0) failures.push(`dependency-cruiser exited ${String(code)}`);

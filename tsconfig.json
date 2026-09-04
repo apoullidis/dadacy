@@ -9,12 +9,5 @@
     "packages/**/*.tsx",
     "scripts/**/*.ts"
   ],
-  "exclude": [
-    "**/node_modules",
-    "**/dist",
-    "**/build",
-    "**/out",
-    "**/.next",
-    "**/.turbo"
-  ]
+  "exclude": ["**/node_modules", "**/dist", "**/build", "**/out", "**/.next", "**/.turbo"]
 }

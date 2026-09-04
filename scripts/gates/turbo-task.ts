@@ -12,11 +12,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { REPO_ROOT, bin } from './lib/run.ts';
 
-const task = process.argv[2];
-if (task === undefined || task === '') {
+const argvTask = process.argv[2];
+if (argvTask === undefined || argvTask === '') {
   console.error('usage: node scripts/gates/turbo-task.ts <task>');
   process.exit(2);
 }
+const task: string = argvTask;
 
 /** Which workspace packages actually declare this script? */
 function implementers(): string[] {
@@ -43,15 +44,9 @@ function implementers(): string[] {
 const who = implementers();
 if (who.length === 0) {
   console.log(`turbo run ${task}: NO PACKAGE IMPLEMENTS THIS TASK YET.`);
-  console.log(
-    '  The workspace is T-001 scaffolding — apps/* and packages/* are placeholder',
-  );
-  console.log(
-    `  package.json files with no scripts. This is reported, not silently skipped:`,
-  );
-  console.log(
-    `  0 suites run is a fact about the repository, not a passing test suite.`,
-  );
+  console.log('  The workspace is T-001 scaffolding — apps/* and packages/* are placeholder');
+  console.log(`  package.json files with no scripts. This is reported, not silently skipped:`);
+  console.log(`  0 suites run is a fact about the repository, not a passing test suite.`);
   process.exit(0);
 }
 
