@@ -1,0 +1,322 @@
+# Kinvara — the local runtime (DOCKER.md §2, §3, §7, §9).
+#
+# THIS FILE IS NEVER RUN DIRECTLY. Use scripts/svc, which supplies the project
+# name (-p kinvara-<ticket>), the overlays and the profile flags:
+#
+#   scripts/svc up   T-062 db
+#   scripts/svc run  T-062 -- pnpm --filter core test:integration
+#   scripts/svc down T-062
+#
+# Four properties this file is responsible for, each of which has bitten a
+# programme like this one before:
+#
+#   1. EVERY service sits behind a profile. Nothing starts unless its profile
+#      is named (DOCKER.md §3). There is no `all` profile and none may be added.
+#
+#   2. EVERY service is on `kinvara-int`, which is `internal: true`. No
+#      application container and no fake has a route off this host. That is
+#      what makes "no live vendor credentials" structural rather than a rule
+#      somebody has to remember (DOCKER.md §7).
+#      NO SERVICE IN THIS FILE IS EVER ATTACHED TO `kinvara-build`. T-017's
+#      boundary check greps for exactly that.
+#
+#   3. NO FIXED HOST PORTS. Every published port uses the one-element short
+#      form ("5432"), so Docker assigns an ephemeral host port. Two agents
+#      running two tickets at once would otherwise collide, and the failure
+#      presents as a flaky test in somebody else's ticket rather than as a
+#      port clash. The single exception is the shared `kinvara-dev` stack,
+#      which pins its ports in compose.dev.yml.
+#      Your tests do NOT use these ports: under `scripts/svc run` you reach a
+#      service by its compose service name on its DEFAULT port (postgres:5432).
+#      The ephemeral host ports exist for a human with a browser.
+#
+#   4. EVERY service declares `mem_limit` and `cpus`, and the numbers match the
+#      budget table in DOCKER.md §3 exactly. The orchestrator sums that table
+#      before dispatching a wave; if this file disagrees with it, the
+#      arithmetic that keeps a 4-core / 15 GB machine alive is wrong.
+#
+# Budget reconciliation against DOCKER.md §3 (RAM per PROFILE):
+#   db 512  = postgres 512
+#   cache 64 = valkey 64
+#   aws 1024 = localstack 1024
+#   pay 128  = stripe-mock 128
+#   tel 128  = fake-telephony 128
+#   mail 64  = mailpit 64
+#   otel 512 = otel-collector 192 + jaeger 320
+#   api 768  = core 768
+#   worker 512 = worker 512
+#   safety 256 = safety-gw 256
+#   web 768  = web 768
+#   admin 768 = admin 768
+# `cpus` is a share of the 4 available cores; it is a ceiling, not a
+# reservation, so the sums may exceed 4.
+
+# ---------------------------------------------------------------------------
+# Networks
+# ---------------------------------------------------------------------------
+networks:
+  # Compose names this `<project>_kinvara-int`, so every ticket gets its own
+  # isolated one. `internal: true` means no default gateway: a container here
+  # cannot reach the internet, and neither can a test process attached to it.
+  kinvara-int:
+    internal: true
+    labels:
+      io.kinvara.network: int
+      io.kinvara.egress: denied
+
+# ---------------------------------------------------------------------------
+# Volumes — all project-scoped, all destroyed by `scripts/svc down`.
+# ---------------------------------------------------------------------------
+volumes:
+  pgdata:
+    labels: { io.kinvara.volume: pgdata }
+  valkeydata:
+    labels: { io.kinvara.volume: valkeydata }
+  localstackdata:
+    labels: { io.kinvara.volume: localstackdata }
+
+services:
+
+  # =========================================================================
+  # profile: db — Postgres 18 + PostGIS 3.6
+  #
+  # THE PINNED POSTGRES IMAGE. Testcontainers (T-115) and every migration
+  # ticket must use this exact tag; it is published in T-016's contract and
+  # nothing else declares it (DOCKER.md §1).
+  # The Debian-based variant is deliberate, not the -alpine one: the Greek
+  # collation and text-search behaviour T-098 checks depends on the ICU and
+  # snowball build, and Debian is what RDS is closest to.
+  # =========================================================================
+  postgres:
+    image: postgis/postgis:18-3.6
+    profiles: ["db"]
+    networks: [kinvara-int]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-app_local_dev_only}
+      POSTGRES_DB: ${POSTGRES_DB:-kinvara}
+      # Deterministic across agents and identical to what T-019 will map to RDS.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C.UTF-8"
+      TZ: UTC
+      PGTZ: UTC
+    ports:
+      - "5432"          # ephemeral host port; see note 3 in the header
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-app} -d ${POSTGRES_DB:-kinvara}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    mem_limit: 512m
+    cpus: 1.0
+    stop_grace_period: 10s
+
+  # =========================================================================
+  # profile: cache — Valkey
+  # 8.1 rather than 9.x: ElastiCache is the T-019 counterpart and 8.1 is what
+  # it offers. A local stand-in ahead of the managed service is drift.
+  # =========================================================================
+  valkey:
+    image: valkey/valkey:8.1-alpine
+    profiles: ["cache"]
+    networks: [kinvara-int]
+    command:
+      - valkey-server
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      # Bound below the 64 MB cgroup limit so Valkey evicts rather than being
+      # OOM-killed. A cache that dies is a different failure from a cache that
+      # is full, and only one of them is the one we want to test.
+      - --maxmemory
+      - 48mb
+      - --maxmemory-policy
+      - allkeys-lru
+    ports:
+      - "6379"
+    volumes:
+      - valkeydata:/data
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+    mem_limit: 64m
+    cpus: 0.25
+    stop_grace_period: 5s
+
+  # =========================================================================
+  # profile: aws — LocalStack (S3, KMS, Secrets Manager, SES)
+  # T-017 owns the seed hooks in ./fakes/seed. Declared here so the profile
+  # name and the budget are fixed now; T-017 mounts the seed directory.
+  # =========================================================================
+  localstack:
+    image: localstack/localstack:4.9
+    profiles: ["aws"]
+    networks: [kinvara-int]
+    environment:
+      SERVICES: s3,kms,secretsmanager,ses
+      DEBUG: "0"
+      AWS_DEFAULT_REGION: ${AWS_REGION:-eu-central-1}
+      # LocalStack must not phone home; it is on an internal network and would
+      # only produce noisy timeouts if it tried.
+      DISABLE_EVENTS: "1"
+      SKIP_SSL_CERT_DOWNLOAD: "1"
+    ports:
+      - "4566"
+    volumes:
+      - localstackdata:/var/lib/localstack
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:4566/_localstack/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    mem_limit: 1024m
+    cpus: 1.0
+
+  # =========================================================================
+  # profile: pay — stripe-mock
+  # =========================================================================
+  stripe-mock:
+    image: stripe/stripe-mock:v0.194.0
+    profiles: ["pay"]
+    networks: [kinvara-int]
+    ports:
+      - "12111"
+    mem_limit: 128m
+    cpus: 0.5
+
+  # =========================================================================
+  # profile: tel — fake-telephony (ours)
+  # T-017 builds this image from ./fakes/telephony. It is declared now so the
+  # profile name, service name, port and budget are fixed and every ticket's
+  # `svc` column can be written against them.
+  # It returns 501 Not Implemented on every inbound-SMS route (SA §INT-5r) —
+  # a fake never exceeds the real thing's capability (DOCKER.md §8).
+  # =========================================================================
+  fake-telephony:
+    image: kinvara/fake-telephony:dev
+    profiles: ["tel"]
+    networks: [kinvara-int]
+    ports:
+      - "4000"
+    mem_limit: 128m
+    cpus: 0.5
+
+  # =========================================================================
+  # profile: mail — Mailpit
+  # =========================================================================
+  mailpit:
+    image: axllent/mailpit:v1.28
+    profiles: ["mail"]
+    networks: [kinvara-int]
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: "1"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "1"
+    ports:
+      - "1025"          # SMTP
+      - "8025"          # web UI + assertion API
+    mem_limit: 64m
+    cpus: 0.25
+
+  # =========================================================================
+  # profile: otel — collector + Jaeger (T-008 owns the collector config)
+  # =========================================================================
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.140.0
+    profiles: ["otel"]
+    networks: [kinvara-int]
+    ports:
+      - "4317"          # OTLP gRPC
+      - "4318"          # OTLP HTTP
+    mem_limit: 192m
+    cpus: 0.5
+
+  jaeger:
+    image: jaegertracing/jaeger:2.11.0
+    profiles: ["otel"]
+    networks: [kinvara-int]
+    ports:
+      - "16686"         # UI
+    mem_limit: 320m
+    cpus: 0.5
+
+  # =========================================================================
+  # Application services.
+  #
+  # T-018 owns the Dockerfiles and compose.verify.yml, which adds the `build:`
+  # stanza for each of these. Until then the images below do not exist and
+  # `scripts/svc up <t> api` fails with "image not found" — loudly, and
+  # correctly attributed. The service names, profiles, ports and budgets are
+  # fixed HERE so every other ticket's `svc` declaration can be written now.
+  #
+  # DV-14 floor of 2 tasks applies to `worker` and `safety-gw` in the cloud
+  # (T-014). Compose runs one replica of each locally; the floor is a
+  # blast-radius decision about the deployed estate, encoded in Terraform.
+  # =========================================================================
+  core:
+    image: kinvara/core:dev
+    profiles: ["api"]
+    networks: [kinvara-int]
+    ports:
+      - "3000"
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      DATABASE_URL: ${DATABASE_URL:-postgres://app:app_local_dev_only@postgres:5432/kinvara}
+      VALKEY_URL: ${VALKEY_URL:-redis://valkey:6379}
+    mem_limit: 768m
+    cpus: 1.0
+    stop_grace_period: 30s   # SIGTERM must drain in-flight requests (T-018)
+
+  worker:
+    image: kinvara/worker:dev
+    profiles: ["worker"]
+    networks: [kinvara-int]
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      DATABASE_URL: ${DATABASE_URL:-postgres://app:app_local_dev_only@postgres:5432/kinvara}
+      VALKEY_URL: ${VALKEY_URL:-redis://valkey:6379}
+    mem_limit: 512m
+    cpus: 1.0
+    stop_grace_period: 30s
+
+  safety-gw:
+    image: kinvara/safety-gw:dev
+    profiles: ["safety"]
+    networks: [kinvara-int]
+    ports:
+      - "3010"
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+    mem_limit: 256m
+    cpus: 0.5
+    stop_grace_period: 30s
+
+  web:
+    image: kinvara/web:dev
+    profiles: ["web"]
+    networks: [kinvara-int]
+    ports:
+      - "3001"
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      CORE_BASE_URL: ${CORE_BASE_URL:-http://core:3000}
+    mem_limit: 768m
+    cpus: 1.5
+
+  admin:
+    image: kinvara/admin:dev
+    profiles: ["admin"]
+    networks: [kinvara-int]
+    ports:
+      - "3002"
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      CORE_BASE_URL: ${CORE_BASE_URL:-http://core:3000}
+    mem_limit: 768m
+    cpus: 1.5

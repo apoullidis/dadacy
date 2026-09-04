@@ -1,0 +1,30 @@
+# Overlay: `--chaos` — fault injection.
+#
+# Selected by `scripts/svc up <ticket> ... --chaos`.
+#
+# DOCKER.md §3: chaos is an OVERLAY, NOT A PROFILE. It still requires the
+# profiles of the services it modifies. A ticket whose `svc` column reads
+# `db api worker web tel --chaos` declares five profiles AND this overlay.
+#
+# ---------------------------------------------------------------------------
+# OWNED BY T-126 (the M3 exit exercise), WHICH IS WHAT FILLS THIS IN.
+#
+# T-016 creates the file so that the `--chaos` flag in `scripts/svc` is real
+# and demonstrable today rather than a flag that references a missing `-f`
+# file.
+#
+# The M3 exit gate (SD §DH-5 M3, platform-infrastructure.md "Later epics") is
+# pass/fail for the whole product: with push fully disabled, `core` stopped
+# and the network throttled, a check-in must still be accepted, the ladder
+# must fire on schedule, the SMS must arrive in the recipient's stored locale
+# within 2 segments, the voice call must play the correct pre-recorded locale
+# and accept DTMF, and an operator must be paged.
+#
+# Whatever is added here, two constraints hold and are not negotiable:
+#   * nothing in this file may attach a service to `kinvara-build`. Chaos does
+#     not get to open a hole in the egress boundary (DOCKER.md §7).
+#   * nothing in this file may raise a `mem_limit` above its §3 budget. A
+#     chaos run is when the machine is under the most pressure, not the least.
+# ---------------------------------------------------------------------------
+
+services: {}

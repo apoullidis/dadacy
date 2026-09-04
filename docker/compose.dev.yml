@@ -1,0 +1,70 @@
+# Overlay: the shared `kinvara-dev` stack — THE ONE FIXED-PORT EXCEPTION.
+#
+# Applied automatically, and ONLY, by `scripts/svc <cmd> dev ...`
+# (project kinvara-dev). Never by a ticket-scoped project.
+#
+# DOCKER.md §4.1: "The one exception to ephemeral ports is the shared dev
+# stack, scripts/svc up dev db cache, which uses project kinvara-dev and fixed
+# ports ... so a human with a browser has a stable target."
+#
+# NEVER PRODUCE TICKET EVIDENCE AGAINST kinvara-dev. It is long-lived, other
+# agents touch it, and its state is not reproducible. `scripts/svc` refuses to
+# let `svc run dev` be mistaken for a ticket run by printing a warning; the
+# rule itself is yours to keep.
+#
+# The ports below are DOCKER.md §4.1's list verbatim. Four services in
+# compose.yml publish a port that §4.1 does not name (Mailpit's SMTP port,
+# the two OTLP receivers, safety-gw); they are assigned in the same 5xxxx
+# scheme here so that the overlay does not silently drop them — an overlay
+# `ports:` list REPLACES the base list, it does not merge with it.
+
+services:
+  postgres:
+    ports:
+      - "55432:5432"
+
+  valkey:
+    ports:
+      - "56379:6379"
+
+  localstack:
+    ports:
+      - "54566:4566"
+
+  stripe-mock:
+    ports:
+      - "52111:12111"
+
+  fake-telephony:
+    ports:
+      - "54000:4000"
+
+  mailpit:
+    ports:
+      - "51025:1025"    # SMTP — not in the §4.1 list; same scheme, no conflict
+      - "58025:8025"    # web UI + assertion API
+
+  otel-collector:
+    ports:
+      - "54317:4317"    # not in the §4.1 list; same scheme, no conflict
+      - "54318:4318"    # not in the §4.1 list; same scheme, no conflict
+
+  jaeger:
+    ports:
+      - "56686:16686"
+
+  core:
+    ports:
+      - "53000:3000"
+
+  safety-gw:
+    ports:
+      - "53010:3010"    # not in the §4.1 list; same scheme, no conflict
+
+  web:
+    ports:
+      - "53001:3001"
+
+  admin:
+    ports:
+      - "53002:3002"

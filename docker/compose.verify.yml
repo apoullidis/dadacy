@@ -1,0 +1,36 @@
+# Overlay: `--verify` — the applications built from their own Dockerfiles.
+#
+# Selected by `scripts/svc up <ticket> ... --verify [--build]`.
+#
+# DOCKER.md §5: a ticket's Definition of Done is satisfied, for anything that
+# runs a service, only by the form where the apps run AS THEIR IMAGES. The
+# container-specific failures — signal handling on shutdown, DNS between
+# services, file paths, env resolution, non-root permissions, NODE_ENV — are
+# invisible when the app runs outside its image and surface at deploy time,
+# which under this plan is the worst possible moment because there is no
+# staging environment to catch them.
+#
+# ---------------------------------------------------------------------------
+# OWNED BY T-018, WHICH IS WHAT FILLS THIS IN.
+#
+# T-016 creates the file so that the `--verify` flag in `scripts/svc` is real
+# and demonstrable today rather than a flag that references a missing `-f`
+# file. T-018 adds, for each of core / worker / safety-gw / web / admin:
+#
+#   <service>:
+#     build:
+#       context: ..
+#       dockerfile: docker/<service>.Dockerfile
+#     pull_policy: build
+#
+# Ports stay ephemeral: the base file's one-element short form already does
+# that and MUST NOT be overridden here. A fixed host port added in this
+# overlay is the exact defect DOCKER.md §4.1(2) exists to prevent, and it
+# would present as a flaky test in another agent's ticket.
+#
+# Do not add a service to this file that is not already in compose.yml with a
+# profile, a mem_limit and a cpus. An overlay cannot introduce a service that
+# escapes the §3 budget table.
+# ---------------------------------------------------------------------------
+
+services: {}
