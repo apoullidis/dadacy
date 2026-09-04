@@ -46,61 +46,61 @@ services:
   postgres:
     networks: [kinvara-int, kinvara-pub]
     ports:
-      - "55432:5432"
+      - '55432:5432'
 
   valkey:
     networks: [kinvara-int, kinvara-pub]
     ports:
-      - "56379:6379"
+      - '56379:6379'
 
   localstack:
     networks: [kinvara-int, kinvara-pub]
     ports:
-      - "54566:4566"
+      - '54566:4566'
 
   stripe-mock:
     networks: [kinvara-int, kinvara-pub]
     ports:
-      - "52111:12111"
+      - '52111:12111'
 
   fake-telephony:
     networks: [kinvara-int, kinvara-pub]
     ports:
-      - "54000:4000"
+      - '54000:4000'
 
   mailpit:
     networks: [kinvara-int, kinvara-pub]
     ports:
-      - "51025:1025"    # SMTP — not in the §4.1 list; same scheme, no conflict
-      - "58025:8025"    # web UI + assertion API
+      - '51025:1025' # SMTP — not in the §4.1 list; same scheme, no conflict
+      - '58025:8025' # web UI + assertion API
 
   otel-collector:
     networks: [kinvara-int, kinvara-pub]
     ports:
-      - "54317:4317"    # not in the §4.1 list; same scheme, no conflict
-      - "54318:4318"    # not in the §4.1 list; same scheme, no conflict
+      - '54317:4317' # not in the §4.1 list; same scheme, no conflict
+      - '54318:4318' # not in the §4.1 list; same scheme, no conflict
 
   jaeger:
     networks: [kinvara-int, kinvara-pub]
     ports:
-      - "56686:16686"
+      - '56686:16686'
 
   core:
     networks: [kinvara-int, kinvara-pub]
     ports:
-      - "53000:3000"
+      - '53000:3000'
 
   safety-gw:
     networks: [kinvara-int, kinvara-pub]
     ports:
-      - "53010:3010"    # not in the §4.1 list; same scheme, no conflict
+      - '53010:3010' # not in the §4.1 list; same scheme, no conflict
 
   web:
     networks: [kinvara-int, kinvara-pub]
     ports:
-      - "53001:3001"
+      - '53001:3001'
 
   admin:
     networks: [kinvara-int, kinvara-pub]
     ports:
-      - "53002:3002"
+      - '53002:3002'

@@ -92,7 +92,6 @@ volumes:
     labels: { io.kinvara.volume: localstackdata }
 
 services:
-
   # =========================================================================
   # profile: db — Postgres 18 + PostGIS 3.6
   #
@@ -105,18 +104,18 @@ services:
   # =========================================================================
   postgres:
     image: postgis/postgis:18-3.6
-    profiles: ["db"]
+    profiles: ['db']
     networks: [kinvara-int]
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-app}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-app_local_dev_only}
       POSTGRES_DB: ${POSTGRES_DB:-kinvara}
       # Deterministic across agents and identical to what T-019 will map to RDS.
-      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C.UTF-8"
+      POSTGRES_INITDB_ARGS: '--encoding=UTF8 --locale=C.UTF-8'
       TZ: UTC
       PGTZ: UTC
     expose:
-      - "5432"          # documented, NOT published — see note 3 in the header
+      - '5432' # documented, NOT published — see note 3 in the header
     volumes:
       # /var/lib/postgresql, NOT /var/lib/postgresql/data. Postgres 18 images
       # store data in a major-version-specific subdirectory so that
@@ -128,7 +127,7 @@ services:
       # image tag and must use the same path.
       - pgdata:/var/lib/postgresql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-app} -d ${POSTGRES_DB:-kinvara}"]
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-app} -d ${POSTGRES_DB:-kinvara}']
       interval: 5s
       timeout: 5s
       retries: 12
@@ -144,14 +143,14 @@ services:
   # =========================================================================
   valkey:
     image: valkey/valkey:8.1-alpine
-    profiles: ["cache"]
+    profiles: ['cache']
     networks: [kinvara-int]
     command:
       - valkey-server
       - --save
-      - ""
+      - ''
       - --appendonly
-      - "no"
+      - 'no'
       # Bound below the 64 MB cgroup limit so Valkey evicts rather than being
       # OOM-killed. A cache that dies is a different failure from a cache that
       # is full, and only one of them is the one we want to test.
@@ -160,11 +159,11 @@ services:
       - --maxmemory-policy
       - allkeys-lru
     expose:
-      - "6379"
+      - '6379'
     volumes:
       - valkeydata:/data
     healthcheck:
-      test: ["CMD", "valkey-cli", "ping"]
+      test: ['CMD', 'valkey-cli', 'ping']
       interval: 5s
       timeout: 3s
       retries: 12
@@ -180,22 +179,22 @@ services:
   # =========================================================================
   localstack:
     image: localstack/localstack:4.9
-    profiles: ["aws"]
+    profiles: ['aws']
     networks: [kinvara-int]
     environment:
       SERVICES: s3,kms,secretsmanager,ses
-      DEBUG: "0"
+      DEBUG: '0'
       AWS_DEFAULT_REGION: ${AWS_REGION:-eu-central-1}
       # LocalStack must not phone home; it is on an internal network and would
       # only produce noisy timeouts if it tried.
-      DISABLE_EVENTS: "1"
-      SKIP_SSL_CERT_DOWNLOAD: "1"
+      DISABLE_EVENTS: '1'
+      SKIP_SSL_CERT_DOWNLOAD: '1'
     expose:
-      - "4566"
+      - '4566'
     volumes:
       - localstackdata:/var/lib/localstack
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:4566/_localstack/health || exit 1"]
+      test: ['CMD-SHELL', 'curl -fsS http://localhost:4566/_localstack/health || exit 1']
       interval: 10s
       timeout: 5s
       retries: 12
@@ -208,10 +207,10 @@ services:
   # =========================================================================
   stripe-mock:
     image: stripe/stripe-mock:v0.194.0
-    profiles: ["pay"]
+    profiles: ['pay']
     networks: [kinvara-int]
     expose:
-      - "12111"
+      - '12111'
     mem_limit: 128m
     cpus: 0.5
 
@@ -225,10 +224,10 @@ services:
   # =========================================================================
   fake-telephony:
     image: kinvara/fake-telephony:dev
-    profiles: ["tel"]
+    profiles: ['tel']
     networks: [kinvara-int]
     expose:
-      - "4000"
+      - '4000'
     mem_limit: 128m
     cpus: 0.5
 
@@ -237,14 +236,14 @@ services:
   # =========================================================================
   mailpit:
     image: axllent/mailpit:v1.28
-    profiles: ["mail"]
+    profiles: ['mail']
     networks: [kinvara-int]
     environment:
-      MP_SMTP_AUTH_ACCEPT_ANY: "1"
-      MP_SMTP_AUTH_ALLOW_INSECURE: "1"
+      MP_SMTP_AUTH_ACCEPT_ANY: '1'
+      MP_SMTP_AUTH_ALLOW_INSECURE: '1'
     expose:
-      - "1025"          # SMTP
-      - "8025"          # web UI + assertion API
+      - '1025' # SMTP
+      - '8025' # web UI + assertion API
     mem_limit: 64m
     cpus: 0.25
 
@@ -253,20 +252,20 @@ services:
   # =========================================================================
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.140.0
-    profiles: ["otel"]
+    profiles: ['otel']
     networks: [kinvara-int]
     expose:
-      - "4317"          # OTLP gRPC
-      - "4318"          # OTLP HTTP
+      - '4317' # OTLP gRPC
+      - '4318' # OTLP HTTP
     mem_limit: 192m
     cpus: 0.5
 
   jaeger:
     image: jaegertracing/jaeger:2.11.0
-    profiles: ["otel"]
+    profiles: ['otel']
     networks: [kinvara-int]
     expose:
-      - "16686"         # UI
+      - '16686' # UI
     mem_limit: 320m
     cpus: 0.5
 
@@ -285,21 +284,21 @@ services:
   # =========================================================================
   core:
     image: kinvara/core:dev
-    profiles: ["api"]
+    profiles: ['api']
     networks: [kinvara-int]
     expose:
-      - "3000"
+      - '3000'
     environment:
       NODE_ENV: ${NODE_ENV:-development}
       DATABASE_URL: ${DATABASE_URL:-postgres://app:app_local_dev_only@postgres:5432/kinvara}
       VALKEY_URL: ${VALKEY_URL:-redis://valkey:6379}
     mem_limit: 768m
     cpus: 1.0
-    stop_grace_period: 30s   # SIGTERM must drain in-flight requests (T-018)
+    stop_grace_period: 30s # SIGTERM must drain in-flight requests (T-018)
 
   worker:
     image: kinvara/worker:dev
-    profiles: ["worker"]
+    profiles: ['worker']
     networks: [kinvara-int]
     environment:
       NODE_ENV: ${NODE_ENV:-development}
@@ -311,10 +310,10 @@ services:
 
   safety-gw:
     image: kinvara/safety-gw:dev
-    profiles: ["safety"]
+    profiles: ['safety']
     networks: [kinvara-int]
     expose:
-      - "3010"
+      - '3010'
     environment:
       NODE_ENV: ${NODE_ENV:-development}
     mem_limit: 256m
@@ -323,10 +322,10 @@ services:
 
   web:
     image: kinvara/web:dev
-    profiles: ["web"]
+    profiles: ['web']
     networks: [kinvara-int]
     expose:
-      - "3001"
+      - '3001'
     environment:
       NODE_ENV: ${NODE_ENV:-development}
       CORE_BASE_URL: ${CORE_BASE_URL:-http://core:3000}
@@ -335,10 +334,10 @@ services:
 
   admin:
     image: kinvara/admin:dev
-    profiles: ["admin"]
+    profiles: ['admin']
     networks: [kinvara-int]
     expose:
-      - "3002"
+      - '3002'
     environment:
       NODE_ENV: ${NODE_ENV:-development}
       CORE_BASE_URL: ${CORE_BASE_URL:-http://core:3000}
