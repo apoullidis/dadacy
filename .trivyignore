@@ -1,0 +1,9 @@
+# Kinvara Trivy ignore file — SD §QD-4 PR row ("`pnpm audit` + Trivy").
+#
+# RULES FOR THIS FILE, and they are not negotiable:
+#   * one CVE per line, with a comment naming WHO accepted it, WHEN, and WHY;
+#   * an expiry date, so a suppression cannot outlive its justification;
+#   * never a blanket wildcard.
+#
+# An empty file is the correct state. Every line added here is a HIGH or
+# CRITICAL vulnerability someone decided to ship with.

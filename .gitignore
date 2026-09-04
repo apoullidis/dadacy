@@ -1,0 +1,40 @@
+# Kinvara — repository ignore rules (T-001).
+#
+# The toolbox writes as the invoking host user into a bind mount, so anything
+# a toolchain command creates lands here as a real file. Everything below is
+# either a build artefact, a cache, or something that must never be committed.
+
+# --- dependency and build output -------------------------------------------
+node_modules/
+dist/
+build/
+out/
+.next/
+.turbo/
+*.tsbuildinfo
+coverage/
+
+# --- pnpm ------------------------------------------------------------------
+# The toolbox points pnpm at the named volume /pnpm-store. If that ever fails,
+# pnpm 11 silently falls back to a store INSIDE the working tree
+# (state/EP-1/T-000.md § Published contract, obligation 2). This line is the
+# cheap insurance that obligation asks for.
+.pnpm-store/
+
+# --- gate caches -----------------------------------------------------------
+# Trivy's vulnerability database (~hundreds of MB). Lives in the repo so it
+# survives between toolbox invocations via the bind mount; never committed.
+.cache/
+
+# --- environment -----------------------------------------------------------
+# docker/.env.example is the committed environment contract (T-016). Real
+# environment files never are.
+.env
+.env.*
+!.env.example
+
+# --- editor / OS -----------------------------------------------------------
+.DS_Store
+*.swp
+.idea/
+.vscode/

@@ -18,3 +18,20 @@ nodejs 24.20.0
 pnpm 11.25.0
 terraform 1.16.1
 playwright 1.62.0
+
+# --- added by T-001 (the six no-app-code gates) -----------------------------
+# gitleaks and Trivy are NOT npm packages; they are static binaries installed
+# into the toolbox image (docker/toolbox.Dockerfile, secops-fetch stage) with
+# checksum verification against the publisher's signed SHA256SUMS.
+#
+# ONE THING TO KNOW BEFORE YOU BUMP EITHER LINE. scripts/dev is T-000's and
+# T-001 does not modify it, so it passes only NODE/PNPM/TERRAFORM/PLAYWRIGHT
+# as --build-arg and the image tag encodes only those three. Changing a
+# version here therefore does NOT invalidate the cached image on its own.
+# That hole is closed by `gate:toolbox`, which compares the running binaries
+# against these lines and fails with "rebuild the toolbox" if they disagree.
+# So: edit the line, then `scripts/dev --build <anything>`, then
+# `scripts/dev pnpm gate:toolbox` to confirm. The Dockerfile's ARG defaults
+# mirror these values and must be edited in the same commit.
+gitleaks 8.30.1
+trivy 0.74.0

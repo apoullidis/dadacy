@@ -1,0 +1,56 @@
+[
+  {
+    "name": "(public)",
+    "path": "apps/web/.next/static/chunks/app/(public)/**/*.js",
+    "limit": "0 KB",
+    "gzip": true
+  },
+  {
+    "name": "/p/search",
+    "path": "apps/web/.next/static/chunks/app/p/search/**/*.js",
+    "limit": "45 KB",
+    "gzip": true
+  },
+  {
+    "name": "/p/sitters/[id]",
+    "path": "apps/web/.next/static/chunks/app/p/sitters/[id]/**/*.js",
+    "limit": "45 KB",
+    "gzip": true
+  },
+  {
+    "name": "/p/book/*",
+    "path": "apps/web/.next/static/chunks/app/p/book/**/*.js",
+    "limit": "90 KB",
+    "gzip": true
+  },
+  {
+    "name": "/p/book/[draftId]/pay",
+    "path": "apps/web/.next/static/chunks/app/p/book/[draftId]/pay/**/*.js",
+    "limit": "180 KB",
+    "gzip": true
+  },
+  {
+    "name": "/s/inbox",
+    "path": "apps/web/.next/static/chunks/app/s/inbox/**/*.js",
+    "limit": "70 KB",
+    "gzip": true
+  },
+  {
+    "name": "/s/availability",
+    "path": "apps/web/.next/static/chunks/app/s/availability/**/*.js",
+    "limit": "130 KB",
+    "gzip": true
+  },
+  {
+    "name": "/session/[id]",
+    "path": "apps/web/.next/static/chunks/app/session/[id]/**/*.js",
+    "limit": "150 KB",
+    "gzip": true
+  },
+  {
+    "name": "Shared app shell",
+    "path": "apps/web/.next/static/chunks/main-app-*.js",
+    "limit": "60 KB",
+    "gzip": true
+  }
+]

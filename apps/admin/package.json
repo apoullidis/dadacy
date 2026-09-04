@@ -1,0 +1,8 @@
+{
+  "name": "@kinvara/admin",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Next.js 16 — Trust & Safety back-office (CSR SPA)",
+  "//": "PLACEHOLDER (T-001). Topology only, per SD §DH-1 — no source, no dependencies, no scripts. The owning agent (frontend-developer) adds src/, dependencies and the typecheck/lint/test/build scripts turbo.json already declares."
+}

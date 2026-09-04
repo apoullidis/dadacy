@@ -1,0 +1,43 @@
+{
+  "name": "kinvara",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Kinvara monorepo — pnpm workspace + Turborepo (SD §DH-1)",
+  "packageManager": "pnpm@11.25.0",
+  "engines": {
+    "node": "24.20.0"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "node scripts/gates/lint.ts",
+    "format": "prettier --write .",
+    "test": "node scripts/gates/turbo-task.ts test",
+    "test:integration": "node scripts/gates/turbo-task.ts test:integration",
+    "build": "turbo run build",
+    "size-limit": "node scripts/gates/size-limit.ts",
+    "db:introspect:check": "node scripts/gates/not-yet-supplied.ts db:introspect:check",
+    "gate:typecheck": "pnpm run --silent typecheck",
+    "gate:lint": "pnpm run --silent lint",
+    "gate:deps": "node scripts/gates/deps.ts",
+    "gate:secrets": "node scripts/gates/secrets.ts",
+    "gate:trivy": "node scripts/gates/trivy.ts",
+    "gate:size-limit": "pnpm run --silent size-limit",
+    "gate:toolbox": "node scripts/gates/toolbox.ts",
+    "gate:pr": "node scripts/gates/pr.ts",
+    "gate:heavy": "node scripts/gates/not-yet-supplied.ts gate:heavy"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@size-limit/file": "13.0.3",
+    "@types/node": "26.4.1",
+    "dependency-cruiser": "18.2.0",
+    "eslint": "10.9.1",
+    "eslint-config-prettier": "10.1.8",
+    "prettier": "3.9.6",
+    "size-limit": "13.0.3",
+    "turbo": "2.10.12",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.69.0"
+  }
+}

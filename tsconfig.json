@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "//": "The repository-wide typecheck program. `pnpm -w typecheck` compiles THIS, so any .ts file added anywhere under apps/, packages/ or scripts/ is typechecked from the moment it lands — a package cannot opt out by forgetting to wire itself in. Per-package tsconfig.json files exist for editors and for the per-package build each owning agent adds later.",
+  "extends": "./tsconfig.base.json",
+  "include": [
+    "apps/**/*.ts",
+    "apps/**/*.tsx",
+    "packages/**/*.ts",
+    "packages/**/*.tsx",
+    "scripts/**/*.ts"
+  ],
+  "exclude": [
+    "**/node_modules",
+    "**/dist",
+    "**/build",
+    "**/out",
+    "**/.next",
+    "**/.turbo"
+  ]
+}

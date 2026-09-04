@@ -1,0 +1,32 @@
+{
+  "$schema": "https://turborepo.com/schema.json",
+  "//": "Kinvara Turborepo task graph (SA §TS-3, SD §DH-1). The tasks are declared here once; each package opts in by adding a script of the same name to its package.json. At T-001 every workspace package is a placeholder with no scripts, so `pnpm -w test` reports that no package implements the task rather than passing silently.",
+  "ui": "stream",
+  "globalDependencies": [".tool-versions", "tsconfig.base.json"],
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**", ".next/**", "!.next/cache/**"]
+    },
+    "typecheck": {
+      "dependsOn": ["^build"],
+      "outputs": []
+    },
+    "lint": {
+      "outputs": []
+    },
+    "test": {
+      "dependsOn": ["^build"],
+      "outputs": ["coverage/**"]
+    },
+    "test:integration": {
+      "dependsOn": ["^build"],
+      "cache": false,
+      "outputs": []
+    },
+    "size-limit": {
+      "dependsOn": ["build"],
+      "outputs": []
+    }
+  }
+}

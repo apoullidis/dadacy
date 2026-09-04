@@ -1,0 +1,8 @@
+{
+  "name": "@kinvara/core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "NestJS 11 / Fastify — the modular monolith API",
+  "//": "PLACEHOLDER (T-001). Topology only, per SD §DH-1 — no source, no dependencies, no scripts. The owning agent (tech-lead) adds src/, dependencies and the typecheck/lint/test/build scripts turbo.json already declares."
+}

@@ -1,0 +1,14 @@
+# Kinvara pnpm workspace (SD §DH-1, SA §TS-3).
+#
+# pnpm settings belong HERE and not in .npmrc: measured against pnpm 11.25.0,
+# pnpm no longer reads its own settings from npmrc and ignores them silently
+# (state/EP-1/T-000.md § Published contract, obligation 2). There is no
+# .npmrc in this repository and none should be added.
+#
+# `storeDir` is deliberately NOT set. The toolbox exports
+# pnpm_config_store_dir=/pnpm-store, a named Docker volume shared by every
+# agent; overriding it here would put the store inside the bind-mounted tree.
+
+packages:
+  - 'apps/*'
+  - 'packages/*'

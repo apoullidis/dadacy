@@ -1,0 +1,26 @@
+# Kinvara gitleaks configuration — SD §QD-4 PR row.
+#
+# Extends the bundled default rule set (~150 provider rules: AWS, Stripe,
+# Twilio, GitHub, private keys, generic high-entropy assignments) rather than
+# re-deriving it. PROTOCOL.md §9.9 and platform-infrastructure.md
+# non-negotiable 7: there are no real vendor credentials anywhere in this
+# programme, so ANY provider-shaped secret in this repository is either a
+# mistake or a test fixture that should not look real.
+
+title = "Kinvara"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Paths that are never secrets"
+paths = [
+  '''(^|/)node_modules/''',
+  '''(^|/)\.git/''',
+  '''(^|/)\.pnpm-store/''',
+  '''(^|/)\.cache/''',
+  '''(^|/)dist/''',
+  '''(^|/)\.next/''',
+  '''(^|/)\.turbo/''',
+  '''(^|/)pnpm-lock\.yaml$''',
+]

@@ -1,0 +1,8 @@
+{
+  "name": "@kinvara/pricing",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "priceBooking, mulRateRound, VAT decomposition — the only rounding",
+  "//": "PLACEHOLDER (T-001). Topology only, per SD §DH-1 — no source, no dependencies, no scripts. The owning agent (backend-booking-payments T-087) adds src/, dependencies and the typecheck/lint/test/build scripts turbo.json already declares."
+}

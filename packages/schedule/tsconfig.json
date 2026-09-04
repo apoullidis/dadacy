@@ -1,0 +1,6 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "//": "PLACEHOLDER (T-001). Inherits SD §DH-2's strict baseline. Repo-wide typecheck runs from the root tsconfig.json, which already globs this package's sources; this file exists for editors and for the per-package build the owning agent (backend-booking-payments) adds.",
+  "extends": "../../tsconfig.base.json",
+  "include": ["src/**/*"]
+}

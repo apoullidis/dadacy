@@ -1,0 +1,8 @@
+{
+  "name": "@kinvara/text-normalise",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "THE ONE normalisation pipeline (SE-10)",
+  "//": "PLACEHOLDER (T-001). Topology only, per SD §DH-1 — no source, no dependencies, no scripts. The owning agent (backend-credential-trust T-065) adds src/, dependencies and the typecheck/lint/test/build scripts turbo.json already declares."
+}

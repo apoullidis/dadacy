@@ -27,6 +27,15 @@ ARG PNPM_VERSION=11.25.0
 ARG TERRAFORM_VERSION=1.16.1
 ARG PLAYWRIGHT_VERSION=1.62.0
 
+# Added by T-001 for the no-app-code gates (gate:secrets, gate:trivy).
+# scripts/dev (T-000, unmodified) passes only the four args above, so these two
+# are NOT overridden at build time: the defaults below ARE the pin, and they
+# must be kept identical to app/.tool-versions in the same commit. `gate:toolbox`
+# compares the installed binaries against .tool-versions and fails if they drift,
+# which is what makes that convention enforced rather than remembered.
+ARG GITLEAKS_VERSION=8.30.1
+ARG TRIVY_VERSION=0.74.0
+
 # ---------------------------------------------------------------------------
 # Stage 1 — fetch and checksum-verify Terraform. HashiCorp publish no image,
 # so the binary is downloaded and verified against their signed SHA256SUMS.
@@ -52,6 +61,58 @@ RUN set -eux; \
     /out/terraform version
 
 # ---------------------------------------------------------------------------
+# Stage 1b (T-001) — fetch and checksum-verify gitleaks and Trivy.
+#
+# Both are single static Go binaries published on GitHub with a signed
+# checksums file. Neither is an npm package, so neither can live in the
+# workspace: they have to be in the image (platform-infrastructure.md
+# non-negotiable 8 — "if a command is missing, the answer is to add it to the
+# toolbox image, never apt install").
+#
+# dependency-cruiser is deliberately NOT here: it IS an npm package, it must
+# resolve the workspace's own tsconfig.json and node_modules to follow a TS
+# import graph at all, and a copy installed globally in the image could not.
+# It is pinned in the root package.json devDependencies and the lockfile.
+# ---------------------------------------------------------------------------
+FROM node:${NODE_VERSION}-bookworm-slim AS secops-fetch
+ARG GITLEAKS_VERSION
+ARG TRIVY_VERSION
+ARG TARGETARCH
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates curl; \
+    rm -rf /var/lib/apt/lists/*
+RUN set -eux; \
+    mkdir -p /out; \
+    cd /tmp; \
+    case "${TARGETARCH}" in \
+      amd64) gl_arch=x64;   tv_arch=64bit ;; \
+      arm64) gl_arch=arm64; tv_arch=ARM64 ;; \
+      *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    \
+    gl_tar="gitleaks_${GITLEAKS_VERSION}_linux_${gl_arch}.tar.gz"; \
+    gl_sums="gitleaks_${GITLEAKS_VERSION}_checksums.txt"; \
+    gl_base="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"; \
+    curl -fsSL -o "${gl_tar}"  "${gl_base}/${gl_tar}"; \
+    curl -fsSL -o "${gl_sums}" "${gl_base}/${gl_sums}"; \
+    grep "  ${gl_tar}\$" "${gl_sums}" | sha256sum -c -; \
+    tar -xzf "${gl_tar}" gitleaks; \
+    install -m 0755 gitleaks /out/gitleaks; \
+    \
+    tv_tar="trivy_${TRIVY_VERSION}_Linux-${tv_arch}.tar.gz"; \
+    tv_sums="trivy_${TRIVY_VERSION}_checksums.txt"; \
+    tv_base="https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}"; \
+    curl -fsSL -o "${tv_tar}"  "${tv_base}/${tv_tar}"; \
+    curl -fsSL -o "${tv_sums}" "${tv_base}/${tv_sums}"; \
+    grep "  ${tv_tar}\$" "${tv_sums}" | sha256sum -c -; \
+    tar -xzf "${tv_tar}" trivy; \
+    install -m 0755 trivy /out/trivy; \
+    \
+    /out/gitleaks version; \
+    /out/trivy --version
+
+# ---------------------------------------------------------------------------
 # Stage 2 — the toolbox proper.
 # ---------------------------------------------------------------------------
 FROM node:${NODE_VERSION}-bookworm-slim AS toolbox
@@ -59,13 +120,17 @@ ARG NODE_VERSION
 ARG PNPM_VERSION
 ARG TERRAFORM_VERSION
 ARG PLAYWRIGHT_VERSION
+ARG GITLEAKS_VERSION
+ARG TRIVY_VERSION
 
 LABEL org.opencontainers.image.title="kinvara-toolbox" \
       org.opencontainers.image.description="Kinvara pinned toolchain (DOCKER.md §4.2)" \
       io.kinvara.node="${NODE_VERSION}" \
       io.kinvara.pnpm="${PNPM_VERSION}" \
       io.kinvara.terraform="${TERRAFORM_VERSION}" \
-      io.kinvara.playwright="${PLAYWRIGHT_VERSION}"
+      io.kinvara.playwright="${PLAYWRIGHT_VERSION}" \
+      io.kinvara.gitleaks="${GITLEAKS_VERSION}" \
+      io.kinvara.trivy="${TRIVY_VERSION}"
 
 # git: pnpm resolves git-hosted deps and the gates shell out to it.
 # ca-certificates: the toolbox is the one container with egress (DOCKER.md §7).
@@ -75,6 +140,11 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=terraform-fetch /out/terraform /usr/local/bin/terraform
+
+# T-001: the two no-app-code security gates (SD §QD-4 PR row: gitleaks,
+# "pnpm audit + Trivy"). Verified by gate:toolbox against .tool-versions.
+COPY --from=secops-fetch /out/gitleaks /usr/local/bin/gitleaks
+COPY --from=secops-fetch /out/trivy    /usr/local/bin/trivy
 
 # Terraform phones home on `version` unless this is set. That upgrade notice is
 # exactly what breaks the "same command twice is byte-identical" gate.
@@ -158,6 +228,11 @@ COPY --from=toolbox /usr/local/bin/node /usr/local/bin/node
 COPY --from=toolbox /usr/local/include/node /usr/local/include/node
 COPY --from=toolbox /usr/local/lib/node_modules /usr/local/lib/node_modules
 COPY --from=toolbox /usr/local/bin/terraform /usr/local/bin/terraform
+# T-001: keep the two security gates present in BOTH variants, so
+# `scripts/dev --playwright pnpm gate:toolbox` asserts the same pin contract
+# rather than reporting two missing binaries.
+COPY --from=toolbox /usr/local/bin/gitleaks /usr/local/bin/gitleaks
+COPY --from=toolbox /usr/local/bin/trivy    /usr/local/bin/trivy
 COPY --from=toolbox /opt/corepack /opt/corepack
 COPY --from=toolbox /usr/local/bin/toolbox-entrypoint /usr/local/bin/toolbox-entrypoint
 

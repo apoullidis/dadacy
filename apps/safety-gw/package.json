@@ -1,0 +1,8 @@
+{
+  "name": "@kinvara/safety-gw",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Bare Fastify — arrival, check-in, SOS, end, stream, share",
+  "//": "PLACEHOLDER (T-001). Topology only, per SD §DH-1 — no source, no dependencies, no scripts. The owning agent (platform-infrastructure T-012, two-approval path) adds src/, dependencies and the typecheck/lint/test/build scripts turbo.json already declares."
+}

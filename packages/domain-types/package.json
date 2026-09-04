@@ -1,0 +1,8 @@
+{
+  "name": "@kinvara/domain-types",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Enums, state machines, jurisdiction config, RANKING_INPUT_ALLOWLIST, time.ts",
+  "//": "PLACEHOLDER (T-001). Topology only, per SD §DH-1 — no source, no dependencies, no scripts. The owning agent (tech-lead T-023) adds src/, dependencies and the typecheck/lint/test/build scripts turbo.json already declares."
+}
