@@ -28,13 +28,25 @@ ARG TERRAFORM_VERSION=1.16.1
 ARG PLAYWRIGHT_VERSION=1.62.0
 
 # Added by T-001 for the no-app-code gates (gate:secrets, gate:trivy).
-# scripts/dev (T-000, unmodified) passes only the four args above, so these two
-# are NOT overridden at build time: the defaults below ARE the pin, and they
-# must be kept identical to app/.tool-versions in the same commit. `gate:toolbox`
-# compares the installed binaries against .tool-versions and fails if they drift,
-# which is what makes that convention enforced rather than remembered.
 ARG GITLEAKS_VERSION=8.30.1
 ARG TRIVY_VERSION=0.74.0
+
+# Added by T-016: psql / pg_dump. Default target only — see below.
+ARG POSTGRESQL_VERSION=18
+
+# --- T-016 / OD-1: how these ARGs are supplied -----------------------------
+# scripts/lib/toolbox.sh passes ONE --build-arg PER LINE of app/.tool-versions,
+# named <KEY>_VERSION (upper-cased, non-alphanumerics folded to '_', with the
+# single alias nodejs -> NODE), and puts a fingerprint of every pin into the
+# image tag. So the defaults above are a fallback for a bare `docker build`
+# only; .tool-versions is what a `scripts/dev` or `scripts/svc run` build uses,
+# and changing any line there forces a rebuild.
+#
+# Until T-016 that was NOT true of GITLEAKS_VERSION and TRIVY_VERSION: they
+# were not passed, they were not in the tag, and bumping either silently reused
+# the cached image (decisions.md OD-1). ADD AN `ARG <KEY>_VERSION` HERE WHENEVER
+# YOU ADD A LINE TO .tool-versions — BuildKit will warn about an unconsumed
+# build-arg if you forget, on a rebuild that now definitely happens.
 
 # ---------------------------------------------------------------------------
 # Stage 1 — fetch and checksum-verify Terraform. HashiCorp publish no image,
@@ -122,6 +134,7 @@ ARG TERRAFORM_VERSION
 ARG PLAYWRIGHT_VERSION
 ARG GITLEAKS_VERSION
 ARG TRIVY_VERSION
+ARG POSTGRESQL_VERSION
 
 LABEL org.opencontainers.image.title="kinvara-toolbox" \
       org.opencontainers.image.description="Kinvara pinned toolchain (DOCKER.md §4.2)" \
@@ -130,14 +143,33 @@ LABEL org.opencontainers.image.title="kinvara-toolbox" \
       io.kinvara.terraform="${TERRAFORM_VERSION}" \
       io.kinvara.playwright="${PLAYWRIGHT_VERSION}" \
       io.kinvara.gitleaks="${GITLEAKS_VERSION}" \
-      io.kinvara.trivy="${TRIVY_VERSION}"
+      io.kinvara.trivy="${TRIVY_VERSION}" \
+      io.kinvara.postgresql="${POSTGRESQL_VERSION}"
 
 # git: pnpm resolves git-hosted deps and the gates shell out to it.
 # ca-certificates: the toolbox is the one container with egress (DOCKER.md §7).
 RUN set -eux; \
     apt-get update; \
-    apt-get install -y --no-install-recommends ca-certificates git; \
+    apt-get install -y --no-install-recommends ca-certificates curl git; \
     rm -rf /var/lib/apt/lists/*
+
+# T-016: psql and pg_dump. There is no psql on the host and there must not be
+# (DOCKER.md §0.1), so `scripts/svc run <t> -- psql -h postgres` — the shape of
+# connection every service-dependent ticket uses — needs a client in here.
+# PGDG rather than Debian's own package, because Debian bookworm ships the
+# 15 client and the server we run is 18; a client older than the server is the
+# kind of local-only difference T-019's parity list exists to keep out.
+# The armoured key goes straight into a signed-by keyring, so gnupg is not
+# needed in the image.
+RUN set -eux; \
+    curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+        -o /usr/share/keyrings/pgdg.asc; \
+    echo "deb [signed-by=/usr/share/keyrings/pgdg.asc] http://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" \
+        > /etc/apt/sources.list.d/pgdg.list; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends "postgresql-client-${POSTGRESQL_VERSION}"; \
+    rm -rf /var/lib/apt/lists/*; \
+    psql --version
 
 COPY --from=terraform-fetch /out/terraform /usr/local/bin/terraform
 
@@ -215,6 +247,12 @@ ARG NODE_VERSION
 ARG PNPM_VERSION
 ARG TERRAFORM_VERSION
 ARG PLAYWRIGHT_VERSION
+ARG GITLEAKS_VERSION
+ARG TRIVY_VERSION
+# Declared but deliberately unused: this variant carries no psql. It is built
+# on Ubuntu noble and dragging libpq across from bookworm is drift for no
+# benefit — Playwright exercises the app, not the database.
+ARG POSTGRESQL_VERSION
 
 LABEL org.opencontainers.image.title="kinvara-toolbox-playwright" \
       io.kinvara.node="${NODE_VERSION}" \

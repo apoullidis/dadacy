@@ -6,9 +6,12 @@
 # convenience edit.
 #
 # Consumed by:
-#   app/docker/toolbox.Dockerfile  (build args NODE_VERSION / PNPM_VERSION /
-#                                   TERRAFORM_VERSION / PLAYWRIGHT_VERSION)
-#   app/scripts/dev                (image tag + --build-arg values)
+#   app/scripts/lib/toolbox.sh     (image tag + --build-arg values, derived
+#                                   from EVERY line below — see the note at
+#                                   the bottom of this file)
+#   app/scripts/dev                (egress, no services)
+#   app/scripts/svc run            (services, no egress)
+#   app/docker/toolbox.Dockerfile  (one ARG <KEY>_VERSION per line below)
 #
 # The Playwright browser image tag is DERIVED, never written separately:
 #   mcr.microsoft.com/playwright:v<playwright>-noble
@@ -23,15 +26,43 @@ playwright 1.62.0
 # gitleaks and Trivy are NOT npm packages; they are static binaries installed
 # into the toolbox image (docker/toolbox.Dockerfile, secops-fetch stage) with
 # checksum verification against the publisher's signed SHA256SUMS.
-#
-# ONE THING TO KNOW BEFORE YOU BUMP EITHER LINE. scripts/dev is T-000's and
-# T-001 does not modify it, so it passes only NODE/PNPM/TERRAFORM/PLAYWRIGHT
-# as --build-arg and the image tag encodes only those three. Changing a
-# version here therefore does NOT invalidate the cached image on its own.
-# That hole is closed by `gate:toolbox`, which compares the running binaries
-# against these lines and fails with "rebuild the toolbox" if they disagree.
-# So: edit the line, then `scripts/dev --build <anything>`, then
-# `scripts/dev pnpm gate:toolbox` to confirm. The Dockerfile's ARG defaults
-# mirror these values and must be edited in the same commit.
 gitleaks 8.30.1
 trivy 0.74.0
+
+# --- added by T-016 --------------------------------------------------------
+# psql and pg_dump, for `scripts/svc run <t> -- psql` and for T-010's restore
+# drill. Not on the host and never to be (DOCKER.md §0.1). Installed from PGDG
+# into the DEFAULT toolbox target only, not into the --playwright variant:
+# that one is built on Ubuntu noble and carrying libpq across is drift for no
+# benefit, since Playwright runs E2E through the app and not through psql.
+postgresql 18
+
+# ===========================================================================
+# HOW A PIN REACHES THE IMAGE  (T-016 / OD-1 — this used to be wrong)
+# ===========================================================================
+# scripts/lib/toolbox.sh reads EVERY line above. For each one it passes
+# --build-arg <KEY>_VERSION=<value> (KEY upper-cased, non-alphanumerics folded
+# to '_', with the single alias nodejs -> NODE), and it puts a fingerprint of
+# the whole set into the image tag:
+#
+#   kinvara-toolbox:node<n>-pnpm<p>-tf<t>[-pw<w>]-x<12 hex>
+#
+# Reproduce the fingerprint by hand, exactly:
+#
+#   awk '!/^[[:space:]]*#/ && NF >= 2 { print $1, $2 }' app/.tool-versions \
+#     | LC_ALL=C sort | sha256sum | cut -c1-12
+#
+# So CHANGING OR ADDING ANY LINE HERE CHANGES THE TAG AND FORCES A REBUILD.
+# You cannot keep an old toolchain by accident, and you cannot run a stale
+# binary while believing this file. Comments and line order deliberately do
+# not affect it: re-wording this paragraph must not invalidate a 1 GB image.
+#
+# BEFORE T-016 THIS WAS NOT TRUE. The tag encoded only nodejs/pnpm/terraform
+# and only those four were passed as build args, so bumping gitleaks or trivy
+# reused the cached image in silence (decisions.md OD-1). `gate:toolbox` was
+# the only thing catching it, after the fact.
+#
+# WHEN YOU ADD A LINE: add the matching `ARG <KEY>_VERSION` to
+# docker/toolbox.Dockerfile and use it. If you forget, BuildKit warns about an
+# unconsumed build-arg on a rebuild that now definitely happens — loud, and
+# not silence.

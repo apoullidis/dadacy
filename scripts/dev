@@ -20,16 +20,29 @@
 #     egress. The two never overlap — that is what makes "no live credentials"
 #     structural rather than a rule someone has to remember.
 #   * no arguments is an error, not a shell.
+#
+# --- T-016 / OD-1 ----------------------------------------------------------
+# The pin loop and the image tag used to be written out here and enumerated
+# FOUR tools by hand. T-001 added `gitleaks` and `trivy` to .tool-versions, and
+# bumping either changed nothing the tag could see: the cached image was
+# silently reused and an agent ran a stale binary while believing the pin.
+# Both now come from scripts/lib/toolbox.sh, which derives them from EVERY line
+# in .tool-versions and from no hand-written list. scripts/svc run uses the
+# same file, so the two entry points cannot drift.
 
 set -euo pipefail
 
 SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
-REPO_ROOT="$(cd "$(dirname "${SCRIPT_PATH}")/.." && pwd)"
+SCRIPT_DIR="$(dirname "${SCRIPT_PATH}")"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 TOOL_VERSIONS="${REPO_ROOT}/.tool-versions"
 DOCKERFILE="${REPO_ROOT}/docker/toolbox.Dockerfile"
 
 BUILD_NETWORK="kinvara-build"
 PNPM_STORE_VOLUME="kinvara-pnpm-store"
+
+# shellcheck source=scripts/lib/toolbox.sh
+. "${SCRIPT_DIR}/lib/toolbox.sh"
 
 die() { printf 'scripts/dev: %s\n' "$*" >&2; exit 1; }
 
@@ -60,17 +73,7 @@ USAGE
 [[ -f "${TOOL_VERSIONS}" ]] || die "missing ${TOOL_VERSIONS}"
 [[ -f "${DOCKERFILE}" ]]    || die "missing ${DOCKERFILE}"
 
-pin() {
-    local key="$1" value
-    value="$(awk -v k="${key}" '$1 == k { print $2; exit }' "${TOOL_VERSIONS}")"
-    [[ -n "${value}" ]] || die "no pin for '${key}' in ${TOOL_VERSIONS}"
-    printf '%s' "${value}"
-}
-
-NODE_VERSION="$(pin nodejs)"
-PNPM_VERSION="$(pin pnpm)"
-TERRAFORM_VERSION="$(pin terraform)"
-PLAYWRIGHT_VERSION="$(pin playwright)"
+toolbox_load_pins "${TOOL_VERSIONS}" || exit 1
 
 # --- arguments -------------------------------------------------------------
 FORCE_BUILD=0
@@ -95,27 +98,13 @@ if [[ $# -eq 0 ]]; then
 fi
 
 # --- image -----------------------------------------------------------------
-# The tag encodes the pins, so changing .tool-versions forces a new image
-# rather than silently reusing the old one.
-IMAGE="kinvara-toolbox:node${NODE_VERSION}-pnpm${PNPM_VERSION}-tf${TERRAFORM_VERSION}"
-if [[ "${TARGET}" == "toolbox-playwright" ]]; then
-    IMAGE="${IMAGE}-pw${PLAYWRIGHT_VERSION}"
-fi
-
+# The tag encodes EVERY pin in .tool-versions — the readable node/pnpm/tf
+# prefix for a human reading `docker images`, and a fingerprint of the whole
+# file so that no pin can change without the tag changing (OD-1).
 command -v docker >/dev/null 2>&1 || die "docker is not installed"
 
-if [[ "${FORCE_BUILD}" -eq 1 ]] || ! docker image inspect "${IMAGE}" >/dev/null 2>&1; then
-    printf 'scripts/dev: building %s (target %s) ...\n' "${IMAGE}" "${TARGET}" >&2
-    DOCKER_BUILDKIT=1 docker build \
-        --file "${DOCKERFILE}" \
-        --target "${TARGET}" \
-        --tag "${IMAGE}" \
-        --build-arg "NODE_VERSION=${NODE_VERSION}" \
-        --build-arg "PNPM_VERSION=${PNPM_VERSION}" \
-        --build-arg "TERRAFORM_VERSION=${TERRAFORM_VERSION}" \
-        --build-arg "PLAYWRIGHT_VERSION=${PLAYWRIGHT_VERSION}" \
-        "${REPO_ROOT}/docker" >&2
-fi
+IMAGE="$(toolbox_image_tag "${TOOL_VERSIONS}" "${TARGET}")"
+toolbox_ensure_image "${IMAGE}" "${TARGET}" "${DOCKERFILE}" "${REPO_ROOT}/docker" "${FORCE_BUILD}"
 
 # --- the one permitted egress network (DOCKER.md §7) -----------------------
 if ! docker network inspect "${BUILD_NETWORK}" >/dev/null 2>&1; then
@@ -137,6 +126,11 @@ else
     WORKDIR="${REPO_ROOT}"
 fi
 
+# The repo bind mount, plus the main repository's .git when this is a LINKED
+# git worktree — without it every git command inside the container fails,
+# which is the caveat DOCKER.md §9.1b names as blocking parallel dispatch.
+toolbox_mount_args "${REPO_ROOT}"
+
 # A TTY only when the caller actually has one on both ends: otherwise docker
 # rewrites LF as CRLF and captured output stops being byte-comparable.
 TTY_FLAGS=()
@@ -150,7 +144,7 @@ exec docker run \
     "${TTY_FLAGS[@]}" \
     --network "${BUILD_NETWORK}" \
     --user "$(id -u):$(id -g)" \
-    --volume "${REPO_ROOT}:${REPO_ROOT}" \
+    "${KINVARA_MOUNT_ARGS[@]}" \
     --volume "${PNPM_STORE_VOLUME}:/pnpm-store" \
     --workdir "${WORKDIR}" \
     --env "HOME=/home/toolbox" \
