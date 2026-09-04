@@ -23,10 +23,10 @@
 #
 #       postgres:5432     valkey:6379     core:3000     localstack:4566
 #
-#   NOT by an ephemeral host port, and never by `localhost`. The ephemeral host
-#   ports that `scripts/svc port` and `scripts/svc env` report exist for A
-#   HUMAN WITH A BROWSER. A test that uses one passes here and fails in the
-#   next ticket, as a flake, in somebody else's evidence.
+#   NEVER by a host port, and never by `localhost`. A ticket-scoped project
+#   publishes no host port at all — see "HOST PORTS" below. Host ports exist
+#   only on the shared `kinvara-dev` stack, for A HUMAN WITH A BROWSER, and a
+#   test that reaches for one fails in somebody else's ticket, as a flake.
 #
 # =============================================================================
 # THE EGRESS RULE — THIS SCRIPT HOLDS ONE HALF OF IT (DOCKER.md §7)
@@ -47,15 +47,28 @@
 #   under `scripts/dev`.
 #
 # =============================================================================
-# EPHEMERAL PORTS
+# HOST PORTS — THERE ARE NONE ON A TICKET-SCOPED PROJECT
 # =============================================================================
 #
-#   Ticket-scoped projects publish with no fixed host port. Two agents working
-#   in parallel would otherwise collide on the second concurrent ticket, and
-#   the failure presents as a flaky test rather than as a port clash. The one
-#   exception is the shared `kinvara-dev` stack (compose.dev.yml), which pins
-#   its ports so a human has a stable target. NEVER produce ticket evidence
-#   against kinvara-dev.
+#   Not fixed ones, and — after measurement — not ephemeral ones either.
+#
+#   DOCKER.md §4.1 assumed ticket-scoped services would publish ephemeral host
+#   ports. They cannot: Docker SILENTLY drops port publishing for a container
+#   attached only to an `internal: true` network. No error, no warning;
+#   `docker port` just returns nothing (Docker 29.7.1 / Compose v5.3.1,
+#   recorded as OD-4). Of the two rules, §7's internal network wins — it is
+#   what makes "no live vendor credentials" structural rather than remembered.
+#
+#   Nothing is lost. The ephemeral-port rule existed to stop two parallel
+#   agents colliding, and publishing nothing satisfies that more completely
+#   than publishing randomly. Everything that reaches a service — every test,
+#   every gate, Playwright, Lighthouse — runs under `svc run`, ON the network,
+#   addressing services by name. `svc exec` covers an interactive poke.
+#
+#   `svc port` therefore fails, loudly and with an explanation, on a
+#   ticket-scoped project, and works only for the shared `kinvara-dev` stack
+#   (compose.dev.yml), which buys its fixed ports with a second, non-internal
+#   network and is never used for evidence.
 
 set -euo pipefail
 
@@ -94,7 +107,7 @@ usage: scripts/svc <command> [args...]
 
   up   <ticket> <profile...> [--verify] [--chaos] [--build]
                        Start exactly the named profiles in this ticket's own
-                       compose project, on ephemeral host ports.
+                       compose project. No host ports are published.
   run  <ticket> [--image IMG] [--playwright] [--build] -- <cmd...>
                        Run one command in the toolbox, ATTACHED TO THIS
                        TICKET'S INTERNAL NETWORK. Services are reached by
@@ -104,9 +117,11 @@ usage: scripts/svc <command> [args...]
                        Run a command inside an already-running service.
   ps   <ticket>        What is running in this ticket's project.
   port <ticket> <service> <container-port>
-                       The ephemeral host port Docker assigned. For a human.
-  env  <ticket>        Host-side connection strings, for a human with a
-                       browser or a psql. NOT what your tests use.
+                       The fixed host port, for a human with a browser.
+                       ONLY the shared `dev` stack has one; on a ticket
+                       project this fails and tells you why.
+  env  <ticket>        The connection strings for this project — service name
+                       on default port, which is what `svc run` injects.
   down <ticket>        Stop and remove everything, volumes included.
   nuke [--yes]         EVERY kinvara-* compose project. ORCHESTRATOR ONLY.
 
@@ -367,6 +382,29 @@ cmd_port() {
     local project; project="$(project_for "$1")"
     compose_files_for
     all_profile_flags
+
+    if [[ "${IS_DEV}" -eq 0 ]]; then
+        cat >&2 <<EOF
+scripts/svc: ${project} publishes no host port, by design, and cannot.
+
+Its services are on an \`internal: true\` network (DOCKER.md §7) and Docker
+silently drops port publishing there — that is OD-4, measured, not a bug here.
+The internal network is what makes "no live vendor credentials" structural, so
+it wins over §4.1's assumption that ephemeral host ports would exist.
+
+Reach ${2} the way every test does — from ON the network:
+
+    scripts/svc run $1 -- <command>        # ${2}:${3}, by service name
+    scripts/svc exec $1 ${2} <command>     # inside the container itself
+    scripts/svc env $1                     # the addresses, printed
+
+A human with a browser wants the shared stack instead:
+
+    scripts/svc up dev <profiles>          # fixed ports, never used for evidence
+EOF
+        exit 1
+    fi
+
     dc "${project}" port "$2" "$3"
 }
 
@@ -376,28 +414,33 @@ cmd_env() {
     compose_files_for
     all_profile_flags
 
-    local hostport
     cat <<'BANNER'
-# scripts/svc env — HOST-SIDE addresses, for a human with a browser or a psql.
+# scripts/svc env — the addresses for this project.
 #
-# THESE ARE NOT WHAT YOUR TESTS USE. A process under `scripts/svc run` is on
-# the ticket's internal network and reaches a service by its COMPOSE SERVICE
-# NAME on its DEFAULT PORT — postgres:5432, valkey:6379, core:3000. Those
-# addresses are in docker/.env.example and are injected for you.
+# Every one of them is a COMPOSE SERVICE NAME ON ITS DEFAULT PORT. That is not
+# a simplification: it is the only form that works. A ticket-scoped project
+# publishes no host port at all (its network is `internal: true`, and Docker
+# drops publishing there — OD-4), so there is no `localhost:NNNNN` to get
+# wrong, and no ephemeral port to hard-code into a test that then fails in
+# somebody else's ticket.
 #
-# The ports below are ephemeral: Docker picked them, they differ per project
-# and per start, and hard-coding one into a test is how a passing suite
-# becomes another agent's flake.
+# `scripts/svc run` injects exactly these for you from docker/.env.example.
+# You should rarely need to eval this; it is here so you can read it.
 BANNER
 
-    local svc port
-    while read -r svc port; do
-        [[ -n "${svc}" ]] || continue
-        if hostport="$(dc "${project}" port "${svc}" "${port}" 2>/dev/null)" && [[ -n "${hostport}" ]]; then
-            printf 'export KINVARA_%s_%s_HOST_ADDR=%s\n' \
-                "$(printf '%s' "${svc}" | tr '[:lower:]-' '[:upper:]_')" "${port}" "${hostport}"
-        fi
-    done <<'PORTS'
+    sed -e 's/^/export /' -e 's/^export *$//' \
+        -e '/^export *#/s/^export //' "$(env_file)"
+
+    if [[ "${IS_DEV}" -eq 1 ]]; then
+        printf '\n# --- kinvara-dev only: the fixed HOST ports, for a browser ---\n' 
+        printf '# Never point a test or a gate at these (DOCKER.md §4.1).\n'
+        local svc port hostport
+        while read -r svc port; do
+            [[ -n "${svc}" ]] || continue
+            if hostport="$(dc "${project}" port "${svc}" "${port}" 2>/dev/null)" && [[ -n "${hostport}" ]]; then
+                printf '# %-16s %s\n' "${svc}:${port}" "${hostport}"
+            fi
+        done <<'PORTS'
 postgres 5432
 valkey 6379
 localstack 4566
@@ -412,6 +455,7 @@ safety-gw 3010
 web 3001
 admin 3002
 PORTS
+    fi
 }
 
 cmd_down() {

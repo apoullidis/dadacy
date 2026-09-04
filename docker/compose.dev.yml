@@ -7,64 +7,100 @@
 # stack, scripts/svc up dev db cache, which uses project kinvara-dev and fixed
 # ports ... so a human with a browser has a stable target."
 #
-# NEVER PRODUCE TICKET EVIDENCE AGAINST kinvara-dev. It is long-lived, other
-# agents touch it, and its state is not reproducible. `scripts/svc` refuses to
-# let `svc run dev` be mistaken for a ticket run by printing a warning; the
-# rule itself is yours to keep.
+# ===========================================================================
+# WHAT THIS OVERLAY COSTS, STATED PLAINLY
+# ===========================================================================
+# A container attached ONLY to an `internal: true` network cannot publish a
+# host port. Docker drops the publishing silently — no error, no warning
+# (measured, Docker 29.7.1 / Compose v5.3.1; OD-4). So a stack a human can
+# open in a browser MUST have a second, non-internal network, and that second
+# network gives those containers a default route.
+#
+# THIS OVERLAY THEREFORE TRADES THE STRUCTURAL EGRESS BLOCK FOR HOST
+# REACHABILITY, and it is the only place in the programme that does.
+# That is acceptable for exactly one reason: NO TICKET EVIDENCE IS EVER
+# PRODUCED AGAINST kinvara-dev (DOCKER.md §4.1). The property §7 protects is
+# that a *test* cannot start passing because it silently reached a real
+# endpoint; tests never run here. Ticket-scoped projects keep `internal: true`
+# with no second network and no published port, and that is where every gate,
+# every suite and every piece of evidence runs.
+#
+# Two things follow, and they are not optional:
+#   * Never point a test, a gate or an evidence command at kinvara-dev.
+#   * Never put a credential in docker/.env that you would not commit to
+#     docker/.env.example. This stack can reach the internet.
 #
 # The ports below are DOCKER.md §4.1's list verbatim. Four services in
-# compose.yml publish a port that §4.1 does not name (Mailpit's SMTP port,
-# the two OTLP receivers, safety-gw); they are assigned in the same 5xxxx
-# scheme here so that the overlay does not silently drop them — an overlay
-# `ports:` list REPLACES the base list, it does not merge with it.
+# compose.yml expose a port that §4.1 does not name (Mailpit's SMTP port, the
+# two OTLP receivers, safety-gw); they are assigned in the same 5xxxx scheme
+# here so the overlay does not silently drop them.
+
+networks:
+  # NOT internal. This is the whole of the exception.
+  kinvara-pub:
+    labels:
+      io.kinvara.network: pub
+      io.kinvara.egress: permitted-dev-stack-only
 
 services:
   postgres:
+    networks: [kinvara-int, kinvara-pub]
     ports:
       - "55432:5432"
 
   valkey:
+    networks: [kinvara-int, kinvara-pub]
     ports:
       - "56379:6379"
 
   localstack:
+    networks: [kinvara-int, kinvara-pub]
     ports:
       - "54566:4566"
 
   stripe-mock:
+    networks: [kinvara-int, kinvara-pub]
     ports:
       - "52111:12111"
 
   fake-telephony:
+    networks: [kinvara-int, kinvara-pub]
     ports:
       - "54000:4000"
 
   mailpit:
+    networks: [kinvara-int, kinvara-pub]
     ports:
       - "51025:1025"    # SMTP — not in the §4.1 list; same scheme, no conflict
       - "58025:8025"    # web UI + assertion API
 
   otel-collector:
+    networks: [kinvara-int, kinvara-pub]
     ports:
       - "54317:4317"    # not in the §4.1 list; same scheme, no conflict
       - "54318:4318"    # not in the §4.1 list; same scheme, no conflict
 
   jaeger:
+    networks: [kinvara-int, kinvara-pub]
     ports:
       - "56686:16686"
 
   core:
+    networks: [kinvara-int, kinvara-pub]
     ports:
       - "53000:3000"
 
   safety-gw:
+    networks: [kinvara-int, kinvara-pub]
     ports:
       - "53010:3010"    # not in the §4.1 list; same scheme, no conflict
 
   web:
+    networks: [kinvara-int, kinvara-pub]
     ports:
       - "53001:3001"
 
   admin:
+    networks: [kinvara-int, kinvara-pub]
     ports:
       - "53002:3002"

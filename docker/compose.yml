@@ -20,15 +20,31 @@
 #      NO SERVICE IN THIS FILE IS EVER ATTACHED TO `kinvara-build`. T-017's
 #      boundary check greps for exactly that.
 #
-#   3. NO FIXED HOST PORTS. Every published port uses the one-element short
-#      form ("5432"), so Docker assigns an ephemeral host port. Two agents
-#      running two tickets at once would otherwise collide, and the failure
-#      presents as a flaky test in somebody else's ticket rather than as a
-#      port clash. The single exception is the shared `kinvara-dev` stack,
-#      which pins its ports in compose.dev.yml.
-#      Your tests do NOT use these ports: under `scripts/svc run` you reach a
-#      service by its compose service name on its DEFAULT port (postgres:5432).
-#      The ephemeral host ports exist for a human with a browser.
+#   3. NO HOST PORTS AT ALL on a ticket-scoped project. Not fixed ones, and —
+#      after measurement — not ephemeral ones either. `expose:` documents the
+#      port; nothing is published.
+#
+#      DOCKER.md §4.1 assumed ephemeral host ports here. THEY CANNOT EXIST
+#      ALONGSIDE §7'S `internal: true` NETWORK: Docker silently drops port
+#      publishing for a container attached only to an internal network. Not an
+#      error, not a warning — `docker port` simply returns nothing (measured on
+#      Docker 29.7.1 / Compose v5.3.1; recorded as OD-4).
+#
+#      Given the two, the internal network wins and it is not close. It is what
+#      makes "no live vendor credentials" structural rather than remembered
+#      (PROTOCOL.md §9.9, platform-infrastructure.md non-negotiable 5). The
+#      ephemeral-port rule exists to stop two parallel agents colliding, and
+#      publishing nothing satisfies that more completely than publishing
+#      randomly: two projects cannot collide on a port neither has.
+#
+#      Nothing is lost, because nothing was reaching a ticket's services
+#      through a host port anyway. Under `scripts/svc run` your process is ON
+#      this network and addresses a service by its COMPOSE SERVICE NAME on its
+#      DEFAULT PORT — postgres:5432, valkey:6379, core:3000. That covers every
+#      test, every gate, Playwright and Lighthouse. `scripts/svc exec` covers
+#      an interactive poke. The browser case — Mailpit's UI, Jaeger's UI — is
+#      what the shared `kinvara-dev` stack is for, and compose.dev.yml is the
+#      single documented place where a host port exists at all.
 #
 #   4. EVERY service declares `mem_limit` and `cpus`, and the numbers match the
 #      budget table in DOCKER.md §3 exactly. The orchestrator sums that table
@@ -99,10 +115,18 @@ services:
       POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C.UTF-8"
       TZ: UTC
       PGTZ: UTC
-    ports:
-      - "5432"          # ephemeral host port; see note 3 in the header
+    expose:
+      - "5432"          # documented, NOT published — see note 3 in the header
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      # /var/lib/postgresql, NOT /var/lib/postgresql/data. Postgres 18 images
+      # store data in a major-version-specific subdirectory so that
+      # `pg_upgrade --link` does not cross a mount boundary
+      # (docker-library/postgres#1259). Mounting the old 17-and-earlier path
+      # makes the container exit 1 at startup with "there appears to be
+      # PostgreSQL data in: /var/lib/postgresql/data (unused mount/volume)".
+      # Measured here, not guessed. T-115's Testcontainers harness reuses this
+      # image tag and must use the same path.
+      - pgdata:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-app} -d ${POSTGRES_DB:-kinvara}"]
       interval: 5s
@@ -135,7 +159,7 @@ services:
       - 48mb
       - --maxmemory-policy
       - allkeys-lru
-    ports:
+    expose:
       - "6379"
     volumes:
       - valkeydata:/data
@@ -166,7 +190,7 @@ services:
       # only produce noisy timeouts if it tried.
       DISABLE_EVENTS: "1"
       SKIP_SSL_CERT_DOWNLOAD: "1"
-    ports:
+    expose:
       - "4566"
     volumes:
       - localstackdata:/var/lib/localstack
@@ -186,7 +210,7 @@ services:
     image: stripe/stripe-mock:v0.194.0
     profiles: ["pay"]
     networks: [kinvara-int]
-    ports:
+    expose:
       - "12111"
     mem_limit: 128m
     cpus: 0.5
@@ -203,7 +227,7 @@ services:
     image: kinvara/fake-telephony:dev
     profiles: ["tel"]
     networks: [kinvara-int]
-    ports:
+    expose:
       - "4000"
     mem_limit: 128m
     cpus: 0.5
@@ -218,7 +242,7 @@ services:
     environment:
       MP_SMTP_AUTH_ACCEPT_ANY: "1"
       MP_SMTP_AUTH_ALLOW_INSECURE: "1"
-    ports:
+    expose:
       - "1025"          # SMTP
       - "8025"          # web UI + assertion API
     mem_limit: 64m
@@ -231,7 +255,7 @@ services:
     image: otel/opentelemetry-collector-contrib:0.140.0
     profiles: ["otel"]
     networks: [kinvara-int]
-    ports:
+    expose:
       - "4317"          # OTLP gRPC
       - "4318"          # OTLP HTTP
     mem_limit: 192m
@@ -241,7 +265,7 @@ services:
     image: jaegertracing/jaeger:2.11.0
     profiles: ["otel"]
     networks: [kinvara-int]
-    ports:
+    expose:
       - "16686"         # UI
     mem_limit: 320m
     cpus: 0.5
@@ -263,7 +287,7 @@ services:
     image: kinvara/core:dev
     profiles: ["api"]
     networks: [kinvara-int]
-    ports:
+    expose:
       - "3000"
     environment:
       NODE_ENV: ${NODE_ENV:-development}
@@ -289,7 +313,7 @@ services:
     image: kinvara/safety-gw:dev
     profiles: ["safety"]
     networks: [kinvara-int]
-    ports:
+    expose:
       - "3010"
     environment:
       NODE_ENV: ${NODE_ENV:-development}
@@ -301,7 +325,7 @@ services:
     image: kinvara/web:dev
     profiles: ["web"]
     networks: [kinvara-int]
-    ports:
+    expose:
       - "3001"
     environment:
       NODE_ENV: ${NODE_ENV:-development}
@@ -313,7 +337,7 @@ services:
     image: kinvara/admin:dev
     profiles: ["admin"]
     networks: [kinvara-int]
-    ports:
+    expose:
       - "3002"
     environment:
       NODE_ENV: ${NODE_ENV:-development}
