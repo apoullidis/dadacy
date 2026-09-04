@@ -109,14 +109,27 @@ toolbox_image_tag() {
 #
 #   nodejs -> NODE_VERSION      (the Dockerfile's arg predates .tool-versions)
 #
-# A pin with no matching ARG in the Dockerfile makes BuildKit warn about an
-# unconsumed build-arg. That warning is the correct outcome: the tag changed,
-# the image was rebuilt, and you are being told the Dockerfile has not caught
-# up. It is loud, and it is not silence.
+# ...AND EVERY PIN MUST HAVE A MATCHING `ARG` IN THE DOCKERFILE. That is
+# checked here, by this function, and a missing one is a hard failure.
 #
+# QA-F6, measured on Docker 29.7.1: this used to say that BuildKit warns about
+# an unconsumed build-arg, and that the warning was the safety net behind the
+# OD-1 fix. IT DOES NOT WARN. Adding `shellcheck 0.10.0` to .tool-versions with
+# no `ARG SHELLCHECK_VERSION` in the Dockerfile produced a changed tag, a
+# rebuilt image, exit 0, and NO diagnostic of any kind — and the tool was
+# simply absent from the image. That is OD-1's own shape one level down: the
+# pin moved, the image was rebuilt, and an agent still did not get the tool it
+# had pinned.
+#
+# So the net is a real check rather than a hoped-for warning. `.tool-versions`
+# is the single source of truth; the Dockerfile must keep up with it, and this
+# is what says so.
+#
+# toolbox_build_args <dockerfile>
 # Sets: KINVARA_BUILD_ARGS (array of "--build-arg" "NAME=value" pairs)
 toolbox_build_args() {
-    local i key name
+    local dockerfile="$1" i key name
+    local -a missing=()
     KINVARA_BUILD_ARGS=()
     for i in "${!KINVARA_PIN_KEYS[@]}"; do
         key="${KINVARA_PIN_KEYS[$i]}"
@@ -125,8 +138,22 @@ toolbox_build_args() {
         else
             name="$(printf '%s' "${key}" | tr '[:lower:]-' '[:upper:]_' | tr -cd 'A-Z0-9_')_VERSION"
         fi
+        if ! grep -qE "^[[:space:]]*ARG[[:space:]]+${name}([[:space:]]|=|\$)" "${dockerfile}"; then
+            missing+=("  .tool-versions pins '${key}' but ${dockerfile##*/} declares no 'ARG ${name}'")
+        fi
         KINVARA_BUILD_ARGS+=(--build-arg "${name}=${KINVARA_PIN_VALUES[$i]}")
     done
+
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        {
+            printf 'toolbox: .tool-versions and the Dockerfile disagree.\n\n'
+            printf '%s\n' "${missing[@]}"
+            printf '\nA pin with no ARG is silently dropped: the image tag changes, the image is\n'
+            printf 'rebuilt, and the tool is simply not in it. Docker does not warn (QA-F6).\n\n'
+            printf 'Add the ARG to docker/toolbox.Dockerfile AND use it, or remove the pin.\n'
+        } >&2
+        return 1
+    fi
 }
 
 # --- building ---------------------------------------------------------------
@@ -139,7 +166,7 @@ toolbox_ensure_image() {
         return 0
     fi
 
-    toolbox_build_args
+    toolbox_build_args "${dockerfile}" || return 1
     printf 'toolbox: building %s (target %s)\n' "${image}" "${target}" >&2
     DOCKER_BUILDKIT=1 docker build \
         --file "${dockerfile}" \

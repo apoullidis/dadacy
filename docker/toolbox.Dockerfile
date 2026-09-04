@@ -44,9 +44,14 @@ ARG POSTGRESQL_VERSION=18
 #
 # Until T-016 that was NOT true of GITLEAKS_VERSION and TRIVY_VERSION: they
 # were not passed, they were not in the tag, and bumping either silently reused
-# the cached image (decisions.md OD-1). ADD AN `ARG <KEY>_VERSION` HERE WHENEVER
-# YOU ADD A LINE TO .tool-versions — BuildKit will warn about an unconsumed
-# build-arg if you forget, on a rebuild that now definitely happens.
+# the cached image (decisions.md OD-1).
+#
+# ADD AN `ARG <KEY>_VERSION` HERE WHENEVER YOU ADD A LINE TO .tool-versions,
+# AND USE IT. scripts/lib/toolbox.sh greps this file for the ARG and REFUSES TO
+# BUILD if one is missing. That check replaces a claim that turned out to be
+# false: BuildKit does NOT warn about an unconsumed build-arg (measured on
+# Docker 29.7.1, QA-F6) — a pin with no ARG rebuilt the image, exited 0, said
+# nothing, and left the tool out.
 
 # ---------------------------------------------------------------------------
 # Stage 1 — fetch and checksum-verify Terraform. HashiCorp publish no image,

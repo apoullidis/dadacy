@@ -44,9 +44,26 @@ interface Probe {
   readonly argv: readonly string[];
   /** Pull the bare version out of the command's stdout. */
   readonly extract: (out: string) => string;
+  /**
+   * Set when the tool is deliberately absent from one toolbox variant. The
+   * probe is then reported as skipped-by-design there instead of failing.
+   */
+  readonly absentFrom?: { readonly variant: Variant; readonly why: string };
 }
 
 const first = (s: string): string => s.split('\n')[0] ?? '';
+
+// ---------------------------------------------------------------------------
+// Which toolbox variant are we in?
+//
+// Detected from the filesystem rather than an env var, deliberately: the image
+// tag is a fingerprint of .tool-versions ONLY (T-016 / OD-1), so editing the
+// Dockerfile does not invalidate a cached image. An env var added there could
+// be missing from an image built before the edit; /ms-playwright comes from
+// the mcr.microsoft.com/playwright base image itself and cannot be stale.
+// ---------------------------------------------------------------------------
+type Variant = 'toolbox' | 'toolbox-playwright';
+const VARIANT: Variant = fs.existsSync('/ms-playwright') ? 'toolbox-playwright' : 'toolbox';
 
 const PROBES: readonly Probe[] = [
   {
@@ -80,17 +97,55 @@ const PROBES: readonly Probe[] = [
         .replace(/^Version:\s*/, '')
         .trim(),
   },
+  {
+    // T-016. `psql (PostgreSQL) 18.6 (Debian 18.6-1.pgdg12+2)` -> `18`; the pin
+    // is a major version, which is what PGDG's package name takes.
+    tool: 'psql',
+    pinKey: 'postgresql',
+    argv: ['psql', '--version'],
+    extract: (o) => /\b(\d+)\.\d+/.exec(first(o))?.[1] ?? first(o).trim(),
+    absentFrom: {
+      variant: 'toolbox-playwright',
+      why: 'the Playwright variant is built on Ubuntu noble and carries no libpq; it exercises the app, not the database (T-016)',
+    },
+  },
 ];
+
+// ---------------------------------------------------------------------------
+// Pins that are asserted structurally rather than by running something.
+//
+// A pin listed here still counts as covered by section 1a below; a pin that is
+// neither probed nor listed here is a FAILURE. That rule is the point: the
+// probe table is a SECOND enumeration of .tool-versions, and a second
+// enumeration that nothing reconciles is exactly the defect OD-1 was
+// (scripts/dev's four-tool pin loop) and QA-F6 was (a pin with no Dockerfile
+// ARG, silently dropped). One list is the source of truth and everything else
+// is checked against it.
+// ---------------------------------------------------------------------------
+const STRUCTURALLY_ASSERTED: ReadonlyMap<string, string> = new Map([
+  [
+    'playwright',
+    'consumed as the base image tag mcr.microsoft.com/playwright:v<pin>-noble. ' +
+      'A wrong value cannot produce a working image at all — the pull fails and the ' +
+      'build stops — which is a stronger assertion than any version probe run afterwards.',
+  ],
+]);
 
 for (const p of PROBES) {
   const want = pin(p.pinKey);
   const [cmd, ...args] = p.argv;
   if (cmd === undefined) continue;
-  const r = capture(cmd, args);
   if (want === undefined) {
     failures.push(`.tool-versions has no pin for '${p.pinKey}'`);
     continue;
   }
+  if (p.absentFrom !== undefined && p.absentFrom.variant === VARIANT) {
+    // Say so on stdout rather than passing silently (T-001 contract, rule 2).
+    console.log(`  -- ${p.tool.padEnd(10)} absent from the ${VARIANT} variant by design`);
+    console.log(`     ${p.absentFrom.why}`);
+    continue;
+  }
+  const r = capture(cmd, args);
   if (r.spawnFailed || r.code !== 0) {
     failures.push(
       `${p.tool}: '${p.argv.join(' ')}' exited ${String(r.code)} (${r.stderr.trim().slice(0, 120)}). ` +
@@ -109,6 +164,33 @@ for (const p of PROBES) {
 }
 
 // ---------------------------------------------------------------------------
+// 1a. COVERAGE — every pin in .tool-versions is accounted for (QA-F6).
+//
+// Without this, .tool-versions can grow a line that nothing anywhere asserts,
+// and the pin becomes decoration. It is the same shape as OD-1 and QA-F6, one
+// level up: a list enumerated in two places with nothing reconciling them.
+// ---------------------------------------------------------------------------
+console.log(`\n1a. COVERAGE — every .tool-versions pin is probed or structurally asserted`);
+console.log(`    (running in the ${VARIANT} variant)\n`);
+
+const probedKeys = new Set(PROBES.map((p) => p.pinKey));
+for (const [key] of pins) {
+  if (probedKeys.has(key)) {
+    console.log(`  ok ${key.padEnd(12)} probed`);
+  } else if (STRUCTURALLY_ASSERTED.has(key)) {
+    console.log(`  ok ${key.padEnd(12)} structurally asserted`);
+    console.log(`     ${STRUCTURALLY_ASSERTED.get(key) ?? ''}`);
+  } else {
+    failures.push(
+      `.tool-versions pins '${key}' but nothing asserts it: no probe in scripts/gates/toolbox.ts ` +
+        'and no entry in STRUCTURALLY_ASSERTED. A pin nothing checks is decoration — add a probe, ' +
+        'or record why one is not the right check.',
+    );
+    console.log(`  X  ${key.padEnd(12)} NOTHING ASSERTS THIS PIN`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // 2. Determinism — exit 0 twice AND byte-identical output. Both, or neither.
 // ---------------------------------------------------------------------------
 console.log('\n2. DETERMINISM — same command twice: exit 0 both times AND identical bytes\n');
@@ -116,6 +198,7 @@ console.log('\n2. DETERMINISM — same command twice: exit 0 both times AND iden
 for (const p of PROBES) {
   const [cmd, ...args] = p.argv;
   if (cmd === undefined) continue;
+  if (p.absentFrom !== undefined && p.absentFrom.variant === VARIANT) continue;
   const a = capture(cmd, args);
   const b = capture(cmd, args);
   const label = p.argv.join(' ');

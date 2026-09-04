@@ -62,7 +62,16 @@ postgresql 18
 # reused the cached image in silence (decisions.md OD-1). `gate:toolbox` was
 # the only thing catching it, after the fact.
 #
-# WHEN YOU ADD A LINE: add the matching `ARG <KEY>_VERSION` to
-# docker/toolbox.Dockerfile and use it. If you forget, BuildKit warns about an
-# unconsumed build-arg on a rebuild that now definitely happens — loud, and
-# not silence.
+# WHEN YOU ADD A LINE, TWO THINGS MUST FOLLOW IT, AND BOTH ARE ENFORCED:
+#
+#   1. Add the matching `ARG <KEY>_VERSION` to docker/toolbox.Dockerfile AND
+#      USE IT. scripts/lib/toolbox.sh refuses to build otherwise.
+#   2. Add a probe to scripts/gates/toolbox.ts, or an entry in its
+#      STRUCTURALLY_ASSERTED map saying why a probe is not the right check.
+#      `gate:toolbox` fails on any pin that nothing asserts.
+#
+# DO NOT RELY ON DOCKER TO TELL YOU. This note used to say that BuildKit warns
+# about an unconsumed build-arg. Measured on Docker 29.7.1 (QA-F6): IT DOES
+# NOT. A pin with no ARG produced a changed tag, a rebuilt image, exit 0, no
+# diagnostic of any kind — and the tool simply absent. Both checks above exist
+# because that warning does not.
