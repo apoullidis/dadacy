@@ -142,7 +142,12 @@ USAGE
 #
 # One compose project per ticket, so two agents never share a database or
 # fight over a container name.
+# Sets the globals PROJECT and IS_DEV. It does NOT print the name and must not
+# be called in a command substitution: `$(...)` runs in a subshell, so IS_DEV
+# would be set there and lost here — which silently dropped compose.dev.yml
+# from every dev-stack invocation until it was caught.
 IS_DEV=0
+PROJECT=""
 project_for() {
     local raw="$1" slug
     slug="$(printf '%s' "${raw}" | tr '[:upper:]' '[:lower:]')"
@@ -150,10 +155,10 @@ project_for() {
         || die "'${raw}' is not a usable ticket id (letters, digits, '-' and '_' only)"
     if [[ "${slug}" == "dev" ]]; then
         IS_DEV=1
-        printf 'kinvara-dev'
+        PROJECT="kinvara-dev"
     else
         IS_DEV=0
-        printf 'kinvara-%s' "${slug}"
+        PROJECT="kinvara-${slug}"
     fi
 }
 
@@ -218,7 +223,7 @@ int_network_for() {
 # =============================================================================
 cmd_up() {
     [[ $# -ge 1 ]] || die "up needs a ticket id (see --help)"
-    local project; project="$(project_for "$1")"; shift
+    project_for "$1"; local project="${PROJECT}"; shift
 
     USE_VERIFY=0; USE_CHAOS=0
     local do_build=0
@@ -280,7 +285,7 @@ cmd_up() {
 # =============================================================================
 cmd_run() {
     [[ $# -ge 1 ]] || die "run needs a ticket id (see --help)"
-    local project; project="$(project_for "$1")"; shift
+    project_for "$1"; local project="${PROJECT}"; shift
 
     local image="" target="toolbox" force_build=0
     while [[ $# -gt 0 ]]; do
@@ -359,7 +364,7 @@ cmd_run() {
 # =============================================================================
 cmd_exec() {
     [[ $# -ge 2 ]] || die "exec needs a ticket id and a service (see --help)"
-    local project; project="$(project_for "$1")"; shift
+    project_for "$1"; local project="${PROJECT}"; shift
     local service="$1"; shift
     [[ $# -gt 0 ]] || die "exec needs a command"
     compose_files_for
@@ -371,7 +376,7 @@ cmd_exec() {
 
 cmd_ps() {
     [[ $# -ge 1 ]] || die "ps needs a ticket id"
-    local project; project="$(project_for "$1")"
+    project_for "$1"; local project="${PROJECT}"
     compose_files_for
     all_profile_flags
     dc "${project}" ps --format 'table {{.Name}}\t{{.Image}}\t{{.Status}}'
@@ -379,7 +384,7 @@ cmd_ps() {
 
 cmd_port() {
     [[ $# -eq 3 ]] || die "usage: scripts/svc port <ticket> <service> <container-port>"
-    local project; project="$(project_for "$1")"
+    project_for "$1"; local project="${PROJECT}"
     compose_files_for
     all_profile_flags
 
@@ -410,7 +415,7 @@ EOF
 
 cmd_env() {
     [[ $# -ge 1 ]] || die "env needs a ticket id"
-    local project; project="$(project_for "$1")"
+    project_for "$1"; local project="${PROJECT}"
     compose_files_for
     all_profile_flags
 
@@ -460,7 +465,7 @@ PORTS
 
 cmd_down() {
     [[ $# -ge 1 ]] || die "down needs a ticket id"
-    local project; project="$(project_for "$1")"
+    project_for "$1"; local project="${PROJECT}"
     compose_files_for
     all_profile_flags
     dc "${project}" down --volumes --remove-orphans --timeout 20
