@@ -1,0 +1,30 @@
+{
+  "//": "THE LOCALE SET IS DATA, NOT A UNION TYPE (SA §TS-12.2 rule 5, SD §FE-10). This file mirrors the `locale_registry` table of SD §DB-... verbatim, column for column, and db/seed/ seeds the table from it. Adding Turkish (PM Q9/Q10) or a visitor-segment language (PM Q14) is a row here plus a translation programme — it is never a codebase-wide type change. `is_safety_language` is where the honest cost is stated: a fourth SAFETY locale needs a lexicon, a red-team, an operator on every shift and a full safety_critical catalogue; a fourth UI locale does not.",
+  "defaultLocale": "en",
+  "locales": [
+    {
+      "code": "en",
+      "endonym": "English",
+      "direction": "ltr",
+      "isSafetyLanguage": true,
+      "pluralCategories": ["one", "other"],
+      "enabled": true
+    },
+    {
+      "code": "el",
+      "endonym": "Ελληνικά",
+      "direction": "ltr",
+      "isSafetyLanguage": true,
+      "pluralCategories": ["one", "other"],
+      "enabled": true
+    },
+    {
+      "code": "ru",
+      "endonym": "Русский",
+      "direction": "ltr",
+      "isSafetyLanguage": true,
+      "pluralCategories": ["one", "few", "many", "other"],
+      "enabled": true
+    }
+  ]
+}

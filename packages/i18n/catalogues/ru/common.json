@@ -1,0 +1,6 @@
+{
+  "app.name": "Kinvara",
+  "dossier.verified": "{grammaticalRef, select, feminine {Проверена} masculine {Проверен} other {Проверено}} {date, date, long}",
+  "locale.switch_prompt": "Всегда использовать {endonym}?",
+  "fallback.not_translated": "Эта страница пока недоступна на вашем языке."
+}

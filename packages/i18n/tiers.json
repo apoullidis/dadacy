@@ -1,0 +1,29 @@
+{
+  "//": "SA §TS-12.3 / SD §FE-10 — every fully-qualified catalogue key carries a tier, and the TIER DRIVES THE GATE. Fully-qualified key = '<namespace>.<key>', where <namespace> is the catalogue filename and <key> is the flat dotted key inside it. Assignment is EXACT and EXHAUSTIVE: there is no prefix rule, no namespace default and no inherited tier, because a key that silently inherits `marketing` from its neighbours is exactly how a safety string escapes gate:locale-completeness. A key present in catalogues/en/ with no entry here is a COMPILE FAILURE (fail-closed).",
+  "tiers": {
+    "common.app.name": "marketing",
+    "common.dossier.verified": "transactional",
+    "common.locale.switch_prompt": "operational",
+    "common.fallback.not_translated": "transactional",
+    "common.marketing.tagline": "marketing",
+
+    "session.checkins_missed": "safety_critical",
+    "session.staffed_hours.commitment": "transactional",
+
+    "booking.count.upcoming": "transactional",
+    "booking.cancel.fee_notice": "transactional",
+
+    "safety.emergency.call_112.label": "safety_critical",
+    "safety.emergency.call_112.script": "safety_critical",
+    "safety.emergency.address_prompt": "safety_critical",
+    "safety.helpline.116111.label": "safety_critical",
+    "safety.helpline.1466.label": "safety_critical",
+    "safety.helpline.199.label": "safety_critical",
+    "safety.sos.confirm": "safety_critical",
+
+    "legal.terms.accept": "transactional",
+
+    "notify.checkin.reminder": "operational",
+    "notify.digest.weekly_subject": "operational"
+  }
+}

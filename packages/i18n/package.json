@@ -3,6 +3,21 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "locale registry, catalogues (en/el/ru), tiers.json, review.json, prohibited/{el,ru}.json, compiled/",
-  "//": "PLACEHOLDER (T-001). Topology only, per SD §DH-1 — no source, no dependencies, no scripts. The owning agent (frontend-developer T-040) adds src/, dependencies and the typecheck/lint/test/build scripts turbo.json already declares."
+  "description": "Locale registry, ICU catalogues (en/el/ru), tier taxonomy, review provenance, and the compile-to-functions pipeline — SD §FE-10, SA §TS-12",
+  "exports": {
+    ".": "./src/index.ts",
+    "./review": "./src/review.ts",
+    "./compiled/*": "./compiled/*"
+  },
+  "scripts": {
+    "build": "node tools/compile.ts",
+    "build:check": "node tools/compile.ts --check",
+    "test": "node --test --test-reporter=spec src/icu-render.test.ts src/catalogue.test.ts src/registry.test.ts src/review.test.ts"
+  },
+  "dependencies": {
+    "intl-messageformat": "11.2.14"
+  },
+  "devDependencies": {
+    "@formatjs/icu-messageformat-parser": "3.5.17"
+  }
 }

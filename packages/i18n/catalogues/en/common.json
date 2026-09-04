@@ -1,0 +1,7 @@
+{
+  "app.name": "Kinvara",
+  "dossier.verified": "{grammaticalRef, select, feminine {Verified} masculine {Verified} other {Verified}} on {date, date, long}",
+  "locale.switch_prompt": "Always use {endonym}?",
+  "fallback.not_translated": "This page is not yet available in your language.",
+  "marketing.tagline": "Childcare in Cyprus, with a safeguarding operator on shift."
+}

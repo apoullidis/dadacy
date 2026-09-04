@@ -1,0 +1,9 @@
+{
+  "emergency.call_112.label": "Call 112 — emergency services",
+  "emergency.call_112.script": "Say: I need an ambulance. My address is {address}. There is a child with me.",
+  "emergency.address_prompt": "Read this address to the operator: {address}",
+  "helpline.116111.label": "116 111 — children's helpline",
+  "helpline.1466.label": "1466 — Social Welfare Services",
+  "helpline.199.label": "199 — police and ambulance",
+  "sos.confirm": "Hold to send an SOS. An operator will call you."
+}

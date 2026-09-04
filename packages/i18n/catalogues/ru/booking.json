@@ -1,0 +1,4 @@
+{
+  "count.upcoming": "{count, plural, one {# предстоящее бронирование} few {# предстоящих бронирования} many {# предстоящих бронирований} other {# предстоящего бронирования}}",
+  "cancel.fee_notice": "Отмена сейчас стоит {fee, number, ::currency/EUR}."
+}
