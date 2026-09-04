@@ -145,10 +145,45 @@ if (measurable.length === 0) {
       '  EP-4 / T-006 build the routes and this section starts measuring them. The CONFIG\n' +
       '  half above is live now and is what blocks a budget being raised in the meantime.',
   );
-} else {
-  console.log('\n$ size-limit');
+} else if (measurable.length === entries.length) {
+  // Every entry resolves, so size-limit can be driven from .size-limit.json —
+  // which is the only mode that honours each entry's `gzip: true`. SD §PERF
+  // states its budgets as compressed sizes and SD §FE says gzip, so this is
+  // the correct mode and it is the steady state once EP-4 / T-006 produce
+  // real bundles.
+  console.log('\n$ size-limit        (config mode — honours "gzip": true per entry)');
   const code = stream(bin('size-limit'), []);
-  if (code !== 0) failures.push(`size-limit exited ${String(code)} — a budget was exceeded`);
+  if (code !== 0) failures.push(`size-limit exited ${String(code)} — a route is over budget`);
+} else {
+  // Mixed state: some routes are built and some are not. size-limit's config
+  // runner aborts the whole run on the first entry whose glob matches nothing,
+  // so a single over-budget route would be reported as "no bundle". Measure
+  // the resolvable entries one at a time instead.
+  //
+  // CAVEAT, stated because it is a real difference and not a rounding one:
+  // size-limit's CLI mode compresses with BROTLI, while `gzip: true` in the
+  // config compresses with gzip. Brotli is the smaller of the two, so this
+  // mode is LENIENT against a gzip budget — it can pass something the config
+  // mode would fail. It is a transitional path only; the branch above takes
+  // over as soon as every route is built, and T-006 should confirm that.
+  console.log(
+    '\n  NOTE: partial build — measuring per entry via the CLI, which compresses with\n' +
+      '  brotli rather than gzip and is therefore LENIENT against these budgets. This\n' +
+      '  branch disappears once every route in .size-limit.json resolves.',
+  );
+  for (const e of measurable) {
+    const globs = (typeof e.path === 'string' ? [e.path] : (e.path as unknown[])).filter(
+      (g): g is string => typeof g === 'string',
+    );
+    const limit = String(e.limit);
+    console.log(`\n$ size-limit --limit "${limit}" ${globs.join(' ')}`);
+    const code = stream(bin('size-limit'), ['--limit', limit, ...globs]);
+    if (code !== 0) {
+      failures.push(
+        `"${String(e.name)}": over its ${limit} budget (size-limit exited ${String(code)})`,
+      );
+    }
+  }
 }
 
 finish('gate:size-limit', failures);
