@@ -1,0 +1,510 @@
+#!/usr/bin/env bash
+#
+# scripts/svc — THE ONLY SUPPORTED WAY TO START SERVICES AND TO REACH THEM.
+#
+#   scripts/svc up   T-062 db                  start exactly Postgres
+#   scripts/svc up   T-094 db pay              Postgres + stripe-mock
+#   scripts/svc up   T-091 db api --verify --build
+#   scripts/svc up   T-126 db api worker web tel --chaos
+#   scripts/svc run  T-062 -- pnpm --filter core test:integration
+#   scripts/svc exec T-062 postgres psql -U app
+#   scripts/svc ps   T-062
+#   scripts/svc port T-062 postgres 5432
+#   scripts/svc env  T-062
+#   scripts/svc down T-062
+#   scripts/svc nuke --yes                     ORCHESTRATOR ONLY
+#
+# =============================================================================
+# THE ONE THING EVERY OTHER AGENT MUST GET RIGHT
+# =============================================================================
+#
+#   `scripts/svc run` puts the toolbox ON THE TICKET'S INTERNAL NETWORK, where
+#   a service is addressed BY ITS COMPOSE SERVICE NAME ON ITS DEFAULT PORT:
+#
+#       postgres:5432     valkey:6379     core:3000     localstack:4566
+#
+#   NOT by an ephemeral host port, and never by `localhost`. The ephemeral host
+#   ports that `scripts/svc port` and `scripts/svc env` report exist for A
+#   HUMAN WITH A BROWSER. A test that uses one passes here and fails in the
+#   next ticket, as a flake, in somebody else's evidence.
+#
+# =============================================================================
+# THE EGRESS RULE — THIS SCRIPT HOLDS ONE HALF OF IT (DOCKER.md §7)
+# =============================================================================
+#
+#   scripts/dev      -> kinvara-build (egress)        and NO services
+#   scripts/svc run  -> the ticket's kinvara-int      and NO egress
+#
+#   Never both in one invocation. `kinvara-int` is `internal: true`, so a
+#   process under `svc run` cannot reach the internet — which is what keeps a
+#   gate command's result honest, and what makes "no live vendor credentials"
+#   structural rather than a rule somebody has to remember. There is an
+#   assertion below that refuses to attach `kinvara-build`; it is cheap, and
+#   the property it defends is the reason this programme can be trusted.
+#
+#   Consequence, published in T-001's contract: `gate:trivy` needs its
+#   vulnerability database and therefore CANNOT run under `svc run`. Run it
+#   under `scripts/dev`.
+#
+# =============================================================================
+# EPHEMERAL PORTS
+# =============================================================================
+#
+#   Ticket-scoped projects publish with no fixed host port. Two agents working
+#   in parallel would otherwise collide on the second concurrent ticket, and
+#   the failure presents as a flaky test rather than as a port clash. The one
+#   exception is the shared `kinvara-dev` stack (compose.dev.yml), which pins
+#   its ports so a human has a stable target. NEVER produce ticket evidence
+#   against kinvara-dev.
+
+set -euo pipefail
+
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(dirname "${SCRIPT_PATH}")"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+DOCKER_DIR="${REPO_ROOT}/docker"
+
+BASE_FILE="${DOCKER_DIR}/compose.yml"
+DEV_FILE="${DOCKER_DIR}/compose.dev.yml"
+VERIFY_FILE="${DOCKER_DIR}/compose.verify.yml"
+CHAOS_FILE="${DOCKER_DIR}/compose.chaos.yml"
+TOOL_VERSIONS="${REPO_ROOT}/.tool-versions"
+DOCKERFILE="${DOCKER_DIR}/toolbox.Dockerfile"
+
+# scripts/dev's egress network. Named here ONLY so it can be refused.
+BUILD_NETWORK="kinvara-build"
+PNPM_STORE_VOLUME="kinvara-pnpm-store"
+INT_NETWORK_KEY="kinvara-int"
+
+# Every profile in DOCKER.md §3, and no others. There is no `all` profile and
+# none may be added: it would be used by every agent in a hurry, the machine
+# would thrash, and "only the services the ticket needs" would become
+# decorative. A ticket that seems to need eight services is a chaos or E2E
+# ticket and says so.
+ALL_PROFILES=(db cache aws pay tel mail otel api worker safety web admin)
+
+# shellcheck source=scripts/lib/toolbox.sh
+. "${SCRIPT_DIR}/lib/toolbox.sh"
+
+die() { printf 'scripts/svc: %s\n' "$*" >&2; exit 1; }
+
+usage() {
+    cat >&2 <<'USAGE'
+usage: scripts/svc <command> [args...]
+
+  up   <ticket> <profile...> [--verify] [--chaos] [--build]
+                       Start exactly the named profiles in this ticket's own
+                       compose project, on ephemeral host ports.
+  run  <ticket> [--image IMG] [--playwright] [--build] -- <cmd...>
+                       Run one command in the toolbox, ATTACHED TO THIS
+                       TICKET'S INTERNAL NETWORK. Services are reached by
+                       compose service name on their default port
+                       (postgres:5432) — never by a host port. No egress.
+  exec <ticket> <service> <cmd...>
+                       Run a command inside an already-running service.
+  ps   <ticket>        What is running in this ticket's project.
+  port <ticket> <service> <container-port>
+                       The ephemeral host port Docker assigned. For a human.
+  env  <ticket>        Host-side connection strings, for a human with a
+                       browser or a psql. NOT what your tests use.
+  down <ticket>        Stop and remove everything, volumes included.
+  nuke [--yes]         EVERY kinvara-* compose project. ORCHESTRATOR ONLY.
+
+profiles (DOCKER.md §3 — there is no `all` profile and none may be added):
+  db cache aws pay tel mail otel api worker safety web admin
+
+overlays are flags, not profiles. They still require the profiles of the
+services they modify:
+  --verify   apps built from their Dockerfiles (compose.verify.yml)
+  --chaos    fault injection (compose.chaos.yml)
+
+`<ticket>` is a ticket id (T-016, T-016-qa). The literal `dev` selects the
+shared, long-lived, FIXED-PORT stack. Never produce ticket evidence against it.
+USAGE
+}
+
+# --- project naming ---------------------------------------------------------
+#
+# One compose project per ticket, so two agents never share a database or
+# fight over a container name.
+IS_DEV=0
+project_for() {
+    local raw="$1" slug
+    slug="$(printf '%s' "${raw}" | tr '[:upper:]' '[:lower:]')"
+    [[ "${slug}" =~ ^[a-z0-9][a-z0-9_-]*$ ]] \
+        || die "'${raw}' is not a usable ticket id (letters, digits, '-' and '_' only)"
+    if [[ "${slug}" == "dev" ]]; then
+        IS_DEV=1
+        printf 'kinvara-dev'
+    else
+        IS_DEV=0
+        printf 'kinvara-%s' "${slug}"
+    fi
+}
+
+# --- the environment contract ----------------------------------------------
+#
+# docker/.env if a human made one, docker/.env.example otherwise. ONE file for
+# both compose substitution and the environment `svc run` injects, so a
+# service and the test process talking to it can never be configured
+# differently.
+env_file() {
+    if [[ -f "${DOCKER_DIR}/.env" ]]; then
+        printf '%s' "${DOCKER_DIR}/.env"
+    else
+        printf '%s' "${DOCKER_DIR}/.env.example"
+    fi
+}
+
+# --- compose invocation -----------------------------------------------------
+COMPOSE_FILES=()
+compose_files_for() {
+    COMPOSE_FILES=(-f "${BASE_FILE}")
+    [[ "${IS_DEV}" -eq 1 ]] && COMPOSE_FILES+=(-f "${DEV_FILE}")
+    [[ "${USE_VERIFY:-0}" -eq 1 ]] && COMPOSE_FILES+=(-f "${VERIFY_FILE}")
+    [[ "${USE_CHAOS:-0}" -eq 1 ]] && COMPOSE_FILES+=(-f "${CHAOS_FILE}")
+    return 0
+}
+
+# dc <project> <profile-flags-array-name> -- <compose args...>
+dc() {
+    local project="$1"; shift
+    docker compose \
+        -p "${project}" \
+        --env-file "$(env_file)" \
+        "${COMPOSE_FILES[@]}" \
+        "${PROFILE_FLAGS[@]}" \
+        "$@"
+}
+
+# Read-only and teardown commands must see services whose profile is not
+# currently named, or `ps` would under-report and `down` would leave
+# containers behind. Enumerating the §3 list here is not an `all` profile:
+# nothing in compose.yml gains one, and `up` never uses this.
+all_profile_flags() {
+    PROFILE_FLAGS=()
+    local p
+    for p in "${ALL_PROFILES[@]}"; do PROFILE_FLAGS+=(--profile "${p}"); done
+}
+
+# --- the ticket's internal network -----------------------------------------
+int_network_for() {
+    local project="$1" name
+    name="$(docker network ls \
+        --filter "label=com.docker.compose.project=${project}" \
+        --filter "label=com.docker.compose.network=${INT_NETWORK_KEY}" \
+        --format '{{.Name}}' | head -n1)"
+    [[ -n "${name}" ]] || name="${project}_${INT_NETWORK_KEY}"
+    printf '%s' "${name}"
+}
+
+# =============================================================================
+# up
+# =============================================================================
+cmd_up() {
+    [[ $# -ge 1 ]] || die "up needs a ticket id (see --help)"
+    local project; project="$(project_for "$1")"; shift
+
+    USE_VERIFY=0; USE_CHAOS=0
+    local do_build=0
+    local -a profiles=()
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --verify) USE_VERIFY=1; shift ;;
+            --chaos)  USE_CHAOS=1;  shift ;;
+            --build)  do_build=1;   shift ;;
+            --all|--profile) die "no. Name the profiles the ticket declares; there is no 'all' (DOCKER.md §3)" ;;
+            -*)       die "unknown option '$1' (see --help)" ;;
+            *)        profiles+=("$1"); shift ;;
+        esac
+    done
+
+    [[ ${#profiles[@]} -gt 0 ]] \
+        || die "up needs at least one profile. A ticket declares its services and its evidence proves nothing else was running (DOCKER.md §6)."
+
+    local p ok
+    PROFILE_FLAGS=()
+    for p in "${profiles[@]}"; do
+        ok=0
+        local known
+        for known in "${ALL_PROFILES[@]}"; do
+            [[ "${p}" == "${known}" ]] && ok=1 && break
+        done
+        [[ "${ok}" -eq 1 ]] || die "'${p}' is not a profile. DOCKER.md §3 lists: ${ALL_PROFILES[*]}"
+        PROFILE_FLAGS+=(--profile "${p}")
+    done
+
+    compose_files_for
+
+    if [[ "${IS_DEV}" -eq 1 ]]; then
+        printf 'scripts/svc: kinvara-dev is the shared FIXED-PORT stack. Never produce ticket evidence against it (DOCKER.md §4.1).\n' >&2
+    fi
+
+    # Images are pulled BEFORE the internal network is attached (DOCKER.md §7),
+    # so an egress-less network does not break the first start. Buildable
+    # services are skipped: under --verify they come from a Dockerfile.
+    local -a pull_args=(pull)
+    if docker compose pull --help 2>&1 | grep -q -- '--ignore-buildable'; then
+        pull_args+=(--ignore-buildable)
+    fi
+    printf 'scripts/svc: pulling images for project %s ...\n' "${project}" >&2
+    dc "${project}" "${pull_args[@]}" --quiet >&2
+
+    local -a up_args=(up --detach --wait --wait-timeout 180 --remove-orphans)
+    [[ "${do_build}" -eq 1 ]] && up_args+=(--build)
+    dc "${project}" "${up_args[@]}"
+
+    printf '\n'
+    all_profile_flags
+    dc "${project}" ps --format 'table {{.Name}}\t{{.Image}}\t{{.Status}}'
+}
+
+# =============================================================================
+# run — the toolbox, on the ticket's network, with no egress
+# =============================================================================
+cmd_run() {
+    [[ $# -ge 1 ]] || die "run needs a ticket id (see --help)"
+    local project; project="$(project_for "$1")"; shift
+
+    local image="" target="toolbox" force_build=0
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --image)      [[ $# -ge 2 ]] || die "--image needs an image reference"; image="$2"; shift 2 ;;
+            --playwright) target="toolbox-playwright"; shift ;;
+            --build)      force_build=1; shift ;;
+            --)           shift; break ;;
+            -*)           die "unknown option '$1' (see --help)" ;;
+            *)            break ;;
+        esac
+    done
+
+    [[ $# -gt 0 ]] || die "run needs a command: scripts/svc run ${1:-<ticket>} -- <cmd...>"
+
+    if [[ "${IS_DEV}" -eq 1 ]]; then
+        printf 'scripts/svc: WARNING — this is the shared kinvara-dev stack. Its state is not reproducible and other agents touch it. Ticket evidence must use a ticket-scoped project (DOCKER.md §4.1).\n' >&2
+    fi
+
+    local network; network="$(int_network_for "${project}")"
+    docker network inspect "${network}" >/dev/null 2>&1 \
+        || die "no network '${network}'. Run 'scripts/svc up ${project#kinvara-} <profiles>' first — 'run' attaches to a project that is already up."
+
+    # ---- the assertion that keeps DOCKER.md §7 structural -------------------
+    # scripts/dev holds the other half: it attaches kinvara-build and no
+    # services. If this ever attached kinvara-build as well, "no live vendor
+    # credentials" would stop being a property of the network and become a
+    # rule someone has to remember. Exactly one network is attached, and it is
+    # never that one.
+    [[ "${network}" != "${BUILD_NETWORK}" ]] \
+        || die "refusing to attach ${BUILD_NETWORK} — svc run gets services and NO egress (DOCKER.md §7b)"
+
+    if [[ -z "${image}" ]]; then
+        toolbox_load_pins "${TOOL_VERSIONS}"
+        image="$(toolbox_image_tag "${TOOL_VERSIONS}" "${target}")"
+        toolbox_ensure_image "${image}" "${target}" "${DOCKERFILE}" "${DOCKER_DIR}" "${force_build}"
+    fi
+
+    toolbox_mount_args "${REPO_ROOT}"
+
+    local host_cwd workdir
+    host_cwd="$(pwd -P)"
+    if [[ "${host_cwd}" == "${REPO_ROOT}" || "${host_cwd}" == "${REPO_ROOT}/"* ]]; then
+        workdir="${host_cwd}"
+    else
+        workdir="${REPO_ROOT}"
+    fi
+
+    # A TTY only when the caller has one on both ends: otherwise docker
+    # rewrites LF as CRLF and captured output stops being byte-comparable
+    # (PROTOCOL.md §5.1 — determinism checks assert bytes).
+    local -a tty_flags=()
+    [[ -t 0 && -t 1 ]] && tty_flags=(--tty)
+
+    exec docker run \
+        --rm \
+        --interactive \
+        "${tty_flags[@]}" \
+        --network "${network}" \
+        --user "$(id -u):$(id -g)" \
+        "${KINVARA_MOUNT_ARGS[@]}" \
+        --volume "${PNPM_STORE_VOLUME}:/pnpm-store" \
+        --workdir "${workdir}" \
+        --env-file "$(env_file)" \
+        --env "HOME=/home/toolbox" \
+        --env "CI=1" \
+        --env "LANG=C.UTF-8" \
+        --env "KINVARA_PROJECT=${project}" \
+        --label "io.kinvara.toolbox=1" \
+        --label "io.kinvara.project=${project}" \
+        "${image}" "$@"
+}
+
+# =============================================================================
+# exec / ps / port / env / down
+# =============================================================================
+cmd_exec() {
+    [[ $# -ge 2 ]] || die "exec needs a ticket id and a service (see --help)"
+    local project; project="$(project_for "$1")"; shift
+    local service="$1"; shift
+    [[ $# -gt 0 ]] || die "exec needs a command"
+    compose_files_for
+    all_profile_flags
+    local -a t=()
+    [[ -t 0 && -t 1 ]] || t=(-T)
+    dc "${project}" exec "${t[@]}" "${service}" "$@"
+}
+
+cmd_ps() {
+    [[ $# -ge 1 ]] || die "ps needs a ticket id"
+    local project; project="$(project_for "$1")"
+    compose_files_for
+    all_profile_flags
+    dc "${project}" ps --format 'table {{.Name}}\t{{.Image}}\t{{.Status}}'
+}
+
+cmd_port() {
+    [[ $# -eq 3 ]] || die "usage: scripts/svc port <ticket> <service> <container-port>"
+    local project; project="$(project_for "$1")"
+    compose_files_for
+    all_profile_flags
+    dc "${project}" port "$2" "$3"
+}
+
+cmd_env() {
+    [[ $# -ge 1 ]] || die "env needs a ticket id"
+    local project; project="$(project_for "$1")"
+    compose_files_for
+    all_profile_flags
+
+    local hostport
+    cat <<'BANNER'
+# scripts/svc env — HOST-SIDE addresses, for a human with a browser or a psql.
+#
+# THESE ARE NOT WHAT YOUR TESTS USE. A process under `scripts/svc run` is on
+# the ticket's internal network and reaches a service by its COMPOSE SERVICE
+# NAME on its DEFAULT PORT — postgres:5432, valkey:6379, core:3000. Those
+# addresses are in docker/.env.example and are injected for you.
+#
+# The ports below are ephemeral: Docker picked them, they differ per project
+# and per start, and hard-coding one into a test is how a passing suite
+# becomes another agent's flake.
+BANNER
+
+    local svc port
+    while read -r svc port; do
+        [[ -n "${svc}" ]] || continue
+        if hostport="$(dc "${project}" port "${svc}" "${port}" 2>/dev/null)" && [[ -n "${hostport}" ]]; then
+            printf 'export KINVARA_%s_%s_HOST_ADDR=%s\n' \
+                "$(printf '%s' "${svc}" | tr '[:lower:]-' '[:upper:]_')" "${port}" "${hostport}"
+        fi
+    done <<'PORTS'
+postgres 5432
+valkey 6379
+localstack 4566
+stripe-mock 12111
+fake-telephony 4000
+mailpit 1025
+mailpit 8025
+otel-collector 4318
+jaeger 16686
+core 3000
+safety-gw 3010
+web 3001
+admin 3002
+PORTS
+}
+
+cmd_down() {
+    [[ $# -ge 1 ]] || die "down needs a ticket id"
+    local project; project="$(project_for "$1")"
+    compose_files_for
+    all_profile_flags
+    dc "${project}" down --volumes --remove-orphans --timeout 20
+}
+
+# =============================================================================
+# nuke — ORCHESTRATOR ONLY (PROTOCOL.md §6.4)
+# =============================================================================
+#
+# Destroys EVERY kinvara-* compose project on the machine, including the ticket
+# another agent is halfway through and the shared dev stack. If you believe
+# there are orphans, SAY SO; do not clear them.
+#
+# Two deliberate narrownesses:
+#
+#   * It enumerates COMPOSE PROJECTS (`docker compose ls`), not containers
+#     whose name happens to start with "kinvara". A container started with a
+#     bare `docker run` — a probe another agent left behind, say — is not a
+#     project and is left alone. Name-prefix matching here would destroy
+#     another agent's work while claiming to tidy up.
+#   * `kinvara-build` (scripts/dev's egress network) and `kinvara-pnpm-store`
+#     (the shared package cache) are NOT projects and are never touched.
+#     Deleting the store would make the next install re-download everything.
+cmd_nuke() {
+    local assume_yes=0
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --yes|-y) assume_yes=1; shift ;;
+            *) die "unknown option '$1'" ;;
+        esac
+    done
+
+    local -a projects=()
+    local name
+    while read -r name; do
+        [[ -n "${name}" ]] || continue
+        projects+=("${name}")
+    done < <(docker compose ls --all --format json 2>/dev/null \
+             | tr ',' '\n' | grep -o '"Name":"kinvara-[^"]*"' | cut -d'"' -f4 | sort -u)
+
+    if [[ ${#projects[@]} -eq 0 ]]; then
+        printf 'scripts/svc: no kinvara-* compose projects.\n' >&2
+        return 0
+    fi
+
+    printf 'scripts/svc nuke will DESTROY these compose projects and their volumes:\n' >&2
+    printf '  %s\n' "${projects[@]}" >&2
+
+    if [[ "${assume_yes}" -ne 1 ]]; then
+        if [[ -t 0 ]]; then
+            local reply
+            read -r -p "Type 'nuke' to confirm: " reply
+            [[ "${reply}" == "nuke" ]] || die "aborted"
+        else
+            die "refusing to run non-interactively without --yes. nuke is ORCHESTRATOR ONLY (PROTOCOL.md §6.4) and it destroys work in progress."
+        fi
+    fi
+
+    local p
+    for p in "${projects[@]}"; do
+        printf 'scripts/svc: down %s\n' "${p}" >&2
+        docker compose -p "${p}" down --volumes --remove-orphans --timeout 20 || true
+    done
+}
+
+# =============================================================================
+main() {
+    [[ $# -ge 1 ]] || { printf 'scripts/svc: no command given.\n\n' >&2; usage; exit 2; }
+    command -v docker >/dev/null 2>&1 || die "docker is not installed"
+    [[ -f "${BASE_FILE}" ]] || die "missing ${BASE_FILE}"
+
+    PROFILE_FLAGS=()
+    USE_VERIFY=0
+    USE_CHAOS=0
+
+    local cmd="$1"; shift
+    case "${cmd}" in
+        up)   cmd_up   "$@" ;;
+        run)  cmd_run  "$@" ;;
+        exec) cmd_exec "$@" ;;
+        ps)   cmd_ps   "$@" ;;
+        port) cmd_port "$@" ;;
+        env)  cmd_env  "$@" ;;
+        down) cmd_down "$@" ;;
+        nuke) cmd_nuke "$@" ;;
+        -h|--help|help) usage; exit 0 ;;
+        *)    printf 'scripts/svc: unknown command '\''%s'\''.\n\n' "${cmd}" >&2; usage; exit 2 ;;
+    esac
+}
+
+main "$@"
