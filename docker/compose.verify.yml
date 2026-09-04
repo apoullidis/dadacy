@@ -23,10 +23,24 @@
 #       dockerfile: docker/<service>.Dockerfile
 #     pull_policy: build
 #
-# Ports stay ephemeral: the base file's one-element short form already does
-# that and MUST NOT be overridden here. A fixed host port added in this
-# overlay is the exact defect DOCKER.md §4.1(2) exists to prevent, and it
-# would present as a flaky test in another agent's ticket.
+# DO NOT ADD A `ports:` KEY TO ANY SERVICE HERE. A ticket-scoped project
+# publishes NO host port at all — not fixed, and not ephemeral either.
+# compose.yml has no `ports:` key anywhere; it uses `expose:`, which documents
+# a port without publishing it.
+#
+# This is the amended DOCKER.md §4.1(2), and it is not a style preference: a
+# container attached only to an `internal: true` network CANNOT publish a host
+# port. Docker drops it silently — no error, no warning (measured on Docker
+# 29.7.1 / Compose v5.3.1, recorded as OD-4). A `ports:` line added here would
+# therefore do nothing at all on a ticket project, while reading as though it
+# worked, and it would take effect the moment someone gave a service a second
+# non-internal network — which is how a fixed host port becomes a flaky test in
+# another agent's ticket.
+#
+# The apps are reached the way everything else is: by compose service name on
+# their default port (core:3000, web:3001), from a process running under
+# `scripts/svc run`, which is on the network with them. Playwright and
+# Lighthouse included — they run in the toolbox, not on the host.
 #
 # Do not add a service to this file that is not already in compose.yml with a
 # profile, a mem_limit and a cpus. An overlay cannot introduce a service that

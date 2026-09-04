@@ -218,6 +218,74 @@ int_network_for() {
     printf '%s' "${name}"
 }
 
+# --- images this programme builds itself ------------------------------------
+#
+# QA-F8. Six services use kinvara/* images that do not exist until T-017 and
+# T-018 build them. Left to Docker, asking for one gives:
+#
+#   pull access denied for kinvara/core, repository does not exist or may
+#   require 'docker login'
+#
+# In a programme whose ninth non-negotiable is that NO VENDOR CREDENTIAL EXISTS
+# AND NONE MAY BE OBTAINED (PROTOCOL.md §9.9), that message sends an agent
+# hunting for a login. There is no registry, there is no account, and there is
+# nothing to log in to: the image is simply not built yet.
+#
+# Failing is still the right behaviour — QA judged it so and it is what stops a
+# ticket producing evidence against a stack that never started. Only the
+# attribution changes. The owning ticket is read from the service's
+# io.kinvara.built-by label in compose.yml, so this is not a second list of
+# services to drift out of date.
+check_local_images() {
+    local project="$1" want_build="$2" cfg
+    cfg="$(dc "${project}" config --format json 2>/dev/null)" || return 0
+    [[ -n "${cfg}" ]] || return 0
+
+    local missing
+    missing="$(printf '%s' "${cfg}" | python3 -c '
+import json, subprocess, sys
+try:
+    cfg = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+for name, svc in sorted(cfg.get("services", {}).items()):
+    image = svc.get("image", "")
+    # Only our own images. A public image that fails to pull is a real
+    # network or tag problem and must keep Docker own message.
+    if not image.startswith("kinvara/"):
+        continue
+    buildable = bool(svc.get("build"))
+    if buildable and sys.argv[1] == "1":   # --verify + --build: it is about to be built
+        continue
+    if subprocess.run(["docker", "image", "inspect", image],
+                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
+        continue
+    labels = svc.get("labels") or {}
+    note = ("declares a build: add --build to build it" if buildable
+            else labels.get("io.kinvara.built-by-title", ""))
+    print("\t".join([name, image,
+                      labels.get("io.kinvara.built-by", "?"), note]))
+' "${want_build}" 2>/dev/null)"
+
+    [[ -n "${missing}" ]] || return 0
+
+    {
+        printf 'scripts/svc: cannot start %s — an image it needs has not been built yet.\n\n' "${project}"
+        local name image ticket title
+        while IFS=$'\t' read -r name image ticket title; do
+            [[ -n "${name}" ]] || continue
+            printf '  %-16s %-28s built by %s — %s\n' "${name}" "${image}" "${ticket}" "${title}"
+        done <<< "${missing}"
+        printf '\nThis is NOT a registry or credential problem. There is no registry, no\n'
+        printf 'account and nothing to log in to (PROTOCOL.md §9.9) — if Docker offers you\n'
+        printf "'docker login', ignore it. These images are built from this repository by\n"
+        printf 'the tickets named above, and until those land the profile cannot start.\n\n'
+        printf 'If your ticket depends on one, it is blocked on that ticket: say so and\n'
+        printf 'tell the orchestrator. Do not substitute a public image.\n'
+    } >&2
+    exit 1
+}
+
 # =============================================================================
 # up
 # =============================================================================
@@ -260,6 +328,8 @@ cmd_up() {
     if [[ "${IS_DEV}" -eq 1 ]]; then
         printf 'scripts/svc: kinvara-dev is the shared FIXED-PORT stack. Never produce ticket evidence against it (DOCKER.md §4.1).\n' >&2
     fi
+
+    check_local_images "${project}" "${do_build}"
 
     # Images are pulled BEFORE the internal network is attached (DOCKER.md §7),
     # so an egress-less network does not break the first start. Buildable

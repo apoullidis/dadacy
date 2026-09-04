@@ -225,6 +225,12 @@ services:
   fake-telephony:
     image: kinvara/fake-telephony:dev
     profiles: ['tel']
+    # Read by scripts/svc to name the ticket that builds this image, so a
+    # missing one reports "not built yet" instead of Docker's own
+    # "pull access denied ... may require 'docker login'" (QA-F8).
+    labels:
+      io.kinvara.built-by: 'T-017'
+      io.kinvara.built-by-title: 'the vendor fake containers'
     networks: [kinvara-int]
     expose:
       - '4000'
@@ -285,6 +291,12 @@ services:
   core:
     image: kinvara/core:dev
     profiles: ['api']
+    # Read by scripts/svc to name the ticket that builds this image, so a
+    # missing one reports "not built yet" instead of Docker's own
+    # "pull access denied ... may require 'docker login'" (QA-F8).
+    labels:
+      io.kinvara.built-by: 'T-018'
+      io.kinvara.built-by-title: 'the application Dockerfiles + the verify overlay'
     networks: [kinvara-int]
     expose:
       - '3000'
@@ -299,6 +311,12 @@ services:
   worker:
     image: kinvara/worker:dev
     profiles: ['worker']
+    # Read by scripts/svc to name the ticket that builds this image, so a
+    # missing one reports "not built yet" instead of Docker's own
+    # "pull access denied ... may require 'docker login'" (QA-F8).
+    labels:
+      io.kinvara.built-by: 'T-018'
+      io.kinvara.built-by-title: 'the application Dockerfiles + the verify overlay'
     networks: [kinvara-int]
     environment:
       NODE_ENV: ${NODE_ENV:-development}
@@ -311,6 +329,12 @@ services:
   safety-gw:
     image: kinvara/safety-gw:dev
     profiles: ['safety']
+    # Read by scripts/svc to name the ticket that builds this image, so a
+    # missing one reports "not built yet" instead of Docker's own
+    # "pull access denied ... may require 'docker login'" (QA-F8).
+    labels:
+      io.kinvara.built-by: 'T-018'
+      io.kinvara.built-by-title: 'the application Dockerfiles + the verify overlay'
     networks: [kinvara-int]
     expose:
       - '3010'
@@ -323,6 +347,12 @@ services:
   web:
     image: kinvara/web:dev
     profiles: ['web']
+    # Read by scripts/svc to name the ticket that builds this image, so a
+    # missing one reports "not built yet" instead of Docker's own
+    # "pull access denied ... may require 'docker login'" (QA-F8).
+    labels:
+      io.kinvara.built-by: 'T-018'
+      io.kinvara.built-by-title: 'the application Dockerfiles + the verify overlay'
     networks: [kinvara-int]
     expose:
       - '3001'
@@ -335,6 +365,12 @@ services:
   admin:
     image: kinvara/admin:dev
     profiles: ['admin']
+    # Read by scripts/svc to name the ticket that builds this image, so a
+    # missing one reports "not built yet" instead of Docker's own
+    # "pull access denied ... may require 'docker login'" (QA-F8).
+    labels:
+      io.kinvara.built-by: 'T-018'
+      io.kinvara.built-by-title: 'the application Dockerfiles + the verify overlay'
     networks: [kinvara-int]
     expose:
       - '3002'
