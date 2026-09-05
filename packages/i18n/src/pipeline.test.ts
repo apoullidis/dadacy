@@ -30,6 +30,8 @@ import {
   endOfDay,
   pipelineIncoherences,
   reAnchorProblems,
+  stageManifestProblems,
+  stageApplies,
 } from './review.ts';
 import type { ReviewRegister, CopyPipeline } from './review.ts';
 import { keysAtTier } from './tiers.ts';
@@ -847,9 +849,14 @@ test('R2-F2: practitioner and translator as one person is NOT banned — only cl
     JSON.stringify(claimed, null, 2),
   );
 
-  // Re-declare `ru` as natively authored and the same roster is fine.
+  // Re-declare `ru` as natively authored and the same roster is fine — provided
+  // the two stages that describe a translation are honestly null, which is what
+  // the R3 applicability rule below both permits and requires.
   const authoredRu: CopyPipeline = {
     ...dual,
+    stages: dual.stages.map((s) =>
+      s.id === 'brief_ru_translator' || s.id === 'translate_ru' ? { ...s, completed_at: null } : s,
+    ),
     assignments: Object.fromEntries(
       Object.entries(dual.assignments).map(([k, a]) => [
         k,
@@ -1062,9 +1069,18 @@ test("T-040's published `pending_pipeline` fields all survive, and the additions
     assert.equal(typeof waiver[f], 'string', `T-040 field '${f}' must survive`);
   }
   assert.ok(Array.isArray(waiver.keys) && waiver.keys.length > 0);
-  // The additions T-049 made, present and of the right shape — so "additive" is
-  // a checked property rather than a description of a diff nobody re-runs.
-  assert.ok('external_start' in waiver);
+  // The additions T-049 made, as an EXACT key set. Round 3 found the contract's
+  // corrected header saying "three fields were added" six lines above §1 saying
+  // "two new optional fields", where the measurement is five keys — a sentence
+  // written to replace a false one, itself unpinned. Pinned now: the prose has to
+  // match this list or this test goes red.
+  const T040_KEYS = ['opened_at', 'expected_by', 'owner', 'ticket', 'reason', 'keys'];
+  const added = Object.keys(waiver).filter((k) => !T040_KEYS.includes(k));
+  assert.deepEqual(
+    added.sort(),
+    ['expected_by_means', 'external_start', 'external_start_note', 're_anchors', 're_anchors_note'],
+    'five keys were added; two of them (external_start, re_anchors) are typed on PendingPipeline and three are prose annotations',
+  );
   assert.ok(Array.isArray(waiver.re_anchors));
 });
 
@@ -1104,5 +1120,160 @@ test('NEGATIVE — the stage list is a SEQUENCE, which the contract claimed and 
       /'translate_ru' completed .*, before 'brief_ru_translator' which precedes it/.test(x),
     ),
     JSON.stringify(problems, null, 2),
+  );
+});
+
+/**
+ * R3-F1. The six stages SA §TS-12.4 defines, in its order. Written HERE, never
+ * read from `review.json` — a register supplying the list it is checked against
+ * would be checking that it equals itself, which is how `blocking` came to be
+ * flippable with the suite green.
+ */
+const STAGE_MANIFEST: readonly string[] = [
+  'author_en_el',
+  'brief_ru_translator',
+  'translate_ru',
+  'dsl_signoff',
+  'in_context_screenshot_review',
+  'read_aloud_voice',
+];
+
+test('R3-F1: six stage ids, that order, ALL BLOCKING', () => {
+  assert.deepEqual(stageManifestProblems(loadCopyPipeline(), STAGE_MANIFEST), []);
+});
+
+test('NEGATIVE — R3-F1: clearing ANY stage’s `blocking` flag goes red', () => {
+  // The half the §5.1 re-read missed, and the one carrying the weight: `blocking`
+  // is the flag the sign-off rule reads, so clearing `dsl_signoff.blocking`
+  // removed DSL sign-off from the requirement while all 94 tests stayed green.
+  // Asserted at every position, not just the one QA happened to flip.
+  const p = loadCopyPipeline();
+  for (const [i, stage] of p.stages.entries()) {
+    const flipped: CopyPipeline = {
+      ...p,
+      stages: p.stages.map((s, j) => (i === j ? { ...s, blocking: false } : s)),
+    };
+    const problems = stageManifestProblems(flipped, STAGE_MANIFEST);
+    assert.ok(
+      problems.some((x) => x.includes(`['${stage.id}'].blocking is false`)),
+      `clearing blocking on '${stage.id}' must be caught — got ${JSON.stringify(problems)}`,
+    );
+  }
+});
+
+test('NEGATIVE — R3-F1: adding, removing or reordering a stage goes red', () => {
+  const p = loadCopyPipeline();
+  const mutations: readonly (readonly [string, CopyPipeline])[] = [
+    ['removed', { ...p, stages: p.stages.filter((s) => s.id !== 'dsl_signoff') }],
+    ['reordered', { ...p, stages: [...p.stages].reverse() }],
+    [
+      'renamed',
+      {
+        ...p,
+        stages: p.stages.map((s) => (s.id === 'dsl_signoff' ? { ...s, id: 'dsl_signoff_v2' } : s)),
+      },
+    ],
+  ];
+  for (const [label, mutated] of mutations) {
+    assert.ok(
+      stageManifestProblems(mutated, STAGE_MANIFEST).some((x) =>
+        /is a change to the pipeline, not to a list/.test(x),
+      ),
+      `${label} must be caught`,
+    );
+  }
+});
+
+test('R3: the dual-role path no longer demands a completion for an event that cannot happen', () => {
+  // The complement QA named of the rule I had just written. One practitioner
+  // authoring all three locales natively is permitted (§4b) precisely because
+  // there is nobody to brief — yet `brief_ru_translator` and `translate_ru` were
+  // still blocking, so signing anything off demanded a `completed_at` for two
+  // events that did not occur. My own mechanism was manufacturing pressure to
+  // write a false date, which is the pattern this register exists to prevent.
+  const p = deliveredPipeline();
+  const nativeRu: CopyPipeline = {
+    ...p,
+    roles: {
+      ...p.roles,
+      russian_translator_briefed: {
+        ...p.roles['russian_translator_briefed']!,
+        named: PRACTITIONER,
+      },
+    },
+    assignments: Object.fromEntries(
+      Object.entries(p.assignments).map(([k, a]) => [
+        k,
+        {
+          ...a,
+          locales: {
+            ...a.locales,
+            ru: { ...a.locales['ru']!, method: 'authored', required_provenance: 'authored' },
+          },
+        },
+      ]),
+    ),
+    // Honestly null: these two events did not happen.
+    stages: p.stages.map((s) =>
+      s.id === 'brief_ru_translator' || s.id === 'translate_ru' ? { ...s, completed_at: null } : s,
+    ),
+  };
+  assert.equal(stageApplies('brief_ru_translator', nativeRu), false);
+  assert.equal(stageApplies('translate_ru', nativeRu), false);
+  assert.equal(stageApplies('dsl_signoff', nativeRu), true);
+
+  const problems = pipelineIncoherences(
+    withRecord('ru', 'safety.sos.confirm', {
+      ...SIGNED,
+      provenance: 'authored',
+      authored_by: PRACTITIONER,
+    }),
+    nativeRu,
+    LOCALES,
+    SAFETY_KEYS,
+    NOW,
+  );
+  assert.deepEqual(problems, [], JSON.stringify(problems, null, 2));
+
+  // And the flags themselves are untouched — applicability is DERIVED, not a
+  // flag anyone can clear. R3-F1's manifest still holds over this pipeline.
+  assert.deepEqual(stageManifestProblems(nativeRu, STAGE_MANIFEST), []);
+});
+
+test('NEGATIVE — R3: a stage that could not have happened may not be dated', () => {
+  // The inverse, without which the exemption is a licence: drop
+  // `translated_briefed` from every locale and then date the briefing anyway.
+  const p = deliveredPipeline();
+  const nativeRu: CopyPipeline = {
+    ...p,
+    assignments: Object.fromEntries(
+      Object.entries(p.assignments).map(([k, a]) => [
+        k,
+        {
+          ...a,
+          locales: {
+            ...a.locales,
+            ru: { ...a.locales['ru']!, method: 'authored', required_provenance: 'authored' },
+          },
+        },
+      ]),
+    ),
+    // …but the briefing is still dated.
+  };
+  const problems = pipelineIncoherences(loadReviewRegister(), nativeRu, LOCALES, SAFETY_KEYS, NOW);
+  assert.ok(
+    problems.some((x) => /'brief_ru_translator'.*may not be dated/.test(x)),
+    JSON.stringify(problems, null, 2),
+  );
+});
+
+test('the register as it stands: every stage applies, and none is dated', () => {
+  // The real file uses `translated_briefed` for `ru`, so all six stages apply —
+  // the exemption above is reachable only by a roster that does not exist yet.
+  const p = loadCopyPipeline();
+  for (const id of STAGE_MANIFEST) assert.equal(stageApplies(id, p), true, id);
+  assert.deepEqual(
+    p.stages.filter((s) => s.completed_at !== null),
+    [],
   );
 });

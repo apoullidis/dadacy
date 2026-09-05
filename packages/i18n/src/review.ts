@@ -315,6 +315,40 @@ const AUTHORING_ROLE_FOR_METHOD: Readonly<Record<CopyMethod, string>> = {
 
 const REVIEWER_ROLES: readonly string[] = ['dsl', 'dsl_deputy'];
 
+/**
+ * Whether a stage describes an event that can happen at all under the current
+ * assignments — as opposed to whether it has happened.
+ *
+ * QA round 3 named the complement of the rule I had just written. The permissive
+ * dual-role path (§4b: one practitioner authoring all three locales natively) is
+ * permitted precisely because there is nobody to brief and no brief to
+ * acknowledge — and yet `brief_ru_translator` and `translate_ru` stayed blocking,
+ * so signing anything off demanded a `completed_at` for two events that did not
+ * occur. **My own mechanism was manufacturing pressure to write a false date**,
+ * which is the exact pattern this whole register exists to prevent.
+ *
+ * `blocking` and applicability are different questions and both are kept:
+ * `blocking` says *when this applies, it gates* — all six are, and R3-F1 asserts
+ * it. Applicability says *does it apply*, and it is **derived from the
+ * assignments**, never a flag someone can clear.
+ */
+export function stageApplies(stageId: string, pipeline: CopyPipeline): boolean {
+  const locales = Object.values(pipeline.assignments).flatMap((a) => Object.values(a.locales));
+  switch (stageId) {
+    case 'brief_ru_translator':
+    case 'translate_ru':
+      // No locale is being translated ⇒ there is no translator to brief.
+      return locales.some((l) => l.method === 'translated_briefed');
+    case 'read_aloud_voice':
+      // SA §TS-12.4's read-aloud pass covers strings that are heard rather than
+      // read. `undetermined` counts as applying: fail closed, because a stage
+      // that might be needed must not be skipped by a question nobody answered.
+      return Object.values(pipeline.assignments).some((a) => a.channel !== 'screen');
+    default:
+      return true;
+  }
+}
+
 export function pipelineIncoherences(
   register: ReviewRegister,
   pipeline: CopyPipeline,
@@ -437,6 +471,15 @@ export function pipelineIncoherences(
   // mechanism, and a sequence nothing enforces is a list.
   let previousStage: { id: string; at: number } | null = null;
   for (const stage of pipeline.stages) {
+    if (stage.completed_at !== null && !stageApplies(stage.id, pipeline)) {
+      // The inverse of the rule above, and it must exist or the exemption becomes
+      // a licence: a stage that cannot have happened may not be recorded as
+      // having happened. Dropping `translated_briefed` from every locale and then
+      // dating `brief_ru_translator` is a claim about an event with no subject.
+      problems.push(
+        `pipeline.stages['${stage.id}'] is recorded complete at ${stage.completed_at}, but no assignment makes it applicable — nothing here is translated, so there was no translator to brief. A stage that could not have happened may not be dated.`,
+      );
+    }
     if (stage.completed_at === null) continue;
     const at = Date.parse(stage.completed_at);
     if (!Number.isFinite(at)) {
@@ -598,6 +641,9 @@ export function pipelineIncoherences(
       }
       for (const stage of pipeline.stages) {
         if (!stage.blocking) continue;
+        // A stage describing an event that cannot happen under these assignments
+        // is not required — and must not be recorded as completed either (below).
+        if (!stageApplies(stage.id, pipeline)) continue;
         if (stage.completed_at === null) {
           problems.push(
             `${locale}/${key}: signed off while the blocking pipeline stage '${stage.id}' is not complete — ${stage.what}`,
@@ -637,6 +683,43 @@ export function pipelineIncoherences(
  * `pending_pipeline` mirror (R2-F3). It does **not** check that any of it is true
  * of the world — see `pipelineIncoherences`' own limit.
  */
+/**
+ * Whether the stage list is the manifest it claims to be — the exact ids, in the
+ * declared order, **every one of them blocking**.
+ *
+ * R3-F1. The contract sentence read "Stage ids, all blocking, in order". The
+ * §5.1 re-read implemented *"in order"* and left *"all blocking"* unbacked — and
+ * `blocking` is the flag every other rule here reads, so the unbacked clause was
+ * the load-bearing one. Flipping `dsl_signoff.blocking` to `false` removed DSL
+ * sign-off from the requirement entirely and the suite stayed green.
+ *
+ * **The expected manifest is passed in**, and its only caller writes it as a
+ * literal in `src/pipeline.test.ts`. It is deliberately not read from
+ * `review.json`: a register that supplied the list it is checked against would be
+ * checking that it equals itself (PROTOCOL §5.1), which is exactly how the flag
+ * came to be flippable in the first place.
+ */
+export function stageManifestProblems(
+  pipeline: CopyPipeline,
+  expectedIds: readonly string[],
+): string[] {
+  const problems: string[] = [];
+  const actual = pipeline.stages.map((s) => s.id);
+  if (actual.length !== expectedIds.length || actual.some((id, i) => id !== expectedIds[i])) {
+    problems.push(
+      `pipeline.stages is [${actual.join(', ')}]; the pipeline SA §TS-12.4 defines is [${expectedIds.join(', ')}]. Adding, removing or reordering a stage is a change to the pipeline, not to a list.`,
+    );
+  }
+  for (const stage of pipeline.stages) {
+    if (!stage.blocking) {
+      problems.push(
+        `pipeline.stages['${stage.id}'].blocking is false. Every stage in this pipeline is blocking — \`blocking\` is the flag the sign-off rule reads, so clearing one silently removes that step from the requirement while every other check stays green.`,
+      );
+    }
+  }
+  return problems;
+}
+
 export function reAnchorProblems(
   waiver: PendingPipeline,
   pipeline: CopyPipeline,
