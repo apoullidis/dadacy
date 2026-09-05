@@ -342,4 +342,54 @@ if (!/^\.pnpm-store\/?$/m.test(gitignore)) {
   console.log('  ok .gitignore covers .pnpm-store/');
 }
 
+// ---------------------------------------------------------------------------
+// 6. ISOLATION — a gate run cannot reach the Docker daemon (T-018 / OD-16).
+//
+// This is the BEHAVIOURAL half of the OD-16 ruling, and it is deliberately
+// UNCONDITIONAL. gate:egress-boundary asserts the same property by READING
+// scripts/dev and scripts/svc; a check derived from the same text as the thing
+// it checks confirms its own misreading (PROTOCOL §5.1, and the reason QA-F2
+// happened). This one observes the container it is actually running in, so it
+// is red the moment the socket becomes available by ANY route — a changed
+// default, a new flag, an edit to the shared mount helper, or an agent
+// exporting DOCKER_HOST.
+//
+// There is no bypass and there must not be one: an env var saying "the caller
+// asked for it" would be set by the same code path that mounts the socket, and
+// the check would agree with the defect. So `pnpm gate:toolbox` (and therefore
+// `gate:pr`) is run WITHOUT `--docker`. That is also the correct posture on its
+// own terms: a gate result should be a fact about the toolchain, not about
+// something that could create arbitrary containers while producing it.
+// ---------------------------------------------------------------------------
+console.log('\n6. ISOLATION — a gate run has no route to the Docker daemon\n');
+
+const SOCKET = '/var/run/docker.sock';
+let socketVisible = false;
+try {
+  socketVisible = fs.statSync(SOCKET).isSocket();
+} catch {
+  socketVisible = false;
+}
+const dockerHost = process.env['DOCKER_HOST'];
+
+if (socketVisible) {
+  failures.push(
+    `${SOCKET} is visible to this gate run. The Docker socket belongs to ` +
+      `'scripts/dev --docker' and to nothing else (OD-16): it is host-root for whatever ` +
+      `the toolbox runs, and a process holding it can create a container on a network ` +
+      `with egress, which defeats the property 'svc run' exists to provide. If you are ` +
+      `running gates, drop --docker; if the socket arrived without it, that is the defect.`,
+  );
+} else {
+  console.log(`  ok no ${SOCKET}`);
+}
+if (dockerHost !== undefined && dockerHost !== '') {
+  failures.push(
+    `DOCKER_HOST is set to '${dockerHost}' during a gate run. Same property as above, by ` +
+      `a different route: a TCP daemon endpoint needs no socket mount at all.`,
+  );
+} else {
+  console.log('  ok DOCKER_HOST unset');
+}
+
 finish('gate:toolbox', failures);

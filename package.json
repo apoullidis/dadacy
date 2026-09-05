@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Kinvara monorepo — pnpm workspace + Turborepo (SD §DH-1)",
+  "description": "Kinvara monorepo \u2014 pnpm workspace + Turborepo (SD \u00a7DH-1)",
   "packageManager": "pnpm@11.25.0",
   "engines": {
     "node": "24.20.0"
@@ -25,6 +25,7 @@
     "gate:size-limit": "pnpm run --silent size-limit",
     "gate:toolbox": "node scripts/gates/toolbox.ts",
     "gate:egress-boundary": "node scripts/gates/egress-boundary.ts",
+    "gate:app-images": "node scripts/gates/app-images.ts",
     "gate:pr": "node scripts/gates/pr.ts",
     "gate:heavy": "node scripts/gates/not-yet-supplied.ts gate:heavy"
   },

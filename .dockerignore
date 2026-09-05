@@ -1,0 +1,33 @@
+# Build context for docker/app.Dockerfile (context: the repository root).
+#
+# Two reasons this file matters more than usual here:
+#
+#  1. `node_modules/` is ~400 MB of host-installed, host-linked packages. pnpm
+#     uses symlinks into a store that does not exist inside the image, so
+#     shipping it would not even work — the image installs its own closure in
+#     the `prod-deps` stage.
+#  2. A stale `dist/` from the host would be COPYed over whatever the `build`
+#     stage produced, and the image would then run code nobody built in it.
+#     That is the exact failure DOCKER.md §5 exists to prevent, arriving by
+#     the back door.
+#
+# Everything else here is transfer time on a 4-core shared machine.
+
+.git
+.gitignore
+node_modules
+**/node_modules
+.pnpm-store
+.turbo
+**/.turbo
+.cache
+**/dist
+**/.next
+**/coverage
+**/*.tsbuildinfo
+docker/fakes
+infra
+runbooks
+docs
+.github
+scripts/negative-tests

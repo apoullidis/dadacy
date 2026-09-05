@@ -345,6 +345,22 @@ cmd_up() {
 
     compose_files_for
 
+    # --- the --verify overlay's build args, DERIVED (T-018) -----------------
+    # compose.verify.yml builds the app images from docker/app.Dockerfile,
+    # whose `ARG NODE_VERSION` has no default: a build that does not supply it
+    # fails at the FROM line rather than quietly picking a Node. The value
+    # comes from .tool-versions, the single source of truth (DOCKER.md §4.2),
+    # so the runtime in the image and the toolchain the toolbox typechecks
+    # with can never be two different Nodes. Writing them into
+    # docker/.env.example instead would be a SECOND place enumerating the
+    # pins, which is exactly OD-1.
+    if [[ "${USE_VERIFY}" -eq 1 ]]; then
+        toolbox_load_pins "${TOOL_VERSIONS}" || exit 1
+        KINVARA_NODE_VERSION="$(toolbox_require_pin nodejs)" || exit 1
+        KINVARA_PNPM_VERSION="$(toolbox_require_pin pnpm)" || exit 1
+        export KINVARA_NODE_VERSION KINVARA_PNPM_VERSION
+    fi
+
     if [[ "${IS_DEV}" -eq 1 ]]; then
         printf 'scripts/svc: kinvara-dev is the shared FIXED-PORT stack. Never produce ticket evidence against it (DOCKER.md §4.1).\n' >&2
     fi

@@ -30,7 +30,11 @@ const GATES: readonly Gate[] = [
   { name: 'gate:size-limit', why: 'per-route JS budgets (SD §PERF)' },
   {
     name: 'gate:egress-boundary',
-    why: 'every compose service on kinvara-int and nothing else; svc run has no egress (DOCKER.md §7, OD-12)',
+    why: 'every compose service on kinvara-int and nothing else; svc run has no egress; an overlay ADDITION is not an override (DOCKER.md §7, OD-12, OD-16, QA-F5)',
+  },
+  {
+    name: 'gate:app-images',
+    why: 'the app images derive their Node from .tool-versions, publish no host port, cannot raise a budget, and cannot ship a placeholder over real source (DOCKER.md §5)',
   },
 ];
 

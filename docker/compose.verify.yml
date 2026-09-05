@@ -11,17 +11,26 @@
 # staging environment to catch them.
 #
 # ---------------------------------------------------------------------------
-# OWNED BY T-018, WHICH IS WHAT FILLS THIS IN.
+# EVERY SERVICE HERE IS AN OVERRIDE, NOT AN ADDITION — AND THE DIFFERENCE IS
+# ENFORCED (QA-F5).
 #
-# T-016 creates the file so that the `--verify` flag in `scripts/svc` is real
-# and demonstrable today rather than a flag that references a missing `-f`
-# file. T-018 adds, for each of core / worker / safety-gw / web / admin:
+# All five names below already exist in compose.yml with a profile, a
+# mem_limit, a cpus and a networks: key. This file adds only `build:` and the
+# handful of settings that differ when the app is its image rather than a
+# stock one.
 #
-#   <service>:
-#     build:
-#       context: ..
-#       dockerfile: docker/<service>.Dockerfile
-#     pull_policy: build
+# `gate:egress-boundary` now distinguishes the two cases by a NAME-SET
+# DIFFERENCE: a service present here but ABSENT from compose.yml is an
+# ADDITION, and an addition must declare `networks:` exactly as a base service
+# does. An override may leave networks alone because compose merges the base
+# definition's. Before that change, a service defined only here with no
+# networks: key passed the gate, came up healthy, and completed a TCP
+# connection to 1.1.1.1:443 — QA measured it on T-017.
+#
+# So: prefer an override. If you genuinely need a service that exists nowhere
+# else, it must carry `networks: [kinvara-int]`, an `image:` or a `build:`,
+# and — because an overlay may not escape the DOCKER.md §3 budget table — a
+# `mem_limit` and `cpus` that a profile in that table accounts for.
 #
 # DO NOT ADD A `ports:` KEY TO ANY SERVICE HERE. A ticket-scoped project
 # publishes NO host port at all — not fixed, and not ephemeral either.
@@ -35,16 +44,102 @@
 # therefore do nothing at all on a ticket project, while reading as though it
 # worked, and it would take effect the moment someone gave a service a second
 # non-internal network — which is how a fixed host port becomes a flaky test in
-# another agent's ticket.
+# another agent's ticket. `gate:app-images` fails on a `ports:` key here.
 #
 # The apps are reached the way everything else is: by compose service name on
 # their default port (core:3000, web:3001), from a process running under
 # `scripts/svc run`, which is on the network with them. Playwright and
 # Lighthouse included — they run in the toolbox, not on the host.
 #
-# Do not add a service to this file that is not already in compose.yml with a
-# profile, a mem_limit and a cpus. An overlay cannot introduce a service that
-# escapes the §3 budget table.
+# ---------------------------------------------------------------------------
+# THE BUILD ARGS ARE DERIVED, NOT WRITTEN DOWN.
+#
+# `KINVARA_NODE_VERSION` and `KINVARA_PNPM_VERSION` are exported by
+# `scripts/svc up ... --verify` from .tool-versions, the single source of truth
+# (DOCKER.md §4.2). The `:?` form means a plain `docker compose -f ...` run
+# fails with that message instead of silently building against some other Node
+# — which is OD-1's shape, and the reason the image tag carries a fingerprint
+# of the whole pin file.
+#
+# docker/app.Dockerfile is ONE file for all five, parameterised by APP. Read
+# its header for why that is not laziness.
+#
+# THE REPETITION BELOW IS DELIBERATE. A YAML anchor with a `<<:` merge key
+# would collapse it, and it would also plant a real parser disagreement in the
+# one file this programme's egress gate parses: YAML 1.2 (the `yaml` package
+# the gate uses) does NOT resolve `<<`, while compose's own Go parser (YAML
+# 1.1) does. T-017's QA found exactly that difference and used it to prove an
+# anti-vacuity check. `args:` maps do not merge anyway — the child map
+# replaces the parent's — so the anchor would have saved two lines and bought
+# a divergence between what the gate reads and what compose runs.
 # ---------------------------------------------------------------------------
 
-services: {}
+services:
+  core:
+    build:
+      context: ..
+      dockerfile: docker/app.Dockerfile
+      target: runtime
+      args:
+        NODE_VERSION: ${KINVARA_NODE_VERSION:?derived from .tool-versions by scripts/svc}
+        PNPM_VERSION: ${KINVARA_PNPM_VERSION:?derived from .tool-versions by scripts/svc}
+        APP: core
+        APP_KIND: http
+        APP_PORT: '3000'
+    pull_policy: build
+
+  worker:
+    build:
+      context: ..
+      dockerfile: docker/app.Dockerfile
+      target: runtime
+      args:
+        NODE_VERSION: ${KINVARA_NODE_VERSION:?derived from .tool-versions by scripts/svc}
+        PNPM_VERSION: ${KINVARA_PNPM_VERSION:?derived from .tool-versions by scripts/svc}
+        APP: worker
+        # A worker has no port, so its liveness is a heartbeat file and the
+        # image's HEALTHCHECK asserts its freshness. Giving it an HTTP port
+        # purely to be checkable would be a service surface that does not
+        # exist in the deployed estate (T-003 runs it as an ECS task with no
+        # load balancer).
+        APP_KIND: worker
+    pull_policy: build
+
+  safety-gw:
+    build:
+      context: ..
+      dockerfile: docker/app.Dockerfile
+      target: runtime
+      args:
+        NODE_VERSION: ${KINVARA_NODE_VERSION:?derived from .tool-versions by scripts/svc}
+        PNPM_VERSION: ${KINVARA_PNPM_VERSION:?derived from .tool-versions by scripts/svc}
+        APP: safety-gw
+        APP_KIND: http
+        APP_PORT: '3010'
+    pull_policy: build
+
+  web:
+    build:
+      context: ..
+      dockerfile: docker/app.Dockerfile
+      target: runtime
+      args:
+        NODE_VERSION: ${KINVARA_NODE_VERSION:?derived from .tool-versions by scripts/svc}
+        PNPM_VERSION: ${KINVARA_PNPM_VERSION:?derived from .tool-versions by scripts/svc}
+        APP: web
+        APP_KIND: http
+        APP_PORT: '3001'
+    pull_policy: build
+
+  admin:
+    build:
+      context: ..
+      dockerfile: docker/app.Dockerfile
+      target: runtime
+      args:
+        NODE_VERSION: ${KINVARA_NODE_VERSION:?derived from .tool-versions by scripts/svc}
+        PNPM_VERSION: ${KINVARA_PNPM_VERSION:?derived from .tool-versions by scripts/svc}
+        APP: admin
+        APP_KIND: http
+        APP_PORT: '3002'
+    pull_policy: build
