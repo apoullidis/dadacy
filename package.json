@@ -24,6 +24,7 @@
     "gate:trivy": "node scripts/gates/trivy.ts",
     "gate:size-limit": "pnpm run --silent size-limit",
     "gate:toolbox": "node scripts/gates/toolbox.ts",
+    "gate:egress-boundary": "node scripts/gates/egress-boundary.ts",
     "gate:pr": "node scripts/gates/pr.ts",
     "gate:heavy": "node scripts/gates/not-yet-supplied.ts gate:heavy"
   },

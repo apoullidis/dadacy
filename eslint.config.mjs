@@ -49,6 +49,27 @@ export default tseslint.config(
     },
   },
   {
+    // The vendor fakes (T-017) are plain ESM, run by Node INSIDE a container,
+    // with no build step, no bundler and no dependency. They are linted like
+    // everything else — but Node's globals have to be declared for them,
+    // because the rest of this repo is TypeScript and typescript-eslint turns
+    // `no-undef` off for TS files (the compiler already answers that question).
+    files: ['docker/fakes/**/*.mjs'],
+    languageOptions: {
+      sourceType: 'module',
+      globals: {
+        process: 'readonly',
+        console: 'readonly',
+        fetch: 'readonly',
+        Buffer: 'readonly',
+        URL: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
+        AbortSignal: 'readonly',
+      },
+    },
+  },
+  {
     rules: {
       // SD §DH-2: "`any` is a lint error everywhere; in packages/policy it is
       // a Semgrep failure." The Semgrep half is T-005's.

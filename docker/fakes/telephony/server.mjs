@@ -407,7 +407,9 @@ async function handle(req, res) {
 }
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`fake-telephony (T-017) listening on ${String(PORT)}; inbound SMS -> 501 (SA §INT-5r)`);
+  console.log(
+    `fake-telephony (T-017) listening on ${String(PORT)}; inbound SMS -> 501 (SA §INT-5r)`,
+  );
 });
 
 for (const sig of ['SIGTERM', 'SIGINT']) {

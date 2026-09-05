@@ -28,6 +28,10 @@ const GATES: readonly Gate[] = [
   { name: 'gate:secrets', why: 'gitleaks (SD §QD-4)' },
   { name: 'gate:trivy', why: 'dependency vulnerabilities (SD §QD-4)' },
   { name: 'gate:size-limit', why: 'per-route JS budgets (SD §PERF)' },
+  {
+    name: 'gate:egress-boundary',
+    why: 'no compose service on kinvara-build; svc run has no egress (DOCKER.md §7)',
+  },
 ];
 
 const results: { name: string; code: number }[] = [];
