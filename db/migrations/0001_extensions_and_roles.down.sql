@@ -62,6 +62,9 @@ $dbgrants$;
 -- it. That is correct — dropping a role out from under another database's grants would be
 -- worse — and it is why 0001 is only ever rolled back on a database whose starting state
 -- the operator controls.
+-- This also removes the SELECT grants the up file issued to these roles on the extensions'
+-- own relations (spatial_ref_sys and friends). The PUBLIC grants it revoked on those same
+-- relations are handled with the extensions themselves, in Section 4.
 DROP OWNED BY app_rw, app_admin_rw, app_safety_rw, app_ddl, answering_service;
 
 DROP ROLE IF EXISTS answering_service;
@@ -78,6 +81,11 @@ DROP ROLE IF EXISTS app_rw;
 -- migration has built something on postgis or btree_gist, this must fail loudly rather
 -- than silently taking that object with it. A down migration that quietly drops a
 -- downstream table is worse than one that refuses.
+-- The PUBLIC grants the up file revoked on spatial_ref_sys, geometry_columns,
+-- geography_columns and the two pg_stat_statements views are NOT restored here, and must
+-- not be: DROP EXTENSION destroys those relations outright, and the next `up` recreates
+-- them with the grants the extension ships. Re-granting first would be dead code, and it
+-- would make a down-then-up cycle look like it had exercised the revoke when it had not.
 DROP EXTENSION IF EXISTS pg_stat_statements;
 DROP EXTENSION IF EXISTS pg_partman;
 DROP EXTENSION IF EXISTS pgcrypto;

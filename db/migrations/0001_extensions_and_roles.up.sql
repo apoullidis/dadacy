@@ -254,6 +254,38 @@ REVOKE ALL ON SCHEMA public FROM PUBLIC;
 GRANT USAGE ON SCHEMA public TO app_rw, app_admin_rw, app_safety_rw, answering_service;
 GRANT USAGE, CREATE ON SCHEMA public TO app_ddl;
 
+-- ---------------------------------------------------------------------------
+-- The extensions' own PUBLIC grants. THIS BLOCK IS NOT HOUSEKEEPING.
+-- ---------------------------------------------------------------------------
+-- Section 1's extensions create relations in `public` and grant SELECT on them to PUBLIC,
+-- and PUBLIC includes `answering_service`. Found by this migration's own Section 5 check
+-- on its first run: before a single application table existed, the write-only vendor
+-- principal already held SELECT on five relations.
+--
+-- Four of them are harmless reference data. `pg_stat_statements` is not: it stores QUERY
+-- TEXT, and query text carries literal values — a phone number, an email address, a child's
+-- name in a WHERE clause. A principal that can read it can harvest personal data without
+-- holding a single grant on a single application table, which is precisely the outcome
+-- SA §INT-10 exists to make impossible.
+REVOKE ALL ON TABLE public.spatial_ref_sys            FROM PUBLIC;
+REVOKE ALL ON TABLE public.geometry_columns           FROM PUBLIC;
+REVOKE ALL ON TABLE public.geography_columns          FROM PUBLIC;
+REVOKE ALL ON TABLE public.pg_stat_statements         FROM PUBLIC;
+REVOKE ALL ON TABLE public.pg_stat_statements_info    FROM PUBLIC;
+
+-- Granted back only to the roles with a reason. PostGIS reads spatial_ref_sys during
+-- ST_Transform and the two *_columns views are catalogue conveniences; safety-gw does no
+-- geometry and the vendor principal does nothing at all.
+GRANT SELECT ON TABLE public.spatial_ref_sys, public.geometry_columns, public.geography_columns
+  TO app_rw, app_admin_rw;
+
+-- pg_stat_statements is an operator surface (SD §DB-12, the weekly >50 ms review), reached
+-- through the break-glass role. No application role reads it. A dedicated read-only
+-- monitoring principal, if observability wants one, is T-019's to define and must be
+-- granted here rather than by widening PUBLIC.
+GRANT SELECT ON TABLE public.pg_stat_statements, public.pg_stat_statements_info TO app_ddl;
+
+
 -- NO `ALTER DEFAULT PRIVILEGES` IS ISSUED HERE, DELIBERATELY, AND IT IS THE MOST
 -- LOAD-BEARING OMISSION IN THIS FILE.
 --
@@ -502,6 +534,11 @@ CREATE EVENT TRIGGER trg_int10_answering_service
   ON ddl_command_end
   WHEN TAG IN ('GRANT',
                'ALTER DEFAULT PRIVILEGES',
+               -- CREATE EXTENSION is in this list because of a defect this file found in
+               -- itself: postgis and pg_stat_statements grant SELECT to PUBLIC on their own
+               -- relations, and PUBLIC includes answering_service. Any extension added in a
+               -- later epic can reopen exactly that hole, so it trips the guard.
+               'CREATE EXTENSION',
                'CREATE TABLE',
                'CREATE TABLE AS',
                'CREATE VIEW',
