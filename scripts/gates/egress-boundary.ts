@@ -46,6 +46,29 @@
  * devDependency and this file is now the only place in the repo that reads
  * compose YAML structurally.
  *
+ * OVERLAY-ONLY SERVICES — AN ADDITION IS NOT AN OVERRIDE (QA-F5)
+ * ---------------------------------------------------------------
+ * The first version exempted every service in an overlay from the
+ * `networks:` requirement, on the reasoning that an override may legitimately
+ * leave networks alone. That reasoning is right for an OVERRIDE and much too
+ * wide for an ADDITION. QA measured the hole on `T-017`: a service defined
+ * ONLY in `compose.verify.yml`, with no `networks:` key, passed this gate,
+ * came up healthy, and completed a TCP connection to 1.1.1.1:443. It could
+ * not fire only because both overlays were `services: {}` — and `T-018` is
+ * the ticket that populates one.
+ *
+ * The rule is a NAME-SET DIFFERENCE, derived rather than listed:
+ *
+ *     a service name present in an overlay or compose.dev.yml but ABSENT
+ *     from compose.yml is an ADDITION, and an addition carries every
+ *     obligation a base service carries: it must declare `networks:`, that
+ *     list must be non-empty, it must include kinvara-int, and it must name
+ *     nothing else (bar kinvara-pub in compose.dev.yml alone).
+ *
+ * A name that IS in compose.yml is an override and keeps the exemption,
+ * because compose merges the base definition's networks into it. There is no
+ * list of exempt services to extend and none to forget.
+ *
  * WHAT THIS GATE STILL CANNOT FOLLOW — each one is a FAILURE, never a pass
  * ----------------------------------------------------------------------
  * A parser removes the syntax blind spots, not the compose-semantics ones.
@@ -105,6 +128,20 @@ function networksOf(svc: Record<string, unknown>): string[] | undefined {
 
 let filesParsed = 0;
 let servicesChecked = 0;
+/** Service names declared in compose.yml. Anything else in an overlay is an ADDITION. */
+let baseNames: Set<string> | null = null;
+let additionsChecked = 0;
+
+// compose.yml is read first ON PURPOSE — the overlay rule below is a set
+// difference against it. If it is ever not first, or fails to parse, every
+// overlay service becomes an "addition" and the gate goes red rather than
+// silently exempting them. That direction is the safe one.
+if (COMPOSE_FILES[0] !== BASE_FILE) {
+  failures.push(
+    `this gate's file list must start with ${BASE_FILE}: the overlay rule is a set ` +
+      `difference against its service names and cannot be computed before it is read`,
+  );
+}
 
 for (const rel of COMPOSE_FILES) {
   const text = read(rel);
@@ -159,6 +196,7 @@ for (const rel of COMPOSE_FILES) {
   }
 
   const names = Object.keys(services);
+  if (rel === BASE_FILE) baseNames = new Set(names);
   if (rel === BASE_FILE && names.length === 0) {
     failures.push(`${BASE_FILE} declares zero services — this gate would then assert nothing`);
   }
@@ -171,6 +209,13 @@ for (const rel of COMPOSE_FILES) {
     }
     servicesChecked += 1;
 
+    // An ADDITION carries every obligation a base service carries (QA-F5).
+    // Fail closed: if compose.yml did not parse we do not know what is an
+    // override, so nothing is exempt.
+    const isAddition = rel !== BASE_FILE && (baseNames === null || !baseNames.has(name));
+    if (isAddition) additionsChecked += 1;
+    const mustDeclareNetworks = rel === BASE_FILE || isAddition;
+
     // A compose feature this gate does not model must FAIL, never pass.
     if ('extends' in svc) {
       failures.push(
@@ -182,10 +227,12 @@ for (const rel of COMPOSE_FILES) {
 
     // Anti-vacuity that does NOT share a blind spot with the parse: compose
     // requires image or build on every service, so a "service" with neither is
-    // evidence that something other than a service is being read as one.
-    if (rel === BASE_FILE && !('image' in svc) && !('build' in svc)) {
+    // evidence that something other than a service is being read as one. It
+    // applies to an ADDITION for the same reason it applies to a base service
+    // — an override is exempt because the base definition supplies them.
+    if (mustDeclareNetworks && !('image' in svc) && !('build' in svc)) {
       failures.push(
-        `${BASE_FILE}: '${name}' has neither image: nor build:. Either it is not a ` +
+        `${rel}: '${name}' has neither image: nor build:. Either it is not a ` +
           `service and this gate is misreading the file, or it is a service compose ` +
           `cannot start. Both are failures.`,
       );
@@ -195,21 +242,25 @@ for (const rel of COMPOSE_FILES) {
 
     if (nets === undefined) {
       // The OD-12 case, and the one the written rule used to miss.
-      if (rel === BASE_FILE) {
+      if (mustDeclareNetworks) {
         failures.push(
-          `${BASE_FILE}: service '${name}' declares no networks:. Compose puts it on ` +
-            `the project's DEFAULT bridge, which is NOT internal and HAS EGRESS — ` +
-            `measured on kinvara-t-017: such a container completed a TCP connection to ` +
-            `1.1.1.1:443 while 'svc up' reported it healthy (OD-12). ` +
+          `${rel}: service '${name}' declares no networks:` +
+            (isAddition
+              ? ` — and it is an ADDITION, not an override: the name does not appear in ` +
+                `${BASE_FILE}, so there is no base definition to inherit networks from. `
+              : ' ') +
+            `Compose puts it on the project's DEFAULT bridge, which is NOT internal and ` +
+            `HAS EGRESS — measured on kinvara-t-017: such a container completed a TCP ` +
+            `connection to 1.1.1.1:443 while 'svc up' reported it healthy (OD-12, QA-F5). ` +
             `Every service must name ${INT_NETWORK} explicitly.`,
         );
       }
-      continue; // an overlay may legitimately leave networks alone
+      continue; // an OVERRIDE may legitimately leave networks alone
     }
 
-    if (nets.length === 0 && rel === BASE_FILE) {
+    if (nets.length === 0 && mustDeclareNetworks) {
       failures.push(
-        `${BASE_FILE}: service '${name}' has an EMPTY networks:. Same outcome as ` +
+        `${rel}: service '${name}' has an EMPTY networks:. Same outcome as ` +
           `omitting it — compose falls back to the default bridge (OD-12).`,
       );
     }
@@ -224,8 +275,8 @@ for (const rel of COMPOSE_FILES) {
       );
     }
 
-    if (rel === BASE_FILE && !nets.includes(INT_NETWORK)) {
-      failures.push(`${BASE_FILE}: service '${name}' is not on ${INT_NETWORK}.`);
+    if (mustDeclareNetworks && !nets.includes(INT_NETWORK)) {
+      failures.push(`${rel}: service '${name}' is not on ${INT_NETWORK}.`);
     }
   }
 }
@@ -287,9 +338,121 @@ if (devScript === null) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// 4. The Docker socket lives in `scripts/dev --docker` and NOWHERE ELSE
+//    (OD-16, ruled in T-018).
+//
+//    This is part of the egress boundary, not a separate concern, and it is
+//    here because the boundary is what it defeats. `svc run` has no route off
+//    the host BY CONSTRUCTION — kinvara-int is `internal: true`. A Docker
+//    socket restores one: POST /containers/create with `NetworkMode: bridge`
+//    gives a sibling with full egress, and `Binds: ["/:/host"]` gives the
+//    host filesystem as root. Without this check the socket could be moved
+//    into `svc run` and every check above would stay green, because none of
+//    them models a socket.
+//
+//    The mount is built by `toolbox_docker_socket_args`, which lives in the
+//    SHARED library both entry points source — so checking `scripts/svc` for
+//    the literal path is not enough. Three things are asserted:
+//      (a) scripts/svc names neither the socket, the helper, nor its output;
+//      (b) `toolbox_mount_args` — the mount helper `svc run` DOES call — does
+//          not name the socket, so the mount cannot be smuggled in through
+//          the shared path;
+//      (c) neither entry point can be edited into running the toolbox as
+//          root, which is OD-16's cheapest wrong repair.
+//
+//    (c) is deliberately a SECOND check on a property `gate:toolbox` §4
+//    already covers behaviourally, by stat-ing a file the toolbox actually
+//    wrote. Two checks, two different derivations: this one reads the script,
+//    that one observes the container.
+// ---------------------------------------------------------------------------
+const SOCKET_PATH = 'docker.sock';
+const SOCKET_HELPER = 'toolbox_docker_socket_args';
+const SOCKET_ARGS = 'KINVARA_DOCKER_ARGS';
+
+if (svcScript !== null) {
+  const live = svcScript.split('\n').map(codeOf).join('\n');
+  for (const token of [SOCKET_PATH, SOCKET_HELPER, SOCKET_ARGS]) {
+    if (live.includes(token)) {
+      failures.push(
+        `scripts/svc names '${token}' in live code. The Docker socket belongs to ` +
+          `'scripts/dev --docker' and to nothing else: a process under 'svc run' has no ` +
+          `egress by construction, and a socket lets it create a sibling container on a ` +
+          `network that HAS egress — so the internal: true guarantee would stop being ` +
+          `structural and every other check in this gate would stay green (OD-16).`,
+      );
+    }
+  }
+  if (!/--docker\)\s*die/.test(svcScript)) {
+    failures.push(
+      `scripts/svc no longer refuses '--docker' by name. Falling through to "unknown ` +
+        `option" loses the reason, and the reason is the whole ruling (OD-16).`,
+    );
+  }
+}
+
+const libShell = read('scripts/lib/toolbox.sh');
+if (libShell === null) {
+  failures.push('scripts/lib/toolbox.sh is missing');
+} else {
+  // Fail closed: if the function cannot be located, this check asserts nothing
+  // and must say so rather than pass.
+  const start = libShell.indexOf('\ntoolbox_mount_args() {');
+  if (start === -1) {
+    failures.push(
+      `scripts/lib/toolbox.sh: cannot locate 'toolbox_mount_args()' — this gate then ` +
+        `cannot check that the mount helper both entry points call does not carry the ` +
+        `Docker socket. Restore the function or teach the gate its new shape.`,
+    );
+  } else {
+    const end = libShell.indexOf('\n}', start);
+    const body = end === -1 ? libShell.slice(start) : libShell.slice(start, end);
+    if (body.includes(SOCKET_PATH)) {
+      failures.push(
+        `scripts/lib/toolbox.sh: 'toolbox_mount_args' names '${SOCKET_PATH}'. That helper ` +
+          `is called by BOTH entry points, so the socket would reach 'svc run' through the ` +
+          `shared path without scripts/svc mentioning it (OD-16).`,
+      );
+    }
+  }
+}
+
+for (const [rel, text] of [
+  ['scripts/dev', devScript],
+  ['scripts/svc', svcScript],
+] as const) {
+  if (text === null) continue;
+  const live = text.split('\n').map(codeOf);
+  if (!live.some((l) => /--user\s+"\$\(id -u\):\$\(id -g\)"/.test(l))) {
+    failures.push(
+      `${rel} no longer passes --user "$(id -u):$(id -g)". The toolbox runs as the ` +
+        `INVOKING user; without it every file it writes into the bind mount is ` +
+        `root-owned and T-000's measured ownership property is gone. This is the ` +
+        `cheapest wrong repair for OD-16's EACCES and it must not be reachable.`,
+    );
+  }
+  const rootish = live.filter((l) => /--user\s+["']?0[:\s]/.test(l) || /--privileged/.test(l));
+  if (rootish.length > 0) {
+    failures.push(`${rel} runs the toolbox as root or privileged: ${rootish.join(' | ')}`);
+  }
+  if (!/toolbox_refuse_root/.test(text)) {
+    failures.push(
+      `${rel} no longer calls toolbox_refuse_root. That is the runtime half of the ` +
+        `same property (OD-16).`,
+    );
+  }
+}
+
 console.log(`  compose files parsed       ${String(filesParsed)}/${String(COMPOSE_FILES.length)}`);
 console.log(`  services checked           ${String(servicesChecked)}`);
+console.log(
+  `  overlay-only additions     ${String(additionsChecked)}` +
+    (additionsChecked === 0
+      ? '  (none today — every overlay service overrides a compose.yml service)'
+      : '  (each held to the full base-service rule)'),
+);
 console.log(`  parser                     yaml (a real one — see QA-F2)`);
 console.log(`  entry points checked       scripts/dev, scripts/svc`);
+console.log(`  docker socket              scripts/dev --docker only (OD-16)`);
 
 finish('gate:egress-boundary', failures);
