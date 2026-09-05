@@ -14,7 +14,7 @@ BK="$(mktemp -d)"
 cp "$VERIFY" "$BK/verify"; cp "$DF" "$BK/df"; cp scripts/svc "$BK/svc"; cp apps/core/package.json "$BK/corepkg"
 restore() {
   cp "$BK/verify" "$VERIFY"; cp "$BK/df" "$DF"; cp "$BK/svc" scripts/svc; cp "$BK/corepkg" apps/core/package.json
-  rm -rf apps/core/src
+  rm -rf apps/core/src docker/next.Dockerfile
 }
 trap 'restore; rm -rf "$BK"' EXIT
 
@@ -81,16 +81,44 @@ mut "$DF" 'ENTRYPOINT ["node", "/srv/kinvara/app-runtime/entrypoint.mjs"]' \
           'ENTRYPOINT node /srv/kinvara/app-runtime/entrypoint.mjs' \
   && run_case "11 shell-form ENTRYPOINT (sh at PID 1 eats SIGTERM)" FAIL
 mut "$DF" 'HEALTHCHECK --interval' '# HEALTHCHECK --interval' && run_case "12 HEALTHCHECK removed from the image" FAIL
+mut "$DF" 'RUN node /tmp/assert-no-dev-deps.mjs' 'RUN true # ' && run_case "13 the devDependency build-time guard removed" FAIL
+mut "$DF" 'FROM base AS prod-deps' 'FROM deps AS prod-deps' && run_case "14 prod-deps back to FROM deps (gate CANNOT see this)" PASS
+
+echo; echo "=== the image contract follows the SERVICE, not one hard-coded path ==="
+# QA's escape, reproduced. T-018's own contract §6 tells the Next.js tickets to
+# split the Dockerfile, and the first version of this gate pinned its
+# image-contract checks to docker/app.Dockerfile — so it stopped checking at
+# exactly the moment someone followed that instruction.
+cat > docker/next.Dockerfile <<'DF'
+ARG NODE_VERSION
+FROM node:${NODE_VERSION}-alpine AS runtime
+ARG APP
+USER root
+ENTRYPOINT node /srv/kinvara/app-runtime/entrypoint.mjs
+DF
+mut "$VERIFY" '      dockerfile: docker/app.Dockerfile
+      target: runtime
+      args:
+        NODE_VERSION: ${KINVARA_NODE_VERSION:?derived from .tool-versions by scripts/svc}
+        PNPM_VERSION: ${KINVARA_PNPM_VERSION:?derived from .tool-versions by scripts/svc}
+        APP: web' '      dockerfile: docker/next.Dockerfile
+      target: runtime
+      args:
+        NODE_VERSION: ${KINVARA_NODE_VERSION:?derived from .tool-versions by scripts/svc}
+        PNPM_VERSION: ${KINVARA_PNPM_VERSION:?derived from .tool-versions by scripts/svc}
+        APP: web' \
+  && run_case "15 web repointed at a 2nd Dockerfile: root, shell ENTRYPOINT, no HEALTHCHECK" FAIL
+rm -f docker/next.Dockerfile
 
 echo; echo "=== a placeholder may not outlive real source ==="
 mkdir -p apps/core/src && echo 'export const x = 1;' > apps/core/src/index.ts
-run_case "13 apps/core has src/ but declares no start script" FAIL
+run_case "16 apps/core has src/ but declares no start script" FAIL
 mkdir -p apps/core/src && echo 'export const x = 1;' > apps/core/src/index.ts
 node scripts/negative-tests/mutate.mjs apps/core/package.json '"type": "module",' '"type": "module",
-  "scripts": { "start": "node dist/main.js" },' && run_case "14 the same, once it declares start" PASS
+  "scripts": { "start": "node dist/main.js" },' && run_case "17 the same, once it declares start" PASS
 
 echo
 run_case "99 tree restored" PASS
 echo
-if [[ $bad -eq 0 ]]; then echo "ALL 17 CASES BEHAVED AS EXPECTED"; else echo "!! $bad CASE(S) MISBEHAVED"; fi
+if [[ $bad -eq 0 ]]; then echo "ALL 20 CASES BEHAVED AS EXPECTED"; else echo "!! $bad CASE(S) MISBEHAVED"; fi
 exit $bad

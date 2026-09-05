@@ -50,7 +50,19 @@ import { REPO_ROOT, finish, toolVersions } from './lib/run.ts';
 
 const BASE_FILE = 'docker/compose.yml';
 const VERIFY_FILE = 'docker/compose.verify.yml';
-const DOCKERFILE = 'docker/app.Dockerfile';
+/**
+ * The Dockerfile the pin/derivation checks in §1 read. It is NOT the set §6
+ * runs over — those read `build.dockerfile` PER SERVICE, exactly as §2 does.
+ *
+ * QA caught this. The first version pinned §6 to this constant; repointing
+ * `web` at a second Dockerfile with `USER root`, a shell-form ENTRYPOINT and
+ * no HEALTHCHECK left the gate GREEN. And T-018's own published contract §6
+ * explicitly invites that split for the Next.js apps — so the gate stopped
+ * checking at exactly the moment someone did the thing the contract told them
+ * to do. A check that disarms itself when the documented next step is taken is
+ * worse than no check, because its green reads as coverage.
+ */
+const PRIMARY_DOCKERFILE = 'docker/app.Dockerfile';
 const BUILT_BY = 'T-018';
 
 const failures: string[] = [];
@@ -85,8 +97,8 @@ const servicesOf = (rel: string): Record<string, Record<string, unknown>> | null
 
 const base = servicesOf(BASE_FILE);
 const verify = servicesOf(VERIFY_FILE);
-const dockerfile = read(DOCKERFILE);
-if (dockerfile === null) failures.push(`${DOCKERFILE} does not exist`);
+const dockerfile = read(PRIMARY_DOCKERFILE);
+if (dockerfile === null) failures.push(`${PRIMARY_DOCKERFILE} does not exist`);
 
 const pins = toolVersions();
 const nodePin = pins.get('nodejs');
@@ -104,12 +116,12 @@ if (dockerfile !== null) {
     const withDefault = new RegExp(`^ARG ${argName}=`, 'm');
     if (withDefault.test(dockerfile)) {
       failures.push(
-        `${DOCKERFILE}: 'ARG ${argName}' has a DEFAULT. A default makes a build that ` +
+        `${PRIMARY_DOCKERFILE}: 'ARG ${argName}' has a DEFAULT. A default makes a build that ` +
           `forgets to pass the pin succeed against some other version, silently. It must ` +
           `have none, so the build fails at the FROM line instead.`,
       );
     } else if (!decl.test(dockerfile)) {
-      failures.push(`${DOCKERFILE}: no bare 'ARG ${argName}' declaration`);
+      failures.push(`${PRIMARY_DOCKERFILE}: no bare 'ARG ${argName}' declaration`);
     }
   }
 }
@@ -132,7 +144,7 @@ if (verifyText !== null) {
 
 // The anchor. Everything above is spelling; this is the property.
 if (nodePin !== undefined) {
-  for (const rel of [DOCKERFILE, VERIFY_FILE]) {
+  for (const rel of [PRIMARY_DOCKERFILE, VERIFY_FILE]) {
     const text = read(rel);
     if (
       text !== null &&
@@ -165,6 +177,8 @@ if (svcScript === null) {
 // 2. Every service compose.yml says T-018 builds is built by the overlay.
 // ---------------------------------------------------------------------------
 const declaredByLabel: string[] = [];
+/** dockerfile path -> the services built from it. Filled by §2, consumed by §6. */
+const dockerfilesInUse = new Map<string, string[]>();
 if (base !== null) {
   for (const [name, svc] of Object.entries(base)) {
     const labels = svc['labels'];
@@ -192,6 +206,9 @@ if (verify !== null) {
     const df = String(build['dockerfile'] ?? '');
     if (df === '' || !fs.existsSync(path.join(REPO_ROOT, df))) {
       failures.push(`${VERIFY_FILE}: '${name}' names dockerfile '${df}', which does not exist`);
+    } else {
+      // §6 runs over THIS set, not over a constant — see PRIMARY_DOCKERFILE.
+      dockerfilesInUse.set(df, [...(dockerfilesInUse.get(df) ?? []), name]);
     }
     const args = build['args'];
     if (!isRecord(args) || typeof args['APP'] !== 'string' || args['APP'] === '') {
@@ -300,35 +317,70 @@ for (const name of declaredByLabel) {
 }
 
 // ---------------------------------------------------------------------------
-// 6. The image contract itself.
+// 6. The image contract itself — over EVERY Dockerfile a service is actually
+//    built from, derived in §2 from `build.dockerfile`, never from a constant.
+//    See PRIMARY_DOCKERFILE for what this cost when it was a constant.
 // ---------------------------------------------------------------------------
-if (dockerfile !== null) {
-  if (!/^ENTRYPOINT \[/m.test(dockerfile)) {
+if (dockerfilesInUse.size === 0) {
+  failures.push(
+    `no service in ${VERIFY_FILE} names a build.dockerfile this gate could read — the ` +
+      `image-contract checks below would then assert nothing.`,
+  );
+}
+
+for (const [rel, users] of [...dockerfilesInUse].sort(([a], [b]) => a.localeCompare(b))) {
+  const text = read(rel);
+  if (text === null) continue; // already reported by §2
+  const who = `${rel} (built as: ${users.join(', ')})`;
+
+  if (!/^ENTRYPOINT \[/m.test(text)) {
     failures.push(
-      `${DOCKERFILE}: ENTRYPOINT is not in exec form. Shell form puts /bin/sh at PID 1, ` +
+      `${who}: ENTRYPOINT is not in exec form. Shell form puts /bin/sh at PID 1, ` +
         `and sh does not forward SIGTERM to its child: 'docker stop' would wait out the ` +
         `whole stop_grace_period and then SIGKILL the app mid-request.`,
     );
   }
-  if (!/^HEALTHCHECK /m.test(dockerfile)) {
+  if (!/^HEALTHCHECK /m.test(text)) {
     failures.push(
-      `${DOCKERFILE}: no HEALTHCHECK. It belongs in the image, not only in compose, so it ` +
+      `${who}: no HEALTHCHECK. It belongs in the image, not only in compose, so it ` +
         `travels with what ships (T-003's ECS task definitions read it from here).`,
     );
   }
-  const user = /^USER (\S+)/m.exec(dockerfile);
+  const user = /^USER (\S+)/m.exec(text);
   if (user === null) {
-    failures.push(`${DOCKERFILE}: no USER instruction — the image would run as root`);
+    failures.push(`${who}: no USER instruction — the image would run as root`);
   } else {
     const uid = user[1] ?? '';
-    if (/^(0|root)(:|$)/.test(uid)) failures.push(`${DOCKERFILE}: USER is root (${uid})`);
+    if (/^(0|root)(:|$)/.test(uid)) failures.push(`${who}: USER is root (${uid})`);
     if (/^(1000|node)(:|$)/.test(uid)) {
       failures.push(
-        `${DOCKERFILE}: USER is ${uid}. uid 1000 is the toolbox's uid and this host's repo ` +
+        `${who}: USER is ${uid}. uid 1000 is the toolbox's uid and this host's repo ` +
           `owner, so "runs as a non-root user" and "happens to match the bind mount" become ` +
           `indistinguishable and a permission defect surfaces first in ECS.`,
       );
     }
+  }
+  // The devDependency guard is a BUILD-TIME assertion, because that is the only
+  // place the property is visible: this gate cannot see inside an image, and the
+  // leak is invisible from outside until someone measures a layer — which is
+  // exactly how 112.2 MB of devDependencies shipped in T-018's first version.
+  // Every Dockerfile in use must run it, so a NEW one cannot omit it quietly.
+  // Match a RUN that EXECUTES it, with BOTH kinds of comment stripped: a
+  // whole-line Dockerfile `#`, and a shell `#` inside the RUN. `text.includes`
+  // was the first version and the COPY line alone satisfied it; stripping only
+  // whole-line comments was the second, and `RUN true # ...assert-no-dev-deps.mjs`
+  // satisfied that. Negative case 13 caught both. The check has to name the
+  // instruction that runs, not the filename that appears.
+  const runsGuard = text
+    .split('\n')
+    .map((l) => l.split('#')[0] ?? '')
+    .some((l) => /^RUN\b.*assert-no-dev-deps\.mjs/.test(l.trim()));
+  if (!runsGuard) {
+    failures.push(
+      `${who}: does not run docker/app-runtime/assert-no-dev-deps.mjs. That build-time ` +
+        `assertion is the only thing keeping devDependencies out of the runtime tree, and ` +
+        `a Dockerfile added later must carry it too.`,
+    );
   }
 }
 
@@ -337,6 +389,10 @@ console.log(
 );
 console.log(
   `  services labelled built-by ${BUILT_BY}  ${String(declaredByLabel.length)}: ${declaredByLabel.join(' ')}`,
+);
+console.log(
+  `  dockerfiles checked             ${String(dockerfilesInUse.size)}: ` +
+    [...dockerfilesInUse.keys()].sort().join(' '),
 );
 console.log(`  apps checked                    ${String(appsChecked)}`);
 console.log(
