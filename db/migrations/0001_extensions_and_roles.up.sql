@@ -262,11 +262,25 @@ GRANT USAGE, CREATE ON SCHEMA public TO app_ddl;
 -- on its first run: before a single application table existed, the write-only vendor
 -- principal already held SELECT on five relations.
 --
--- Four of them are harmless reference data. `pg_stat_statements` is not: it stores QUERY
--- TEXT, and query text carries literal values — a phone number, an email address, a child's
--- name in a WHERE clause. A principal that can read it can harvest personal data without
--- holding a single grant on a single application table, which is precisely the outcome
--- SA §INT-10 exists to make impossible.
+-- Four of them are harmless reference data. `pg_stat_statements` is the one worth revoking,
+-- but its severity is NARROWER THAN THIS COMMENT ORIGINALLY CLAIMED, and the correction is
+-- itself worth recording. The first version asserted that query text "carries literal values
+-- — a phone number, an email address, a child's name in a WHERE clause". That was reasoned,
+-- not measured. Measured on this image:
+--
+--   * pg_stat_statements NORMALISES constants. The statement
+--     `SELECT id FROM public.account WHERE email_ci = 'parent@example.test' AND locale = 'el'`
+--     is stored as `… WHERE email_ci = $1 AND locale = $2`. The literals are gone.
+--   * A role without pg_read_all_stats sees OTHER roles' query text as the literal string
+--     `<insufficient privilege>`. Measured: 0 rows containing the email address, from 5 rows
+--     of which 3 were fully masked.
+--
+-- So the exposure is STATEMENT SHAPE plus per-statement userid, call counts, row counts and
+-- timing — a volume-and-timing side channel over the whole database, not personal data.
+-- Still not something a principal outside our staff boundary should hold, and still revoked,
+-- but it is metadata disclosure and this file should not claim otherwise. In a programme
+-- whose premise is evidence over assertion, an asserted severity in a safety justification
+-- is the defect, even when the remediation it argues for is correct.
 REVOKE ALL ON TABLE public.spatial_ref_sys            FROM PUBLIC;
 REVOKE ALL ON TABLE public.geometry_columns           FROM PUBLIC;
 REVOKE ALL ON TABLE public.geography_columns          FROM PUBLIC;
@@ -284,6 +298,17 @@ GRANT SELECT ON TABLE public.spatial_ref_sys, public.geometry_columns, public.ge
 -- monitoring principal, if observability wants one, is T-019's to define and must be
 -- granted here rather than by widening PUBLIC.
 GRANT SELECT ON TABLE public.pg_stat_statements, public.pg_stat_statements_info TO app_ddl;
+
+-- QA-F11: revoking the VIEW is not enough. The view is a thin wrapper over the extension's
+-- own set-returning functions, and PUBLIC holds EXECUTE on those — so `SELECT * FROM
+-- public.pg_stat_statements(true)` reached the same rows with the view's grant already gone.
+-- Exactly the shape of QA-F9: an object class the grant document never mentioned. The only
+-- thing standing in the way was the extension's internal masking, which is upstream C code
+-- and not something this migration enforces.
+REVOKE EXECUTE ON FUNCTION public.pg_stat_statements(boolean),
+                            public.pg_stat_statements_info() FROM PUBLIC;
+GRANT  EXECUTE ON FUNCTION public.pg_stat_statements(boolean),
+                            public.pg_stat_statements_info() TO app_ddl;
 
 
 -- NO `ALTER DEFAULT PRIVILEGES` IS ISSUED HERE, DELIBERATELY, AND IT IS THE MOST
@@ -340,10 +365,46 @@ GRANT SELECT ON TABLE public.pg_stat_statements, public.pg_stat_statements_info 
 -- Everything above is a grant. A grant is a fact about today. This section is the part
 -- that survives fifteen downstream tickets written by agents who have never read INT-10.
 --
--- assert_answering_service_write_only() raises if `answering_service` can reach ANY data
--- by ANY route. It uses has_*_privilege() rather than reading ACLs, so it sees privileges
--- acquired through PUBLIC and through role membership, not only through a GRANT naming the
--- role. It is wired to an event trigger below, and it is also the reconciler query.
+-- assert_answering_service_write_only() raises if `answering_service` can reach data. It
+-- uses has_*_privilege() rather than reading ACLs, so it sees privileges acquired through
+-- PUBLIC and through role membership, not only through a GRANT naming the role. It is wired
+-- to an event trigger below, and it is also the reconciler query.
+--
+-- WHAT IT COVERS, EXACTLY. An earlier version of this comment said "by ANY route", and that
+-- claim was false: qa-verification granted SELECT on a LARGE OBJECT, this function returned
+-- clean, and the vendor principal read the object in full (QA-F9). The claim is now stated
+-- as an enumeration, because a universal claim over a partial guard is worse than an honest
+-- partial one — it stops the next reader looking.
+--
+--   COVERED — every object class PostgreSQL's GRANT can name:
+--     relations (tables, views, matviews, foreign tables) ......... check (4), (5)
+--     columns .................................................... check (6)
+--     sequences .................................................. check (7)
+--     functions and procedures (SECURITY DEFINER) ................ check (8)
+--     default ACLs, including those granted to PUBLIC ............ check (9)
+--     schemas (CREATE) ........................................... check (10)
+--     large objects .............................................. check (11)
+--     server parameters .......................................... check (12)
+--     this database (CREATE, TEMPORARY) .......................... check (13)
+--     languages (untrusted) ...................................... check (14)
+--     foreign servers and foreign data wrappers .................. check (15)
+--     tablespaces ................................................ check (16)
+--   plus role attributes (1) and role membership, in both directions (2), (3).
+--
+--   DELIBERATELY NOT COVERED, each for a stated reason:
+--     * TYPES and DOMAINS. PUBLIC holds USAGE on every type by default and USAGE on a type
+--       is required to use a column of it. It conveys no access to data.
+--     * TRUSTED languages — see check (14).
+--     * The SYSTEM CATALOGUES (pg_catalog, information_schema), which PostgreSQL makes
+--       world-readable by design. This is a real residual: pg_stat_user_tables gives this
+--       principal n_live_tup and n_tup_ins for every table — row counts and arrival rates,
+--       which is the same class of disclosure check (7) denies sequences for (QA-F12).
+--       Closing it means revoking EXECUTE on core statistics functions from PUBLIC, which
+--       breaks ordinary tooling for every role. Accepted, not overlooked. No row DATA is
+--       reachable this way, only counts and object names.
+--     * OTHER DATABASES in the cluster — see check (13).
+--     * `GRANT ROLE`, which cannot be PREVENTED here (PostgreSQL refuses event triggers for
+--       that tag) but IS detected by checks (2) and (3) whenever this function runs.
 CREATE OR REPLACE FUNCTION public.assert_answering_service_write_only()
 RETURNS void
 LANGUAGE plpgsql
@@ -456,17 +517,23 @@ BEGIN
 
     UNION ALL
     -- (8) SECURITY DEFINER functions. A definer function is a read channel that no table
-    --     grant describes. Extension-owned functions are excluded: they are installed by
-    --     Section 1, are not our attack surface, and cannot be revoked without breaking
-    --     the extension.
+    --     grant describes.
+    --
+    --     An earlier version of this check excluded extension-owned functions on the
+    --     reasoning that they are vetted and cannot be revoked without breaking the
+    --     extension. qa-verification (QA-F13) measured the exclusion and found it covered
+    --     ZERO functions across all seven extensions — so it was buying nothing today while
+    --     standing as a permanent blind spot for whichever extension a later epic adds.
+    --     CREATE EXTENSION is in this trigger's tag list precisely because that can happen.
+    --     The exclusion is removed: if an extension ships a definer function reachable by
+    --     this principal, that is a read path and the migration adding it must revoke
+    --     EXECUTE from PUBLIC, exactly as Section 3 does for pg_stat_statements.
     SELECT format('answering_service can EXECUTE SECURITY DEFINER function %s — a definer '
                   'function is a read channel', p.oid::regprocedure::text)
       FROM pg_proc p
       JOIN pg_namespace n ON n.oid = p.pronamespace
      WHERE p.prosecdef
        AND n.nspname NOT IN ('pg_catalog','information_schema')
-       AND NOT EXISTS (SELECT 1 FROM pg_depend d
-                        WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e')
        AND has_function_privilege(k_oid, p.oid, 'EXECUTE')
 
     UNION ALL
@@ -494,6 +561,86 @@ BEGIN
      WHERE n.nspname NOT LIKE 'pg\_%'
        AND n.nspname <> 'information_schema'
        AND has_schema_privilege(k_oid, n.oid, 'CREATE')
+
+    -- Checks (11) to (16) exist because qa-verification found QA-F9: checks (1) to (10)
+    -- covered relations, columns, sequences, functions, default ACLs, schemas, role
+    -- attributes and membership, and NOTHING ELSE — while this function was published as
+    -- refusing a read path "by any route". `GRANT SELECT ON LARGE OBJECT 424242 TO
+    -- answering_service` returned GRANT, this function returned clean, and the principal
+    -- then read the object in full. A large object is not a relation, so no check saw it.
+    --
+    -- The lesson is the reason these six are written by ENUMERATING PostgreSQL's object
+    -- classes rather than by imagining attacks: the classes GRANT can name are a closed,
+    -- documented list, and going through it is finite work. Every class is now either
+    -- checked below or named in the coverage statement above with the reason it is not.
+
+    UNION ALL
+    -- (11) Large objects. QA-F9 itself.
+    SELECT format('answering_service holds %s on large object %s', p.priv, l.oid)
+      FROM pg_largeobject_metadata l
+     CROSS JOIN unnest(ARRAY['SELECT','UPDATE']) AS p(priv)
+     WHERE has_largeobject_privilege(k_oid, l.oid, p.priv)
+
+    UNION ALL
+    -- (12) Server parameters (PG15+). The second class QA-F9 found unchecked. Not a read
+    --      path on its own, but ALTER SYSTEM in the hands of a principal held outside our
+    --      own staff boundary (SA §SEC-11) is a configuration-control path, and `SET` on
+    --      the wrong parameter is a step towards one.
+    SELECT format('answering_service holds %s on parameter %s', p.priv, a.parname)
+      FROM pg_parameter_acl a
+     CROSS JOIN unnest(ARRAY['SET','ALTER SYSTEM']) AS p(priv)
+     WHERE has_parameter_privilege(k_oid, a.parname, p.priv)
+
+    UNION ALL
+    -- (13) This database. CONNECT is granted by Section 3 and is required. CREATE would let
+    --      the principal create a schema and then objects it owns every privilege on;
+    --      TEMPORARY is a resource-exhaustion path. Scoped to current_database() on purpose:
+    --      PUBLIC holds CONNECT and TEMPORARY on OTHER databases of the cluster by default,
+    --      and 0001 governs its own database, not the cluster's other tenants.
+    SELECT format('answering_service holds %s on database %I', p.priv, d.datname)
+      FROM pg_database d
+     CROSS JOIN unnest(ARRAY['CREATE','TEMPORARY']) AS p(priv)
+     WHERE d.datname = current_database()
+       AND has_database_privilege(k_oid, d.oid, p.priv)
+
+    UNION ALL
+    -- (14) UNTRUSTED PROCEDURAL languages (plpython3u, plperlu, …). USAGE on one, plus
+    --      CREATE on a schema, is arbitrary code execution as the server user. Two filters,
+    --      both load-bearing and both established by measurement rather than by reading:
+    --        lanispl      — excludes `c` and `internal`, which are call handlers rather than
+    --                       languages. has_language_privilege() reports USAGE on both for
+    --                       every role, and creating a function in either requires superuser
+    --                       regardless, so without this filter the check fires on a clean
+    --                       database. It did, on the first run.
+    --        lanpltrusted — trusted languages are deliberately permitted: PUBLIC holds USAGE
+    --                       on plpgsql by default and it is inert without the schema CREATE
+    --                       that check (10) forbids.
+    SELECT format('answering_service holds USAGE on untrusted language %I', l.lanname)
+      FROM pg_language l
+     WHERE l.lanispl
+       AND NOT l.lanpltrusted
+       AND has_language_privilege(k_oid, l.oid, 'USAGE')
+
+    UNION ALL
+    -- (15) Foreign servers and foreign data wrappers. USAGE on a server plus a schema CREATE
+    --      is a foreign table over whatever that server can reach — including, on a
+    --      file_fdw or postgres_fdw, data this database does not hold.
+    SELECT format('answering_service holds USAGE on foreign server %I', srv.srvname)
+      FROM pg_foreign_server srv
+     WHERE has_server_privilege(k_oid, srv.oid, 'USAGE')
+
+    UNION ALL
+    SELECT format('answering_service holds USAGE on foreign data wrapper %I', w.fdwname)
+      FROM pg_foreign_data_wrapper w
+     WHERE has_foreign_data_wrapper_privilege(k_oid, w.oid, 'USAGE')
+
+    UNION ALL
+    -- (16) Tablespaces. Not a read path, and included only so that the coverage claim in the
+    --      published contract is true of every object class GRANT can name rather than of
+    --      every class somebody thought of.
+    SELECT format('answering_service holds CREATE on tablespace %I', t.spcname)
+      FROM pg_tablespace t
+     WHERE has_tablespace_privilege(k_oid, t.oid, 'CREATE')
   LOOP
     v_msgs := v_msgs || v;
   END LOOP;
