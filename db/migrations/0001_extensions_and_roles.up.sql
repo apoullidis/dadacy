@@ -544,7 +544,20 @@ CREATE EVENT TRIGGER trg_int10_answering_service
                'CREATE VIEW',
                'CREATE MATERIALIZED VIEW',
                'CREATE FOREIGN TABLE',
-               'SELECT INTO')
+               'SELECT INTO',
+               -- CREATE FUNCTION is here for a reason that is easy to miss and was
+               -- demonstrated on this database: PUBLIC holds EXECUTE on every new function
+               -- by default, so `CREATE FUNCTION … SECURITY DEFINER` hands the vendor
+               -- principal a read path WITHOUT ANY GRANT BEING WRITTEN AT ALL. Measured:
+               -- a three-line definer function over `account` let answering_service_probe
+               -- select every row. An ordinary (invoker) function is harmless — it runs as
+               -- the caller and hits the caller's own privileges — which is why check (8)
+               -- looks only at prosecdef rather than banning EXECUTE.
+               'CREATE FUNCTION',
+               'CREATE PROCEDURE',
+               -- and a function can be made SECURITY DEFINER after the fact.
+               'ALTER FUNCTION',
+               'ALTER PROCEDURE')
   EXECUTE FUNCTION public.trg_assert_answering_service_write_only();
 
 COMMENT ON EVENT TRIGGER trg_int10_answering_service IS
