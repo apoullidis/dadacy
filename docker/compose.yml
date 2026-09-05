@@ -195,8 +195,20 @@ services:
 
   # =========================================================================
   # profile: aws — LocalStack (S3, KMS, Secrets Manager, SES)
-  # T-017 owns the seed hooks in ./fakes/seed. Declared here so the profile
-  # name and the budget are fixed now; T-017 mounts the seed directory.
+  #
+  # SEEDED BY ./fakes/seed (T-017). Two read-only mounts, deliberately:
+  #
+  #   ready.d/  -> /etc/localstack/init/ready.d   LocalStack runs these once,
+  #                                               after it reports ready.
+  #   lib/      -> /opt/kinvara/seed              the manifest and the verifier,
+  #                                               which must NOT be executed as
+  #                                               init hooks.
+  #
+  # The manifest is the single source of truth for the five buckets (SA DA-12),
+  # the CMK set and the secret set, and the SAME file is read by the verifier,
+  # so the seed and the check cannot drift apart:
+  #
+  #   scripts/svc exec <ticket> localstack /opt/kinvara/seed/verify.sh
   # =========================================================================
   localstack:
     image: localstack/localstack:4.9
@@ -210,16 +222,31 @@ services:
       # only produce noisy timeouts if it tried.
       DISABLE_EVENTS: '1'
       SKIP_SSL_CERT_DOWNLOAD: '1'
+      # Where the ready-hook finds the manifest and the verifier.
+      SEED_LIB: /opt/kinvara/seed
     expose:
       - '4566'
     volumes:
       - localstackdata:/var/lib/localstack
+      - ./fakes/seed/ready.d:/etc/localstack/init/ready.d:ro
+      - ./fakes/seed/lib:/opt/kinvara/seed:ro
     healthcheck:
-      test: ['CMD-SHELL', 'curl -fsS http://localhost:4566/_localstack/health || exit 1']
-      interval: 10s
+      # BOTH conditions, on purpose. LocalStack reports healthy before the
+      # ready-hook has finished seeding, so a healthcheck on its own endpoint
+      # returns while the account is half-populated and `svc up` hands the
+      # agent a race. /tmp/kinvara-seed-complete is written by 10-seed.sh only
+      # AFTER verify.sh has passed, so "healthy" here means "seeded and
+      # verified". A failing seed never writes it and `svc up` times out
+      # loudly rather than succeeding against a half-seeded account.
+      test:
+        [
+          'CMD-SHELL',
+          'curl -fsS http://localhost:4566/_localstack/health >/dev/null && test -f /tmp/kinvara-seed-complete',
+        ]
+      interval: 5s
       timeout: 5s
-      retries: 12
-      start_period: 30s
+      retries: 24
+      start_period: 20s
     mem_limit: 1024m
     cpus: 1.0
 
@@ -245,18 +272,34 @@ services:
   # =========================================================================
   fake-telephony:
     image: kinvara/fake-telephony:dev
+    build:
+      context: ./fakes/telephony
+      dockerfile: Dockerfile
     profiles: ['tel']
-    # Read by scripts/svc to name the ticket that builds this image, so a
-    # missing one reports "not built yet" instead of Docker's own
-    # "pull access denied ... may require 'docker login'" (QA-F8).
     labels:
       io.kinvara.built-by: 'T-017'
       io.kinvara.built-by-title: 'the vendor fake containers'
     networks: [kinvara-int]
+    environment:
+      PORT: '4000'
+      # Unset by default. A ticket that wants webhooks delivered points this at
+      # a service on this same internal network, e.g. http://safety-gw:3010.
+      # When unset, every webhook is still RECORDED with delivery
+      # `not_configured`, so a test can still assert the fake tried.
+      TELEPHONY_WEBHOOK_BASE: ${TELEPHONY_WEBHOOK_BASE:-}
+      # The number WE own and forward to the answering-service vendor, so the
+      # 15-minute acknowledgement clock starts at our webhook rather than at
+      # the vendor's report (EV-1).
+      TELEPHONY_SAFETY_LINE: ${TELEPHONY_SAFETY_LINE:-+35722000199}
+      # Alphanumeric sender IDs are fully supported in Cyprus with no
+      # pre-registration (SA INT-5r) — one of the few things this market makes
+      # easier rather than harder.
+      TELEPHONY_SENDER_ID: ${TELEPHONY_SENDER_ID:-Kinvara}
     expose:
       - '4000'
     mem_limit: 128m
     cpus: 0.5
+    stop_grace_period: 5s
 
   # =========================================================================
   # profile: mail — Mailpit
