@@ -1,0 +1,3 @@
+{
+  "checkins_missed": "{count, plural, one {# missed check-in} other {# missed check-ins} from {sitterName}"
+}

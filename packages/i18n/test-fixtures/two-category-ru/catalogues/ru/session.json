@@ -1,0 +1,4 @@
+{
+  "//": "The defect this fixture exists to make visible: a Russian catalogue supplying only `one` and `other`. It is valid ICU, it parses, it compiles, it loads and it renders — and it is wrong on 0, 5, 11, 111 and every other `many` count. This is what a translator delivering a two-category file looks like from the build's point of view, and it is why EV-2 adds gate:plural-completeness (T-045).",
+  "checkins_missed": "{count, plural, one {Пропущена # отметка} other {Пропущено # отметки}} от {sitterName}"
+}

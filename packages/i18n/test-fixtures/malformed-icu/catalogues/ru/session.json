@@ -1,0 +1,3 @@
+{
+  "checkins_missed": "{count, plural, one {Пропущена # отметка} few {Пропущено # отметки} many {Пропущено # отметок} other {Пропущено # отметки}} от {sitterName}"
+}

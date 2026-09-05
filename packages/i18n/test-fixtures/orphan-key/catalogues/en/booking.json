@@ -1,0 +1,3 @@
+{
+  "count.upcoming": "{count, plural, one {# upcoming booking} other {# upcoming bookings}}"
+}

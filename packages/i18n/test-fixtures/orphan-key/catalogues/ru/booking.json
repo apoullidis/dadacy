@@ -1,0 +1,5 @@
+{
+  "//": "`count.upcomming` is a typo that exists only in this translation — the shape a rename applied to one locale leaves behind.",
+  "count.upcoming": "{count, plural, one {# предстоящее бронирование} few {# предстоящих бронирования} many {# предстоящих бронирований} other {# предстоящего бронирования}}",
+  "count.upcomming": "{count, plural, one {#} few {#} many {#} other {#}}"
+}

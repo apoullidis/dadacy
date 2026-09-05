@@ -1,0 +1,4 @@
+{
+  "//": "`safety.emergency.call_112.label` is deliberately absent. Tier assignment is exact and exhaustive: an untiered key must be a compile failure, because a key that silently defaults to a permissive tier is exactly how a safety string escapes gate:locale-completeness.",
+  "tiers": { "safety.sos.confirm": "safety_critical" }
+}

@@ -1,0 +1,21 @@
+{
+  "defaultLocale": "en",
+  "locales": [
+    {
+      "code": "en",
+      "endonym": "English",
+      "direction": "ltr",
+      "isSafetyLanguage": true,
+      "pluralCategories": ["one", "other"],
+      "enabled": true
+    },
+    {
+      "code": "ru",
+      "endonym": "Русский",
+      "direction": "ltr",
+      "isSafetyLanguage": true,
+      "pluralCategories": ["one", "few", "many", "other"],
+      "enabled": true
+    }
+  ]
+}
