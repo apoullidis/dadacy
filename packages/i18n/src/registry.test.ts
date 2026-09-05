@@ -120,6 +120,32 @@ test('QA-F1 — defaultLocale() is called from exactly one place in src/, on the
   );
 });
 
+test('QA-F1 — no runtime module hard-codes a registered locale code', () => {
+  // Closing the gap in the call-site scan above, which the named check in
+  // PROTOCOL §5.1 exposes: that scan looks for `defaultLocale()`, so a fallback
+  // written as the literal `'en'` would slip past it. The rule is derived from
+  // the registry rather than from a list of forbidden strings — add Turkish and
+  // it starts refusing a hard-coded `'tr'` with no edit here.
+  //
+  // `registry.ts` is exempt: it is the module whose job is to know the codes,
+  // and even there they come from the generated registry rather than a literal.
+  const dir = dirname(fileURLToPath(import.meta.url));
+  const codes = enabledLocales().map((d) => d.code);
+  const literal = new RegExp(`(['"\`])(${codes.join('|')})\\1`);
+  for (const file of readdirSync(dir).sort()) {
+    if (!file.endsWith('.ts') || file.endsWith('.test.ts')) continue;
+    const code = readFileSync(join(dir, file), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/\/\/.*$/gm, '');
+    const hit = literal.exec(code);
+    assert.equal(
+      hit,
+      null,
+      `${file} hard-codes the locale ${String(hit?.[0])}. A locale is a value you are given, not one you write down.`,
+    );
+  }
+});
+
 test('QA-F1 — no ambient locale source is reachable from this package', () => {
   // The other way English leaks in: reading a locale from the environment rather
   // than receiving it. Scanned across the package's runtime source, because a

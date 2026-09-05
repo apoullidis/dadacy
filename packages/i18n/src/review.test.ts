@@ -167,19 +167,27 @@ test('the waiver self-closes: once it expires, no placeholder may remain (QA-F3)
   );
 });
 
-test('the safety copy is honestly recorded as unreviewed placeholder', () => {
-  // Asserts the CURRENT state, and T-049 deletes it when real copy lands, so
-  // "placeholder" cannot quietly become "shipped" without a test changing.
-  // Note the guards above do NOT depend on this: they are written so that
-  // deleting this test leaves the coverage, waiver-scope, anchor and
-  // self-closing properties intact.
+test('a waived key must be honestly recorded as unreviewed placeholder', () => {
+  // Scoped to the keys the waiver still covers, so it EMPTIES ITSELF as T-049
+  // delivers instead of having to be deleted. The earlier version asserted the
+  // whole safety set, which meant signing off one key of eight turned it red and
+  // the cheapest green was to delete the test — pressure in exactly the wrong
+  // direction on the one file recording that this copy is not reviewed.
+  //
+  // The invariant is the honest one: a waiver exists FOR unreviewed copy, so
+  // anything inside it must still say so. Copy that is signed off leaves the
+  // waiver; copy that is in the waiver has not been reviewed and may not claim
+  // to have been.
   const register = loadReviewRegister();
+  const waived = register.pending_pipeline?.keys ?? [];
   for (const locale of enabledLocales()) {
-    for (const key of keysAtTier('safety_critical')) {
+    for (const key of waived) {
       const record: ReviewRecord | undefined = register.entries[locale.code]?.[key];
-      assert.equal(record?.status, 'pending_review', `${locale.code}/${key}`);
-      assert.equal(record?.provenance, 'placeholder');
-      assert.equal(record?.reviewed_by, null);
+      assert.ok(record !== undefined, `waived key ${locale.code}/${key} has no record at all`);
+      assert.equal(record.status, 'pending_review', `${locale.code}/${key}`);
+      assert.equal(record.provenance, 'placeholder', `${locale.code}/${key}`);
+      assert.equal(record.reviewed_by, null, `${locale.code}/${key}`);
+      assert.equal(record.reviewed_at, null, `${locale.code}/${key}`);
     }
   }
 });
