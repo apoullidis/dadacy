@@ -403,8 +403,25 @@ GRANT  EXECUTE ON FUNCTION public.pg_stat_statements(boolean),
 --       breaks ordinary tooling for every role. Accepted, not overlooked. No row DATA is
 --       reachable this way, only counts and object names.
 --     * OTHER DATABASES in the cluster — see check (13).
---     * `GRANT ROLE`, which cannot be PREVENTED here (PostgreSQL refuses event triggers for
---       that tag) but IS detected by checks (2) and (3) whenever this function runs.
+--
+-- PREVENTIVE FOR MOST CLASSES, DETECTIVE FOR TWO. The event trigger below turns this
+-- function into a refusal at the moment of the GRANT — but only for object classes whose
+-- GRANT actually fires an event trigger. TWO CLUSTER-GLOBAL CLASSES DO NOT FIRE ONE, and
+-- both were established by measurement, not by reading the documentation:
+--
+--   * `GRANT <role> TO answering_service`. PostgreSQL refuses the trigger outright:
+--     CREATE EVENT TRIGGER ... WHEN TAG IN ('GRANT ROLE') fails with "event triggers are
+--     not supported for GRANT ROLE".
+--   * `GRANT ALTER SYSTEM ON PARAMETER <name> TO answering_service`. This one is quieter and
+--     is why it is written down here. The tag IS 'GRANT' and the statement is accepted, but
+--     no event trigger fires: an UNFILTERED `ON ddl_command_end` trigger placed next to it
+--     saw a following CREATE TABLE and did not see this. Parameters are cluster-global, like
+--     roles.
+--
+-- Checks (2), (3) and (12) DETECT both whenever this function is called. Neither is
+-- PREVENTED. That is the whole reason the scheduled reconciler in the published contract is
+-- an obligation rather than a nicety — it is the only thing that closes these two, and it
+-- closes them after the fact rather than before.
 CREATE OR REPLACE FUNCTION public.assert_answering_service_write_only()
 RETURNS void
 LANGUAGE plpgsql
