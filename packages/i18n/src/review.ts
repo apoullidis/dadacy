@@ -331,20 +331,105 @@ export function pipelineIncoherences(
   // translation is prohibited. Both names are now resolved against the roster —
   // a closed, stakeholder-confirmed set — so distinctness is between two
   // identified ROLES rather than between two arbitrary strings.
-  const roleOfName = new Map<string, string>();
+  // R2-F2. Roles → names, built so that a name held by two roles is a FINDING
+  // rather than whichever role JSON key order happened to write last. The
+  // previous `Map.set` was last-write-wins, so the behaviour of every check
+  // downstream depended on the order of keys in a JSON file — and the stakeholder
+  // is about to name four people into exactly those keys.
+  const rolesOfName = new Map<string, string[]>();
   for (const [id, role] of Object.entries(pipeline.roles)) {
-    if (role.named !== null) roleOfName.set(role.named, id);
+    if (role.named === null) continue;
+    const held = rolesOfName.get(role.named) ?? [];
+    held.push(id);
+    rolesOfName.set(role.named, held);
+  }
+  const reviewerRoles = new Set(REVIEWER_ROLES);
+  const authoringRoles = new Set(Object.values(AUTHORING_ROLE_FOR_METHOD));
+
+  for (const [name, ids] of rolesOfName) {
+    if (ids.length < 2) continue;
+    const held = new Set(ids);
+
+    // (i) The DSL pair. PM §MVP-L5 AC7 makes trilingual coverage a property of
+    // TWO people — "the Designated Safeguarding Lead and deputy BETWEEN THEM must
+    // cover all three languages". One person holding both roles satisfies every
+    // other predicate here and defeats the reason both roles exist.
+    if (held.has('dsl') && held.has('dsl_deputy')) {
+      problems.push(
+        `pipeline.roles: '${name}' is named as both the DSL and the deputy DSL. PM §MVP-L5 AC7 requires the pair to cover English, Greek and Russian BETWEEN THEM — a pair of one covers whatever that one person covers, and a Russian-speaking sitter's copy would be signed off by nobody who reads Russian.`,
+      );
+    }
+
+    // (ii) Four eyes, caught at naming time rather than at sign-off time. The
+    // per-record check already refuses an author who holds a reviewer role, but
+    // it only fires once something is signed off; this fires the moment the
+    // roster is filled in, which is the stakeholder's next action.
+    const authoring = ids.filter((i) => authoringRoles.has(i));
+    const reviewing = ids.filter((i) => reviewerRoles.has(i));
+    if (authoring.length > 0 && reviewing.length > 0) {
+      problems.push(
+        `pipeline.roles: '${name}' holds both an authoring role (${authoring.join(', ')}) and a reviewing role (${reviewing.join(', ')}). Review by the author is not review, whichever field their name is typed into.`,
+      );
+    }
+
+    // (iii) Author and translator as one person is NOT banned — a trilingual
+    // safeguarding practitioner authoring all three locales natively would be
+    // BETTER than a translation. What is incoherent is claiming it as a
+    // translation: there is no translator to brief and no brief to acknowledge,
+    // so `brief_ru_translator` and `translate_ru` describe nothing. Reported
+    // only when some locale actually claims `translated_briefed`.
+    if (
+      held.has('greek_authoring_safeguarding_practitioner') &&
+      held.has('russian_translator_briefed')
+    ) {
+      const briefed = safetyKeys.filter((k) =>
+        Object.values(pipeline.assignments[k]?.locales ?? {}).some(
+          (l) => l.method === 'translated_briefed',
+        ),
+      );
+      if (briefed.length > 0) {
+        problems.push(
+          `pipeline.roles: '${name}' is both the authoring practitioner and the briefed translator, while ${String(briefed.length)} key(s) still claim method 'translated_briefed'. One person cannot be briefed by themselves — if they author all three locales, the method is 'authored' and the provenance is 'authored'.`,
+        );
+      }
+    }
+  }
+
+  const roleOfName = new Map<string, string>();
+  for (const [name, ids] of rolesOfName) {
+    // A duplicate is already reported above; resolve to the first role in
+    // declaration order so the message downstream is deterministic rather than
+    // dependent on which key JSON happened to write last.
+    if (ids[0] !== undefined) roleOfName.set(name, ids[0]);
   }
   const namedPeople = new Map<string, PipelineRole>();
   for (const role of Object.values(pipeline.roles)) {
     if (role.named !== null) namedPeople.set(role.named, role);
   }
-  const reviewerRoles = new Set(REVIEWER_ROLES);
   const reviewerNames = new Set(
     Object.entries(pipeline.roles)
       .filter(([id, r]) => reviewerRoles.has(id) && r.named !== null)
       .map(([, r]) => r.named as string),
   );
+
+  // R2-F1. `confirmed_by_stakeholder_on` must be a DATE, not merely non-null:
+  // "pending" satisfied "has a value" and satisfied nothing else. Checked at the
+  // roster level so it fires when the stakeholder fills the roster in, not only
+  // when something is signed off.
+  const confirmedOn = (name: string): string | null =>
+    namedPeople.get(name)?.confirmed_by_stakeholder_on ?? null;
+  const isRealDate = (v: string | null): boolean => v !== null && Number.isFinite(Date.parse(v));
+  for (const [id, role] of Object.entries(pipeline.roles)) {
+    if (role.named === null) continue;
+    if (
+      role.confirmed_by_stakeholder_on !== null &&
+      !isRealDate(role.confirmed_by_stakeholder_on)
+    ) {
+      problems.push(
+        `pipeline.roles['${id}'].confirmed_by_stakeholder_on is '${role.confirmed_by_stakeholder_on}', which is not a date. A confirmation that cannot be placed in time is not a confirmation.`,
+      );
+    }
+  }
 
   // The latest blocking stage a sign-off must not predate. Derived from the
   // stages themselves rather than from a hand-written floor date.
@@ -408,6 +493,16 @@ export function pipelineIncoherences(
       // what stops `authored_by: "DeepL Pro v3 (machine)"` and what makes the
       // distinctness check below mean something.
       const authorRole = roleOfName.get(record.authored_by);
+      // R2-F1. The author's stakeholder confirmation was never checked — only
+      // the reviewer's — while the prose claimed both. Implemented rather than
+      // narrowed, because an unconfirmed author is the same hole as an
+      // unconfirmed reviewer: a name added in the same commit as the sign-off,
+      // vouched for by nobody.
+      if (authorRole !== undefined && !isRealDate(confirmedOn(record.authored_by))) {
+        problems.push(
+          `${locale}/${key}: authored_by '${record.authored_by}' is named in pipeline.roles but carries no stakeholder confirmation date`,
+        );
+      }
       if (authorRole === undefined) {
         problems.push(
           `${locale}/${key}: authored_by '${record.authored_by}' is not a named person in pipeline.roles. Safety copy is produced by an identified human in a named role — a free-text author cannot be checked against anything, and a machine can be typed into it.`,
@@ -474,8 +569,9 @@ export function pipelineIncoherences(
           `${locale}/${key}: signed off by '${record.reviewed_by}', who is not the named DSL or deputy in pipeline.roles. Only the DSL pair may sign off safety copy (PM §MVP-L5 AC7).`,
         );
       }
-      const reviewer = namedPeople.get(record.reviewed_by);
-      if (reviewer !== undefined && reviewer.confirmed_by_stakeholder_on === null) {
+      if (namedPeople.has(record.reviewed_by) && !isRealDate(confirmedOn(record.reviewed_by))) {
+        // Was `!== null`, which `"pending"` satisfied (R2-F1). A confirmation
+        // that cannot be placed in time is not a confirmation.
         problems.push(
           `${locale}/${key}: signed off by '${record.reviewed_by}', who is named in pipeline.roles but carries no stakeholder confirmation date`,
         );
@@ -516,16 +612,32 @@ export function pipelineIncoherences(
  *
  * What this function checks, exactly: that the chain is *continuous*, that it
  * *agrees with* the date it claims to explain, and that every claimed exemption
- * is consistent with the one recorded start date. It does **not** check that any
- * of it is true of the world — see `pipelineIncoherences`' own limit.
+ * is consistent with the one recorded start date — which is read from
+ * `pipeline.external_start`, the declared source of truth, never from the
+ * `pending_pipeline` mirror (R2-F3). It does **not** check that any of it is true
+ * of the world — see `pipelineIncoherences`' own limit.
  */
 export function reAnchorProblems(
   waiver: PendingPipeline,
+  pipeline: CopyPipeline,
   originalExpectedBy: string,
   maxUnstartedReAnchors: number,
 ): string[] {
   const problems: string[] = [];
   const chain = waiver.re_anchors ?? [];
+
+  // R2-F3. `pipeline.external_start` is the declared source of truth and
+  // `pending_pipeline.external_start` is a mirror of it. This function read the
+  // MIRROR, which was harmless only for as long as both were separately asserted
+  // null — i.e. right up until the stakeholder records a real start in one of
+  // them. It reads the source now, and the mirror is checked against it, because
+  // two fields holding one fact will disagree eventually and the disagreement
+  // must be a finding rather than a silent choice of which to believe.
+  if ((waiver.external_start ?? null) !== pipeline.external_start) {
+    problems.push(
+      `pending_pipeline.external_start (${String(waiver.external_start ?? null)}) does not match pipeline.external_start (${String(pipeline.external_start)}). There is one external start; the second field mirrors it and is not a second opinion.`,
+    );
+  }
 
   if (chain.length === 0) {
     if (waiver.expected_by !== originalExpectedBy) {
@@ -582,7 +694,7 @@ export function reAnchorProblems(
   // against the waiver's ACTUAL state, and a row that disagrees with that state
   // is reported rather than quietly declining the exemption — a wrong claim about
   // provenance is a finding, not a no-op.
-  const actualStart = waiver.external_start ?? null;
+  const actualStart = pipeline.external_start;
   let unstarted = 0;
   for (const [i, row] of chain.entries()) {
     const claimed = row.external_start_at_decision;

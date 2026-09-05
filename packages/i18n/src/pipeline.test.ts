@@ -70,6 +70,16 @@ const ORIGINAL_EXPECTED_BY = '2026-10-17';
  */
 const MAX_UNSTARTED_RE_ANCHORS = 1;
 
+/**
+ * The pipeline whose `external_start` a given waiver is being checked against.
+ * `pipeline.external_start` is the declared source of truth (R2-F3), so a test
+ * that varies the waiver's mirror must vary the source with it — otherwise it is
+ * testing the disagreement, not the rule.
+ */
+function pipelineWith(waiver: { external_start?: string | null }): CopyPipeline {
+  return { ...loadCopyPipeline(), external_start: waiver.external_start ?? null };
+}
+
 test('the pipeline block exists and is loaded fail-closed', () => {
   const pipeline: CopyPipeline = loadCopyPipeline();
   assert.equal(pipeline.deadline, DEADLINE);
@@ -125,7 +135,10 @@ test('expected_by is a DECISION REVIEW DATE and the chain says how it got there'
   const waiver = register.pending_pipeline;
   assert.ok(waiver !== null);
   assert.equal(waiver.expected_by, DEADLINE);
-  assert.deepEqual(reAnchorProblems(waiver, ORIGINAL_EXPECTED_BY, MAX_UNSTARTED_RE_ANCHORS), []);
+  assert.deepEqual(
+    reAnchorProblems(waiver, pipelineWith(waiver), ORIGINAL_EXPECTED_BY, MAX_UNSTARTED_RE_ANCHORS),
+    [],
+  );
   // Every re-anchor so far was made with nothing engaged, and says so.
   for (const row of waiver.re_anchors ?? []) {
     assert.equal(row.external_start_at_decision, null);
@@ -137,7 +150,12 @@ test('NEGATIVE — moving expected_by without recording why is caught', () => {
   // A silent date edit: the field moves, the chain does not.
   const register = loadReviewRegister();
   const waiver = { ...register.pending_pipeline!, expected_by: '2027-03-01' };
-  const problems = reAnchorProblems(waiver, ORIGINAL_EXPECTED_BY, MAX_UNSTARTED_RE_ANCHORS);
+  const problems = reAnchorProblems(
+    waiver,
+    pipelineWith(waiver),
+    ORIGINAL_EXPECTED_BY,
+    MAX_UNSTARTED_RE_ANCHORS,
+  );
   assert.ok(
     problems.some((p) => /The date was edited without recording why/.test(p)),
     JSON.stringify(problems, null, 2),
@@ -162,7 +180,12 @@ test('NEGATIVE — a chain with a gap in it is caught', () => {
       },
     ],
   };
-  const problems = reAnchorProblems(waiver, ORIGINAL_EXPECTED_BY, MAX_UNSTARTED_RE_ANCHORS);
+  const problems = reAnchorProblems(
+    waiver,
+    pipelineWith(waiver),
+    ORIGINAL_EXPECTED_BY,
+    MAX_UNSTARTED_RE_ANCHORS,
+  );
   assert.ok(
     problems.some((p) => /does not continue from/.test(p)),
     JSON.stringify(problems, null, 2),
@@ -192,7 +215,12 @@ test('NEGATIVE — a second re-anchor with nothing engaged exceeds the bound', (
       },
     ],
   };
-  const problems = reAnchorProblems(waiver, ORIGINAL_EXPECTED_BY, MAX_UNSTARTED_RE_ANCHORS);
+  const problems = reAnchorProblems(
+    waiver,
+    pipelineWith(waiver),
+    ORIGINAL_EXPECTED_BY,
+    MAX_UNSTARTED_RE_ANCHORS,
+  );
   assert.ok(
     problems.some((p) => /over a bound of 1/.test(p)),
     JSON.stringify(problems, null, 2),
@@ -212,7 +240,15 @@ test('NEGATIVE — a second re-anchor with nothing engaged exceeds the bound', (
         : { ...r, external_start_at_decision: '2026-10-24', decided_on: '2026-10-24' },
     ),
   };
-  assert.deepEqual(reAnchorProblems(started, ORIGINAL_EXPECTED_BY, MAX_UNSTARTED_RE_ANCHORS), []);
+  assert.deepEqual(
+    reAnchorProblems(
+      started,
+      pipelineWith(started),
+      ORIGINAL_EXPECTED_BY,
+      MAX_UNSTARTED_RE_ANCHORS,
+    ),
+    [],
+  );
 });
 
 test('NEGATIVE — QA-F1: a re-anchor cannot certify its own exemption from the bound', () => {
@@ -242,7 +278,12 @@ test('NEGATIVE — QA-F1: a re-anchor cannot certify its own exemption from the 
       },
     ],
   };
-  const problems = reAnchorProblems(forged, ORIGINAL_EXPECTED_BY, MAX_UNSTARTED_RE_ANCHORS);
+  const problems = reAnchorProblems(
+    forged,
+    pipelineWith(forged),
+    ORIGINAL_EXPECTED_BY,
+    MAX_UNSTARTED_RE_ANCHORS,
+  );
   assert.ok(
     problems.some((p) => /cannot certify its own exemption from the bound/.test(p)),
     JSON.stringify(problems, null, 2),
@@ -272,7 +313,12 @@ test('NEGATIVE — an exemption cannot be backdated to before the start that gra
       },
     ],
   };
-  const problems = reAnchorProblems(forged, ORIGINAL_EXPECTED_BY, MAX_UNSTARTED_RE_ANCHORS);
+  const problems = reAnchorProblems(
+    forged,
+    pipelineWith(forged),
+    ORIGINAL_EXPECTED_BY,
+    MAX_UNSTARTED_RE_ANCHORS,
+  );
   assert.ok(
     problems.some((p) => /before the external start it claims to be exempt under/.test(p)),
     JSON.stringify(problems, null, 2),
@@ -290,7 +336,12 @@ test('NEGATIVE — a row claiming a start date the waiver does not have', () => 
       external_start_at_decision: '2026-09-01',
     })),
   };
-  const problems = reAnchorProblems(forged, ORIGINAL_EXPECTED_BY, MAX_UNSTARTED_RE_ANCHORS);
+  const problems = reAnchorProblems(
+    forged,
+    pipelineWith(forged),
+    ORIGINAL_EXPECTED_BY,
+    MAX_UNSTARTED_RE_ANCHORS,
+  );
   assert.ok(
     problems.some((p) => /There is one start date, not one per row/.test(p)),
     JSON.stringify(problems, null, 2),
@@ -724,5 +775,255 @@ test('NEGATIVE — QA-F2: signed off before the copy was even sent out for autho
   assert.ok(
     problems.some((p2) => /predates external_start/.test(p2)),
     JSON.stringify(problems, null, 2),
+  );
+});
+
+// ─── Round-2 residuals. Every one of these fires on a STAKEHOLDER ACTION —
+// naming a person into the roster, or recording a real external_start — not on a
+// ticket dispatch. There is no ticket between here and the moment they matter,
+// which is why they are closed here rather than carried.
+
+test('NEGATIVE — R2-F2: one person named as both DSL and deputy defeats the pair', () => {
+  // PM §MVP-L5 AC7 makes trilingual coverage a property of TWO people: the DSL
+  // and deputy must cover English, Greek and Russian BETWEEN THEM. A pair of one
+  // covers whatever that one person covers, and every other predicate here stayed
+  // silent about it — including the four-eyes check, because the author was still
+  // a different name. This is the hole the stakeholder falls into on their very
+  // next action.
+  const p = deliveredPipeline();
+  const oneHuman: CopyPipeline = {
+    ...p,
+    roles: { ...p.roles, dsl_deputy: { ...p.roles['dsl_deputy']!, named: DSL } },
+  };
+  const problems = pipelineIncoherences(loadReviewRegister(), oneHuman, LOCALES, SAFETY_KEYS, NOW);
+  assert.ok(
+    problems.some((x) => /named as both the DSL and the deputy DSL/.test(x)),
+    JSON.stringify(problems, null, 2),
+  );
+  // And it fires with NOTHING signed off — the register as it actually stands.
+  // A rule that only bit at sign-off time would bite months after the mistake.
+});
+
+test('NEGATIVE — R2-F2: one person on both sides of four eyes, caught at naming time', () => {
+  const p = deliveredPipeline();
+  const same: CopyPipeline = {
+    ...p,
+    roles: {
+      ...p.roles,
+      greek_authoring_safeguarding_practitioner: {
+        ...p.roles['greek_authoring_safeguarding_practitioner']!,
+        named: DSL,
+      },
+    },
+  };
+  const problems = pipelineIncoherences(loadReviewRegister(), same, LOCALES, SAFETY_KEYS, NOW);
+  assert.ok(
+    problems.some((x) => /holds both an authoring role .* and a reviewing role/.test(x)),
+    JSON.stringify(problems, null, 2),
+  );
+});
+
+test('R2-F2: practitioner and translator as one person is NOT banned — only claiming a brief is', () => {
+  // Deliberately not a ban. A trilingual safeguarding practitioner authoring all
+  // three locales natively is BETTER than a translation, and a rule forbidding it
+  // would be enforcing a staffing shape the specs do not require. What is
+  // incoherent is calling it a translation: there is no translator to brief and
+  // no brief to acknowledge, so two blocking stages describe nothing.
+  const p = deliveredPipeline();
+  const dual: CopyPipeline = {
+    ...p,
+    roles: {
+      ...p.roles,
+      russian_translator_briefed: {
+        ...p.roles['russian_translator_briefed']!,
+        named: PRACTITIONER,
+      },
+    },
+  };
+  const claimed = pipelineIncoherences(loadReviewRegister(), dual, LOCALES, SAFETY_KEYS, NOW);
+  assert.ok(
+    claimed.some((x) => /One person cannot be briefed by themselves/.test(x)),
+    JSON.stringify(claimed, null, 2),
+  );
+
+  // Re-declare `ru` as natively authored and the same roster is fine.
+  const authoredRu: CopyPipeline = {
+    ...dual,
+    assignments: Object.fromEntries(
+      Object.entries(dual.assignments).map(([k, a]) => [
+        k,
+        {
+          ...a,
+          locales: {
+            ...a.locales,
+            ru: { ...a.locales['ru']!, method: 'authored', required_provenance: 'authored' },
+          },
+        },
+      ]),
+    ),
+  };
+  assert.deepEqual(
+    pipelineIncoherences(loadReviewRegister(), authoredRu, LOCALES, SAFETY_KEYS, NOW),
+    [],
+    'a practitioner authoring all three locales natively must be permitted',
+  );
+});
+
+test('NEGATIVE — R2-F2: a duplicated name no longer resolves by JSON key order', () => {
+  // `roleOfName` was `Map.set` in a loop, so a name held by two roles resolved to
+  // whichever key JSON happened to write last, and every downstream check
+  // inherited that. Order-dependence is now a reported finding, and resolution is
+  // by declaration order so the message is at least deterministic.
+  const p = deliveredPipeline();
+  const dup = (order: readonly string[]): CopyPipeline => ({
+    ...p,
+    roles: Object.fromEntries(
+      order.map((id) => [
+        id,
+        { ...p.roles[id]!, named: id === 'dsl_deputy' ? DSL : p.roles[id]!.named },
+      ]),
+    ),
+  });
+  const forward = pipelineIncoherences(
+    loadReviewRegister(),
+    dup([
+      'dsl',
+      'dsl_deputy',
+      'greek_authoring_safeguarding_practitioner',
+      'russian_translator_briefed',
+    ]),
+    LOCALES,
+    SAFETY_KEYS,
+    NOW,
+  );
+  const reversed = pipelineIncoherences(
+    loadReviewRegister(),
+    dup([
+      'dsl_deputy',
+      'dsl',
+      'greek_authoring_safeguarding_practitioner',
+      'russian_translator_briefed',
+    ]),
+    LOCALES,
+    SAFETY_KEYS,
+    NOW,
+  );
+  assert.ok(forward.some((x) => /named as both the DSL and the deputy DSL/.test(x)));
+  assert.deepEqual(
+    forward.filter((x) => /pipeline\.roles:/.test(x)),
+    reversed.filter((x) => /pipeline\.roles:/.test(x)),
+    'the finding must not depend on JSON key order',
+  );
+});
+
+test('NEGATIVE — R2-F1: the AUTHOR must carry a stakeholder confirmation date too', () => {
+  // The prose said "each carrying a stakeholder confirmation date"; only the
+  // reviewer's was checked. Implemented rather than narrowed — an unconfirmed
+  // author is the same hole as an unconfirmed reviewer: a name added in the same
+  // commit as the sign-off, vouched for by nobody.
+  const p = deliveredPipeline();
+  const unconfirmedAuthor: CopyPipeline = {
+    ...p,
+    roles: {
+      ...p.roles,
+      russian_translator_briefed: {
+        ...p.roles['russian_translator_briefed']!,
+        confirmed_by_stakeholder_on: null,
+      },
+    },
+  };
+  const problems = pipelineIncoherences(
+    withRecord('ru', 'safety.sos.confirm', SIGNED),
+    unconfirmedAuthor,
+    LOCALES,
+    SAFETY_KEYS,
+    NOW,
+  );
+  assert.ok(
+    problems.some((x) =>
+      /authored_by '.*' is named in pipeline\.roles but carries no stakeholder confirmation date/.test(
+        x,
+      ),
+    ),
+    JSON.stringify(problems, null, 2),
+  );
+});
+
+test('NEGATIVE — R2-F1: "pending" is not a confirmation date', () => {
+  const p = deliveredPipeline();
+  const pending: CopyPipeline = {
+    ...p,
+    roles: { ...p.roles, dsl: { ...p.roles['dsl']!, confirmed_by_stakeholder_on: 'pending' } },
+  };
+  const problems = pipelineIncoherences(
+    withRecord('ru', 'safety.sos.confirm', SIGNED),
+    pending,
+    LOCALES,
+    SAFETY_KEYS,
+    NOW,
+  );
+  assert.ok(
+    problems.some((x) => /is 'pending', which is not a date/.test(x)),
+    JSON.stringify(problems, null, 2),
+  );
+  assert.ok(
+    problems.some((x) => /carries no stakeholder confirmation date/.test(x)),
+    'and the sign-off itself must be refused, not only the roster flagged',
+  );
+});
+
+test('NEGATIVE — R2-F3: the pending_pipeline mirror disagreeing with the source is a finding', () => {
+  // Harmless today only because both are separately asserted null. Live the
+  // moment a real start is recorded in one of them — which is a stakeholder
+  // action, in this file, with no ticket in between.
+  const register = loadReviewRegister();
+  const waiver = { ...register.pending_pipeline!, external_start: '2026-10-24' };
+  const pipeline = loadCopyPipeline(); // external_start still null
+  const problems = reAnchorProblems(
+    waiver,
+    pipeline,
+    ORIGINAL_EXPECTED_BY,
+    MAX_UNSTARTED_RE_ANCHORS,
+  );
+  assert.ok(
+    problems.some((x) => /does not match pipeline\.external_start/.test(x)),
+    JSON.stringify(problems, null, 2),
+  );
+  // And the exemption is decided from the SOURCE, not the mirror: the waiver's
+  // mirror claims a start, the source says null, so the row still counts.
+  const forged = {
+    ...waiver,
+    expected_by: '2027-01-16',
+    re_anchors: [
+      ...(waiver.re_anchors ?? []),
+      {
+        from: DEADLINE,
+        to: '2027-01-16',
+        decided_on: '2026-12-05',
+        decided_by: 'x',
+        reason: 'y',
+        external_start_at_decision: '2026-10-24',
+      },
+    ],
+  };
+  const p2 = reAnchorProblems(forged, pipeline, ORIGINAL_EXPECTED_BY, MAX_UNSTARTED_RE_ANCHORS);
+  assert.ok(
+    p2.some((x) => /over a bound of 1/.test(x)),
+    JSON.stringify(p2, null, 2),
+  );
+});
+
+test('the mirror and the source agree in the register as it actually stands', () => {
+  const register = loadReviewRegister();
+  const pipeline = loadCopyPipeline();
+  assert.equal(register.pending_pipeline?.external_start, pipeline.external_start);
+  assert.deepEqual(
+    reAnchorProblems(
+      register.pending_pipeline!,
+      pipeline,
+      ORIGINAL_EXPECTED_BY,
+      MAX_UNSTARTED_RE_ANCHORS,
+    ),
+    [],
   );
 });
