@@ -168,6 +168,7 @@ console.log('\n== 3. no constraint suite mocks the database');
  */
 const FORBIDDEN: readonly { readonly re: RegExp; readonly what: string }[] = [
   { re: /\bmock\w*\s*\(/i, what: 'a mock() call' },
+  { re: /\bmock\.\w+\s*\(/i, what: "a call on node:test's mock namespace" },
   { re: /\bimport\s*\{[^}]*\bmock\b[^}]*\}/, what: "an import of node:test's mock" },
   { re: /\b(sinon|jest|vitest|proxyquire|testdouble)\b/i, what: 'a mocking library' },
   { re: /\bpg-mem\b|\bbetter-sqlite3\b|\bsqlite\b|:memory:/i, what: 'an in-memory database' },

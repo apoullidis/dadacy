@@ -292,7 +292,7 @@ export async function acquireCluster(
     // These are cheap and they are the difference between "this suite has its
     // own cluster" being a claim and being a checked property.
     const provider = await cluster.value(
-      `SELECT datlocprovider || ':' || coalesce(datlocale,'')
+      `SELECT datlocprovider::text || ':' || coalesce(datlocale,'')
          FROM pg_database WHERE datname = current_database()`,
     );
     if (provider !== 'i:und') {

@@ -41,7 +41,19 @@ describe('0001 §Section 0 — the preflight refuses a database it cannot be rep
   test('P1 — a libc database, the mistake that cannot be repaired later', async () => {
     await db.sql({
       database: 'postgres',
-      commands: [`CREATE DATABASE probe_libc TEMPLATE template0 ENCODING UTF8 LOCALE 'C.UTF-8'`],
+      commands: [
+        // `LOCALE_PROVIDER libc` is EXPLICIT here and T-020's own statement did
+        // not have it. T-020 ran against the pre-T-017 image, whose `template0`
+        // was itself libc, so `LOCALE 'C.UTF-8'` alone produced a libc database.
+        // On the pinned image (OD-5 fixed at initdb time) `template0` is ICU
+        // `und`, the provider is INHERITED FROM THE TEMPLATE, and the same
+        // statement produces an ICU database with locale `C.UTF-8` — which the
+        // preflight refuses down its *P2* branch, not its P1 one. The port was
+        // green on the exit status and wrong about which assertion it had
+        // exercised; asserting the MESSAGE is what caught it.
+        `CREATE DATABASE probe_libc TEMPLATE template0 ENCODING UTF8
+           LOCALE_PROVIDER libc LOCALE 'C.UTF-8'`,
+      ],
     });
     const r = await applyBaseline(db, 'probe_libc');
     assert.equal(
@@ -108,7 +120,16 @@ describe('0001 §Section 0 — P3, the cluster-level parameter', () => {
       // is one line, which is the whole difference between a one-off run and a
       // suite.
       bare = await acquireCluster('preflight-no-preload', {
-        command: ['postgres', '-c', 'shared_preload_libraries='],
+        // `pg_partman_bgw` and NOT the empty string. An EMPTY value is not a
+        // shorter version of this test — measured on this image, PostgreSQL 18
+        // treats `shared_preload_libraries = ''` as a one-element list whose
+        // element is the empty filename and refuses to start:
+        // `FATAL: could not access file "": No such file or directory`. A P3
+        // cluster that cannot boot would have failed as a harness bug, not as a
+        // preflight refusal. A non-empty list that is MISSING one entry is also
+        // the realistic mistake: OD-9 is a whole finding about getting the names
+        // in this list right.
+        command: ['postgres', '-c', 'shared_preload_libraries=pg_partman_bgw'],
       });
     },
     { timeout: 300_000 },
@@ -119,11 +140,13 @@ describe('0001 §Section 0 — P3, the cluster-level parameter', () => {
   });
 
   test('P3 — shared_preload_libraries without pg_stat_statements (OD-7)', async () => {
+    const preload = await bare.value(`SHOW shared_preload_libraries`);
     assert.equal(
-      await bare.value(`SHOW shared_preload_libraries`),
-      '',
-      'the probe cluster must really have the parameter empty, or P3 tests nothing',
+      preload,
+      'pg_partman_bgw',
+      'the probe cluster must really be missing pg_stat_statements, or P3 tests nothing',
     );
+    assert.ok(!preload.includes('pg_stat_statements'));
     const r = await applyBaseline(bare);
     assert.equal(r.code, PSQL_SCRIPT_ERROR, `P3: expected psql exit 3.\n${r.output}`);
     assert.ok(
