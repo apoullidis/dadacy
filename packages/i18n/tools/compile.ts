@@ -47,14 +47,7 @@ const VALID_TIERS: readonly string[] = [
 const STRICT_TIERS: readonly string[] = ['safety_critical', 'transactional'];
 
 /** CLDR cardinal categories. Closed by CLDR, not by us. */
-const VALID_PLURAL_CATEGORIES: readonly string[] = [
-  'zero',
-  'one',
-  'two',
-  'few',
-  'many',
-  'other',
-];
+const VALID_PLURAL_CATEGORIES: readonly string[] = ['zero', 'one', 'two', 'few', 'many', 'other'];
 
 /**
  * The key convention, as a regex rather than a list.
@@ -68,7 +61,9 @@ const LOCALE_CODE_RE = /^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$/;
 export class CompileError extends Error {
   readonly problems: readonly string[];
   constructor(problems: readonly string[]) {
-    super(`i18n compile failed with ${String(problems.length)} problem(s):\n  - ${problems.join('\n  - ')}`);
+    super(
+      `i18n compile failed with ${String(problems.length)} problem(s):\n  - ${problems.join('\n  - ')}`,
+    );
     this.name = 'CompileError';
     this.problems = problems;
   }
@@ -171,7 +166,9 @@ function loadRegistry(root: string, problems: string[]): Registry | undefined {
 
     const endonym = row['endonym'];
     if (typeof endonym !== 'string' || endonym.trim() === '') {
-      problems.push(`${at}: \`endonym\` must be a non-empty string — the switcher names each language in its own language`);
+      problems.push(
+        `${at}: \`endonym\` must be a non-empty string — the switcher names each language in its own language`,
+      );
     }
     const direction = row['direction'];
     if (direction !== 'ltr' && direction !== 'rtl') {
@@ -187,7 +184,9 @@ function loadRegistry(root: string, problems: string[]): Registry | undefined {
     }
     const cats = row['pluralCategories'];
     if (!Array.isArray(cats) || cats.length === 0) {
-      problems.push(`${at}: \`pluralCategories\` must be a non-empty array — gate:plural-completeness (EV-2) reads it`);
+      problems.push(
+        `${at}: \`pluralCategories\` must be a non-empty array — gate:plural-completeness (EV-2) reads it`,
+      );
       continue;
     }
     const badCat = cats.find((c) => typeof c !== 'string' || !VALID_PLURAL_CATEGORIES.includes(c));
@@ -196,7 +195,9 @@ function loadRegistry(root: string, problems: string[]): Registry | undefined {
       continue;
     }
     if (!cats.includes('other')) {
-      problems.push(`${at}: every CLDR locale has an 'other' category; ${code} does not declare one`);
+      problems.push(
+        `${at}: every CLDR locale has an 'other' category; ${code} does not declare one`,
+      );
     }
     entries.push({
       code,
@@ -210,7 +211,9 @@ function loadRegistry(root: string, problems: string[]): Registry | undefined {
 
   const def = entries.find((e) => e.code === defaultLocale);
   if (def === undefined) {
-    problems.push(`locale-registry.json: defaultLocale '${defaultLocale}' is not a registered locale`);
+    problems.push(
+      `locale-registry.json: defaultLocale '${defaultLocale}' is not a registered locale`,
+    );
   } else if (!def.enabled) {
     problems.push(`locale-registry.json: defaultLocale '${defaultLocale}' is disabled`);
   }
@@ -234,7 +237,9 @@ function loadTiers(root: string, problems: string[]): Map<string, Tier> {
       continue;
     }
     if (typeof value !== 'string' || !VALID_TIERS.includes(value)) {
-      problems.push(`tiers.json: '${key}' has tier ${JSON.stringify(value)}; expected one of ${VALID_TIERS.join(', ')}`);
+      problems.push(
+        `tiers.json: '${key}' has tier ${JSON.stringify(value)}; expected one of ${VALID_TIERS.join(', ')}`,
+      );
       continue;
     }
     out.set(key, value as Tier);
@@ -257,7 +262,9 @@ function mergeParam(
     return;
   }
   if (existing.kind !== next.kind) {
-    problems.push(`${where}: parameter '${name}' is used as both ${existing.kind} and ${next.kind}`);
+    problems.push(
+      `${where}: parameter '${name}' is used as both ${existing.kind} and ${next.kind}`,
+    );
     return;
   }
   if (existing.kind === 'select' && next.kind === 'select') {
@@ -320,7 +327,10 @@ function paramType(p: ParamKind): string {
     case 'datetime':
       return 'Date | number';
     case 'select':
-      return [...p.options].sort().map((o) => `'${o}'`).join(' | ');
+      return [...p.options]
+        .sort()
+        .map((o) => `'${o}'`)
+        .join(' | ');
   }
 }
 
@@ -476,7 +486,7 @@ export async function compile(options: CompileOptions = {}): Promise<CompileResu
   // Namespaces are DERIVED from the default locale's directory, not listed.
   // Adding `handover.json` to catalogues/en/ adds a namespace; there is no
   // second place to remember to edit.
-  let namespaces: string[] = [];
+  let namespaces: string[];
   try {
     namespaces = readdirSync(join(cataloguesDir, defaultLocale))
       .filter((f) => f.endsWith('.json'))
@@ -487,7 +497,10 @@ export async function compile(options: CompileOptions = {}): Promise<CompileResu
     throw new CompileError(problems);
   }
   for (const ns of namespaces) {
-    if (!NAMESPACE_RE.test(ns)) problems.push(`catalogues/${defaultLocale}/${ns}.json: '${ns}' is not a valid namespace name`);
+    if (!NAMESPACE_RE.test(ns))
+      problems.push(
+        `catalogues/${defaultLocale}/${ns}.json: '${ns}' is not a valid namespace name`,
+      );
   }
 
   // locale → fqk → source string
@@ -496,13 +509,19 @@ export async function compile(options: CompileOptions = {}): Promise<CompileResu
     const perLocale = new Map<string, string>();
     const dir = join(cataloguesDir, locale);
     if (!existsSync(dir)) {
-      problems.push(`catalogues/${locale}/ is missing but '${locale}' is an enabled registry locale`);
+      problems.push(
+        `catalogues/${locale}/ is missing but '${locale}' is an enabled registry locale`,
+      );
       continue;
     }
-    const present = readdirSync(dir).filter((f) => f.endsWith('.json')).map((f) => f.slice(0, -5));
+    const present = readdirSync(dir)
+      .filter((f) => f.endsWith('.json'))
+      .map((f) => f.slice(0, -5));
     for (const extra of present) {
       if (!namespaces.includes(extra)) {
-        problems.push(`catalogues/${locale}/${extra}.json: no matching namespace in the default locale '${defaultLocale}'`);
+        problems.push(
+          `catalogues/${locale}/${extra}.json: no matching namespace in the default locale '${defaultLocale}'`,
+        );
       }
     }
     for (const ns of namespaces) {
@@ -513,17 +532,22 @@ export async function compile(options: CompileOptions = {}): Promise<CompileResu
       }
       const raw = readJson(file, problems);
       if (!isRecord(raw)) {
-        if (raw !== undefined) problems.push(`catalogues/${locale}/${ns}.json: must be a flat JSON object`);
+        if (raw !== undefined)
+          problems.push(`catalogues/${locale}/${ns}.json: must be a flat JSON object`);
         continue;
       }
       for (const [key, value] of Object.entries(raw)) {
         if (key === '//') continue;
         if (!KEY_RE.test(key)) {
-          problems.push(`catalogues/${locale}/${ns}.json: '${key}' does not match the key convention ${String(KEY_RE)}`);
+          problems.push(
+            `catalogues/${locale}/${ns}.json: '${key}' does not match the key convention ${String(KEY_RE)}`,
+          );
           continue;
         }
         if (typeof value !== 'string') {
-          problems.push(`catalogues/${locale}/${ns}.json: '${key}' must be a string (catalogues are FLAT — nesting is not a namespace)`);
+          problems.push(
+            `catalogues/${locale}/${ns}.json: '${key}' must be a string (catalogues are FLAT — nesting is not a namespace)`,
+          );
           continue;
         }
         perLocale.set(`${ns}.${key}`, value);
@@ -540,12 +564,16 @@ export async function compile(options: CompileOptions = {}): Promise<CompileResu
   // from its neighbours is exactly how a safety string escapes the gates.
   for (const fqk of defaultKeys.keys()) {
     if (!tiers.has(fqk)) {
-      problems.push(`tiers.json: '${fqk}' has no tier. Every catalogue key carries a tier and the tier drives the gate (SA §TS-12.3).`);
+      problems.push(
+        `tiers.json: '${fqk}' has no tier. Every catalogue key carries a tier and the tier drives the gate (SA §TS-12.3).`,
+      );
     }
   }
   for (const fqk of tiers.keys()) {
     if (!defaultKeys.has(fqk)) {
-      problems.push(`tiers.json: '${fqk}' is tiered but does not exist in catalogues/${defaultLocale}/`);
+      problems.push(
+        `tiers.json: '${fqk}' is tiered but does not exist in catalogues/${defaultLocale}/`,
+      );
     }
   }
   // A key in a translation with no source is an orphan — usually a rename that
@@ -554,7 +582,9 @@ export async function compile(options: CompileOptions = {}): Promise<CompileResu
     if (locale === defaultLocale) continue;
     for (const fqk of keys.keys()) {
       if (!defaultKeys.has(fqk)) {
-        problems.push(`catalogues/${locale}/: '${fqk}' has no counterpart in the default locale '${defaultLocale}'`);
+        problems.push(
+          `catalogues/${locale}/: '${fqk}' has no counterpart in the default locale '${defaultLocale}'`,
+        );
       }
     }
   }
@@ -572,7 +602,9 @@ export async function compile(options: CompileOptions = {}): Promise<CompileResu
       try {
         ast = parse(source, { requiresOtherClause: true, shouldParseSkeletons: true });
       } catch (err) {
-        problems.push(`${where}: malformed ICU message — ${err instanceof Error ? err.message : String(err)}`);
+        problems.push(
+          `${where}: malformed ICU message — ${err instanceof Error ? err.message : String(err)}`,
+        );
         continue;
       }
       const params = new Map<string, ParamKind>();
@@ -595,7 +627,10 @@ export async function compile(options: CompileOptions = {}): Promise<CompileResu
     const byNamespace = compiled.get(locale);
     if (byNamespace === undefined) continue;
     for (const ns of namespaces) {
-      await format(join(out, locale, `${ns}.ts`), emitNamespaceModule(locale, ns, byNamespace.get(ns) ?? []));
+      await format(
+        join(out, locale, `${ns}.ts`),
+        emitNamespaceModule(locale, ns, byNamespace.get(ns) ?? []),
+      );
     }
     await format(join(out, locale, 'index.ts'), emitLocaleIndex(locale, namespaces));
   }

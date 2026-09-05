@@ -51,7 +51,12 @@ export interface LocaleDescriptor {
  */
 export type Tier = 'safety_critical' | 'transactional' | 'operational' | 'marketing';
 
-export const TIERS: readonly Tier[] = ['safety_critical', 'transactional', 'operational', 'marketing'];
+export const TIERS: readonly Tier[] = [
+  'safety_critical',
+  'transactional',
+  'operational',
+  'marketing',
+];
 
 /**
  * What a missing translation does, per tier (SA §TS-12.1, SD §FE-10).
@@ -78,9 +83,6 @@ export interface TierPolicy {
 
 /** Provenance of one catalogue string in one locale (`review.json`). */
 export type ReviewProvenance =
-  | 'authored'
-  | 'translated_professional'
-  | 'legal_review'
-  | 'placeholder';
+  'authored' | 'translated_professional' | 'legal_review' | 'placeholder';
 
 export type ReviewStatus = 'signed_off' | 'pending_review';
