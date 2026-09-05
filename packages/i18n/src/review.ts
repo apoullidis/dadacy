@@ -431,6 +431,26 @@ export function pipelineIncoherences(
     }
   }
 
+  // §5.1 re-read. The contract calls the stage list "in order"; nothing checked
+  // it, so that was a claim with no test. A later stage completing before an
+  // earlier one is the same defect as QA's F6d one level up — the sequence is the
+  // mechanism, and a sequence nothing enforces is a list.
+  let previousStage: { id: string; at: number } | null = null;
+  for (const stage of pipeline.stages) {
+    if (stage.completed_at === null) continue;
+    const at = Date.parse(stage.completed_at);
+    if (!Number.isFinite(at)) {
+      problems.push(`pipeline.stages['${stage.id}'].completed_at is not a date`);
+      continue;
+    }
+    if (previousStage !== null && at < previousStage.at) {
+      problems.push(
+        `pipeline.stages: '${stage.id}' completed ${stage.completed_at}, before '${previousStage.id}' which precedes it. The stage list is a sequence — Russian cannot be translated before its translator was briefed, and copy cannot be signed off before it was written.`,
+      );
+    }
+    previousStage = { id: stage.id, at };
+  }
+
   // The latest blocking stage a sign-off must not predate. Derived from the
   // stages themselves rather than from a hand-written floor date.
   let latestBlockingStage = Number.NEGATIVE_INFINITY;

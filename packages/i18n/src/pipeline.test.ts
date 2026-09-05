@@ -21,6 +21,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   loadReviewRegister,
   loadCopyPipeline,
@@ -1025,5 +1026,83 @@ test('the mirror and the source agree in the register as it actually stands', ()
       MAX_UNSTARTED_RE_ANCHORS,
     ),
     [],
+  );
+});
+
+// ─── §5.1 re-read: claims in the published contract that had no test ───
+
+test("T-040's published `entries` shape survives this ticket, field by field", () => {
+  // The contract said "nothing T-044 codes against has changed" and offered no
+  // way to find out if that stopped being true. T-040 § Published contract §6
+  // names exactly these fields and exactly this rule; a downstream gate is built
+  // on them, so they are asserted here rather than asserted about.
+  const register = loadReviewRegister();
+  for (const locale of LOCALES) {
+    for (const key of SAFETY_KEYS) {
+      const r = register.entries[locale]?.[key];
+      assert.ok(r !== undefined, `${locale}/${key} missing`);
+      assert.match(r.content_hash, /^sha256:[0-9a-f]{64}$/);
+      assert.ok(
+        ['authored', 'translated_professional', 'legal_review', 'placeholder'].includes(
+          r.provenance,
+        ),
+      );
+      assert.ok(['signed_off', 'pending_review'].includes(r.status));
+      for (const f of ['authored_by', 'reviewed_by', 'reviewed_at'] as const) {
+        assert.ok(r[f] === null || typeof r[f] === 'string', `${locale}/${key}.${f}`);
+      }
+    }
+  }
+});
+
+test("T-040's published `pending_pipeline` fields all survive, and the additions are additive", () => {
+  const waiver = loadReviewRegister().pending_pipeline;
+  assert.ok(waiver !== null);
+  for (const f of ['opened_at', 'expected_by', 'owner', 'ticket', 'reason'] as const) {
+    assert.equal(typeof waiver[f], 'string', `T-040 field '${f}' must survive`);
+  }
+  assert.ok(Array.isArray(waiver.keys) && waiver.keys.length > 0);
+  // The additions T-049 made, present and of the right shape — so "additive" is
+  // a checked property rather than a description of a diff nobody re-runs.
+  assert.ok('external_start' in waiver);
+  assert.ok(Array.isArray(waiver.re_anchors));
+});
+
+test('the build-time review module is not reachable from the browser entry point', () => {
+  // The contract says `rendersNothingVisible`/`describeContentFree` "are not part
+  // of the package surface", and that `@kinvara/i18n/review` is build-time only.
+  // Both were assertions about a package.json nobody was reading.
+  const pkg: { exports: Record<string, string> } = JSON.parse(
+    readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
+  );
+  assert.deepEqual(Object.keys(pkg.exports).sort(), ['.', './compiled/*', './review'].sort());
+  assert.ok(
+    !Object.values(pkg.exports).some((v) => v.includes('tools/')),
+    'tools/ must not be an export — compile.ts reads the filesystem at build time',
+  );
+});
+
+test('NEGATIVE — the stage list is a SEQUENCE, which the contract claimed and nothing checked', () => {
+  // Turned up by the §5.1 re-read of my own contract: "Stage ids, all blocking,
+  // in order" was a claim with no test. Same family as QA's F6d one level up.
+  const p = deliveredPipeline();
+  const outOfOrder: CopyPipeline = {
+    ...p,
+    stages: p.stages.map((s) =>
+      s.id === 'brief_ru_translator' ? { ...s, completed_at: '2026-12-01T10:00:00Z' } : s,
+    ),
+  };
+  const problems = pipelineIncoherences(
+    loadReviewRegister(),
+    outOfOrder,
+    LOCALES,
+    SAFETY_KEYS,
+    NOW,
+  );
+  assert.ok(
+    problems.some((x) =>
+      /'translate_ru' completed .*, before 'brief_ru_translator' which precedes it/.test(x),
+    ),
+    JSON.stringify(problems, null, 2),
   );
 });

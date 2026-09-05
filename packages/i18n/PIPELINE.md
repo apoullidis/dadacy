@@ -153,6 +153,28 @@ _coherent_ delivery reports nothing, so the set is not vacuous.
 > distinctness is between two identified _roles_, and a name that resolves to
 > nothing is refused outright.
 
+**Four roles must be four people, and that is checked the moment they are named
+— not at sign-off.** Nothing previously required it: `dsl` and `dsl_deputy` could
+be one human and every predicate above stayed silent, which defeats the reason
+both roles exist. PM §MVP-L5 AC7 makes trilingual coverage a property of the
+**pair**, so a pair of one covers whatever that one person covers, and a
+Russian-speaking sitter's copy would be signed off by nobody who reads Russian.
+
+| Roster rule                                                   | What it stops                                                         |
+| ------------------------------------------------------------- | --------------------------------------------------------------------- |
+| `dsl` ≠ `dsl_deputy`                                          | The pair of one, above                                                |
+| No person holds both an authoring and a reviewing role        | Four eyes, caught at naming time rather than months later at sign-off |
+| A duplicated name is a finding, resolved by declaration order | Behaviour that depended on JSON key order                             |
+| `confirmed_by_stakeholder_on` must parse as a date            | `"pending"`, which satisfied "has a value" and nothing else           |
+| Stage `completed_at` values must not go backwards             | Russian translated before its translator was briefed                  |
+
+**Deliberately not a rule:** the practitioner and the translator may be the same
+person. A trilingual safeguarding practitioner authoring all three locales
+natively is _better_ than a translation, and a rule against it would enforce a
+staffing shape the specs do not require. What is refused is **calling it a
+translation** — there is nobody to brief and no brief to acknowledge. Re-declare
+`ru` as `method: "authored"` and the same roster is clean.
+
 ## 4. The strings — eight keys, three locales, 24 records
 
 All eight are `safety_critical` and all 24 records are `provenance: "placeholder"`
