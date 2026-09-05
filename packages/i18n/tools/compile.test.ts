@@ -16,7 +16,7 @@ import assert from 'node:assert/strict';
 import { rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { compile, CompileError } from './compile.ts';
+import { compile, CompileError, rendersNothingVisible } from './compile.ts';
 
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), '..', 'test-fixtures');
 
@@ -67,13 +67,81 @@ test('negative — a blank string, and a blank plural branch, are refused (QA-F2
   const problems = await compileFixture('blank-safety-string');
   assert.equal(problems.length, 2, JSON.stringify(problems, null, 2));
   assert.ok(
-    problems.some((p) => /'sos\.confirm' is empty/.test(p)),
+    problems.some((p) => /'sos\.confirm' renders nothing visible \(empty string\)/.test(p)),
     'an empty message must be refused',
   );
   assert.ok(
     problems.some((p) => /the 'many' branch of plural 'count' is empty/.test(p)),
     'an empty plural branch must be refused too — the same defect one level down',
   );
+});
+
+test('negative — a value that survives trim() but renders nothing is refused (T-049)', async () => {
+  // The carried obligation from T-040 / QA round 2, and the one blank shape that
+  // is not hypothetical for THIS ticket: `T-049` takes delivery of copy authored
+  // outside the repository, in a spreadsheet or a CAT tool. A stripped
+  // placeholder, a soft hyphen left by a wrapping tool, or an editor's LTR mark
+  // all produce a cell that LOOKS filled and renders as nothing.
+  //
+  // Note what is asserted here and what is not. The `trim()` block below is an
+  // EXTERNAL fact about the language — it would hold with no Kinvara code in the
+  // tree at all — and it is what makes the second block meaningful. A test that
+  // only checked `rendersNothingVisible` against its own regex would be derived
+  // from the same reading as the thing it checks (PROTOCOL §5.1).
+  const named: readonly (readonly [string, string])[] = [
+    ['U+200B ZERO WIDTH SPACE', '​'],
+    ['U+00AD SOFT HYPHEN', '­'],
+    ['U+2060 WORD JOINER', '⁠'],
+    ['U+200E LEFT-TO-RIGHT MARK', '‎'],
+    ['U+0301 COMBINING ACUTE ACCENT, bare', '́'],
+  ];
+  for (const [name, ch] of named) {
+    assert.notEqual(ch.trim(), '', `${name}: trim() was expected NOT to strip this`);
+    assert.ok(rendersNothingVisible(ch), `${name}: must be refused as content-free`);
+  }
+  // `U+00A0` is the one shape the old `trim()` check already caught. Keeping it
+  // here records WHY the gap existed rather than leaving it as folklore.
+  assert.equal(' '.trim(), '', 'U+00A0 was already stripped by trim()');
+  assert.ok(rendersNothingVisible(' '));
+
+  // And the predicate must not fire on real copy, including a DECOMPOSED Greek
+  // letter — `α` + U+0301 is a letter, and refusing it would break NFD input
+  // from exactly the external tools this ticket takes delivery from.
+  for (const real of [
+    'Call 112 — emergency services',
+    'Κρατήστε πατημένο για αποστολή SOS.',
+    'Удерживайте, чтобы отправить SOS.',
+    'ά',
+    '1466',
+    '​Η SOS',
+  ]) {
+    assert.ok(!rendersNothingVisible(real), `false positive on ${JSON.stringify(real)}`);
+  }
+
+  // The compiler refuses all seven, including the invisible plural branch one
+  // level down — the same defect inside `many`, which only ever fires on 5, 11,
+  // 111 … and so is invisible in a two-example spot check as well as on screen.
+  const problems = await compileFixture('invisible-safety-string');
+  assert.equal(problems.length, 7, JSON.stringify(problems, null, 2));
+  for (const key of [
+    'zwsp',
+    'soft_hyphen',
+    'word_joiner',
+    'ltr_mark',
+    'bare_combining_mark',
+    'nbsp',
+  ]) {
+    assert.ok(
+      problems.some((p) => p.includes(`'${key}' renders nothing visible`)),
+      `${key} must be refused — got ${JSON.stringify(problems)}`,
+    );
+  }
+  assert.ok(
+    problems.some((p) => /the 'many' branch of plural 'count' is empty/.test(p)),
+    'an invisible plural branch must be refused too',
+  );
+  // The message names the shape, so the error is actionable on a cell that looks full.
+  assert.ok(problems.some((p) => /invisible character\(s\): U\+200B/.test(p)));
 });
 
 test('the real catalogues compile, and every strict-tier key is emitted', async () => {

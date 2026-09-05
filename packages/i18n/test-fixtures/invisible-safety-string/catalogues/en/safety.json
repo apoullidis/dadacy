@@ -1,0 +1,10 @@
+{
+  "//": "Valid English sources. Every counterpart in ru/ is a value that survives String.trim() and renders nothing.",
+  "zwsp": "Hold to send an SOS.",
+  "soft_hyphen": "Call 112 — emergency services.",
+  "word_joiner": "Read this address to the operator.",
+  "ltr_mark": "116 111 — children's helpline.",
+  "bare_combining_mark": "1466 — Hope For Children helpline.",
+  "nbsp": "199 — police and ambulance.",
+  "checkins_missed": "{count, plural, one {# missed check-in} other {# missed check-ins}}"
+}

@@ -58,6 +58,62 @@ const NAMESPACE_RE = /^[a-z][a-z0-9_]*$/;
 const KEY_RE = /^[a-z0-9][a-z0-9_]*(\.[a-z0-9][a-z0-9_]*)*$/;
 const LOCALE_CODE_RE = /^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$/;
 
+/**
+ * **The third blank shape** — the carried obligation `T-040`'s QA round 2 left to
+ * `T-049`, the ticket that takes delivery of externally-authored copy.
+ *
+ * `String.trim()` strips whitespace. It does **not** strip default-ignorable code
+ * points, so a value of only `U+200B`, `U+00AD`, `U+2060`, `U+200E` or a bare
+ * combining mark passes every check `T-040` shipped, compiles, typechecks, links
+ * into `STRICT_TIER_COMPLETENESS`, and **renders invisibly**. `U+00A0` happens to
+ * be caught, because `trim()` treats it as whitespace; the rest are not. Measured
+ * on the pinned toolbox (node 24.20.0, ICU 78.3, Unicode 17.0) — see `T-049`
+ * evidence, which prints `trim()`, `\p{Default_Ignorable_Code_Point}`, `\p{Mark}`
+ * and `\p{White_Space}` for each shape rather than asserting them.
+ *
+ * This is not a hypothetical for a ticket whose input is a spreadsheet or a CAT
+ * tool round-trip from an external translator: a stripped placeholder, a soft
+ * hyphen left behind by a wrapping tool, or an LTR mark inserted by an editor all
+ * produce exactly this value, and the cell **looks** filled in.
+ *
+ * **Derived from Unicode properties, not from a list of characters** (PROTOCOL
+ * §5.1). An enumerated denylist would be a second table to keep in step with the
+ * one in `CONTRACTS.md` and would silently miss `U+FEFF`, `U+3164`, `U+034F` and
+ * the thousands of other code points carrying this property. The named five are
+ * asserted in the test as an *external* requirement the predicate must satisfy —
+ * they are not the definition.
+ */
+const CONTENT_FREE_RE = /^[\p{White_Space}\p{Default_Ignorable_Code_Point}\p{Mark}]*$/u;
+
+/**
+ * True when this string has nothing a reader can see: empty, whitespace-only, or
+ * composed entirely of invisible formatting characters and unattached combining
+ * marks. A combining mark alone is content-free because it has no base character
+ * to combine with; one *inside* a word (`α` + `U+0301`) is a letter and is not
+ * matched, because the string then contains a base character as well.
+ */
+export function rendersNothingVisible(value: string): boolean {
+  return CONTENT_FREE_RE.test(value);
+}
+
+/**
+ * Names the shape in the failure message. A build error reading `'sos.confirm'
+ * renders nothing visible` on a cell that looks full is a bad error message; one
+ * that says `1 invisible character: U+200B` is actionable.
+ */
+export function describeContentFree(value: string): string {
+  if (value === '') return 'empty string';
+  const codePoints = [...value];
+  if (codePoints.every((c) => /^\p{White_Space}$/u.test(c))) {
+    return `${String(codePoints.length)} whitespace character(s)`;
+  }
+  const shown = codePoints
+    .slice(0, 4)
+    .map((c) => `U+${(c.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, '0')}`)
+    .join(' ');
+  return `${String(codePoints.length)} invisible character(s): ${shown}${codePoints.length > 4 ? ' …' : ''}`;
+}
+
 export class CompileError extends Error {
   readonly problems: readonly string[];
   constructor(problems: readonly string[]) {
@@ -352,7 +408,7 @@ function assertNoBlankBranches(
 /** True when these elements can render something a reader would see. */
 function hasContent(elements: readonly MessageFormatElement[]): boolean {
   return elements.some((el) => {
-    if (el.type === TYPE.literal) return el.value.trim() !== '';
+    if (el.type === TYPE.literal) return !rendersNothingVisible(el.value);
     if (el.type === TYPE.plural || el.type === TYPE.select) {
       return Object.values(el.options).some((o) => hasContent(o.value));
     }
@@ -601,14 +657,14 @@ export async function compile(options: CompileOptions = {}): Promise<CompileResu
           );
           continue;
         }
-        if (value.trim() === '') {
+        if (rendersNothingVisible(value)) {
           // QA-F2. `""` is valid ICU: it parses, compiles, typechecks and renders
           // `""`. The strict-tier completeness type checks that a PROPERTY exists,
           // not that it has content, so a blank `ru` SOS confirmation would ship
           // with every gate green. Presence is not content, and this is the only
           // layer that can tell the difference.
           problems.push(
-            `catalogues/${locale}/${ns}.json: '${key}' is empty. A blank string is valid ICU and renders as nothing, so no type and no locale gate can catch it — a blank safety_critical key would ship green. Delete the key or give it content.`,
+            `catalogues/${locale}/${ns}.json: '${key}' renders nothing visible (${describeContentFree(value)}). A string that is empty, whitespace-only, or built from invisible formatting characters is valid ICU and renders as nothing, so no type and no locale gate can catch it — a blank safety_critical key would ship green. Delete the key or give it content.`,
           );
           continue;
         }

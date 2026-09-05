@@ -1,0 +1,11 @@
+{
+  "tiers": {
+    "safety.zwsp": "safety_critical",
+    "safety.soft_hyphen": "safety_critical",
+    "safety.word_joiner": "safety_critical",
+    "safety.ltr_mark": "safety_critical",
+    "safety.bare_combining_mark": "safety_critical",
+    "safety.nbsp": "safety_critical",
+    "safety.checkins_missed": "safety_critical"
+  }
+}
