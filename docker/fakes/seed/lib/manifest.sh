@@ -62,7 +62,14 @@ KINVARA_CMKS=(
 )
 
 # ---------------------------------------------------------------------------
-# Secrets Manager — SA §SEC-11, §INT-5.5, §INT-8, §INT-10.
+# Secrets Manager — SA §SEC-10, §INT-5.5, §INT-8, §INT-10.
+#
+# §SEC-10 is "Secrets management" and it is the section every rotation claim
+# below comes from. It is NOT §SEC-11, which is "Fraud prevention" — an earlier
+# revision of this file cited SEC-11 five times and `qa-verification` caught it
+# (QA-F3). The same mis-citation is still live in db/migrations/0001 and in
+# T-020's published contract; recorded as OD-13, not fixed here, because
+# db/migrations is tech-lead's outright.
 #
 # Format: name|description
 #
@@ -70,16 +77,16 @@ KINVARA_CMKS=(
 # T-020's 0001 creates. The roles themselves are NOLOGIN and have no password
 # — "a password in a migration is a password in git" — so the login principals
 # are created outside the migration and their credentials live here, rotating
-# every 30 days (SA §SEC-11).
+# every 30 days (SA §SEC-10).
 # ---------------------------------------------------------------------------
 KINVARA_SECRETS=(
-    "kinvara/db/app_rw|Login principal granted app_rw. Rotates 30d (SEC-11)."
+    "kinvara/db/app_rw|Login principal granted app_rw. Rotates 30d (SEC-10)."
     "kinvara/db/app_admin_rw|Login principal granted app_admin_rw. Rotates 30d."
     "kinvara/db/app_safety_rw|Login principal granted app_safety_rw. Rotates 30d."
     "kinvara/db/app_ddl|Migration principal. BREAK-GLASS CHECKOUT ONLY (SD DB-13 rule 6, SA I-6). No application connects as it."
-    "kinvara/db/answering_service|The SA INT-10 vendor principal: INSERT on out_of_hours_report, SELECT on nothing. Rotated on any change of VENDOR PERSONNEL as well, because it is held outside our staff boundary (SEC-11)."
+    "kinvara/db/answering_service|The SA INT-10 vendor principal: INSERT on out_of_hours_report, SELECT on nothing. Rotated on any change of VENDOR PERSONNEL as well, because it is held outside our staff boundary (SEC-10)."
     "kinvara/provider/stripe|Stripe API key. Quarterly rotation and on any staff departure with access."
-    "kinvara/provider/stripe/webhook|Stripe webhook signing secret. Verified BEFORE any parsing (SEC-11)."
+    "kinvara/provider/stripe/webhook|Stripe webhook signing secret. Verified BEFORE any parsing (SEC-10)."
     "kinvara/provider/telephony|Twilio — primary SMS + voice (INT-5.5)."
     "kinvara/provider/telephony/webhook|Telephony webhook signing secret."
     "kinvara/provider/telephony-secondary|The second SMS provider behind the same NotificationChannel adapter, activated by the router on primary error-rate breach (INT-5.5)."

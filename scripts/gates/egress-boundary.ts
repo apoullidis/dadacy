@@ -14,30 +14,51 @@
  * STRUCTURAL rather than a rule somebody has to remember (PROTOCOL.md §9.9),
  * and it is what keeps a gate command's result honest: a test cannot start
  * passing because it silently reached a real endpoint, because the packet
- * cannot leave. Measured, in T-017's evidence: ENETUNREACH to a raw IP from
- * under `svc run` and from an app container, against a positive control on
- * `scripts/dev` that connects.
+ * cannot leave.
  *
- * WHAT THIS GATE ADDS, AND WHY IT IS STATIC
- * -----------------------------------------
- * The measurement above is a snapshot of one afternoon. The way this property
- * dies is not a kernel change — it is somebody adding two words to a compose
- * file eight months from now because a service "needs to fetch something".
- * So this gate reads the files, not the network, and it runs with no Docker
- * and no services: `scripts/dev pnpm gate:egress-boundary`, and inside
- * `gate:pr`, where every change passes.
+ * STATE THE RULE AS THE POSITIVE PROPERTY:
  *
- * ANTI-VACUOUS BY CONSTRUCTION
- * ----------------------------
- * A checker that silently parses zero services passes every time — that is
- * the shape of OD-1, of the Trivy zero-package defect, and of OD-7. So the
- * service scan CROSS-CHECKS itself: every compose file must yield exactly as
- * many services as it has `image:` keys, and every service found must declare
- * `networks:`. Reformat the file in a way this parser cannot follow and the
- * gate goes RED, not green.
+ *     Every service in compose.yml is on kinvara-int and on nothing else.
+ *
+ * "No service is attached to kinvara-build" is a CONSEQUENCE, and on its own
+ * it is not enough: a service that declares no `networks:` key at all is put
+ * by compose on <project>_default, an ordinary bridge with full egress, with
+ * no error and a healthy container (measured — OD-12).
+ *
+ * WHY A REAL YAML PARSER, AND NOT A REGEX (QA-F2)
+ * ----------------------------------------------
+ * The first version of this gate hand-rolled a small YAML subset: two indent
+ * levels, `^  <name>:` for a service, `^    image:` for the cross-check. It
+ * passed every test put to it and it was WRONG, because compose accepts flow
+ * mappings:
+ *
+ *     qa-flow-probe: { image: alpine:3.20, profiles: ['mail'] }
+ *
+ * That is a real service — `docker compose config --services` lists it, it
+ * starts, and with no `networks:` key it lands on <project>_default and
+ * reaches the internet. Both regexes missed that single line TOGETHER, so the
+ * `services.length === imageKeys` cross-check still balanced and the gate
+ * reported PASS. An anti-vacuity check that shares a blind spot with the thing
+ * it is checking is not an anti-vacuity check.
+ *
+ * The lesson is not "that regex had a bug". It is: DO NOT DEFEND A SECURITY
+ * PROPERTY WITH A PARSER YOU WROTE BY ACCIDENT. The `yaml` package is a
+ * devDependency and this file is now the only place in the repo that reads
+ * compose YAML structurally.
+ *
+ * WHAT THIS GATE STILL CANNOT FOLLOW — each one is a FAILURE, never a pass
+ * ----------------------------------------------------------------------
+ * A parser removes the syntax blind spots, not the compose-semantics ones.
+ * `extends:` pulls a service definition out of another file and could carry a
+ * `networks:` key this gate never sees. It is not used in this repo, so rather
+ * than half-implement it, encountering it is a hard failure with an
+ * instruction to extend the gate first. If you add a compose feature this
+ * gate does not model, the gate goes RED and you fix the gate — which is the
+ * only direction that is safe.
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { parse as parseYaml } from 'yaml';
 import { REPO_ROOT, finish } from './lib/run.ts';
 
 const BUILD_NETWORK = 'kinvara-build';
@@ -45,6 +66,14 @@ const INT_NETWORK = 'kinvara-int';
 /** The one non-internal network, and the one file allowed to name it. */
 const PUB_NETWORK = 'kinvara-pub';
 const PUB_FILE = 'docker/compose.dev.yml';
+const BASE_FILE = 'docker/compose.yml';
+
+const COMPOSE_FILES = [
+  BASE_FILE,
+  PUB_FILE,
+  'docker/compose.verify.yml',
+  'docker/compose.chaos.yml',
+];
 
 const failures: string[] = [];
 
@@ -53,193 +82,174 @@ const read = (rel: string): string | null => {
   return fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : null;
 };
 
-/** A YAML line with its comment stripped. Crude on purpose — see below. */
-const codeOf = (line: string): string => {
-  // Compose values here are unquoted scalars and flow sequences; none of them
-  // contains a '#'. Anything that did would be over-reported, which is the
-  // safe direction for this gate.
-  const i = line.indexOf('#');
-  return (i === -1 ? line : line.slice(0, i)).replace(/\s+$/, '');
-};
-
-interface Service {
-  readonly name: string;
-  readonly line: number;
-  readonly networks: string[] | null;
-}
+const isRecord = (v: unknown): v is Record<string, unknown> =>
+  typeof v === 'object' && v !== null && !Array.isArray(v);
 
 /**
- * Parse `services:` -> `<name>:` -> `networks:` out of a compose file.
- *
- * A deliberately small subset of YAML: two indent levels, flow or block
- * sequences. It is sound because it refuses to guess — anything it cannot
- * account for makes the caller's cross-check fail.
+ * A service's networks, normalised. Compose accepts three spellings:
+ *   networks: [a, b]            (sequence)
+ *   networks: {a: {...}, b: {}} (mapping, for aliases/ipv4_address)
+ *   networks: a                 (scalar — not legal compose, but parse it
+ *                                anyway so a typo is reported, not ignored)
+ * `undefined` means the key is absent, which is the OD-12 case and is NOT the
+ * same as an empty list.
  */
-function parseServices(text: string): Service[] {
-  const lines = text.split('\n');
-  const services: Service[] = [];
-  let inServices = false;
-  let current: { name: string; line: number; networks: string[] | null } | null = null;
-  let collectingBlockList = false;
-
-  const flush = (): void => {
-    if (current !== null) services.push({ ...current });
-    current = null;
-    collectingBlockList = false;
-  };
-
-  for (let i = 0; i < lines.length; i += 1) {
-    const raw = lines[i] ?? '';
-    const code = codeOf(raw);
-    if (code.trim() === '') continue;
-
-    // A top-level key ends the services block.
-    if (/^[A-Za-z0-9_.-]+:/.test(code)) {
-      flush();
-      inServices = code.startsWith('services:');
-      continue;
-    }
-    if (!inServices) continue;
-
-    // A service name: exactly two spaces of indent, a bare key, nothing after.
-    const svc = /^ {2}([A-Za-z0-9_.-]+):\s*$/.exec(code);
-    if (svc !== null) {
-      flush();
-      current = { name: svc[1] ?? '', line: i + 1, networks: null };
-      continue;
-    }
-    if (current === null) continue;
-
-    if (collectingBlockList) {
-      const item = /^ {6}- +(.+)$/.exec(code);
-      if (item !== null) {
-        (current.networks ??= []).push((item[1] ?? '').trim());
-        continue;
-      }
-      collectingBlockList = false;
-    }
-
-    const nets = /^ {4}networks:\s*(.*)$/.exec(code);
-    if (nets !== null) {
-      const inline = (nets[1] ?? '').trim();
-      if (inline.startsWith('[')) {
-        current.networks = inline
-          .replace(/^\[/, '')
-          .replace(/\]$/, '')
-          .split(',')
-          .map((s) => s.trim())
-          .filter((s) => s !== '');
-      } else if (inline === '') {
-        current.networks = [];
-        collectingBlockList = true;
-      } else {
-        current.networks = [inline];
-      }
-    }
-  }
-  flush();
-  return services;
+function networksOf(svc: Record<string, unknown>): string[] | undefined {
+  if (!('networks' in svc)) return undefined;
+  const n = svc['networks'];
+  if (n === null || n === undefined) return [];
+  if (Array.isArray(n)) return n.map((x) => String(x));
+  if (isRecord(n)) return Object.keys(n);
+  return [String(n)];
 }
 
-// ---------------------------------------------------------------------------
-// 1. `kinvara-build` appears in no compose file, anywhere but a comment.
-//
-//    The blunt check, and the one that cannot be defeated by YAML structure:
-//    a service, an anchor, an `extends`, a `x-` template — if the string is
-//    live in the file, this fires.
-// ---------------------------------------------------------------------------
-const COMPOSE_FILES = [
-  'docker/compose.yml',
-  'docker/compose.dev.yml',
-  'docker/compose.verify.yml',
-  'docker/compose.chaos.yml',
-];
+let filesParsed = 0;
+let servicesChecked = 0;
 
-let composeFilesSeen = 0;
-let parsedServiceCount = 0;
 for (const rel of COMPOSE_FILES) {
   const text = read(rel);
   if (text === null) {
     failures.push(`${rel} does not exist — this gate's file list is stale`);
     continue;
   }
-  composeFilesSeen += 1;
-  text.split('\n').forEach((line, idx) => {
-    if (codeOf(line).includes(BUILD_NETWORK)) {
-      failures.push(
-        `${rel}:${String(idx + 1)} names ${BUILD_NETWORK} outside a comment. ` +
-          `No service may EVER be attached to the egress network (DOCKER.md §7a). ` +
-          `line: ${line.trim()}`,
-      );
-    }
-  });
-}
-if (composeFilesSeen === 0) failures.push('no compose file was read at all — refusing to pass');
 
-// ---------------------------------------------------------------------------
-// 2. Every service declares its networks, and the set is what §7 allows.
-// ---------------------------------------------------------------------------
-for (const rel of COMPOSE_FILES) {
-  const text = read(rel);
-  if (text === null) continue;
+  let doc: unknown;
+  try {
+    doc = parseYaml(text);
+  } catch (err) {
+    failures.push(`${rel} is not parseable YAML: ${String(err)}`);
+    continue;
+  }
+  if (!isRecord(doc)) {
+    failures.push(`${rel} did not parse to a mapping — refusing to report a pass on it`);
+    continue;
+  }
+  filesParsed += 1;
 
-  const services = parseServices(text);
-  parsedServiceCount += services.length;
-  // The cross-check. Every service in every one of these files carries an
-  // `image:`; if the parser found a different number, it did not understand
-  // the file and must not report a pass on it.
-  const imageKeys = text
-    .split('\n')
-    .map(codeOf)
-    .filter((l) => /^ {4}image:/.test(l)).length;
-
-  if (rel === 'docker/compose.yml') {
-    if (imageKeys === 0) {
-      failures.push(`${rel} has no services — this gate would then assert nothing`);
-    }
-    if (services.length !== imageKeys) {
-      failures.push(
-        `${rel}: parsed ${String(services.length)} services but the file has ` +
-          `${String(imageKeys)} image: keys. The parser did not understand this file; ` +
-          `fix the gate rather than trusting it.`,
-      );
-    }
+  // -------------------------------------------------------------------------
+  // 1. `kinvara-build` appears NOWHERE live in the file.
+  //
+  //    Over the PARSED document, not the raw text, so comments are excluded
+  //    exactly rather than by stripping everything after a '#'. It covers what
+  //    the structural walk below does not visit at all: the top-level
+  //    `networks:` block, `x-` extension fields, anchors, and any key this
+  //    gate has never heard of.
+  // -------------------------------------------------------------------------
+  if (JSON.stringify(doc).includes(BUILD_NETWORK)) {
+    failures.push(
+      `${rel} names '${BUILD_NETWORK}' in its live YAML (not in a comment). ` +
+        `No service may EVER be attached to the egress network, and this file must ` +
+        `not even declare it (DOCKER.md §7a).`,
+    );
   }
 
-  for (const s of services) {
-    if (s.networks === null) {
-      if (rel === 'docker/compose.yml') {
+  // -------------------------------------------------------------------------
+  // 2. Every service is on kinvara-int and on nothing else.
+  // -------------------------------------------------------------------------
+  const services = doc['services'];
+  if (services === undefined) {
+    if (rel === BASE_FILE) {
+      failures.push(`${BASE_FILE} has no services: — this gate would then assert nothing`);
+    }
+    continue;
+  }
+  if (!isRecord(services)) {
+    failures.push(`${rel}: services: is not a mapping — refusing to report a pass on it`);
+    continue;
+  }
+
+  const names = Object.keys(services);
+  if (rel === BASE_FILE && names.length === 0) {
+    failures.push(`${BASE_FILE} declares zero services — this gate would then assert nothing`);
+  }
+
+  for (const name of names) {
+    const svc = services[name];
+    if (!isRecord(svc)) {
+      failures.push(`${rel}: service '${name}' is not a mapping — cannot be checked`);
+      continue;
+    }
+    servicesChecked += 1;
+
+    // A compose feature this gate does not model must FAIL, never pass.
+    if ('extends' in svc) {
+      failures.push(
+        `${rel}: service '${name}' uses 'extends', which this gate cannot follow — ` +
+          `the inherited definition may carry a networks: key this gate never sees. ` +
+          `Teach the gate to resolve 'extends' before using it here.`,
+      );
+    }
+
+    // Anti-vacuity that does NOT share a blind spot with the parse: compose
+    // requires image or build on every service, so a "service" with neither is
+    // evidence that something other than a service is being read as one.
+    if (rel === BASE_FILE && !('image' in svc) && !('build' in svc)) {
+      failures.push(
+        `${BASE_FILE}: '${name}' has neither image: nor build:. Either it is not a ` +
+          `service and this gate is misreading the file, or it is a service compose ` +
+          `cannot start. Both are failures.`,
+      );
+    }
+
+    const nets = networksOf(svc);
+
+    if (nets === undefined) {
+      // The OD-12 case, and the one the written rule used to miss.
+      if (rel === BASE_FILE) {
         failures.push(
-          `${rel}:${String(s.line)} service '${s.name}' declares no networks:. ` +
-            `Compose would attach it to the project's DEFAULT bridge, which is NOT ` +
-            `internal and therefore has egress. Every service must name ${INT_NETWORK}.`,
+          `${BASE_FILE}: service '${name}' declares no networks:. Compose puts it on ` +
+            `the project's DEFAULT bridge, which is NOT internal and HAS EGRESS — ` +
+            `measured on kinvara-t-017: such a container completed a TCP connection to ` +
+            `1.1.1.1:443 while 'svc up' reported it healthy (OD-12). ` +
+            `Every service must name ${INT_NETWORK} explicitly.`,
         );
       }
       continue; // an overlay may legitimately leave networks alone
     }
-    for (const n of s.networks) {
+
+    if (nets.length === 0 && rel === BASE_FILE) {
+      failures.push(
+        `${BASE_FILE}: service '${name}' has an EMPTY networks:. Same outcome as ` +
+          `omitting it — compose falls back to the default bridge (OD-12).`,
+      );
+    }
+
+    for (const n of nets) {
       if (n === INT_NETWORK) continue;
       if (n === PUB_NETWORK && rel === PUB_FILE) continue; // the documented dev-stack exception
       failures.push(
-        `${rel}:${String(s.line)} service '${s.name}' is attached to '${n}'. ` +
-          `Only ${INT_NETWORK} is permitted (and ${PUB_NETWORK}, in ${PUB_FILE} alone, ` +
-          `which is why no evidence may come from the shared dev stack).`,
+        `${rel}: service '${name}' is attached to '${n}'. Only ${INT_NETWORK} is ` +
+          `permitted (and ${PUB_NETWORK}, in ${PUB_FILE} alone, which is exactly why no ` +
+          `evidence may ever come from the shared dev stack).`,
       );
     }
-    if (!s.networks.includes(INT_NETWORK) && rel === 'docker/compose.yml') {
-      failures.push(`${rel}:${String(s.line)} service '${s.name}' is not on ${INT_NETWORK}.`);
+
+    if (rel === BASE_FILE && !nets.includes(INT_NETWORK)) {
+      failures.push(`${BASE_FILE}: service '${name}' is not on ${INT_NETWORK}.`);
     }
   }
 }
 
+if (filesParsed === 0) failures.push('no compose file parsed at all — refusing to pass');
+if (servicesChecked === 0) failures.push('no service was checked at all — refusing to pass');
+
 // ---------------------------------------------------------------------------
 // 3. The two entry points keep their halves of the rule.
+//
+//     These are shell, not YAML, so they are read as text — and the checks are
+//     deliberately about the ARGUMENT to --network, which is the one line in
+//     each script that decides the property.
 // ---------------------------------------------------------------------------
-const svc = read('scripts/svc');
-if (svc === null) {
+const codeOf = (line: string): string => {
+  const i = line.indexOf('#');
+  return (i === -1 ? line : line.slice(0, i)).replace(/\s+$/, '');
+};
+
+const svcScript = read('scripts/svc');
+if (svcScript === null) {
   failures.push('scripts/svc is missing');
 } else {
-  const live = svc.split('\n').map(codeOf);
+  const live = svcScript.split('\n').map(codeOf);
   const attaches = live.filter((l) =>
     /--network\s+["']?\$?\{?(BUILD_NETWORK|kinvara-build)/.test(l),
   );
@@ -249,7 +259,7 @@ if (svc === null) {
         `svc run gets services and NO egress (DOCKER.md §7b).`,
     );
   }
-  if (!/refusing to attach/.test(svc)) {
+  if (!/refusing to attach/.test(svcScript)) {
     failures.push(
       `scripts/svc no longer contains its refusal assertion for ${BUILD_NETWORK}. ` +
         `That assertion is the runtime half of this gate; do not delete it.`,
@@ -257,11 +267,11 @@ if (svc === null) {
   }
 }
 
-const dev = read('scripts/dev');
-if (dev === null) {
+const devScript = read('scripts/dev');
+if (devScript === null) {
   failures.push('scripts/dev is missing');
 } else {
-  const live = dev.split('\n').map(codeOf);
+  const live = devScript.split('\n').map(codeOf);
   if (!live.some((l) => /--network\s+["']?\$?\{?BUILD_NETWORK/.test(l))) {
     failures.push(
       `scripts/dev no longer attaches ${BUILD_NETWORK}. It is the ONLY container ` +
@@ -277,10 +287,9 @@ if (dev === null) {
   }
 }
 
-console.log(
-  `  compose files checked      ${String(composeFilesSeen)}/${String(COMPOSE_FILES.length)}`,
-);
-console.log(`  services parsed            ${String(parsedServiceCount)}`);
+console.log(`  compose files parsed       ${String(filesParsed)}/${String(COMPOSE_FILES.length)}`);
+console.log(`  services checked           ${String(servicesChecked)}`);
+console.log(`  parser                     yaml (a real one — see QA-F2)`);
 console.log(`  entry points checked       scripts/dev, scripts/svc`);
 
 finish('gate:egress-boundary', failures);

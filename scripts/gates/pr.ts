@@ -30,7 +30,7 @@ const GATES: readonly Gate[] = [
   { name: 'gate:size-limit', why: 'per-route JS budgets (SD §PERF)' },
   {
     name: 'gate:egress-boundary',
-    why: 'no compose service on kinvara-build; svc run has no egress (DOCKER.md §7)',
+    why: 'every compose service on kinvara-int and nothing else; svc run has no egress (DOCKER.md §7, OD-12)',
   },
 ];
 
