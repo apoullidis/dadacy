@@ -518,7 +518,30 @@ for (const [rel, users] of [...dockerfilesInUse].sort(([a], [b]) => a.localeComp
   // are "app" images: a chaos sidecar built from some other base has no
   // node_modules and no devDependencies, and demanding the guard of it would
   // be a rule nobody could satisfy honestly.
-  const buildsFromWorkspace = /pnpm-lock\.yaml|pnpm\s+(install|--filter)/.test(text);
+  //
+  // WHICH DOCKERFILES NEED THE GUARD AT ALL. Derived from the file, not from a
+  // list of which images are "app" images: a chaos sidecar built from some
+  // other base has no node_modules and no devDependencies, and demanding the
+  // guard of it would be a rule nobody could satisfy honestly.
+  //
+  // The condition is deliberately WIDE — any live mention of pnpm or of
+  // node_modules — and it over-approximates on purpose. The previous version
+  // matched three literals (`pnpm-lock.yaml`, `pnpm install`, `pnpm --filter`)
+  // and QA found the obvious hole: `pnpm i` is the same command, is the
+  // SHORTER and commoner spelling, and skipped the guard, so two Dockerfiles
+  // differing by one word were guarded and unguarded. An enumeration of
+  // spellings is the wrong shape for this question; the right one is "does
+  // this image have a node_modules that could hold devDependencies", and a
+  // mention of either word is the cheap over-approximation of that.
+  //
+  // Over-approximating fails SAFE: the cost of a false positive is being asked
+  // to add a guard to an image that does not need one, which is visible and
+  // arguable. The cost of a false negative is an unguarded image, which is
+  // silent — and silence is what shipped 112.2 MB of devDependencies.
+  const buildsFromWorkspace = text
+    .split('\n')
+    .map(dfCode)
+    .some((l) => /\bpnpm\b|node_modules/.test(l));
   if (buildsFromWorkspace) {
     const stages = stagesOf(text);
     // The target stage: what compose names, else the last stage in the file.

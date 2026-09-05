@@ -25,6 +25,12 @@ restore() {
 trap 'restore; rm -rf "$BK"' EXIT
 
 bad=0
+# The number of cases actually RUN, kept by run_case. The footer prints this
+# counter, not a literal: app-images.sh claimed "ALL 25 CASES" while running 24,
+# and that 25 reached the stakeholder report. A literal also keeps asserting the
+# old number when a case is deleted, which is the same defect pointed the other
+# way. A mutation that fails to apply skips run_case, so a drop here is visible.
+ran=0
 mut() { node scripts/negative-tests/mutate.mjs "$@" || { echo "   HARNESS ERROR"; bad=$((bad+1)); return 1; }; }
 
 run_case() {
@@ -32,6 +38,7 @@ run_case() {
   local out code
   out="$(node scripts/gates/egress-boundary.ts 2>&1)"; code=$?
   local verdict; [[ $code -eq 0 ]] && verdict=PASS || verdict=FAIL
+  ran=$((ran+1))
   local mark="  "; [[ "$verdict" == "$expect" ]] || { mark="!!"; bad=$((bad+1)); }
   printf '%s %-48s exit=%d  %-4s (expected %s)\n' "$mark" "$label" "$code" "$verdict" "$expect"
   [[ "$verdict" == FAIL ]] && printf '%s\n' "$out" | grep -E '^  - ' | head -1 | cut -c1-160 | sed 's/^/       /'
@@ -133,5 +140,5 @@ toolbox_mount_args_renamed() {' && run_case "17 toolbox_mount_args renamed" FAIL
 echo
 run_case "99 tree restored" PASS
 echo
-if [[ $bad -eq 0 ]]; then echo "ALL 21 CASES BEHAVED AS EXPECTED"; else echo "!! $bad CASE(S) MISBEHAVED"; fi
+if [[ $bad -eq 0 ]]; then echo "ALL $ran CASES BEHAVED AS EXPECTED"; else echo "!! $bad of $ran CASE(S) MISBEHAVED"; fi
 exit $bad
