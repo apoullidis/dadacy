@@ -114,3 +114,238 @@ export function catalogueSource(
   const value = (parsed as Record<string, unknown>)[localKey];
   return typeof value === 'string' ? value : undefined;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// T-049 — the pipeline itself, as data.
+//
+// `entries` above records what HAS been reviewed. Everything below records what
+// MUST happen to each `safety_critical` string, by whom, in which language, and
+// by when — so that SD §DH-5's six-week external lead time can be measured
+// against a date rather than remembered.
+//
+// **What this is not.** None of it asserts that any copy has been authored,
+// translated or reviewed, and none of it can. The honest limit is stated once,
+// here, rather than implied: this register lives in the same repository as the
+// copy it vouches for, so a sufficiently determined edit can write a sign-off
+// that never happened. `content_hash` binds a record to the CURRENT source, which
+// proves currency, not review. What the predicates below buy is that a forged
+// sign-off can no longer be a one-word edit: it must name an author, name a
+// DIFFERENT reviewer, and add both to a roster carrying a stakeholder
+// confirmation date — in the same commit, in a file whose whole subject is
+// provenance. Loud and specific instead of cheap and silent. That is the claim,
+// and it is not a stronger one.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** How one locale's copy for one key must be produced. */
+export type CopyMethod = 'authored' | 'translated_briefed';
+
+/**
+ * Where the string is consumed. `spoken_by_user` and `voice` both require SA
+ * §TS-12.4's read-aloud pass; `undetermined` fails closed, because a string
+ * whose channel nobody has decided would silently skip that pass.
+ */
+export type CopyChannel = 'screen' | 'spoken_by_user' | 'voice' | 'undetermined';
+
+export interface PipelineLocaleAssignment {
+  readonly method: CopyMethod;
+  /** The `provenance` an `entries` record for this locale must carry once delivered. */
+  readonly required_provenance: ReviewProvenance;
+  readonly why: string;
+}
+
+export interface PipelineAssignment {
+  /** PM §MVP-IS5 AC7: number labels, the 112 script, the address-reading prompt. */
+  readonly emergency_panel: boolean;
+  readonly channel: CopyChannel;
+  readonly channel_note: string;
+  readonly machine_translation: 'prohibited' | 'permitted';
+  readonly runtime_translation: 'prohibited' | 'permitted';
+  readonly locales: Readonly<Record<string, PipelineLocaleAssignment>>;
+}
+
+export interface PipelineRole {
+  readonly named: string | null;
+  readonly confirmed_by_stakeholder_on: string | null;
+  readonly what: string;
+  readonly spec: string;
+}
+
+export interface PipelineStage {
+  readonly id: string;
+  readonly blocking: boolean;
+  readonly who: string;
+  readonly what: string;
+  readonly output: string;
+  readonly applies_to?: string;
+  readonly completed_at: string | null;
+}
+
+export interface CopyPipeline {
+  readonly opened_by: string;
+  /** The day engineering opened the pipeline. Real, and it is not the external start. */
+  readonly engineering_kickoff: string;
+  /** The day the brief reaches a named practitioner. `null` until a stakeholder sets it. */
+  readonly external_start: string | null;
+  readonly lead_time_days: number;
+  readonly deadline: string;
+  readonly latest_external_start: string;
+  readonly blocked_on: string;
+  readonly roles: Readonly<Record<string, PipelineRole>>;
+  readonly stages: readonly PipelineStage[];
+  readonly assignments: Readonly<Record<string, PipelineAssignment>>;
+}
+
+const DAY_MS = 86_400_000;
+
+/** `YYYY-MM-DD` → epoch ms at end of that UTC day. Dates in this file are days, not instants. */
+export function endOfDay(isoDate: string): number {
+  const t = Date.parse(`${isoDate}T23:59:59Z`);
+  if (!Number.isFinite(t)) throw new RangeError(`not an ISO date: ${isoDate}`);
+  return t;
+}
+
+/** `YYYY-MM-DD` for an epoch-ms instant, UTC. */
+export function isoDay(ms: number): string {
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+/**
+ * The last day the external half can begin and still land by `deadline`.
+ *
+ * Deliberately a function of two inputs that come from OUTSIDE this file — the
+ * waiver's fixed expiry and SD §DH-5's stated lead time — rather than of the
+ * interval between two dates the file itself carries. That interval is exactly
+ * what QA-F3 caught `T-040` doing: a check derived from the same reading as the
+ * thing it checks can only ever confirm it (PROTOCOL §5.1).
+ */
+export function latestExternalStart(deadline: string, leadTimeDays: number): string {
+  return isoDay(endOfDay(deadline) - leadTimeDays * DAY_MS);
+}
+
+/** Days of slack remaining before the deadline becomes unachievable, given today. */
+export function slackDays(pipeline: CopyPipeline, now: number): number {
+  const latest = endOfDay(latestExternalStart(pipeline.deadline, pipeline.lead_time_days));
+  const from = pipeline.external_start === null ? now : endOfDay(pipeline.external_start);
+  return Math.floor((latest - from) / DAY_MS);
+}
+
+export function loadCopyPipeline(root: string = PACKAGE_ROOT): CopyPipeline {
+  const raw: unknown = JSON.parse(readFileSync(join(root, 'review.json'), 'utf8'));
+  const obj = (raw ?? {}) as Record<string, unknown>;
+  const pipeline = obj['pipeline'];
+  if (typeof pipeline !== 'object' || pipeline === null) {
+    // Fail closed. An absent pipeline block must be loud: the whole point of
+    // T-049 is that this work gets scheduled last and then forgotten, and a
+    // loader that returned a friendly empty object would restore exactly that.
+    throw new TypeError(
+      'review.json has no `pipeline` block. The trilingual safety-copy pipeline (SD §DH-5 external dependency 2) is what makes the six-week lead time measurable; without it the waiver expiry is a surprise rather than a schedule.',
+    );
+  }
+  return pipeline as CopyPipeline;
+}
+
+/**
+ * Every reason a `signed_off` record must not be believed, as a list of strings.
+ * Empty means nothing here contradicts itself.
+ *
+ * This is deliberately NOT `gate:safety-review-currency` — that is `T-044`'s, it
+ * reads `entries` and the waiver, and it is the gate that fails the build. These
+ * are the *coherence* rules between the plan (`pipeline`) and the delivery
+ * (`entries`), which `T-044` has no way to check because they did not exist when
+ * its contract was written.
+ */
+export function pipelineIncoherences(
+  register: ReviewRegister,
+  pipeline: CopyPipeline,
+  locales: readonly string[],
+  safetyKeys: readonly string[],
+): string[] {
+  const problems: string[] = [];
+
+  const namedPeople = new Map<string, PipelineRole>();
+  for (const role of Object.values(pipeline.roles)) {
+    if (role.named !== null) namedPeople.set(role.named, role);
+  }
+  const reviewerRoles = new Set(['dsl', 'dsl_deputy']);
+  const reviewerNames = new Set(
+    Object.entries(pipeline.roles)
+      .filter(([id, r]) => reviewerRoles.has(id) && r.named !== null)
+      .map(([, r]) => r.named as string),
+  );
+
+  for (const key of safetyKeys) {
+    const assignment = pipeline.assignments[key];
+    if (assignment === undefined) {
+      problems.push(
+        `pipeline.assignments is missing '${key}'. A safety_critical key with no assignment has nobody who must author it and no language rule — it would arrive machine-translated and nothing here would say so.`,
+      );
+      continue;
+    }
+    if (assignment.machine_translation !== 'prohibited') {
+      problems.push(
+        `pipeline.assignments['${key}'].machine_translation must be 'prohibited' (DV-11)`,
+      );
+    }
+    if (assignment.runtime_translation !== 'prohibited') {
+      problems.push(
+        `pipeline.assignments['${key}'].runtime_translation must be 'prohibited' (PM §MVP-IS5 AC7)`,
+      );
+    }
+    for (const locale of locales) {
+      const per = assignment.locales[locale];
+      if (per === undefined) {
+        problems.push(`pipeline.assignments['${key}'] has no rule for locale '${locale}'`);
+        continue;
+      }
+      const record = register.entries[locale]?.[key];
+      if (record === undefined || record.status !== 'signed_off') continue;
+
+      // From here down: a record CLAIMS to be reviewed. Everything is checked.
+      if (record.provenance !== per.required_provenance) {
+        problems.push(
+          `${locale}/${key}: signed off with provenance '${record.provenance}', but the pipeline requires '${per.required_provenance}' (${per.method}). ${per.why}`,
+        );
+      }
+      if (assignment.channel === 'undetermined') {
+        problems.push(
+          `${locale}/${key}: signed off while its channel is undetermined, so SA §TS-12.4's read-aloud pass may or may not apply and nobody has decided which.`,
+        );
+      }
+      if (
+        record.authored_by === null ||
+        record.reviewed_by === null ||
+        record.reviewed_at === null
+      ) {
+        problems.push(
+          `${locale}/${key}: signed off without an author, a reviewer or a review date`,
+        );
+        continue;
+      }
+      if (record.authored_by === record.reviewed_by) {
+        problems.push(
+          `${locale}/${key}: '${record.authored_by}' both authored and signed off this safety string. Review by the author is not review.`,
+        );
+      }
+      if (!reviewerNames.has(record.reviewed_by)) {
+        problems.push(
+          `${locale}/${key}: signed off by '${record.reviewed_by}', who is not the named DSL or deputy in pipeline.roles. Only the DSL pair may sign off safety copy (PM §MVP-L5 AC7).`,
+        );
+      }
+      const reviewer = namedPeople.get(record.reviewed_by);
+      if (reviewer !== undefined && reviewer.confirmed_by_stakeholder_on === null) {
+        problems.push(
+          `${locale}/${key}: signed off by '${record.reviewed_by}', who is named in pipeline.roles but carries no stakeholder confirmation date`,
+        );
+      }
+      for (const stage of pipeline.stages) {
+        if (!stage.blocking) continue;
+        if (stage.completed_at === null) {
+          problems.push(
+            `${locale}/${key}: signed off while the blocking pipeline stage '${stage.id}' is not complete — ${stage.what}`,
+          );
+        }
+      }
+    }
+  }
+  return problems;
+}

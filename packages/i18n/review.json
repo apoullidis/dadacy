@@ -18,6 +18,292 @@
       "session.checkins_missed"
     ]
   },
+  "pipeline": {
+    "//": "THE PIPELINE ITSELF, as data rather than as a plan in someone's head — T-049, SD §DH-5 external dependency 2, SA §TS-12.4. `entries` above records what HAS been reviewed; this block records what MUST happen, by whom, in which language, and by when, so that the six-week lead time can be MEASURED against a date instead of remembered. Nothing here asserts that any copy has been authored, translated or reviewed. Every `named` and every `completed_at` is null, and that is the honest state on 2026-09-05.",
+    "opened_by": "T-049 (frontend-developer)",
+    "engineering_kickoff": "2026-09-05",
+    "external_start": null,
+    "external_start_note": "The date the brief below actually reaches a named Greek-authoring safeguarding practitioner. Only a stakeholder can set this, because only a stakeholder can engage the two people. It is null because it has not happened — an undated start cannot be measured against a lead time, and a start date recorded before the fact would be the exact defect this register exists to prevent.",
+    "lead_time_days": 42,
+    "lead_time_source": "SD §DH-5 external dependency 2: \"Six weeks of lead time on a path that has no engineering dependency and therefore gets scheduled last by default.\"",
+    "deadline": "2026-10-17",
+    "deadline_source": "pending_pipeline.expected_by — the self-closing waiver above. After this date gate:safety-review-currency (T-044) fails the build on these keys exactly as on unwaived ones. The date is fixed; extending it is an orchestrator decision against BOARD RK-2, not a file edit.",
+    "latest_external_start": "2026-09-05",
+    "latest_external_start_note": "deadline minus lead_time_days. DERIVED, and asserted in src/pipeline.test.ts against those two values written there as literals — so buying slack by editing this field turns the suite red. It falls on the day this pipeline was opened, which means THE WAIVER WINDOW AND THE LEAD TIME ARE THE SAME SIX WEEKS AND THERE IS NO SLACK AT ALL. See decisions.md OD-15.",
+    "blocked_on": "stakeholder",
+    "blocked_on_note": "Not blocked on engineering. Every mechanism this pipeline needs — the register, the hash, the compiler refusals, the waiver, the gate T-044 will build over it — exists. What does not exist is a safeguarding practitioner and a translator, and no agent in this programme can engage either. See packages/i18n/PIPELINE.md §5.",
+    "roles": {
+      "greek_authoring_safeguarding_practitioner": {
+        "named": null,
+        "confirmed_by_stakeholder_on": null,
+        "what": "Authors the English and Greek safety copy IN PARALLEL — not English first and Greek after. Must be a safeguarding practitioner working in Cyprus, because the copy encodes the Cyprus reporting pathway (112, 1466, 116 111, 199, Social Welfare Services) and not a UK one.",
+        "spec": "SA §TS-12.4; PM §MVP-L4 AC4; PM §MVP-S7 AC1"
+      },
+      "russian_translator_briefed": {
+        "named": null,
+        "confirmed_by_stakeholder_on": null,
+        "what": "Professional translator, briefed on the safeguarding context BEFORE translating. The brief is a separate deliverable and a separate stage precisely because it is the step that gets skipped.",
+        "spec": "SA §TS-12.4; PM §MVP-L4 AC4"
+      },
+      "dsl": {
+        "named": null,
+        "confirmed_by_stakeholder_on": null,
+        "what": "Designated Safeguarding Lead. Signs off PER LOCALE and is the only role whose name may appear in `reviewed_by`. The DSL and deputy BETWEEN THEM must cover English, Greek and Russian — a DSL who cannot read Russian cannot sign off Russian copy, and the deputy is how that is covered.",
+        "spec": "PM §MVP-L5 AC7; SA §TS-12.4; SD Revision Log D8"
+      },
+      "dsl_deputy": {
+        "named": null,
+        "confirmed_by_stakeholder_on": null,
+        "what": "Deputy DSL. Also permitted in `reviewed_by`. Exists in this roster because §MVP-L5 AC7 makes trilingual coverage a property of the PAIR, not of one person.",
+        "spec": "PM §MVP-L5 AC7"
+      }
+    },
+    "stages": [
+      {
+        "id": "author_en_el",
+        "blocking": true,
+        "who": "greek_authoring_safeguarding_practitioner",
+        "what": "English and Greek authored in parallel. NOT English-then-translate.",
+        "output": "Catalogue values for en and el; provenance `authored`.",
+        "completed_at": null
+      },
+      {
+        "id": "brief_ru_translator",
+        "blocking": true,
+        "who": "russian_translator_briefed",
+        "what": "The safeguarding-context brief is delivered to and acknowledged by the translator, before any translation begins.",
+        "output": "A dated acknowledgement. Recorded here as the stage `completed_at`.",
+        "completed_at": null
+      },
+      {
+        "id": "translate_ru",
+        "blocking": true,
+        "who": "russian_translator_briefed",
+        "what": "Russian produced by the briefed human translator. Machine translation is prohibited at this tier (DV-11) and cannot produce a record in `entries` at all.",
+        "output": "Catalogue values for ru; provenance `translated_professional`.",
+        "completed_at": null
+      },
+      {
+        "id": "dsl_signoff",
+        "blocking": true,
+        "who": "dsl",
+        "what": "DSL review and sign-off, PER LOCALE. This is the step that writes `entries[<locale>][<key>]` with a real `reviewed_by` and `reviewed_at`, and it is the only step that can make gate:safety-review-currency pass.",
+        "output": "`status: signed_off` per locale per key.",
+        "completed_at": null
+      },
+      {
+        "id": "in_context_screenshot_review",
+        "blocking": true,
+        "who": "dsl",
+        "what": "In-context review in the running product at the target locale, on a 360 px Android viewport. A string that is correct and overflows its container is a failed safety string.",
+        "output": "Screenshots per locale. Needs T-050/T-051 surfaces to exist; until then this stage cannot complete, and it must not be recorded as though it had.",
+        "completed_at": null
+      },
+      {
+        "id": "read_aloud_voice",
+        "blocking": true,
+        "applies_to": "assignments whose `channel` is `voice` or `spoken_by_user`",
+        "who": "dsl",
+        "what": "Read-aloud pass. Copy that scans well on screen frequently does not survive being spoken — which is why SA §INT-5r specifies PRE-RECORDED audio per locale rather than runtime TTS (DV-7).",
+        "output": "A dated read-aloud confirmation per locale for the affected keys.",
+        "completed_at": null
+      }
+    ],
+    "assignments": {
+      "safety.emergency.address_prompt": {
+        "emergency_panel": true,
+        "channel": "spoken_by_user",
+        "channel_note": "The user reads this ALOUD to a 112 operator while an emergency is in progress. It must survive being spoken by a frightened person, not merely read on a screen — SA §TS-12.4 read-aloud pass.",
+        "machine_translation": "prohibited",
+        "runtime_translation": "prohibited",
+        "locales": {
+          "en": {
+            "method": "authored",
+            "required_provenance": "authored",
+            "why": "Source authorship. SA §TS-12.4: English and Greek are authored IN PARALLEL by the safeguarding author."
+          },
+          "el": {
+            "method": "authored",
+            "required_provenance": "authored",
+            "why": "MUST be natively authored, never translated from English. PM §MVP-L4 AC4 and §MVP-S7 AC1 both require Greek AUTHORSHIP. A Greek translation of an English safety string is a different artefact from a Greek safety string and this field is where the difference is enforced rather than hoped for."
+          },
+          "ru": {
+            "method": "translated_briefed",
+            "required_provenance": "translated_professional",
+            "why": "Professional translator BRIEFED ON THE SAFEGUARDING CONTEXT (PM §MVP-L4 AC4). SA §TS-12.4: a translator who does not know a string is an escalation message will produce a grammatically perfect, operationally useless one. Machine translation is prohibited outright at this tier (DV-11) and the brief is a required, separately-recorded stage."
+          }
+        }
+      },
+      "safety.emergency.call_112.label": {
+        "emergency_panel": true,
+        "channel": "screen",
+        "channel_note": "Rendered on screen only. No voice channel carries this string today; if one ever does, this field changes and the read-aloud stage becomes blocking for it.",
+        "machine_translation": "prohibited",
+        "runtime_translation": "prohibited",
+        "locales": {
+          "en": {
+            "method": "authored",
+            "required_provenance": "authored",
+            "why": "Source authorship. SA §TS-12.4: English and Greek are authored IN PARALLEL by the safeguarding author."
+          },
+          "el": {
+            "method": "authored",
+            "required_provenance": "authored",
+            "why": "MUST be natively authored, never translated from English. PM §MVP-L4 AC4 and §MVP-S7 AC1 both require Greek AUTHORSHIP. A Greek translation of an English safety string is a different artefact from a Greek safety string and this field is where the difference is enforced rather than hoped for."
+          },
+          "ru": {
+            "method": "translated_briefed",
+            "required_provenance": "translated_professional",
+            "why": "Professional translator BRIEFED ON THE SAFEGUARDING CONTEXT (PM §MVP-L4 AC4). SA §TS-12.4: a translator who does not know a string is an escalation message will produce a grammatically perfect, operationally useless one. Machine translation is prohibited outright at this tier (DV-11) and the brief is a required, separately-recorded stage."
+          }
+        }
+      },
+      "safety.emergency.call_112.script": {
+        "emergency_panel": true,
+        "channel": "spoken_by_user",
+        "channel_note": "The user reads this ALOUD to a 112 operator while an emergency is in progress. It must survive being spoken by a frightened person, not merely read on a screen — SA §TS-12.4 read-aloud pass.",
+        "machine_translation": "prohibited",
+        "runtime_translation": "prohibited",
+        "locales": {
+          "en": {
+            "method": "authored",
+            "required_provenance": "authored",
+            "why": "Source authorship. SA §TS-12.4: English and Greek are authored IN PARALLEL by the safeguarding author."
+          },
+          "el": {
+            "method": "authored",
+            "required_provenance": "authored",
+            "why": "MUST be natively authored, never translated from English. PM §MVP-L4 AC4 and §MVP-S7 AC1 both require Greek AUTHORSHIP. A Greek translation of an English safety string is a different artefact from a Greek safety string and this field is where the difference is enforced rather than hoped for."
+          },
+          "ru": {
+            "method": "translated_briefed",
+            "required_provenance": "translated_professional",
+            "why": "Professional translator BRIEFED ON THE SAFEGUARDING CONTEXT (PM §MVP-L4 AC4). SA §TS-12.4: a translator who does not know a string is an escalation message will produce a grammatically perfect, operationally useless one. Machine translation is prohibited outright at this tier (DV-11) and the brief is a required, separately-recorded stage."
+          }
+        }
+      },
+      "safety.helpline.116111.label": {
+        "emergency_panel": true,
+        "channel": "screen",
+        "channel_note": "Rendered on screen only. No voice channel carries this string today; if one ever does, this field changes and the read-aloud stage becomes blocking for it.",
+        "machine_translation": "prohibited",
+        "runtime_translation": "prohibited",
+        "locales": {
+          "en": {
+            "method": "authored",
+            "required_provenance": "authored",
+            "why": "Source authorship. SA §TS-12.4: English and Greek are authored IN PARALLEL by the safeguarding author."
+          },
+          "el": {
+            "method": "authored",
+            "required_provenance": "authored",
+            "why": "MUST be natively authored, never translated from English. PM §MVP-L4 AC4 and §MVP-S7 AC1 both require Greek AUTHORSHIP. A Greek translation of an English safety string is a different artefact from a Greek safety string and this field is where the difference is enforced rather than hoped for."
+          },
+          "ru": {
+            "method": "translated_briefed",
+            "required_provenance": "translated_professional",
+            "why": "Professional translator BRIEFED ON THE SAFEGUARDING CONTEXT (PM §MVP-L4 AC4). SA §TS-12.4: a translator who does not know a string is an escalation message will produce a grammatically perfect, operationally useless one. Machine translation is prohibited outright at this tier (DV-11) and the brief is a required, separately-recorded stage."
+          }
+        }
+      },
+      "safety.helpline.1466.label": {
+        "emergency_panel": true,
+        "channel": "screen",
+        "channel_note": "Rendered on screen only. No voice channel carries this string today; if one ever does, this field changes and the read-aloud stage becomes blocking for it.",
+        "machine_translation": "prohibited",
+        "runtime_translation": "prohibited",
+        "locales": {
+          "en": {
+            "method": "authored",
+            "required_provenance": "authored",
+            "why": "Source authorship. SA §TS-12.4: English and Greek are authored IN PARALLEL by the safeguarding author."
+          },
+          "el": {
+            "method": "authored",
+            "required_provenance": "authored",
+            "why": "MUST be natively authored, never translated from English. PM §MVP-L4 AC4 and §MVP-S7 AC1 both require Greek AUTHORSHIP. A Greek translation of an English safety string is a different artefact from a Greek safety string and this field is where the difference is enforced rather than hoped for."
+          },
+          "ru": {
+            "method": "translated_briefed",
+            "required_provenance": "translated_professional",
+            "why": "Professional translator BRIEFED ON THE SAFEGUARDING CONTEXT (PM §MVP-L4 AC4). SA §TS-12.4: a translator who does not know a string is an escalation message will produce a grammatically perfect, operationally useless one. Machine translation is prohibited outright at this tier (DV-11) and the brief is a required, separately-recorded stage."
+          }
+        }
+      },
+      "safety.helpline.199.label": {
+        "emergency_panel": true,
+        "channel": "screen",
+        "channel_note": "Rendered on screen only. No voice channel carries this string today; if one ever does, this field changes and the read-aloud stage becomes blocking for it.",
+        "machine_translation": "prohibited",
+        "runtime_translation": "prohibited",
+        "locales": {
+          "en": {
+            "method": "authored",
+            "required_provenance": "authored",
+            "why": "Source authorship. SA §TS-12.4: English and Greek are authored IN PARALLEL by the safeguarding author."
+          },
+          "el": {
+            "method": "authored",
+            "required_provenance": "authored",
+            "why": "MUST be natively authored, never translated from English. PM §MVP-L4 AC4 and §MVP-S7 AC1 both require Greek AUTHORSHIP. A Greek translation of an English safety string is a different artefact from a Greek safety string and this field is where the difference is enforced rather than hoped for."
+          },
+          "ru": {
+            "method": "translated_briefed",
+            "required_provenance": "translated_professional",
+            "why": "Professional translator BRIEFED ON THE SAFEGUARDING CONTEXT (PM §MVP-L4 AC4). SA §TS-12.4: a translator who does not know a string is an escalation message will produce a grammatically perfect, operationally useless one. Machine translation is prohibited outright at this tier (DV-11) and the brief is a required, separately-recorded stage."
+          }
+        }
+      },
+      "safety.sos.confirm": {
+        "emergency_panel": false,
+        "channel": "screen",
+        "channel_note": "Rendered on screen only. No voice channel carries this string today; if one ever does, this field changes and the read-aloud stage becomes blocking for it.",
+        "machine_translation": "prohibited",
+        "runtime_translation": "prohibited",
+        "locales": {
+          "en": {
+            "method": "authored",
+            "required_provenance": "authored",
+            "why": "Source authorship. SA §TS-12.4: English and Greek are authored IN PARALLEL by the safeguarding author."
+          },
+          "el": {
+            "method": "authored",
+            "required_provenance": "authored",
+            "why": "MUST be natively authored, never translated from English. PM §MVP-L4 AC4 and §MVP-S7 AC1 both require Greek AUTHORSHIP. A Greek translation of an English safety string is a different artefact from a Greek safety string and this field is where the difference is enforced rather than hoped for."
+          },
+          "ru": {
+            "method": "translated_briefed",
+            "required_provenance": "translated_professional",
+            "why": "Professional translator BRIEFED ON THE SAFEGUARDING CONTEXT (PM §MVP-L4 AC4). SA §TS-12.4: a translator who does not know a string is an escalation message will produce a grammatically perfect, operationally useless one. Machine translation is prohibited outright at this tier (DV-11) and the brief is a required, separately-recorded stage."
+          }
+        }
+      },
+      "session.checkins_missed": {
+        "emergency_panel": false,
+        "channel": "undetermined",
+        "channel_note": "UNDETERMINED, and fail-closed on purpose. This is an escalation-ladder message, and DV-7 adds an automated VOICE rung with pre-recorded audio per locale (SA §INT-5r). Whether this key is rendered on that rung is T-105/T-107’s determination, not this ticket’s. A record may not be signed off while its channel is undetermined, because the read-aloud pass would silently not apply.",
+        "machine_translation": "prohibited",
+        "runtime_translation": "prohibited",
+        "locales": {
+          "en": {
+            "method": "authored",
+            "required_provenance": "authored",
+            "why": "Source authorship. SA §TS-12.4: English and Greek are authored IN PARALLEL by the safeguarding author."
+          },
+          "el": {
+            "method": "authored",
+            "required_provenance": "authored",
+            "why": "MUST be natively authored, never translated from English. PM §MVP-L4 AC4 and §MVP-S7 AC1 both require Greek AUTHORSHIP. A Greek translation of an English safety string is a different artefact from a Greek safety string and this field is where the difference is enforced rather than hoped for."
+          },
+          "ru": {
+            "method": "translated_briefed",
+            "required_provenance": "translated_professional",
+            "why": "Professional translator BRIEFED ON THE SAFEGUARDING CONTEXT (PM §MVP-L4 AC4). SA §TS-12.4: a translator who does not know a string is an escalation message will produce a grammatically perfect, operationally useless one. Machine translation is prohibited outright at this tier (DV-11) and the brief is a required, separately-recorded stage."
+          }
+        }
+      }
+    }
+  },
   "entries": {
     "en": {
       "safety.emergency.address_prompt": {
