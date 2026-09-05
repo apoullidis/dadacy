@@ -18,6 +18,7 @@
     "intl-messageformat": "11.2.14"
   },
   "devDependencies": {
-    "@formatjs/icu-messageformat-parser": "3.5.17"
+    "@formatjs/icu-messageformat-parser": "3.5.17",
+    "prettier": "3.9.6"
   }
 }
