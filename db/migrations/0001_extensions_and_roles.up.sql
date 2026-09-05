@@ -404,24 +404,47 @@ GRANT  EXECUTE ON FUNCTION public.pg_stat_statements(boolean),
 --       reachable this way, only counts and object names.
 --     * OTHER DATABASES in the cluster — see check (13).
 --
--- PREVENTIVE FOR MOST CLASSES, DETECTIVE FOR TWO. The event trigger below turns this
--- function into a refusal at the moment of the GRANT — but only for object classes whose
--- GRANT actually fires an event trigger. TWO CLUSTER-GLOBAL CLASSES DO NOT FIRE ONE, and
--- both were established by measurement, not by reading the documentation:
+-- PREVENTIVE OR DETECTIVE — AND THE LINE BETWEEN THEM IS A RULE, NOT A LIST.
 --
---   * `GRANT <role> TO answering_service`. PostgreSQL refuses the trigger outright:
---     CREATE EVENT TRIGGER ... WHEN TAG IN ('GRANT ROLE') fails with "event triggers are
---     not supported for GRANT ROLE".
---   * `GRANT ALTER SYSTEM ON PARAMETER <name> TO answering_service`. This one is quieter and
---     is why it is written down here. The tag IS 'GRANT' and the statement is accepted, but
---     no event trigger fires: an UNFILTERED `ON ddl_command_end` trigger placed next to it
---     saw a following CREATE TABLE and did not see this. Parameters are cluster-global, like
---     roles.
+-- The event trigger below turns this function into a refusal at the moment of the GRANT, but
+-- only where the GRANT fires an event trigger at all. The dividing line is exact:
 --
--- Checks (2), (3) and (12) DETECT both whenever this function is called. Neither is
--- PREVENTED. That is the whole reason the scheduled reconciler in the published contract is
--- an obligation rather than a nicety — it is the only thing that closes these two, and it
--- closes them after the fact rather than before.
+--     A grant is PREVENTABLE here if and only if the catalogue holding its ACL is
+--     PER-DATABASE. Grants recorded in a SHARED catalogue fire nothing.
+--
+-- That is a biconditional and it was verified in both directions, which is what makes it
+-- usable: nine of nine per-database grantable classes fire the trigger; the shared ones fire
+-- nothing while a CREATE TABLE issued in the same psql invocation fires normally.
+--
+-- PostgreSQL 18 has exactly ELEVEN shared catalogues. Exactly THREE carry an aclitem[] ACL
+-- column — pg_database, pg_parameter_acl, pg_tablespace — and pg_auth_members is grantable
+-- without one because membership IS the grant. Measured on 18.6:
+--
+--   SELECT c.relname, EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid=c.oid
+--            AND a.atttypid='aclitem[]'::regtype AND NOT a.attisdropped) AS has_acl_column
+--     FROM pg_class c WHERE c.relisshared AND c.relkind='r';
+--   -> pg_database t, pg_parameter_acl t, pg_tablespace t, and eight more with f.
+--
+-- SO THERE ARE FOUR DETECTIVE-ONLY CLASSES AND THERE IS NO FIFTH:
+--   * role membership   — `GRANT app_rw TO answering_service`. PostgreSQL refuses the
+--                         trigger outright: WHEN TAG IN ('GRANT ROLE') fails with "event
+--                         triggers are not supported for GRANT ROLE".      -> checks (2),(3)
+--   * server parameters — `GRANT ALTER SYSTEM ON PARAMETER ...`. Quieter: the tag IS
+--                         'GRANT', the statement is accepted, nothing fires.     -> check (12)
+--   * this database     — `GRANT TEMPORARY ON DATABASE ...`, likewise accepted silently.
+--                         NOTE: 0001's own .down.sql restores PUBLIC's default CONNECT and
+--                         TEMPORARY on the database, which reopens this one. See the note in
+--                         the down file — it is intended, and it is not silent there.  -> (13)
+--   * tablespaces       — `GRANT CREATE ON TABLESPACE ...`, likewise.              -> check (16)
+--
+-- All four are DETECTED whenever this function runs; none is PREVENTED. That is the whole
+-- reason the scheduled reconciler is an obligation and not a nicety: T-033 (tech-lead,
+-- blocked_by T-020) calls this function on a schedule and pages on a raise, and it is the
+-- only thing that closes these four — after the fact rather than before.
+--
+-- The rule is worth more than the list. A future PostgreSQL that adds a shared catalogue
+-- with an ACL column adds a fifth detective-only class, and the query above finds it in one
+-- statement rather than requiring somebody to have been surprised first.
 CREATE OR REPLACE FUNCTION public.assert_answering_service_write_only()
 RETURNS void
 LANGUAGE plpgsql
@@ -673,11 +696,28 @@ BEGIN
 END
 $int10$;
 
+-- This COMMENT is a SHIPPING ARTEFACT, not documentation. It installs into pg_description
+-- in every database this programme creates, \df+ returns it, and after merge only a new
+-- migration can change it. The first version of it claimed the function catches a read path
+-- "by any route" and then listed 7 of the 16 checks — the same overclaim qa-verification
+-- failed this ticket for, surviving in the one place that ships. Keep it an enumeration.
 COMMENT ON FUNCTION public.assert_answering_service_write_only() IS
-  'SA INT-10 boundary check. Raises SQLSTATE KV010 if answering_service can reach data by '
-  'any route: a grant, PUBLIC, role membership, a column grant, a sequence, a SECURITY '
-  'DEFINER function, or a default ACL. Wired to trg_int10_answering_service, and also the '
-  'reconciler query. Ticket T-020.';
+  'SA INT-10 boundary check for role answering_service. Raises SQLSTATE KV010 on any '
+  'privilege that lets it reach data. Uses has_*_privilege(), so it sees reachability '
+  'through PUBLIC and through role membership, not only a GRANT naming the role. '
+  'COVERS every object class GRANT can name: relations, columns, sequences, SECURITY '
+  'DEFINER functions, default ACLs, schema CREATE, large objects, server parameters, this '
+  'database, untrusted procedural languages, foreign servers, foreign data wrappers, '
+  'tablespaces; plus role attributes and role membership in both directions. '
+  'DOES NOT COVER, deliberately: types and domains (PUBLIC USAGE is required and conveys '
+  'no data); trusted languages (inert without the schema CREATE this rejects); the system '
+  'catalogues, which PostgreSQL makes world-readable — pg_stat_user_tables leaks row '
+  'counts and arrival rates but no row data; and other databases of the cluster. '
+  'PREVENTIVE only where the GRANT fires an event trigger, which is exactly the '
+  'per-database catalogues. DETECTIVE ONLY for the four grantable shared catalogues — '
+  'pg_database, pg_parameter_acl, pg_tablespace and pg_auth_members (role membership) — '
+  'which fire nothing. A scheduled reconciler (T-033) is what closes those four. '
+  'Wired to event trigger trg_int10_answering_service. Ticket T-020.';
 
 CREATE OR REPLACE FUNCTION public.trg_assert_answering_service_write_only()
 RETURNS event_trigger

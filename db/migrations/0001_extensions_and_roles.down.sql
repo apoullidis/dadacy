@@ -42,6 +42,30 @@ REVOKE ALL ON SCHEMA public FROM app_rw, app_admin_rw, app_safety_rw, app_ddl, a
 -- exactly that, not the pre-15 form.
 GRANT USAGE ON SCHEMA public TO PUBLIC;
 
+-- ---------------------------------------------------------------------------
+-- READ THIS BEFORE RUNNING A ROLLBACK. The GRANT below reopens an INT-10 class.
+-- ---------------------------------------------------------------------------
+-- Restoring PUBLIC's default CONNECT + TEMPORARY is the correct thing for a down migration
+-- to do — it is the state PostgreSQL ships and the state a fresh database is in. But while
+-- `answering_service` still exists (it is dropped a few statements below, and only in THIS
+-- database's transaction), PUBLIC includes it, so between this statement and the DROP ROLE
+-- the principal holds TEMPORARY on the database.
+--
+-- It happens silently. Database grants live in pg_database, a SHARED catalogue, and shared
+-- catalogues fire no event trigger — so the guard cannot refuse this and would not have
+-- refused it even if it were still installed (it is dropped in Section 1 above). It is one
+-- of the four detective-only classes enumerated in the up file's Section 5.
+-- `assert_answering_service_write_only()` reports it as
+-- `answering_service holds TEMPORARY on database kinvara` if called in that window.
+--
+-- Found by the tech-lead reviewer running this file with the guard live. Judged CORRECT
+-- rather than fixed, for two reasons: a down migration that declined to restore PostgreSQL's
+-- own defaults would leave a database that is not equivalent to a fresh one, which is the
+-- property the rest of this file exists to preserve; and TEMPORARY is a resource path, not a
+-- read path — a temp table discloses nothing the principal did not already put there.
+-- Recorded rather than left to be rediscovered: a rollback should not surprise the person
+-- running it, and "the boundary reopens for three statements" is exactly the kind of thing
+-- that is alarming when found and unremarkable when expected.
 DO $dbgrants$
 DECLARE
   db text := quote_ident(current_database());
