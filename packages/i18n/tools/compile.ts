@@ -318,6 +318,49 @@ function walk(
   }
 }
 
+/**
+ * QA-F2, one level down: `{count, plural, one {} other {#}}` is the same defect
+ * inside a plural or select option. The option exists, the message parses, and
+ * that branch renders nothing. Checked structurally rather than by rendering,
+ * because rendering would need a count for every category in every locale.
+ */
+function assertNoBlankBranches(
+  elements: readonly MessageFormatElement[],
+  where: string,
+  problems: string[],
+  path = '',
+): void {
+  for (const el of elements) {
+    if (el.type !== TYPE.plural && el.type !== TYPE.select) continue;
+    const kind = el.type === TYPE.plural ? 'plural' : 'select';
+    for (const [option, body] of Object.entries(el.options)) {
+      if (!hasContent(body.value)) {
+        problems.push(
+          `${where}: the '${option}' branch of ${kind} '${el.value}'${path} is empty and renders nothing. A blank branch is valid ICU and no type or locale gate can see it.`,
+        );
+      }
+      assertNoBlankBranches(
+        body.value,
+        where,
+        problems,
+        `${path} > ${kind} '${el.value}'/${option}`,
+      );
+    }
+  }
+}
+
+/** True when these elements can render something a reader would see. */
+function hasContent(elements: readonly MessageFormatElement[]): boolean {
+  return elements.some((el) => {
+    if (el.type === TYPE.literal) return el.value.trim() !== '';
+    if (el.type === TYPE.plural || el.type === TYPE.select) {
+      return Object.values(el.options).some((o) => hasContent(o.value));
+    }
+    // An argument, a pound, a number/date/time — all substitute a value.
+    return true;
+  });
+}
+
 function paramType(p: ParamKind): string {
   switch (p.kind) {
     case 'string':
@@ -558,6 +601,17 @@ export async function compile(options: CompileOptions = {}): Promise<CompileResu
           );
           continue;
         }
+        if (value.trim() === '') {
+          // QA-F2. `""` is valid ICU: it parses, compiles, typechecks and renders
+          // `""`. The strict-tier completeness type checks that a PROPERTY exists,
+          // not that it has content, so a blank `ru` SOS confirmation would ship
+          // with every gate green. Presence is not content, and this is the only
+          // layer that can tell the difference.
+          problems.push(
+            `catalogues/${locale}/${ns}.json: '${key}' is empty. A blank string is valid ICU and renders as nothing, so no type and no locale gate can catch it — a blank safety_critical key would ship green. Delete the key or give it content.`,
+          );
+          continue;
+        }
         perLocale.set(`${ns}.${key}`, value);
       }
     }
@@ -617,6 +671,10 @@ export async function compile(options: CompileOptions = {}): Promise<CompileResu
       }
       const params = new Map<string, ParamKind>();
       walk(ast, params, where, problems);
+      assertNoBlankBranches(ast, where, problems);
+      if (!hasContent(ast)) {
+        problems.push(`${where}: renders nothing. See the empty-string refusal above (QA-F2).`);
+      }
       byNamespace.get(ns)?.push({ fqk, localKey, ast, params });
     }
     compiled.set(locale, byNamespace);

@@ -74,33 +74,112 @@ test('the register covers every safety_critical key in every enabled locale', ()
   }
 });
 
+test('every safety_critical record is either signed off or explicitly waived (QA-F4)', () => {
+  // The direction that matters, and the one the earlier `deepEqual` had
+  // backwards. Asserting `waiver.keys === keysAtTier('safety_critical')` turned
+  // red the moment ANY ticket added a safety key, and the cheapest way back to
+  // green was to append that key to a waiver it was never opened for. It also
+  // made partial delivery by T-049 impossible: signing off three keys of eight
+  // would have broken the suite.
+  //
+  // The property is per record, not per list: for every safety_critical key in
+  // every enabled locale, the record is either genuinely signed off, or its key
+  // is covered by the waiver. Nothing may be neither.
+  const register = loadReviewRegister();
+  const waived = new Set(register.pending_pipeline?.keys ?? []);
+  const unaccounted: string[] = [];
+  for (const locale of enabledLocales()) {
+    for (const key of keysAtTier('safety_critical')) {
+      const record: ReviewRecord | undefined = register.entries[locale.code]?.[key];
+      const signedOff =
+        record !== undefined &&
+        record.status === 'signed_off' &&
+        record.provenance !== 'placeholder' &&
+        record.reviewed_by !== null &&
+        record.reviewed_at !== null;
+      if (!signedOff && !waived.has(key)) unaccounted.push(`${locale.code}/${key}`);
+    }
+  }
+  assert.deepEqual(
+    unaccounted,
+    [],
+    'safety_critical copy that is neither DSL-signed-off nor covered by the pending-pipeline waiver',
+  );
+});
+
+test('the waiver may only cover safety_critical keys (QA-F4)', () => {
+  const register = loadReviewRegister();
+  const safety = new Set<string>(keysAtTier('safety_critical'));
+  const stray = (register.pending_pipeline?.keys ?? []).filter((k) => !safety.has(k));
+  assert.deepEqual(stray, [], 'the waiver covers keys that are not safety_critical');
+});
+
+test('the pending-pipeline waiver is anchored to a fixed date, not to its own interval (QA-F3)', () => {
+  // The earlier assertion checked the INTERVAL between `opened_at` and
+  // `expected_by`, both read from the same file it was policing — so moving both
+  // dates forward renewed the waiver indefinitely and stayed green. A check
+  // derived from the same source as the thing it checks can only ever confirm it
+  // (PROTOCOL §5.1).
+  //
+  // The anchor is written HERE, as a literal, and is not read from review.json.
+  // T-040 opened this waiver on 2026-09-05 against SD §DH-5's six-week external
+  // lead time. Extending it past that date is a schedule decision that belongs to
+  // the orchestrator (BOARD RK-2), and it must cost an edit to this line.
+  const ANCHOR = Date.parse('2026-10-17T23:59:59Z');
+  const register = loadReviewRegister();
+  const waiver = register.pending_pipeline;
+  assert.ok(waiver !== null, 'placeholder safety copy must be covered by an explicit waiver');
+  assert.equal(waiver.ticket, 'T-049');
+
+  const expected = Date.parse(`${waiver.expected_by}T23:59:59Z`);
+  assert.ok(Number.isFinite(expected), `expected_by is not a date: ${waiver.expected_by}`);
+  assert.ok(
+    expected <= ANCHOR,
+    `the waiver expires ${waiver.expected_by}, past the 2026-10-17 anchor this test pins. ` +
+      'Renewing the safety-copy waiver is an orchestrator decision (RK-2), not a file edit.',
+  );
+  assert.ok(Date.parse(waiver.opened_at) < expected, 'opened_at must precede expected_by');
+});
+
+test('the waiver self-closes: once it expires, no placeholder may remain (QA-F3)', () => {
+  // What "self-closing" actually means, asserted rather than described. Before
+  // the date this passes silently; after it, the suite goes red on the real
+  // property — placeholder safety copy still in the tree — rather than on the
+  // date itself.
+  const register = loadReviewRegister();
+  const waiver = register.pending_pipeline;
+  if (waiver === null) return;
+  if (Date.now() <= Date.parse(`${waiver.expected_by}T23:59:59Z`)) return;
+
+  const placeholders: string[] = [];
+  for (const locale of enabledLocales()) {
+    for (const key of keysAtTier('safety_critical')) {
+      if (register.entries[locale.code]?.[key]?.provenance === 'placeholder') {
+        placeholders.push(`${locale.code}/${key}`);
+      }
+    }
+  }
+  assert.deepEqual(
+    placeholders,
+    [],
+    `the T-049 safety-copy waiver expired on ${waiver.expected_by} and this copy is still placeholder. ` +
+      'It must not ship. Escalate to the orchestrator (BOARD RK-2).',
+  );
+});
+
 test('the safety copy is honestly recorded as unreviewed placeholder', () => {
-  // This test asserts the CURRENT, correct state and will be deleted by T-049
-  // when real reviewed copy lands. It exists so that "placeholder" cannot
-  // quietly become "shipped" without a test changing.
+  // Asserts the CURRENT state, and T-049 deletes it when real copy lands, so
+  // "placeholder" cannot quietly become "shipped" without a test changing.
+  // Note the guards above do NOT depend on this: they are written so that
+  // deleting this test leaves the coverage, waiver-scope, anchor and
+  // self-closing properties intact.
   const register = loadReviewRegister();
   for (const locale of enabledLocales()) {
     for (const key of keysAtTier('safety_critical')) {
-      const record = register.entries[locale.code]?.[key];
+      const record: ReviewRecord | undefined = register.entries[locale.code]?.[key];
       assert.equal(record?.status, 'pending_review', `${locale.code}/${key}`);
       assert.equal(record?.provenance, 'placeholder');
       assert.equal(record?.reviewed_by, null);
     }
   }
-});
-
-test('the pending-pipeline waiver is dated, owned, and expires', () => {
-  const register = loadReviewRegister();
-  const waiver = register.pending_pipeline;
-  assert.ok(waiver !== null, 'placeholder safety copy must be covered by an explicit waiver');
-  assert.equal(waiver.ticket, 'T-049');
-  const opened = Date.parse(waiver.opened_at);
-  const expected = Date.parse(waiver.expected_by);
-  assert.ok(Number.isFinite(opened) && Number.isFinite(expected));
-  const weeks = (expected - opened) / (7 * 24 * 3600 * 1000);
-  assert.ok(
-    weeks >= 5.5 && weeks <= 6.5,
-    `expected the six-week lead time, got ${weeks.toFixed(1)} weeks`,
-  );
-  assert.deepEqual([...waiver.keys].sort(), [...keysAtTier('safety_critical')].sort());
 });

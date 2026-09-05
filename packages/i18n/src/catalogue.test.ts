@@ -19,6 +19,7 @@ import {
   allKeys,
 } from './tiers.ts';
 import type { MessageKey } from './tiers.ts';
+import { loadReviewRegister } from './review.ts';
 
 const EN = assertLocale('en');
 const EL = assertLocale('el');
@@ -95,9 +96,54 @@ test('every key is tiered, and the strict set is derived rather than listed', ()
   assert.ok(strictKeys().every((k) => isStrictTier(tierOf(k))));
 });
 
-test('the emergency panel and the 112 script are safety_critical, not transactional', () => {
-  // PM §MVP-IS5 AC7. If one of these ever slips to `operational` it becomes
-  // English-fallback-able, and no test outside this line would notice.
+test('QA-F5 — every key in the `safety` namespace is safety_critical', () => {
+  // Rule, not a list. The namespace comes from the catalogue file layout and the
+  // tier comes from tiers.json — two different sources, so this cannot agree
+  // with a misreading of either. Adding safety.<anything> tiers it correctly or
+  // fails here; re-tiering one downward fails here.
+  const misfiled = allKeys()
+    .filter((k) => k.startsWith('safety.'))
+    .filter((k) => tierOf(k) !== 'safety_critical');
+  assert.deepEqual(misfiled, [], 'keys in the `safety` namespace tiered below safety_critical');
+});
+
+test('QA-F5 — a key with a DSL review record may not be tiered below safety_critical', () => {
+  // The durable half, and the one that survives T-049.
+  //
+  // `review.json` is written by humans — a DSL, a safeguarding author, a
+  // translator — and is a genuinely different source from `tiers.json`. A key
+  // that has review records is a key somebody signed off as safety copy, so
+  // lowering its tier without also removing those records is a contradiction
+  // between two independently-maintained files, and that is what is detected.
+  //
+  // This catches `session.checkins_missed`, which lives outside the `safety`
+  // namespace and was previously guarded only by the literal list below and by
+  // an assertion T-049 is expected to delete.
+  const register = loadReviewRegister();
+  const reviewed = new Set<string>();
+  for (const perLocale of Object.values(register.entries)) {
+    for (const key of Object.keys(perLocale)) reviewed.add(key);
+  }
+  assert.ok(reviewed.size > 0, 'review.json must not be empty while safety copy exists');
+
+  const demoted = [...reviewed]
+    .filter((k): k is MessageKey => (allKeys() as readonly string[]).includes(k))
+    .filter((k) => tierOf(k) !== 'safety_critical')
+    .sort();
+  assert.deepEqual(
+    demoted,
+    [],
+    'these keys carry review records in review.json but are no longer tiered safety_critical. ' +
+      "Lowering a reviewed safety string's tier means removing its review records in the same commit.",
+  );
+});
+
+test('the emergency panel, the 112 script and the missed-check-in ladder are safety_critical', () => {
+  // PM §MVP-IS5 AC7 and the escalation ladder, named literally as a floor. The
+  // two rules above are the general guards; this is the belt-and-braces list for
+  // the keys where a demotion is a safeguarding incident rather than a defect.
+  // `session.checkins_missed` is here because it is the one safety_critical key
+  // outside the `safety` namespace.
   for (const key of [
     'safety.emergency.call_112.label',
     'safety.emergency.call_112.script',
@@ -106,6 +152,7 @@ test('the emergency panel and the 112 script are safety_critical, not transactio
     'safety.helpline.1466.label',
     'safety.helpline.199.label',
     'safety.sos.confirm',
+    'session.checkins_missed',
   ] as const) {
     assert.equal(tierOf(key), 'safety_critical', key);
   }

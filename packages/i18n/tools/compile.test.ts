@@ -57,6 +57,25 @@ test('negative — a key that exists only in a translation is an orphan', async 
   );
 });
 
+test('negative — a blank string, and a blank plural branch, are refused (QA-F2)', async () => {
+  // `""` is valid ICU. It parses, compiles, typechecks and renders `""`. The
+  // strict-tier completeness type checks that a PROPERTY EXISTS, not that it has
+  // content, so a blank Russian SOS confirmation would otherwise ship with every
+  // gate green — and `gate:safety-review-currency` would not see it either while
+  // the key sits inside the T-049 waiver. The compiler is the only layer that can
+  // tell presence from content.
+  const problems = await compileFixture('blank-safety-string');
+  assert.equal(problems.length, 2, JSON.stringify(problems, null, 2));
+  assert.ok(
+    problems.some((p) => /'sos\.confirm' is empty/.test(p)),
+    'an empty message must be refused',
+  );
+  assert.ok(
+    problems.some((p) => /the 'many' branch of plural 'count' is empty/.test(p)),
+    'an empty plural branch must be refused too — the same defect one level down',
+  );
+});
+
 test('the real catalogues compile, and every strict-tier key is emitted', async () => {
   const result = await compile({ check: true });
   assert.deepEqual(

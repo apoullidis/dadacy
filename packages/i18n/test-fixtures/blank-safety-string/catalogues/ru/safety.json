@@ -1,0 +1,5 @@
+{
+  "//": "Two blank safety_critical strings. Both are valid ICU, both compile, both typecheck, and both render nothing — the first as an empty message, the second as an empty plural branch that only fires on `many` counts. Presence is not content (QA-F2).",
+  "sos.confirm": "",
+  "checkins_missed": "{count, plural, one {Пропущена # отметка} few {Пропущено # отметки} many {} other {Пропущено # отметки}}"
+}

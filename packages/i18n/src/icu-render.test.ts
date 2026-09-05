@@ -25,6 +25,7 @@ import assert from 'node:assert/strict';
 import { messages as en } from '../compiled/en/index.ts';
 import { messages as el } from '../compiled/el/index.ts';
 import { messages as ru } from '../compiled/ru/index.ts';
+import { pluralCategories, assertLocale } from './registry.ts';
 
 const SITTER = 'Άδα Χριστοδούλου';
 /** Fixed instant so the date argument is deterministic; the toolbox runs with TZ=UTC. */
@@ -33,8 +34,16 @@ const DATE = new Date(Date.UTC(2026, 8, 5, 14, 30, 0));
 /* ------------------------------------------------------- Russian: four categories */
 
 /**
- * `category` is the CLDR category the count must select, and it is stated so a
- * failure says *which rule broke* rather than only which string differed.
+ * `category` is the CLDR category the count must select. It is **not trusted**:
+ * every row is checked against `Intl.PluralRules`, which is the same CLDR data
+ * ICU selects with, so the column is an independent oracle rather than a second
+ * hand-written statement of the same belief. A check derived from the same
+ * reading as the thing it checks can only ever confirm it (PROTOCOL §5.1).
+ *
+ * The counts are the SD §QD-2 boundary set — 0, 1, 2, 5, 11, 21, 22, 101, 111,
+ * 1.5 — plus the ones the role file names (3, 4, 23, 24, 102) and the teens and
+ * hundreds where `few`/`many` change hands (12–14, 25, 112–114, 121, 122, 212,
+ * 1002, 1005, 1013).
  */
 const RU_CHECKINS: readonly [count: number, category: string, expected: string][] = [
   [0, 'many', 'Пропущено 0 отметок'],
@@ -44,15 +53,46 @@ const RU_CHECKINS: readonly [count: number, category: string, expected: string][
   [4, 'few', 'Пропущено 4 отметки'],
   [5, 'many', 'Пропущено 5 отметок'],
   [11, 'many', 'Пропущено 11 отметок'],
+  [12, 'many', 'Пропущено 12 отметок'],
+  [13, 'many', 'Пропущено 13 отметок'],
+  [14, 'many', 'Пропущено 14 отметок'],
   [21, 'one', 'Пропущена 21 отметка'],
   [22, 'few', 'Пропущено 22 отметки'],
   [23, 'few', 'Пропущено 23 отметки'],
   [24, 'few', 'Пропущено 24 отметки'],
+  [25, 'many', 'Пропущено 25 отметок'],
   [101, 'one', 'Пропущена 101 отметка'],
   [102, 'few', 'Пропущено 102 отметки'],
   [111, 'many', 'Пропущено 111 отметок'],
+  [112, 'many', 'Пропущено 112 отметок'],
+  [113, 'many', 'Пропущено 113 отметок'],
+  [114, 'many', 'Пропущено 114 отметок'],
+  [121, 'one', 'Пропущена 121 отметка'],
+  [122, 'few', 'Пропущено 122 отметки'],
+  [212, 'many', 'Пропущено 212 отметок'],
+  [1002, 'few', 'Пропущено 1\u00a0002 отметки'],
+  [1005, 'many', 'Пропущено 1\u00a0005 отметок'],
+  [1013, 'many', 'Пропущено 1\u00a0013 отметок'],
   [1.5, 'other', 'Пропущено 1,5 отметки'],
 ];
+// Note the four-digit rows: Russian groups thousands with U+00A0, a NO-BREAK
+// SPACE, and separates decimals with a comma. Both come from Intl, and both are
+// the kind of thing a hand-rolled formatter gets wrong invisibly.
+
+test('the declared categories match Intl.PluralRules, not our reading of CLDR', () => {
+  const rules = new Intl.PluralRules('ru');
+  for (const [count, category] of RU_CHECKINS) {
+    assert.equal(
+      rules.select(count),
+      category,
+      `ru count=${String(count)}: the table claims '${category}'`,
+    );
+  }
+  const elRules = new Intl.PluralRules('el');
+  for (const [count, category] of EL_CHECKINS_CATEGORIES) {
+    assert.equal(elRules.select(count), category, `el count=${String(count)}`);
+  }
+});
 
 test('ru — session.checkins_missed selects all four CLDR categories at their boundaries', () => {
   for (const [count, category, expected] of RU_CHECKINS) {
@@ -82,6 +122,17 @@ test('ru — the four categories are mutually distinct at their boundaries', () 
     4,
     `expected four distinct forms, got ${JSON.stringify(forms)}`,
   );
+});
+
+test('every category the ru registry declares is reachable from some count', () => {
+  // Derived rather than listed: whatever `pluralCategories('ru')` says, a count
+  // must exist in the table that selects it. If a fourth locale is added with a
+  // category set we have never seen, this fails rather than silently passing.
+  const rules = new Intl.PluralRules('ru');
+  const reachable = new Set(RU_CHECKINS.map(([count]) => rules.select(count)));
+  for (const category of pluralCategories(assertLocale('ru'))) {
+    assert.ok(reachable.has(category), `no count in the table selects ru '${category}'`);
+  }
 });
 
 const RU_BOOKINGS: readonly [number, string][] = [
@@ -132,6 +183,18 @@ test('ru — gender agreement is required in Russian too, not only in Greek', ()
     assert.equal(ru['common.dossier.verified']({ grammaticalRef, date: DATE }), expected);
   }
 });
+
+/** Greek category expectations, checked against Intl.PluralRules in the same test as Russian. */
+const EL_CHECKINS_CATEGORIES: readonly [number, string][] = [
+  [0, 'other'],
+  [1, 'one'],
+  [2, 'other'],
+  [5, 'other'],
+  [11, 'other'],
+  [21, 'other'],
+  [101, 'other'],
+  [1.5, 'other'],
+];
 
 const EL_CHECKINS: readonly [number, string][] = [
   [0, '0 χαμένες καταγραφές'],

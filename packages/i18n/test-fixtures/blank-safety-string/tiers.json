@@ -1,0 +1,3 @@
+{
+  "tiers": { "safety.sos.confirm": "safety_critical", "safety.checkins_missed": "safety_critical" }
+}

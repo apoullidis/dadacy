@@ -1,0 +1,4 @@
+{
+  "sos.confirm": "Hold to send an SOS. An operator will call you.",
+  "checkins_missed": "{count, plural, one {# missed check-in} other {# missed check-ins}}"
+}
