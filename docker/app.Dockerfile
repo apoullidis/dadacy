@@ -210,6 +210,21 @@ COPY --from=build --chown=10001:10001 /srv/kinvara/packages ./packages
 COPY --from=build --chown=10001:10001 /srv/kinvara/apps/${APP} ./apps/${APP}
 COPY --chown=10001:10001 docker/app-runtime/ ./app-runtime/
 
+# THE GUARD, RUN AGAIN — HERE, AFTER THE LAST COPY, IN THE STAGE THAT SHIPS.
+#
+# It also runs in `prod-deps`, where it fails earlier and points straight at
+# `FROM deps`. That is a convenience. THIS is the one that proves the claim,
+# and the difference is not academic: QA built the counter-example. A guard
+# that only runs in `prod-deps` proves a property of `prod-deps`, and ONE
+# `COPY --from=deps` in this stage puts 23.6 MB of typescript into
+# kinvara/core:dev with the guard green and the gate green. Measured.
+#
+# So it runs last, over the tree that is actually in the image. Any COPY added
+# below it would escape it, and `gate:app-images` fails a Dockerfile whose
+# target stage has a COPY after this line — the static check and this runtime
+# check guard each other's blind spot rather than sharing one.
+RUN node /srv/kinvara/app-runtime/assert-no-dev-deps.mjs /srv/kinvara
+
 USER 10001:10001
 
 EXPOSE ${APP_PORT}

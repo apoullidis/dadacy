@@ -52,17 +52,29 @@ const BASE_FILE = 'docker/compose.yml';
 const VERIFY_FILE = 'docker/compose.verify.yml';
 /**
  * The Dockerfile the pin/derivation checks in §1 read. It is NOT the set §6
- * runs over — those read `build.dockerfile` PER SERVICE, exactly as §2 does.
+ * runs over — that set is `dockerfilesInUse`, derived in §2a from every
+ * OVERLAY service declaring a `build.dockerfile`.
  *
- * QA caught this. The first version pinned §6 to this constant; repointing
- * `web` at a second Dockerfile with `USER root`, a shell-form ENTRYPOINT and
- * no HEALTHCHECK left the gate GREEN. And T-018's own published contract §6
- * explicitly invites that split for the Next.js apps — so the gate stopped
- * checking at exactly the moment someone did the thing the contract told them
- * to do. A check that disarms itself when the documented next step is taken is
- * worse than no check, because its green reads as coverage.
+ * Two rounds of QA on this one line of design, and both are worth keeping:
+ *   round 1 — §6 was pinned to this constant. Repointing `web` at a second
+ *             Dockerfile with USER root, a shell-form ENTRYPOINT and no
+ *             HEALTHCHECK left the gate GREEN — and T-018's own contract §6
+ *             invites exactly that split for the Next.js apps.
+ *   round 2 — §6 was then pinned to the `built-by: T-018` label set, which is
+ *             the same defect in a different hat. An UNLABELLED overlay
+ *             service with a build.dockerfile was checked by nothing, and the
+ *             gate still printed `dockerfiles checked 1` as though it had
+ *             enumerated.
+ * A check that disarms itself when a documented next step is taken is worse
+ * than no check, because its green is read as coverage.
  */
 const PRIMARY_DOCKERFILE = 'docker/app.Dockerfile';
+const CHAOS_FILE = 'docker/compose.chaos.yml';
+/**
+ * Every overlay. §6's set of Dockerfiles is derived from ALL of these — see
+ * `dockerfilesInUse` for why it is not derived from the `built-by` label.
+ */
+const OVERLAY_FILES = [VERIFY_FILE, CHAOS_FILE];
 const BUILT_BY = 'T-018';
 
 const failures: string[] = [];
@@ -177,7 +189,30 @@ if (svcScript === null) {
 // 2. Every service compose.yml says T-018 builds is built by the overlay.
 // ---------------------------------------------------------------------------
 const declaredByLabel: string[] = [];
-/** dockerfile path -> the services built from it. Filled by §2, consumed by §6. */
+
+/**
+ * dockerfile path -> `<file>:<service>[:<target>]` for every OVERLAY service
+ * that declares a `build.dockerfile`, whatever its labels say.
+ *
+ * DERIVED FROM THE OVERLAYS, NOT FROM `declaredByLabel`, and that is QA's
+ * finding one level up from the previous one. The first version of §6 pinned
+ * its checks to a constant path; the second pinned them to the label set,
+ * which is the same defect wearing a different hat. QA added an overlay
+ * service with a `build.dockerfile`, `USER root`, a shell-form ENTRYPOINT, no
+ * HEALTHCHECK and no guard, and left it unlabelled: GATE PASS, with the gate
+ * printing `dockerfiles checked 1` as though it had enumerated something.
+ *
+ * `compose.chaos.yml` is in the set for a concrete reason: T-018's own
+ * published contract hands that file to T-126, and a built sidecar — a proxy
+ * that throttles the network, say — is exactly what lands there.
+ *
+ * compose.yml's own builds (postgres, fake-telephony) are NOT in the set. That
+ * is not an omission: they are T-017's images, they are not built from the
+ * pnpm workspace, and the application-image contract below — a non-root uid of
+ * this shape, a Node healthcheck, the devDependency guard — does not describe
+ * them. The boundary is "an image an OVERLAY builds", which is the boundary
+ * this ticket and T-126 own.
+ */
 const dockerfilesInUse = new Map<string, string[]>();
 if (base !== null) {
   for (const [name, svc] of Object.entries(base)) {
@@ -206,9 +241,6 @@ if (verify !== null) {
     const df = String(build['dockerfile'] ?? '');
     if (df === '' || !fs.existsSync(path.join(REPO_ROOT, df))) {
       failures.push(`${VERIFY_FILE}: '${name}' names dockerfile '${df}', which does not exist`);
-    } else {
-      // §6 runs over THIS set, not over a constant — see PRIMARY_DOCKERFILE.
-      dockerfilesInUse.set(df, [...(dockerfilesInUse.get(df) ?? []), name]);
     }
     const args = build['args'];
     if (!isRecord(args) || typeof args['APP'] !== 'string' || args['APP'] === '') {
@@ -222,6 +254,34 @@ if (verify !== null) {
           `may try the registry first for an image only this repository can produce.`,
       );
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 2a. The Dockerfiles §6 checks: EVERY overlay service that declares one.
+// ---------------------------------------------------------------------------
+for (const rel of OVERLAY_FILES) {
+  const svcs = servicesOf(rel);
+  if (svcs === null) continue; // already reported
+  for (const [name, svc] of Object.entries(svcs)) {
+    const build = svc['build'];
+    if (!isRecord(build)) continue;
+    const df = String(build['dockerfile'] ?? '');
+    if (df === '') {
+      failures.push(
+        `${rel}: '${name}' declares build: with no dockerfile:. This gate cannot then ` +
+          `check the image contract of something this repository builds, and a build with ` +
+          `no dockerfile: silently means './Dockerfile' relative to the context.`,
+      );
+      continue;
+    }
+    if (!fs.existsSync(path.join(REPO_ROOT, df))) {
+      failures.push(`${rel}: '${name}' names dockerfile '${df}', which does not exist`);
+      continue;
+    }
+    const target = typeof build['target'] === 'string' ? build['target'] : '';
+    const label = `${rel.replace('docker/', '')}:${name}${target === '' ? '' : `→${target}`}`;
+    dockerfilesInUse.set(df, [...(dockerfilesInUse.get(df) ?? []), label]);
   }
 }
 
@@ -316,6 +376,92 @@ for (const name of declaredByLabel) {
   }
 }
 
+/**
+ * The instruction lines of one stage of a Dockerfile.
+ *
+ * WHY THE CHECK BELOW HAS TO KNOW ABOUT STAGES. The previous version looked
+ * for a line matching /^RUN.*assert-no-dev-deps/ anywhere in the file. QA
+ * showed two ways past that, and only the first is adversarial:
+ *   - `RUN echo skipping assert-no-dev-deps.mjs` — a mention, not a run;
+ *   - moving the real RUN into a stage the target does not depend on. That is
+ *     an ORDINARY REFACTOR, not sabotage, and it left the gate green while the
+ *     guard never executed. Present-but-unreachable is the exact failure mode
+ *     the guard exists to prevent.
+ *
+ * So the check is: the guard must run IN THE TARGET STAGE — the one compose
+ * names in `build.target`, or the last stage if it names none — and no COPY or
+ * ADD may follow it there. Anything copied in after it is outside what it saw,
+ * and `COPY --from=deps ./node_modules` is precisely how QA put 23.6 MB of
+ * typescript back into the image with an earlier version of the guard green.
+ */
+interface Stage {
+  readonly name: string;
+  readonly lines: readonly string[];
+}
+
+/** Strip a Dockerfile comment line and any trailing shell comment. */
+const dfCode = (line: string): string => (line.split('#')[0] ?? '').trim();
+
+/**
+ * Does this instruction EXECUTE the devDependency guard?
+ *
+ * "Contains the filename" is not the question, and asking it that way was
+ * wrong twice. `text.includes(...)` was satisfied by the COPY line;
+ * `/^RUN.*assert-no-dev-deps\.mjs/` is satisfied by
+ * `RUN echo skipping assert-no-dev-deps.mjs`, which QA wrote and which
+ * passed. So: split the RUN's body on shell operators and require some
+ * command whose FIRST TOKEN is `node` and which names the script. `echo …`
+ * and `echo node …` both fail that; `true && node …assert-no-dev-deps.mjs`
+ * passes it, correctly, because it runs.
+ *
+ * WHAT THIS CANNOT DO. Deciding whether an arbitrary shell line executes a
+ * program is not a thing a regex settles, and this does not claim to: a
+ * `RUN node -e '0' …assert-no-dev-deps.mjs` would satisfy it. It catches the
+ * ways the guard ordinarily stops running — deleted, replaced by a mention,
+ * moved into a stage the target does not build, or outrun by a later COPY —
+ * and the thing that actually observes the guard running is the build, which
+ * prints `assert-no-dev-deps: OK — none of them is present` once per image.
+ */
+const runsGuard = (line: string): boolean => {
+  if (!/^RUN\b/i.test(line)) return false;
+  const body = line.replace(/^RUN\s+/i, '').replace(/^--mount=\S+\s+/, '');
+  return body
+    .split(/&&|\|\||;|\|/)
+    .map((seg) => seg.trim())
+    .some((seg) => /^node\b/.test(seg) && /(^|[\s/])assert-no-dev-deps\.mjs(\s|$)/.test(seg));
+};
+
+/** Split a Dockerfile into stages, joining continuation lines. */
+function stagesOf(text: string): Stage[] {
+  const joined: string[] = [];
+  let acc = '';
+  for (const raw of text.split('\n')) {
+    const code = dfCode(raw);
+    if (code === '') continue;
+    if (code.endsWith('\\')) {
+      acc += `${code.slice(0, -1)} `;
+      continue;
+    }
+    joined.push((acc + code).trim());
+    acc = '';
+  }
+  if (acc.trim() !== '') joined.push(acc.trim());
+
+  const stages: Stage[] = [];
+  let current: { name: string; lines: string[] } | null = null;
+  for (const line of joined) {
+    const from = /^FROM\s+(\S+)(?:\s+AS\s+(\S+))?$/i.exec(line);
+    if (from !== null) {
+      if (current !== null) stages.push(current);
+      current = { name: from[2] ?? `#${String(stages.length)}`, lines: [] };
+      continue;
+    }
+    if (current !== null) current.lines.push(line);
+  }
+  if (current !== null) stages.push(current);
+  return stages;
+}
+
 // ---------------------------------------------------------------------------
 // 6. The image contract itself — over EVERY Dockerfile a service is actually
 //    built from, derived in §2 from `build.dockerfile`, never from a constant.
@@ -365,22 +511,50 @@ for (const [rel, users] of [...dockerfilesInUse].sort(([a], [b]) => a.localeComp
   // leak is invisible from outside until someone measures a layer — which is
   // exactly how 112.2 MB of devDependencies shipped in T-018's first version.
   // Every Dockerfile in use must run it, so a NEW one cannot omit it quietly.
-  // Match a RUN that EXECUTES it, with BOTH kinds of comment stripped: a
-  // whole-line Dockerfile `#`, and a shell `#` inside the RUN. `text.includes`
-  // was the first version and the COPY line alone satisfied it; stripping only
-  // whole-line comments was the second, and `RUN true # ...assert-no-dev-deps.mjs`
-  // satisfied that. Negative case 13 caught both. The check has to name the
-  // instruction that runs, not the filename that appears.
-  const runsGuard = text
-    .split('\n')
-    .map((l) => l.split('#')[0] ?? '')
-    .some((l) => /^RUN\b.*assert-no-dev-deps\.mjs/.test(l.trim()));
-  if (!runsGuard) {
-    failures.push(
-      `${who}: does not run docker/app-runtime/assert-no-dev-deps.mjs. That build-time ` +
-        `assertion is the only thing keeping devDependencies out of the runtime tree, and ` +
-        `a Dockerfile added later must carry it too.`,
+  // --- the devDependency guard, stage-aware --------------------------------
+  //
+  // Only for a Dockerfile that installs from the pnpm workspace. That
+  // condition is read from the file itself, not from a list of which images
+  // are "app" images: a chaos sidecar built from some other base has no
+  // node_modules and no devDependencies, and demanding the guard of it would
+  // be a rule nobody could satisfy honestly.
+  const buildsFromWorkspace = /pnpm-lock\.yaml|pnpm\s+(install|--filter)/.test(text);
+  if (buildsFromWorkspace) {
+    const stages = stagesOf(text);
+    // The target stage: what compose names, else the last stage in the file.
+    const targets = new Set(
+      users.map((u) => (u.includes('→') ? (u.split('→')[1] ?? '') : '')).filter((t) => t !== ''),
     );
+    if (targets.size === 0 && stages.length > 0) targets.add(stages[stages.length - 1]?.name ?? '');
+
+    for (const target of targets) {
+      const stage = stages.find((st) => st.name === target);
+      if (stage === undefined) {
+        failures.push(
+          `${who}: compose builds target '${target}', which is not a stage in this file`,
+        );
+        continue;
+      }
+      const guardAt = stage.lines.findIndex(runsGuard);
+      if (guardAt === -1) {
+        failures.push(
+          `${who}: stage '${target}' — the stage that SHIPS — does not run ` +
+            `docker/app-runtime/assert-no-dev-deps.mjs. Running it in an earlier stage ` +
+            `proves a property of THAT stage: one 'COPY --from=deps' here puts 23.6 MB of ` +
+            `typescript into the image with the guard green (measured by QA). It must run ` +
+            `in the stage compose actually builds.`,
+        );
+        continue;
+      }
+      const after = stage.lines.slice(guardAt + 1).filter((l) => /^(COPY|ADD)\b/i.test(l));
+      if (after.length > 0) {
+        failures.push(
+          `${who}: stage '${target}' copies into the image AFTER the devDependency guard ` +
+            `runs, so what it copied was never checked: ${after.join(' | ')}. Move the ` +
+            `guard below the last COPY.`,
+        );
+      }
+    }
   }
 }
 
@@ -390,10 +564,13 @@ console.log(
 console.log(
   `  services labelled built-by ${BUILT_BY}  ${String(declaredByLabel.length)}: ${declaredByLabel.join(' ')}`,
 );
-console.log(
-  `  dockerfiles checked             ${String(dockerfilesInUse.size)}: ` +
-    [...dockerfilesInUse.keys()].sort().join(' '),
-);
+console.log(`  dockerfiles checked             ${String(dockerfilesInUse.size)}`);
+for (const [df, users] of [...dockerfilesInUse].sort(([a], [b]) => a.localeCompare(b))) {
+  // Print WHO, not just how many. `dockerfiles checked 1` was printed by the
+  // version that had enumerated the wrong set entirely, and it read as
+  // coverage (QA, round 2).
+  console.log(`    ${df}  <-  ${users.join(', ')}`);
+}
 console.log(`  apps checked                    ${String(appsChecked)}`);
 console.log(
   `  apps with src/                  ${String(withSource)}` +

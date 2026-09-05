@@ -9,12 +9,13 @@
 set -uo pipefail
 cd "$(dirname "$0")/../.."
 VERIFY=docker/compose.verify.yml
+CHAOS=docker/compose.chaos.yml
 DF=docker/app.Dockerfile
 BK="$(mktemp -d)"
-cp "$VERIFY" "$BK/verify"; cp "$DF" "$BK/df"; cp scripts/svc "$BK/svc"; cp apps/core/package.json "$BK/corepkg"
+cp "$VERIFY" "$BK/verify"; cp "$CHAOS" "$BK/chaos"; cp "$DF" "$BK/df"; cp scripts/svc "$BK/svc"; cp apps/core/package.json "$BK/corepkg"
 restore() {
-  cp "$BK/verify" "$VERIFY"; cp "$BK/df" "$DF"; cp "$BK/svc" scripts/svc; cp "$BK/corepkg" apps/core/package.json
-  rm -rf apps/core/src docker/next.Dockerfile
+  cp "$BK/verify" "$VERIFY"; cp "$BK/chaos" "$CHAOS"; cp "$BK/df" "$DF"; cp "$BK/svc" scripts/svc; cp "$BK/corepkg" apps/core/package.json
+  rm -rf apps/core/src docker/next.Dockerfile docker/rogue.Dockerfile
 }
 trap 'restore; rm -rf "$BK"' EXIT
 
@@ -81,8 +82,32 @@ mut "$DF" 'ENTRYPOINT ["node", "/srv/kinvara/app-runtime/entrypoint.mjs"]' \
           'ENTRYPOINT node /srv/kinvara/app-runtime/entrypoint.mjs' \
   && run_case "11 shell-form ENTRYPOINT (sh at PID 1 eats SIGTERM)" FAIL
 mut "$DF" 'HEALTHCHECK --interval' '# HEALTHCHECK --interval' && run_case "12 HEALTHCHECK removed from the image" FAIL
-mut "$DF" 'RUN node /tmp/assert-no-dev-deps.mjs' 'RUN true # ' && run_case "13 the devDependency build-time guard removed" FAIL
-mut "$DF" 'FROM base AS prod-deps' 'FROM deps AS prod-deps' && run_case "14 prod-deps back to FROM deps (gate CANNOT see this)" PASS
+
+echo; echo "=== the devDependency guard must RUN, IN THE STAGE THAT SHIPS ==="
+mut "$DF" 'RUN node /srv/kinvara/app-runtime/assert-no-dev-deps.mjs /srv/kinvara' 'RUN true # ' \
+  && run_case "13 the guard removed from the runtime stage" FAIL
+mut "$DF" 'RUN node /srv/kinvara/app-runtime/assert-no-dev-deps.mjs /srv/kinvara' \
+          'RUN echo skipping assert-no-dev-deps.mjs' \
+  && run_case "14 a MENTION of it instead of a run" FAIL
+# Not sabotage — an ordinary refactor. The guard is still in the file, still on
+# a RUN, and never executes for the target compose builds. A line-based check
+# passes this; that is why the check parses stages.
+mut "$DF" 'RUN node /srv/kinvara/app-runtime/assert-no-dev-deps.mjs /srv/kinvara' \
+          '# moved to an orphan stage below' \
+  && node scripts/negative-tests/mutate.mjs "$DF" 'ENTRYPOINT ["node", "/srv/kinvara/app-runtime/entrypoint.mjs"]' \
+       'ENTRYPOINT ["node", "/srv/kinvara/app-runtime/entrypoint.mjs"]
+
+FROM runtime AS orphan-nobody-builds
+RUN node /srv/kinvara/app-runtime/assert-no-dev-deps.mjs /srv/kinvara' \
+  && run_case "15 the guard moved to a stage the target does not use" FAIL
+# What QA actually built: one COPY after the guard puts anything it likes into
+# the image, unchecked.
+mut "$DF" 'RUN node /srv/kinvara/app-runtime/assert-no-dev-deps.mjs /srv/kinvara' \
+          'RUN node /srv/kinvara/app-runtime/assert-no-dev-deps.mjs /srv/kinvara
+COPY --from=deps --chown=10001:10001 /srv/kinvara/node_modules ./node_modules' \
+  && run_case "16 a COPY added AFTER the guard in the runtime stage" FAIL
+mut "$DF" 'FROM base AS prod-deps' 'FROM deps AS prod-deps' \
+  && run_case "17 prod-deps back to FROM deps (static gate cannot see it)" PASS
 
 echo; echo "=== the image contract follows the SERVICE, not one hard-coded path ==="
 # QA's escape, reproduced. T-018's own contract §6 tells the Next.js tickets to
@@ -107,18 +132,62 @@ mut "$VERIFY" '      dockerfile: docker/app.Dockerfile
         NODE_VERSION: ${KINVARA_NODE_VERSION:?derived from .tool-versions by scripts/svc}
         PNPM_VERSION: ${KINVARA_PNPM_VERSION:?derived from .tool-versions by scripts/svc}
         APP: web' \
-  && run_case "15 web repointed at a 2nd Dockerfile: root, shell ENTRYPOINT, no HEALTHCHECK" FAIL
+  && run_case "18 web repointed at a 2nd Dockerfile: root, shell ENTRYPOINT, no HEALTHCHECK" FAIL
 rm -f docker/next.Dockerfile
+
+# QA round 2: the same defect one level up. §6 was then pinned to the
+# `built-by: T-018` LABEL SET, so an overlay service that builds its own image
+# and is simply not labelled was checked by nothing — and the gate still
+# printed `dockerfiles checked 1` as though it had enumerated.
+cat > docker/rogue.Dockerfile <<'DF'
+ARG NODE_VERSION
+FROM node:${NODE_VERSION}-alpine AS runtime
+RUN echo "pnpm install" > /dev/null
+USER root
+ENTRYPOINT node /nope.mjs
+DF
+mut "$VERIFY" 'services:' 'services:
+  qa-rogue:
+    image: kinvara/rogue:dev
+    networks: [kinvara-int]
+    build:
+      context: ..
+      dockerfile: docker/rogue.Dockerfile
+      target: runtime
+    pull_policy: build' \
+  && run_case "19 UNLABELLED overlay service with its own Dockerfile" FAIL
+rm -f docker/rogue.Dockerfile
+
+# compose.chaos.yml is T-126's, and T-018's contract §4 hands it to them. A
+# built sidecar lands there, so it is in the derived set too.
+cat > docker/rogue.Dockerfile <<'DF'
+ARG NODE_VERSION
+FROM node:${NODE_VERSION}-alpine AS runtime
+RUN echo "pnpm install" > /dev/null
+USER root
+ENTRYPOINT node /nope.mjs
+DF
+mut "$CHAOS" 'services: {}' 'services:
+  qa-chaos-sidecar:
+    image: kinvara/chaos-sidecar:dev
+    networks: [kinvara-int]
+    build:
+      context: ..
+      dockerfile: docker/rogue.Dockerfile
+      target: runtime
+    pull_policy: build' \
+  && run_case "20 the same in compose.chaos.yml (T-126's file)" FAIL
+rm -f docker/rogue.Dockerfile
 
 echo; echo "=== a placeholder may not outlive real source ==="
 mkdir -p apps/core/src && echo 'export const x = 1;' > apps/core/src/index.ts
-run_case "16 apps/core has src/ but declares no start script" FAIL
+run_case "21 apps/core has src/ but declares no start script" FAIL
 mkdir -p apps/core/src && echo 'export const x = 1;' > apps/core/src/index.ts
 node scripts/negative-tests/mutate.mjs apps/core/package.json '"type": "module",' '"type": "module",
-  "scripts": { "start": "node dist/main.js" },' && run_case "17 the same, once it declares start" PASS
+  "scripts": { "start": "node dist/main.js" },' && run_case "22 the same, once it declares start" PASS
 
 echo
 run_case "99 tree restored" PASS
 echo
-if [[ $bad -eq 0 ]]; then echo "ALL 20 CASES BEHAVED AS EXPECTED"; else echo "!! $bad CASE(S) MISBEHAVED"; fi
+if [[ $bad -eq 0 ]]; then echo "ALL 25 CASES BEHAVED AS EXPECTED"; else echo "!! $bad CASE(S) MISBEHAVED"; fi
 exit $bad

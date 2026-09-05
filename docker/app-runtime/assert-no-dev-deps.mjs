@@ -1,6 +1,20 @@
 /**
- * docker/app-runtime/assert-no-dev-deps.mjs — a BUILD-TIME assertion, run in
- * the `prod-deps` stage of docker/app.Dockerfile. It never ships.
+ * docker/app-runtime/assert-no-dev-deps.mjs — a BUILD-TIME assertion, run
+ * TWICE in docker/app.Dockerfile: in `prod-deps`, where it fails early and
+ * points straight at the cause, and again in `runtime` AFTER THE LAST COPY,
+ * where it proves the property of the image that actually ships.
+ *
+ * Both runs are needed and the second is the load-bearing one. A guard that
+ * runs only in `prod-deps` proves a property OF `prod-deps`: QA built the
+ * counter-example, and a single `COPY --from=deps` in the runtime stage put
+ * 23.6 MB of typescript into kinvara/core:dev with the guard green.
+ *
+ * IT DOES SHIP, and an earlier version of this comment said "it never ships".
+ * That was false: `COPY docker/app-runtime/ ./app-runtime/` copies this whole
+ * directory into the image, and QA found the file there. It is inert — nothing
+ * invokes it at runtime — but writing an unverified "never" into the very file
+ * created to stop unverified claims is the defect in miniature, so: it ships,
+ * it is about 4 KB, and it does nothing once the image is running.
  *
  * WHY IT EXISTS. T-018's first version claimed in its evidence — as measured
  * fact — that "typescript, eslint, turbo, size-limit, dependency-cruiser do
