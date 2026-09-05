@@ -59,6 +59,8 @@ importers:
 
   packages/crypto: {}
 
+  packages/db-testkit: {}
+
   packages/domain-types: {}
 
   packages/fixtures: {}

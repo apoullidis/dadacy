@@ -1,0 +1,13 @@
+{
+  "name": "@kinvara/db-testkit",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Testcontainers harness: one disposable Postgres cluster per constraint suite, pinned to compose's image (T-115, DOCKER.md §1)",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test:integration": "node --test --test-concurrency=1 --test-reporter=spec 'suites/*.test.ts'"
+  }
+}

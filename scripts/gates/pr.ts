@@ -36,6 +36,14 @@ const GATES: readonly Gate[] = [
     name: 'gate:app-images',
     why: 'static checks over EVERY Dockerfile an overlay service builds and over compose.yml + every overlay (DOCKER.md §5, §3). The scope of each check is published in state/EP-1/T-036.md § Published contract, with the negative case that falsifies it; this gate is static and still cannot look inside an image — anchor image properties on docker image inspect and on the build',
   },
+  {
+    // T-115. The STATIC half only: the tag-identity and no-mock rules need no
+    // Docker and no services, so they block on a PR today. The half that RUNS
+    // the suites needs the daemon, which the toolbox cannot reach (OD-16), and
+    // belongs in gate:heavy — T-006, which is blocked_by T-115 for this reason.
+    name: 'gate:constraint-suite:static',
+    why: "the Testcontainers image tag is compose's, and no constraint suite mocks the database (T-115)",
+  },
 ];
 
 const results: { name: string; code: number }[] = [];
