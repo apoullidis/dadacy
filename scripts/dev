@@ -48,7 +48,7 @@ die() { printf 'scripts/dev: %s\n' "$*" >&2; exit 1; }
 
 usage() {
     cat >&2 <<'USAGE'
-usage: scripts/dev [--build] [--playwright] <command> [args...]
+usage: scripts/dev [--build] [--playwright] [--docker] <command> [args...]
 
 Runs exactly one command inside the pinned Kinvara toolbox container
 (docker/toolbox.Dockerfile, versions from .tool-versions). No services are
@@ -56,6 +56,11 @@ attached; the container has egress and nothing else.
 
   --build       rebuild the toolbox image even if it already exists
   --playwright  use the Playwright variant (browsers included; heavy gates only)
+  --docker      mount the Docker socket, so Testcontainers can acquire a
+                database (OD-16/OD-18). OFF by default and NEVER available
+                under `scripts/svc run` — see the ruling in
+                scripts/lib/toolbox.sh. Use it only for suites that create
+                their own containers.
   -h, --help    this message
 
 examples:
@@ -63,6 +68,7 @@ examples:
   scripts/dev pnpm install
   scripts/dev pnpm -w typecheck
   scripts/dev terraform -chdir=infra validate
+  scripts/dev --docker pnpm --filter db-testkit test    # Testcontainers
 
 A command that needs a running service is NOT run here — use
   scripts/svc run <ticket> -- <command>
@@ -75,14 +81,26 @@ USAGE
 
 toolbox_load_pins "${TOOL_VERSIONS}" || exit 1
 
+# Before anything else: the toolbox never runs as root (OD-16). Doing so would
+# make every file it writes into the bind mount root-owned and undo the
+# property T-000 measured.
+toolbox_refuse_root "scripts/dev" || exit 1
+
 # --- arguments -------------------------------------------------------------
 FORCE_BUILD=0
 TARGET="toolbox"
+# The Docker socket is OFF unless this invocation asks for it. Do not change
+# the default: gate:toolbox §6 asserts that a gate run cannot see the daemon,
+# and it is deliberately unconditional so that making the socket always-on
+# turns gate:pr red rather than passing quietly (OD-16).
+WANT_DOCKER=0
+KINVARA_DOCKER_ARGS=()
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --build)       FORCE_BUILD=1; shift ;;
         --playwright)  TARGET="toolbox-playwright"; shift ;;
+        --docker)      WANT_DOCKER=1; shift ;;
         -h|--help)     usage; exit 0 ;;
         --)            shift; break ;;
         -*)            die "unknown option '$1' (see --help)" ;;
@@ -131,6 +149,13 @@ fi
 # which is the caveat DOCKER.md §9.1b names as blocking parallel dispatch.
 toolbox_mount_args "${REPO_ROOT}"
 
+# The Docker socket, only when explicitly asked for. Four flags, not one:
+# without --group-add the connect is EACCES, and without --add-host the
+# SIBLING CONTAINER'S published port is unreachable — see OD-16 and OD-18.
+if [[ "${WANT_DOCKER}" -eq 1 ]]; then
+    toolbox_docker_socket_args || exit 1
+fi
+
 # A TTY only when the caller actually has one on both ends: otherwise docker
 # rewrites LF as CRLF and captured output stops being byte-comparable.
 TTY_FLAGS=()
@@ -145,6 +170,7 @@ exec docker run \
     --network "${BUILD_NETWORK}" \
     --user "$(id -u):$(id -g)" \
     "${KINVARA_MOUNT_ARGS[@]}" \
+    "${KINVARA_DOCKER_ARGS[@]}" \
     --volume "${PNPM_STORE_VOLUME}:/pnpm-store" \
     --workdir "${WORKDIR}" \
     --env "HOME=/home/toolbox" \

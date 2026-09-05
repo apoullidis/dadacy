@@ -46,6 +46,19 @@
 #   vulnerability database and therefore CANNOT run under `svc run`. Run it
 #   under `scripts/dev`.
 #
+#   AND THERE IS NO DOCKER SOCKET HERE, EVER (T-018's OD-16 ruling). A socket
+#   is a general-purpose escape from exactly the property above: a process
+#   with no route off the host can POST /containers/create with
+#   `NetworkMode: bridge` and reach the internet from the sibling it just
+#   made, and can bind-mount `/` and read the host as root. `internal: true`
+#   would stop being structural and become a convention, and
+#   `gate:egress-boundary` — which reads compose files and the `--network`
+#   argument of each entry point — models none of it and would stay green.
+#   Testcontainers gets its daemon from `scripts/dev --docker`, which already
+#   has egress and gets NO services. `--docker` is refused by name below
+#   rather than falling through to "unknown option", so the answer arrives
+#   with its reason attached.
+#
 # =============================================================================
 # HOST PORTS — THERE ARE NONE ON A TICKET-SCOPED PROJECT
 # =============================================================================
@@ -112,7 +125,8 @@ usage: scripts/svc <command> [args...]
                        Run one command in the toolbox, ATTACHED TO THIS
                        TICKET'S INTERNAL NETWORK. Services are reached by
                        compose service name on their default port
-                       (postgres:5432) — never by a host port. No egress.
+                       (postgres:5432) — never by a host port. No egress,
+                       and no Docker socket (see `--docker`, refused here).
   exec <ticket> <service> <cmd...>
                        Run a command inside an already-running service.
   ps   <ticket>        What is running in this ticket's project.
@@ -369,6 +383,7 @@ cmd_run() {
             --image)      [[ $# -ge 2 ]] || die "--image needs an image reference"; image="$2"; shift 2 ;;
             --playwright) target="toolbox-playwright"; shift ;;
             --build)      force_build=1; shift ;;
+            --docker)     die "no. A Docker socket here would undo the only reason this entry point exists: a process on an \`internal: true\` network can create a sibling container on a network that HAS egress, so the guarantee would stop being structural. Testcontainers creates its own containers and needs no compose network — run it under 'scripts/dev --docker' (OD-16, ruled in T-018)." ;;
             --)           shift; break ;;
             -*)           die "unknown option '$1' (see --help)" ;;
             *)            break ;;
@@ -393,6 +408,8 @@ cmd_run() {
     # never that one.
     [[ "${network}" != "${BUILD_NETWORK}" ]] \
         || die "refusing to attach ${BUILD_NETWORK} — svc run gets services and NO egress (DOCKER.md §7b)"
+
+    toolbox_refuse_root "scripts/svc run" || exit 1
 
     if [[ -z "${image}" ]]; then
         toolbox_load_pins "${TOOL_VERSIONS}"
