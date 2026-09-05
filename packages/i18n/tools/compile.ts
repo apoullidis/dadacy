@@ -356,9 +356,17 @@ function emitNamespaceModule(
   messages: readonly CompiledMessage[],
 ): string {
   const lines: string[] = [BANNER];
-  lines.push(`import type { MessageFormatElement } from '@formatjs/icu-messageformat-parser';`);
-  lines.push(`import { formatAst } from '../../src/runtime.ts';`);
-  lines.push('');
+  // Imports are emitted only when they are used. A namespace can legitimately be
+  // EMPTY in a translation — `operational` and `marketing` keys are allowed to
+  // fall back to the default locale (SA §TS-12.1), so a namespace holding only
+  // those may have no rows in `ru` yet. Emitting unused imports there would fail
+  // `noUnusedLocals` and turn a permitted state into a build error, which is the
+  // opposite of what the tier policy says.
+  if (messages.length > 0) {
+    lines.push(`import type { MessageFormatElement } from '@formatjs/icu-messageformat-parser';`);
+    lines.push(`import { formatAst } from '../../src/runtime.ts';`);
+    lines.push('');
+  }
   lines.push(`export const locale = '${locale}';`);
   lines.push(`export const namespace = '${namespace}';`);
   lines.push('');
