@@ -88,6 +88,22 @@ BEGIN
     RAISE EXCEPTION 'collation "und-x-icu" is non-deterministic; SD DB-16 requires deterministic'
       USING ERRCODE = 'KV001';
   END IF;
+
+  -- pg_stat_statements is the one extension below that installs SUCCESSFULLY and is then
+  -- dead. Without the library in shared_preload_libraries, CREATE EXTENSION returns
+  -- CREATE EXTENSION and every read of the view raises "must be loaded via
+  -- shared_preload_libraries". SD DB-12's weekly review of statements over 50 ms mean on
+  -- the request path is the thing that stops working, and nothing goes red. Asserting it
+  -- here converts a silent half-install into a refusal (recorded as OD-7).
+  IF ('pg_stat_statements' <> ALL (string_to_array(
+        translate(current_setting('shared_preload_libraries'), ' ', ''), ','))) THEN
+    RAISE EXCEPTION
+      'shared_preload_libraries does not contain pg_stat_statements (it is %). CREATE '
+      'EXTENSION would succeed and the view would raise on every read — SD DB-12 would be '
+      'silently dead. Fix the server parameter, restart, and re-run.',
+      quote_literal(current_setting('shared_preload_libraries'))
+      USING ERRCODE = 'KV001';
+  END IF;
 END
 $preflight$;
 
@@ -340,7 +356,8 @@ BEGIN
                   'that no GRANT on a table would show', r.rolname)
       FROM pg_roles r
      WHERE r.oid <> k_oid
-       AND pg_has_role(k_oid, r.oid, 'USAGE')
+       AND pg_has_role(k_oid, r.oid, 'MEMBER')   -- MEMBER, not USAGE: a membership granted
+                                                --   WITH INHERIT FALSE still permits SET ROLE.
 
     UNION ALL
     -- (3) The mirror of (2): a per-environment login principal that is a member of
@@ -352,8 +369,8 @@ BEGIN
       JOIN pg_roles o ON o.oid <> m.oid AND o.oid <> k_oid
      WHERE m.oid <> k_oid
        AND NOT m.rolsuper
-       AND pg_has_role(m.oid, k_oid, 'USAGE')
-       AND pg_has_role(m.oid, o.oid, 'USAGE')
+       AND pg_has_role(m.oid, k_oid, 'MEMBER')
+       AND pg_has_role(m.oid, o.oid, 'MEMBER')
 
     UNION ALL
     -- (4) Any relation privilege other than INSERT, anywhere outside the system catalogs.
