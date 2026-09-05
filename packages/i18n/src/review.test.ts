@@ -125,7 +125,17 @@ test('the pending-pipeline waiver is anchored to a fixed date, not to its own in
   // T-040 opened this waiver on 2026-09-05 against SD §DH-5's six-week external
   // lead time. Extending it past that date is a schedule decision that belongs to
   // the orchestrator (BOARD RK-2), and it must cost an edit to this line.
-  const ANCHOR = Date.parse('2026-10-17T23:59:59Z');
+  //
+  // RE-ANCHORED ONCE, on 2026-09-05, and moved TOGETHER with
+  // `pending_pipeline.expected_by` — that is the whole discipline, and the guard
+  // above must survive the change rather than be worked around by it. T-049
+  // measured that 2026-09-05 → 2026-10-17 was exactly the 42-day external lead
+  // time, so the original date was never a forecast: it was the spec's six weeks
+  // written down on the day the register was created, with zero slack on arrival
+  // (decisions.md OD-15, escalated as OE-5). Stakeholder decision: re-anchor
+  // honestly to a DECISION REVIEW DATE rather than let it expire into a build
+  // failure whose cheapest repair is deleting the waiver.
+  const ANCHOR = Date.parse('2026-12-05T23:59:59Z');
   const register = loadReviewRegister();
   const waiver = register.pending_pipeline;
   assert.ok(waiver !== null, 'placeholder safety copy must be covered by an explicit waiver');
@@ -135,7 +145,7 @@ test('the pending-pipeline waiver is anchored to a fixed date, not to its own in
   assert.ok(Number.isFinite(expected), `expected_by is not a date: ${waiver.expected_by}`);
   assert.ok(
     expected <= ANCHOR,
-    `the waiver expires ${waiver.expected_by}, past the 2026-10-17 anchor this test pins. ` +
+    `the waiver expires ${waiver.expected_by}, past the 2026-12-05 anchor this test pins. ` +
       'Renewing the safety-copy waiver is an orchestrator decision (RK-2), not a file edit.',
   );
   assert.ok(Date.parse(waiver.opened_at) < expected, 'opened_at must precede expected_by');

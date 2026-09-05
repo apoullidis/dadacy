@@ -63,13 +63,48 @@ export interface ReviewRecord {
  * as it would on unwaived ones. That is BOARD RK-2's standing escalation
  * expressed as a build failure with a date on it rather than as a reminder.
  */
+/**
+ * One deliberate move of `expected_by`, with its reason. Append-only.
+ *
+ * The chain exists so that the date is not a single mutable field. Each row's
+ * `from` is the previous row's `to`, the first `from` is the original date, and
+ * the last `to` must equal `expected_by` — so editing the date without saying
+ * why is a red test rather than a quiet edit.
+ */
+export interface ReAnchor {
+  readonly from: string;
+  readonly to: string;
+  readonly decided_on: string;
+  readonly decided_by: string;
+  readonly reason: string;
+  /** `external_start` as it stood when this decision was made. `null` = nothing had begun. */
+  readonly external_start_at_decision: string | null;
+  readonly note?: string;
+}
+
 export interface PendingPipeline {
   readonly opened_at: string;
+  /**
+   * **A decision review date, not a delivery date.** Nobody has promised copy by
+   * it; no external engagement has begun, so there is nothing to promise. What
+   * must happen by it is a *decision* — record a real `external_start` and
+   * re-anchor to start + the lead time, or re-anchor again with a stated reason.
+   *
+   * The gate behaviour is unchanged and the self-closing property is unchanged:
+   * after this date `gate:safety-review-currency` fails on these keys exactly as
+   * on unwaived ones. **This is not an open-ended waiver.** Re-anchors made while
+   * `external_start` is null are bounded by a literal in `src/pipeline.test.ts`,
+   * deliberately outside this file — a register that could raise its own limit
+   * would be measuring itself (PROTOCOL §5.1).
+   */
   readonly expected_by: string;
+  /** Mirrors `pipeline.external_start`, which is the source of truth. Explicitly null, never absent. */
+  readonly external_start?: string | null;
   readonly owner: string;
   readonly ticket: string;
   readonly reason: string;
   readonly keys: readonly string[];
+  readonly re_anchors?: readonly ReAnchor[];
 }
 
 export interface ReviewRegister {
@@ -241,6 +276,15 @@ export function loadCopyPipeline(root: string = PACKAGE_ROOT): CopyPipeline {
       'review.json has no `pipeline` block. The trilingual safety-copy pipeline (SD §DH-5 external dependency 2) is what makes the six-week lead time measurable; without it the waiver expiry is a surprise rather than a schedule.',
     );
   }
+  if (!('external_start' in (pipeline as Record<string, unknown>))) {
+    // Point 3 of the re-anchor decision, as a refusal rather than a convention.
+    // `null` means "has not happened" and is checkable; an ABSENT key is
+    // ambiguous — it reads identically to a field nobody thought to add, and the
+    // whole value of this record is that the absence of a start is data.
+    throw new TypeError(
+      'review.json § pipeline has no `external_start` key. Record it explicitly as null — an absent key cannot be told apart from a field nobody added, and the absence of an external start is the fact this register exists to carry.',
+    );
+  }
   return pipeline as CopyPipeline;
 }
 
@@ -346,6 +390,81 @@ export function pipelineIncoherences(
         }
       }
     }
+  }
+  return problems;
+}
+
+/**
+ * Whether the `expected_by` chain tells a coherent story. Empty means it does.
+ *
+ * **The question PROTOCOL §5.1 forces, asked of this record itself: could it
+ * report "we are on track" while nothing has been engaged?** Yes — trivially, by
+ * appending a re-anchor row every time the date approaches. The chain is
+ * self-reported and every field in it is derived from the same file, so on its
+ * own it can only ever confirm itself.
+ *
+ * So the bound is **not** here. `maxUnstartedReAnchors` is passed in, and its
+ * only caller writes it as a literal in the test file: a register that could
+ * raise its own limit would be measuring itself. Cumulative drift is bounded
+ * separately and also from outside, by the dated anchor in `review.test.ts`.
+ * What this function checks is only that the chain is *continuous* and that it
+ * *agrees with* the date it claims to explain — which is what turns a silent
+ * date edit into a red test.
+ */
+export function reAnchorProblems(
+  waiver: PendingPipeline,
+  originalExpectedBy: string,
+  maxUnstartedReAnchors: number,
+): string[] {
+  const problems: string[] = [];
+  const chain = waiver.re_anchors ?? [];
+
+  if (chain.length === 0) {
+    if (waiver.expected_by !== originalExpectedBy) {
+      problems.push(
+        `expected_by is ${waiver.expected_by} but there are no re_anchors rows explaining the move from ${originalExpectedBy}. A date without a recorded decision is an edit, not a schedule.`,
+      );
+    }
+    return problems;
+  }
+
+  if (chain[0]?.from !== originalExpectedBy) {
+    problems.push(
+      `re_anchors[0].from is ${String(chain[0]?.from)}, not the original ${originalExpectedBy}. The chain must start where the waiver did, or the earliest move is unaccounted for.`,
+    );
+  }
+  for (let i = 1; i < chain.length; i += 1) {
+    const prev = chain[i - 1];
+    const cur = chain[i];
+    if (prev === undefined || cur === undefined) continue;
+    if (cur.from !== prev.to) {
+      problems.push(
+        `re_anchors[${String(i)}].from (${cur.from}) does not continue from re_anchors[${String(i - 1)}].to (${prev.to}) — a gap here is a date that moved without a decision`,
+      );
+    }
+  }
+  const last = chain[chain.length - 1];
+  if (last !== undefined && last.to !== waiver.expected_by) {
+    problems.push(
+      `expected_by is ${waiver.expected_by} but the last re-anchor moved it to ${last.to}. The date was edited without recording why.`,
+    );
+  }
+  for (const [i, row] of chain.entries()) {
+    if (endOfDay(row.to) <= endOfDay(row.from)) {
+      problems.push(
+        `re_anchors[${String(i)}] does not move the date forward (${row.from} → ${row.to})`,
+      );
+    }
+    if (row.reason.trim() === '' || row.decided_by.trim() === '') {
+      problems.push(`re_anchors[${String(i)}] has no stated reason or no decider`);
+    }
+  }
+
+  const unstarted = chain.filter((r) => r.external_start_at_decision === null).length;
+  if (unstarted > maxUnstartedReAnchors) {
+    problems.push(
+      `${String(unstarted)} re-anchors have been made with no external_start recorded, over a bound of ${String(maxUnstartedReAnchors)}. Repeatedly moving the date while nothing has been engaged is the shape of an open-ended waiver, which this mechanism exists to not become. Raising the bound is an orchestrator decision against BOARD RK-2 and must cost an edit to the literal in src/pipeline.test.ts.`,
+    );
   }
   return problems;
 }

@@ -3,6 +3,7 @@
 **Owner:** `T-049` (front-end / i18n) · **Register:** [`review.json`](./review.json) `§ pipeline`
 **Specs:** SD §DH-5 external dependency 2 · SA §TS-12.4 · PM §MVP-L4 AC4, §MVP-L5 AC7, §MVP-IS5 AC7 · DV-7, DV-11 · SD Revision Log D8
 **Status on 2026-09-05:** engineering side complete; **external side not started, and blocked on a stakeholder.**
+**Decision review date: 2026-12-05** (re-anchored once from 2026-10-17 — §5).
 
 ---
 
@@ -176,45 +177,112 @@ so the register refuses sign-off rather than dropping the question.
 
 ## 5. What a human must do next — and by when
 
-**By 2026-10-17** `gate:safety-review-currency` starts failing the build on all
-24 records. That is the waiver `T-040` opened, and it is deliberately
-self-closing.
+### What changed on 2026-09-05, and why
 
-**The problem is that the waiver window _is_ the lead time.** `opened_at`
-2026-09-05 → `expected_by` 2026-10-17 is exactly **42 days**, and 42 days is SD
-§DH-5's six-week external lead time verbatim. So:
+`T-040` opened the waiver with `opened_at 2026-09-05` → `expected_by 2026-10-17`.
+That interval is **exactly 42 days**, which is SD §DH-5's six-week external lead
+time verbatim. So:
 
 ```
-latest_external_start  =  deadline − lead time  =  2026-10-17 − 42 days  =  2026-09-05
+latest external start  =  deadline − lead time  =  2026-10-17 − 42 days  =  2026-09-05
 ```
 
-**There is no slack.** Recorded as **OD-15** in `tasks/state/decisions.md`, and
-asserted in `src/pipeline.test.ts` against the deadline and the lead time
-written there as literals, so the value cannot be nudged later to make the
-schedule look survivable.
+— the day the register was created. **The window had zero slack on arrival.**
+Recorded as **OD-15** in `tasks/state/decisions.md` and escalated as **OE-5**.
+
+The conclusion the stakeholder drew is the right one: **2026-10-17 was never a
+forecast.** `T-040` wrote six weeks because the spec says six weeks, not because
+a clock had started — and no clock has started, because no engagement has begun.
+A date nobody ever committed to should not be allowed to expire into a build
+failure whose cheapest repair is deleting the waiver.
+
+**Decision: re-anchor honestly to `2026-12-05`, and redefine what the date
+means.**
+
+### `expected_by` is a decision review date, not a delivery date
+
+Nobody has promised safety copy by 2026-12-05. What must happen by it is a
+**decision**: either a real `external_start` is recorded and the date is
+re-anchored to _start + 42 days_, or it is re-anchored again with a stated
+reason. **The gate behaviour is unchanged** — after `expected_by`,
+`gate:safety-review-currency` fails the build on these keys exactly as on
+unwaived ones — so the self-closing property, which is the entire value of the
+mechanism, survives the change.
+
+**This is not an open-ended waiver and it is prevented from becoming one**, by
+three things that all live _outside_ the register:
+
+| Guard                                            | Where it lives                                       | What it stops                                                                                          |
+| ------------------------------------------------ | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `expected_by ≤ 2026-12-05`                       | a literal in `src/review.test.ts`                    | The date drifting later without an edit to a test file                                                 |
+| `pipeline.deadline === '2026-12-05'`             | a literal in `src/pipeline.test.ts`                  | The date drifting _earlier_ in the register than the anchor, or the anchor moving without the register |
+| **≤ 1 re-anchor while `external_start` is null** | `MAX_UNSTARTED_RE_ANCHORS` in `src/pipeline.test.ts` | Moving the date repeatedly while nothing is engaged. One has been used                                 |
+
+And one that lives inside, but is checkable: `pending_pipeline.re_anchors` is an
+**append-only chain**. Each row's `from` is the previous row's `to`, the first
+`from` is the original `2026-10-17`, and the last `to` must equal `expected_by`.
+**A date moved without a row explaining it is a red test**, even when every
+literal above is moved with it — demonstrated in `T-049`'s evidence, case C.
+
+> **The §5.1 question, asked of this record.** _Could it report "we are on track"
+> while nothing has been engaged?_ On its own, **yes** — append a row every time
+> the date approaches, and the chain stays perfectly coherent while nothing
+> happens. That is why the _bound_ is a literal in a test file rather than a
+> field in the register: a register that could raise its own limit would be
+> measuring itself. A second unstarted re-anchor reds the suite and costs an
+> orchestrator decision against BOARD RK-2.
+
+`external_start` is recorded as an **explicit `null`**, in both
+`pipeline` and `pending_pipeline`, and `loadCopyPipeline()` **refuses to load a
+pipeline whose `external_start` key is absent** — a null that means "has not
+happened" is checkable; a missing key reads identically to a field nobody
+thought to add.
+
+### What blocks, and what does not — say this plainly
+
+**The copy pipeline blocks a milestone, not the build.** Roughly 24 of 25 ready
+tickets are unaffected and the programme keeps moving. What is genuinely blocked,
+and stays blocked deliberately:
+
+- **`T-043` (`gate:prohibited-claims`).** Its gate requires **nine demonstrated
+  failures** over natively-authored `el`/`ru` lists. Those cannot be faked —
+  that is the point of the gate — so it waits for the native speakers. §6.
+- **The M0 exit gate.** SD §DH-5 conditions it on native authorship **with named
+  authorship**. A placeholder with a name attached is not native authorship, and
+  no re-anchoring of a date changes that.
+
+**The re-anchor does not make the dependency go away.** It replaces a date nobody
+committed to with a date somebody decided, and it makes the next move cost a
+decision instead of an edit.
 
 ### The ask, in order
 
-1. **Name the four people** and fill `named` +
-   `confirmed_by_stakeholder_on` in `review.json § pipeline.roles`: the
-   Greek-authoring safeguarding practitioner, the Russian translator, the DSL
-   and the deputy. §MVP-L5 AC7 requires the DSL pair to cover all three
-   languages between them, so check that before confirming them.
-2. **Send Appendix A** to the practitioner and **Appendix B** to the
-   translator. Both are written to be sent as they stand.
-3. **Record `external_start`** on the day the brief is _actually delivered_ —
-   not the day it is written, and not in advance. An undated start cannot be
-   measured against a lead time.
-4. **If the brief cannot be delivered by 2026-09-05**, then the 2026-10-17
-   deadline is already unachievable and the honest move is a recorded
-   orchestrator decision against **BOARD RK-2** that moves `expected_by` **and**
-   the `2026-10-17` anchor in `src/review.test.ts` together, with the new date
-   justified. **Do not** let the date arrive and be repaired under pressure: the
-   cheapest repair at that point is deleting the waiver, and deleting the waiver
-   deletes the only record saying this copy is unreviewed.
-
-Doing neither (1)–(3) nor (4) means the build fails on 2026-10-18 with no
-prepared answer.
+1. **Name the four people** in `review.json § pipeline.roles` and set
+   `confirmed_by_stakeholder_on`: the **Greek-authoring safeguarding
+   practitioner** — _the long pole, and the Cyprus constraint is not negotiable,
+   because the copy encodes the Cyprus reporting pathway_ — the **Russian
+   translator**, the **DSL** and the **deputy DSL**. PM §MVP-L5 AC7 requires the
+   DSL pair to cover English, Greek and Russian between them; verify that before
+   confirming them.
+2. **Send Appendix A** to the practitioner and **Appendix B** to the translator.
+   Both are complete as written. Appendix B must not go out with the strings
+   attached until the translator has acknowledged the brief — that
+   acknowledgement is the recorded stage `brief_ru_translator`, and it is the
+   stage that gets skipped.
+3. **Record `external_start`** on the day the brief is _actually_ delivered. Not
+   the day it is written, and not in advance.
+4. **Then re-anchor `expected_by` to `external_start + 42 days`**, appending a
+   `re_anchors` row with `external_start_at_decision` set — which is the moment
+   the date becomes a genuine forecast for the first time, and the moment the
+   unstarted-re-anchor bound stops applying.
+5. **If 2026-12-05 arrives with `external_start` still null**, that is a second
+   unstarted re-anchor and it must be an explicit orchestrator decision against
+   BOARD **RK-2**, moving `pending_pipeline.expected_by`, the `2026-12-05`
+   literals in both test files, `MAX_UNSTARTED_RE_ANCHORS`, and a new
+   `re_anchors` row — **together**. Four deliberate edits, which is the intended
+   cost. What must not happen is the date arriving unattended: the cheapest
+   repair under pressure is deleting the waiver, and deleting the waiver deletes
+   the only record saying this copy is unreviewed.
 
 ## 6. Also on this engagement — `T-043`'s prohibited-claim lists
 

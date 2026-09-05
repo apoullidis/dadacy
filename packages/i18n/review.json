@@ -3,7 +3,10 @@
   "version": 1,
   "pending_pipeline": {
     "opened_at": "2026-09-05",
-    "expected_by": "2026-10-17",
+    "expected_by": "2026-12-05",
+    "expected_by_means": "A DECISION REVIEW DATE, not a delivery date, and the distinction is the point. Nobody has promised safety copy by this date — no external engagement has begun, so there is nothing to promise. What must happen by it is a DECISION: either a real `external_start` is recorded and this date is re-anchored to start + the 42-day lead time, or it is re-anchored again with a stated reason and a new `re_anchors` row. The gate behaviour is unchanged and the self-closing property is unchanged: after this date gate:safety-review-currency (T-044) fails the build on these keys exactly as on unwaived ones. This is NOT an open-ended waiver and must not become one — see `re_anchors` and the bound asserted in src/pipeline.test.ts.",
+    "external_start": null,
+    "external_start_note": "Recorded explicitly as null so the absence is DATA rather than a missing field: a null that means 'has not happened' is checkable, an absent key is ambiguous. The single source of truth is `pipeline.external_start`, which this mirrors and which `loadCopyPipeline()` refuses to load without. Set on the day the brief is actually delivered to a named practitioner, by the stakeholder, and by nobody else.",
     "owner": "frontend-developer (T-049) — Greek-authoring safeguarding practitioner + briefed Russian translator + DSL sign-off",
     "ticket": "T-049",
     "reason": "SD §DH-5 external dependency 2: the trilingual safety-copy pipeline has a six-week external lead time and no engineering dependency beyond T-040. The catalogue strings these keys currently hold are ENGINEERING PLACEHOLDERS written to exercise the compile, gate and render mechanisms — they are not reviewed safety copy and must not ship. This waiver is dated and self-closing: after `expected_by` the gate fails on these keys exactly as it would on unwaived ones. That is BOARD RK-2's standing escalation with a date on it instead of a reminder.",
@@ -16,7 +19,19 @@
       "safety.helpline.199.label",
       "safety.sos.confirm",
       "session.checkins_missed"
-    ]
+    ],
+    "re_anchors": [
+      {
+        "from": "2026-10-17",
+        "to": "2026-12-05",
+        "decided_on": "2026-09-05",
+        "decided_by": "stakeholder, via the orchestrator (escalation OE-5, raised from T-049 OD-15)",
+        "reason": "no external start has occurred",
+        "external_start_at_decision": null,
+        "note": "T-040 set expected_by = opened_at + six weeks because SD §DH-5 says six weeks, not because a clock had started. Measured in T-049: 2026-09-05 → 2026-10-17 is exactly 42 days, identical to the stated external lead time, so the latest workable external start was the day the waiver opened and slack was zero on arrival. 2026-10-17 was therefore never a forecast. Re-anchored honestly rather than allowed to expire into a build failure whose cheapest repair is deleting the waiver. THE CHAIN IS THE POINT: a date edited without a row here is caught, because the last `to` must equal `expected_by`."
+      }
+    ],
+    "re_anchors_note": "Append-only. Each row's `from` must equal the previous row's `to`, the first row's `from` is the original 2026-10-17, and the last row's `to` must equal `expected_by` — so moving the date without recording why is a red test, not a quiet edit. RE-ANCHORS MADE WHILE `external_start` IS NULL ARE BOUNDED, and the bound is a literal in src/pipeline.test.ts rather than a field here: a register that could raise its own limit would be measuring itself. Exceeding it is an orchestrator decision against BOARD RK-2 and must cost an edit to that line."
   },
   "pipeline": {
     "//": "THE PIPELINE ITSELF, as data rather than as a plan in someone's head — T-049, SD §DH-5 external dependency 2, SA §TS-12.4. `entries` above records what HAS been reviewed; this block records what MUST happen, by whom, in which language, and by when, so that the six-week lead time can be MEASURED against a date instead of remembered. Nothing here asserts that any copy has been authored, translated or reviewed. Every `named` and every `completed_at` is null, and that is the honest state on 2026-09-05.",
@@ -26,10 +41,10 @@
     "external_start_note": "The date the brief below actually reaches a named Greek-authoring safeguarding practitioner. Only a stakeholder can set this, because only a stakeholder can engage the two people. It is null because it has not happened — an undated start cannot be measured against a lead time, and a start date recorded before the fact would be the exact defect this register exists to prevent.",
     "lead_time_days": 42,
     "lead_time_source": "SD §DH-5 external dependency 2: \"Six weeks of lead time on a path that has no engineering dependency and therefore gets scheduled last by default.\"",
-    "deadline": "2026-10-17",
-    "deadline_source": "pending_pipeline.expected_by — the self-closing waiver above. After this date gate:safety-review-currency (T-044) fails the build on these keys exactly as on unwaived ones. The date is fixed; extending it is an orchestrator decision against BOARD RK-2, not a file edit.",
-    "latest_external_start": "2026-09-05",
-    "latest_external_start_note": "deadline minus lead_time_days. DERIVED, and asserted in src/pipeline.test.ts against those two values written there as literals — so buying slack by editing this field turns the suite red. It falls on the day this pipeline was opened, which means THE WAIVER WINDOW AND THE LEAD TIME ARE THE SAME SIX WEEKS AND THERE IS NO SLACK AT ALL. See decisions.md OD-15.",
+    "deadline": "2026-12-05",
+    "deadline_source": "pending_pipeline.expected_by — the self-closing waiver above, re-anchored once on 2026-09-05 (see pending_pipeline.re_anchors). It is a DECISION REVIEW DATE, not a delivery date. After it, gate:safety-review-currency (T-044) fails the build on these keys exactly as on unwaived ones. Moving it again means appending a re_anchors row AND moving the literal in src/pipeline.test.ts, together.",
+    "latest_external_start": "2026-10-24",
+    "latest_external_start_note": "deadline minus lead_time_days. DERIVED, and asserted in src/pipeline.test.ts against those two values written there as literals — so buying slack by editing this field turns the suite red. On the ORIGINAL 2026-10-17 anchor this fell on 2026-09-05, the very day the pipeline was opened: the waiver window and the lead time were the same six weeks and there was no slack at all (decisions.md OD-15, escalated as OE-5). The re-anchor to 2026-12-05 buys back a real 42-day window; it does not start it. Nothing starts until `external_start` is non-null.",
     "blocked_on": "stakeholder",
     "blocked_on_note": "Not blocked on engineering. Every mechanism this pipeline needs — the register, the hash, the compiler refusals, the waiver, the gate T-044 will build over it — exists. What does not exist is a safeguarding practitioner and a translator, and no agent in this programme can engage either. See packages/i18n/PIPELINE.md §5.",
     "roles": {

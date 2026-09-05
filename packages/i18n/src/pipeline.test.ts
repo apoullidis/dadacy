@@ -28,6 +28,7 @@ import {
   slackDays,
   endOfDay,
   pipelineIncoherences,
+  reAnchorProblems,
 } from './review.ts';
 import type { ReviewRegister, CopyPipeline } from './review.ts';
 import { keysAtTier } from './tiers.ts';
@@ -43,8 +44,31 @@ const SAFETY_KEYS = [...keysAtTier('safety_critical')];
  *     against BOARD RK-2 and must cost an edit to this line.
  *   - 42 days is SD §DH-5 external dependency 2's "six weeks of lead time".
  */
-const DEADLINE = '2026-10-17';
+const DEADLINE = '2026-12-05';
 const LEAD_TIME_DAYS = 42;
+
+/**
+ * The date `T-040` opened the waiver with, before the 2026-09-05 re-anchor.
+ * Written here so the re-anchor chain has something outside itself to start
+ * from: a chain whose own first row supplied its origin could not detect a
+ * rewritten origin.
+ */
+const ORIGINAL_EXPECTED_BY = '2026-10-17';
+
+/**
+ * How many times the date may be moved while **nothing has been engaged**.
+ *
+ * This is the bound that stops a self-closing waiver becoming an open-ended one,
+ * and it lives HERE rather than in `review.json` on purpose: a register that
+ * could raise its own limit would be measuring itself (PROTOCOL §5.1). One
+ * re-anchor has been made — the honest 2026-09-05 one. A second, still with no
+ * `external_start`, reds this suite and forces an orchestrator decision against
+ * BOARD RK-2 rather than another quiet edit.
+ *
+ * Re-anchors made AFTER a real `external_start` is recorded are not counted:
+ * once the pipeline is genuinely running, moving a date is scheduling, not drift.
+ */
+const MAX_UNSTARTED_RE_ANCHORS = 1;
 
 test('the pipeline block exists and is loaded fail-closed', () => {
   const pipeline: CopyPipeline = loadCopyPipeline();
@@ -57,42 +81,151 @@ test('latest_external_start is the deadline minus the lead time, computed outsid
   // The whole risk of this ticket in one assertion. If the recorded value is
   // ever nudged later to make the schedule look survivable, this reds.
   const pipeline = loadCopyPipeline();
-  assert.equal(latestExternalStart(DEADLINE, LEAD_TIME_DAYS), '2026-09-05');
+  assert.equal(latestExternalStart(DEADLINE, LEAD_TIME_DAYS), '2026-10-24');
   assert.equal(pipeline.latest_external_start, latestExternalStart(DEADLINE, LEAD_TIME_DAYS));
 
   // And the arithmetic itself, against cases computed by hand rather than by
   // the same expression: six weeks before 2026-10-17 is 2026-09-05, and one day
   // less of lead time is one day more of slack.
+  assert.equal(latestExternalStart('2026-12-05', 42), '2026-10-24');
+  assert.equal(latestExternalStart('2026-12-05', 41), '2026-10-25');
+  assert.equal(latestExternalStart('2026-12-05', 0), '2026-12-05');
+  // and the original anchor, which is the OD-15 measurement itself
   assert.equal(latestExternalStart('2026-10-17', 42), '2026-09-05');
-  assert.equal(latestExternalStart('2026-10-17', 41), '2026-09-06');
-  assert.equal(latestExternalStart('2026-10-17', 0), '2026-10-17');
 });
 
-test('the waiver window and the external lead time are the SAME six weeks — zero slack', () => {
-  // Recorded as a test because it is the finding, not a coincidence: T-040 set
-  // `expected_by = opened_at + six weeks`, so every day the external half does
-  // not start is a day the deadline cannot be met. decisions.md OD-15.
+test('the ORIGINAL waiver window was exactly the lead time — the OD-15 finding, kept', () => {
+  // Kept, not deleted, and deliberately re-expressed against the recorded
+  // origin rather than against the current `expected_by`. The finding is why the
+  // date moved; erasing it because the date moved would be exactly the
+  // delete-the-evidence pattern this build has been failed for twice.
+  //
+  // T-040 set expected_by = opened_at + six weeks because SD §DH-5 says six
+  // weeks, not because a clock had started. So the latest workable external
+  // start fell on the day the register was created, and slack was zero on
+  // arrival. That is what OD-15 reported and what OE-5 acted on.
   const register = loadReviewRegister();
   const waiver = register.pending_pipeline;
   assert.ok(waiver !== null);
-  const window = (endOfDay(waiver.expected_by) - endOfDay(waiver.opened_at)) / 86_400_000;
+  const originalWindow = (endOfDay(ORIGINAL_EXPECTED_BY) - endOfDay(waiver.opened_at)) / 86_400_000;
   assert.equal(
-    window,
+    originalWindow,
     LEAD_TIME_DAYS,
-    'the waiver window is exactly the lead time, so slack is zero',
+    'the waiver as opened had a window exactly equal to the lead time, i.e. zero slack',
   );
+  assert.equal(latestExternalStart(ORIGINAL_EXPECTED_BY, LEAD_TIME_DAYS), waiver.opened_at);
+
+  // And the re-anchor bought back a real window rather than merely a later date.
+  const currentWindow = (endOfDay(DEADLINE) - endOfDay(waiver.opened_at)) / 86_400_000;
+  assert.ok(currentWindow > LEAD_TIME_DAYS, 'the re-anchored window must exceed the lead time');
+});
+
+test('expected_by is a DECISION REVIEW DATE and the chain says how it got there', () => {
+  const register = loadReviewRegister();
+  const waiver = register.pending_pipeline;
+  assert.ok(waiver !== null);
+  assert.equal(waiver.expected_by, DEADLINE);
+  assert.deepEqual(reAnchorProblems(waiver, ORIGINAL_EXPECTED_BY, MAX_UNSTARTED_RE_ANCHORS), []);
+  // Every re-anchor so far was made with nothing engaged, and says so.
+  for (const row of waiver.re_anchors ?? []) {
+    assert.equal(row.external_start_at_decision, null);
+    assert.ok(row.reason.length > 0);
+  }
+});
+
+test('NEGATIVE — moving expected_by without recording why is caught', () => {
+  // A silent date edit: the field moves, the chain does not.
+  const register = loadReviewRegister();
+  const waiver = { ...register.pending_pipeline!, expected_by: '2027-03-01' };
+  const problems = reAnchorProblems(waiver, ORIGINAL_EXPECTED_BY, MAX_UNSTARTED_RE_ANCHORS);
+  assert.ok(
+    problems.some((p) => /The date was edited without recording why/.test(p)),
+    JSON.stringify(problems, null, 2),
+  );
+});
+
+test('NEGATIVE — a chain with a gap in it is caught', () => {
+  const register = loadReviewRegister();
+  const base = register.pending_pipeline!;
+  const waiver = {
+    ...base,
+    expected_by: '2027-03-01',
+    re_anchors: [
+      ...(base.re_anchors ?? []),
+      {
+        from: '2027-01-01', // does not continue from 2026-12-05
+        to: '2027-03-01',
+        decided_on: '2026-12-05',
+        decided_by: 'x',
+        reason: 'y',
+        external_start_at_decision: null,
+      },
+    ],
+  };
+  const problems = reAnchorProblems(waiver, ORIGINAL_EXPECTED_BY, MAX_UNSTARTED_RE_ANCHORS);
+  assert.ok(
+    problems.some((p) => /does not continue from/.test(p)),
+    JSON.stringify(problems, null, 2),
+  );
+});
+
+test('NEGATIVE — a second re-anchor with nothing engaged exceeds the bound', () => {
+  // The answer to "could this record report we are on track while nothing has
+  // been engaged". On its own, yes: append a row each time the date approaches.
+  // The bound is what stops it, and the bound is a literal in THIS file, not a
+  // field in the register — a register that could raise its own limit would be
+  // measuring itself.
+  const register = loadReviewRegister();
+  const base = register.pending_pipeline!;
+  const waiver = {
+    ...base,
+    expected_by: '2027-01-16',
+    re_anchors: [
+      ...(base.re_anchors ?? []),
+      {
+        from: DEADLINE,
+        to: '2027-01-16',
+        decided_on: '2026-12-05',
+        decided_by: 'whoever was editing',
+        reason: 'still nothing has started',
+        external_start_at_decision: null,
+      },
+    ],
+  };
+  const problems = reAnchorProblems(waiver, ORIGINAL_EXPECTED_BY, MAX_UNSTARTED_RE_ANCHORS);
+  assert.ok(
+    problems.some((p) => /over a bound of 1/.test(p)),
+    JSON.stringify(problems, null, 2),
+  );
+  // And the same move, once the pipeline is genuinely running, is scheduling
+  // rather than drift — so it is permitted.
+  const started = {
+    ...waiver,
+    re_anchors: waiver.re_anchors.map((r, i) =>
+      i === waiver.re_anchors.length - 1 ? { ...r, external_start_at_decision: '2026-10-24' } : r,
+    ),
+  };
+  assert.deepEqual(reAnchorProblems(started, ORIGINAL_EXPECTED_BY, MAX_UNSTARTED_RE_ANCHORS), []);
+});
+
+test('external_start is recorded as an explicit null, and an absent key fails closed', () => {
+  const pipeline = loadCopyPipeline();
+  assert.equal(pipeline.external_start, null);
+  assert.ok('external_start' in pipeline, 'the key must be PRESENT and null, never absent');
+  const register = loadReviewRegister();
+  assert.equal(register.pending_pipeline?.external_start, null);
 });
 
 test('slackDays measures from the recorded external start, or from today while it is null', () => {
   const pipeline = loadCopyPipeline();
   // Null start: slack is measured against the wall clock, which is what makes
   // "nobody has started" visible rather than merely true.
-  assert.equal(slackDays(pipeline, endOfDay('2026-09-05')), 0);
-  assert.equal(slackDays(pipeline, endOfDay('2026-09-01')), 4);
-  assert.equal(slackDays(pipeline, endOfDay('2026-09-19')), -14);
+  assert.equal(slackDays(pipeline, endOfDay('2026-10-24')), 0);
+  assert.equal(slackDays(pipeline, endOfDay('2026-10-20')), 4);
+  assert.equal(slackDays(pipeline, endOfDay('2026-11-07')), -14);
   // A recorded start pins it: the clock stops mattering and the recorded date does.
-  const started = { ...pipeline, external_start: '2026-09-19' };
-  assert.equal(slackDays(started, endOfDay('2026-09-01')), -14);
+  const started = { ...pipeline, external_start: '2026-11-07' };
+  assert.equal(slackDays(started, endOfDay('2026-10-20')), -14);
 });
 
 test('a recorded external_start may not already be past the last workable day', () => {
