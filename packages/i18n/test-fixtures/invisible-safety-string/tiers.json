@@ -6,6 +6,10 @@
     "safety.ltr_mark": "safety_critical",
     "safety.bare_combining_mark": "safety_critical",
     "safety.nbsp": "safety_critical",
-    "safety.checkins_missed": "safety_critical"
+    "safety.checkins_missed": "safety_critical",
+    "safety.braille_blank": "safety_critical",
+    "safety.c0_control": "safety_critical",
+    "safety.interlinear": "safety_critical",
+    "safety.noncharacter": "safety_critical"
   }
 }

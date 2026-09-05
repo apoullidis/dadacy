@@ -76,20 +76,48 @@ const LOCALE_CODE_RE = /^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$/;
  * hyphen left behind by a wrapping tool, or an LTR mark inserted by an editor all
  * produce exactly this value, and the cell **looks** filled in.
  *
- * **Derived from Unicode properties, not from a list of characters** (PROTOCOL
- * §5.1). An enumerated denylist would be a second table to keep in step with the
- * one in `CONTRACTS.md` and would silently miss `U+FEFF`, `U+3164`, `U+034F` and
- * the thousands of other code points carrying this property. The named five are
- * asserted in the test as an *external* requirement the predicate must satisfy —
- * they are not the definition.
+ * **Mostly derived from Unicode properties, not from a list of characters**
+ * (PROTOCOL §5.1). An enumerated denylist would be a second table to keep in step
+ * with the one in `CONTRACTS.md` and would silently miss `U+FEFF`, `U+3164`,
+ * `U+034F` and thousands of other code points carrying these properties. The
+ * named five are asserted in the test as an *external* requirement the predicate
+ * must satisfy — they are not the definition.
+ *
+ * **Three additions are NOT property-derived, and each is here because a first
+ * property-only version of this predicate let it through** (QA round 1, F3 —
+ * measured, not reasoned about):
+ *
+ *   - `U+2800 BRAILLE PATTERN BLANK` — general category `So`, carrying *none* of
+ *     `White_Space`, `Default_Ignorable`, `Mark`, `Cc`, `Cf` or
+ *     `Noncharacter_Code_Point`. It is an ordinary assigned symbol that renders
+ *     as nothing, which is exactly why it is the character of choice for
+ *     "invisible" text on the web. No Unicode property distinguishes it.
+ *   - `\p{Cc}` — C0/C1 controls. A property, but a *different* one, and `U+0000`
+ *     in a JSON string is what a truncated export produces.
+ *   - `U+FFF9`–`U+FFFB` — interlinear annotation. `Cf`, but explicitly *excluded*
+ *     from `Default_Ignorable_Code_Point` by Unicode's own definition.
+ *
+ * **What this predicate does NOT cover, stated because the flat claim was wrong
+ * once already:** a **private-use** code point (`U+E000`…) or an **unassigned**
+ * one (`U+0378`) is refused by neither this predicate nor any other check here.
+ * That is deliberate and it is not a gap that can be closed from here: both
+ * normally render as a visible `.notdef` box, but a font that maps them to a
+ * blank glyph would make them invisible, and the compiler cannot know which. It
+ * would be a false claim to say those "render nothing", so they are left, and
+ * named — here and in `T-049` § Published contract §7.
  */
-const CONTENT_FREE_RE = /^[\p{White_Space}\p{Default_Ignorable_Code_Point}\p{Mark}]*$/u;
+const CONTENT_FREE_RE =
+  /^[\p{White_Space}\p{Default_Ignorable_Code_Point}\p{Mark}\p{Cc}\p{Noncharacter_Code_Point}\u{2800}\u{FFF9}-\u{FFFB}]*$/u;
 
 /**
- * True when this string has nothing a reader can see: empty, whitespace-only, or
- * composed entirely of invisible formatting characters and unattached combining
- * marks. A combining mark alone is content-free because it has no base character
- * to combine with; one *inside* a word (`α` + `U+0301`) is a letter and is not
+ * True when **every** code point in this string is one that cannot render a
+ * visible glyph, drawn from `CONTENT_FREE_RE`'s enumerated properties and its
+ * three named exceptions. That is the exact claim; it is not "renders nothing
+ * visible" in general, because private-use and unassigned code points are outside
+ * it (see above).
+ *
+ * A combining mark alone is content-free because it has no base character to
+ * combine with; one *inside* a word (`α` + `U+0301`) is a letter and is not
  * matched, because the string then contains a base character as well.
  */
 export function rendersNothingVisible(value: string): boolean {

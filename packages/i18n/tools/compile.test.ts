@@ -88,16 +88,56 @@ test('negative — a value that survives trim() but renders nothing is refused (
   // tree at all — and it is what makes the second block meaningful. A test that
   // only checked `rendersNothingVisible` against its own regex would be derived
   // from the same reading as the thing it checks (PROTOCOL §5.1).
-  const named: readonly (readonly [string, string])[] = [
-    ['U+200B ZERO WIDTH SPACE', '​'],
-    ['U+00AD SOFT HYPHEN', '­'],
-    ['U+2060 WORD JOINER', '⁠'],
-    ['U+200E LEFT-TO-RIGHT MARK', '‎'],
-    ['U+0301 COMBINING ACUTE ACCENT, bare', '́'],
+  const named: readonly (readonly [string, number])[] = [
+    ['U+200B ZERO WIDTH SPACE', 0x200b],
+    ['U+00AD SOFT HYPHEN', 0x00ad],
+    ['U+2060 WORD JOINER', 0x2060],
+    ['U+200E LEFT-TO-RIGHT MARK', 0x200e],
+    ['U+0301 COMBINING ACUTE ACCENT, bare', 0x0301],
+    // Added after QA round 1 drove the FIRST version of this predicate. Each of
+    // these four passed it, compiled, linked, and rendered blank — the same
+    // defect the predicate was written to close, intact one property along.
+    ['U+2800 BRAILLE PATTERN BLANK', 0x2800],
+    ['U+0000 NULL', 0x0000],
+    ['U+FFF9 INTERLINEAR ANNOTATION ANCHOR', 0xfff9],
+    ['U+FDD0 noncharacter', 0xfdd0],
   ];
-  for (const [name, ch] of named) {
+  for (const [name, cp] of named) {
+    const ch = String.fromCodePoint(cp);
     assert.notEqual(ch.trim(), '', `${name}: trim() was expected NOT to strip this`);
     assert.ok(rendersNothingVisible(ch), `${name}: must be refused as content-free`);
+  }
+
+  // U+2800 is the one that shows why "derived from Unicode properties" cannot be
+  // the WHOLE construction. It carries none of them, and it is the character of
+  // choice for invisible text on the web precisely because of that.
+  for (const prop of [
+    'White_Space',
+    'Default_Ignorable_Code_Point',
+    'Mark',
+    'Cc',
+    'Cf',
+    'Noncharacter_Code_Point',
+  ]) {
+    assert.ok(
+      !new RegExp(`^\\p{${prop}}$`, 'u').test(String.fromCodePoint(0x2800)),
+      `U+2800 was expected NOT to carry ${prop} — if it now does, simplify the predicate`,
+    );
+  }
+
+  // THE RESIDUAL, asserted rather than described, so the claim in the contract
+  // stays true. These two are NOT refused and must not be: both normally render
+  // as a visible .notdef box, and only a font that maps them to a blank glyph
+  // would make them invisible. Claiming otherwise would be the overclaim this
+  // rework exists to remove.
+  for (const [name, cp] of [
+    ['U+E000 private use', 0xe000],
+    ['U+0378 unassigned', 0x0378],
+  ] as const) {
+    assert.ok(
+      !rendersNothingVisible(String.fromCodePoint(cp)),
+      `${name} must NOT be refused — the compiler cannot know how a font renders it`,
+    );
   }
   // `U+00A0` is the one shape the old `trim()` check already caught. Keeping it
   // here records WHY the gap existed rather than leaving it as folklore.
@@ -122,7 +162,7 @@ test('negative — a value that survives trim() but renders nothing is refused (
   // level down — the same defect inside `many`, which only ever fires on 5, 11,
   // 111 … and so is invisible in a two-example spot check as well as on screen.
   const problems = await compileFixture('invisible-safety-string');
-  assert.equal(problems.length, 7, JSON.stringify(problems, null, 2));
+  assert.equal(problems.length, 11, JSON.stringify(problems, null, 2));
   for (const key of [
     'zwsp',
     'soft_hyphen',
@@ -130,6 +170,10 @@ test('negative — a value that survives trim() but renders nothing is refused (
     'ltr_mark',
     'bare_combining_mark',
     'nbsp',
+    'braille_blank',
+    'c0_control',
+    'interlinear',
+    'noncharacter',
   ]) {
     assert.ok(
       problems.some((p) => p.includes(`'${key}' renders nothing visible`)),

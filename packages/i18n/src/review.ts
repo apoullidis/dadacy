@@ -163,12 +163,21 @@ export function catalogueSource(
 // here, rather than implied: this register lives in the same repository as the
 // copy it vouches for, so a sufficiently determined edit can write a sign-off
 // that never happened. `content_hash` binds a record to the CURRENT source, which
-// proves currency, not review. What the predicates below buy is that a forged
-// sign-off can no longer be a one-word edit: it must name an author, name a
-// DIFFERENT reviewer, and add both to a roster carrying a stakeholder
-// confirmation date — in the same commit, in a file whose whole subject is
-// provenance. Loud and specific instead of cheap and silent. That is the claim,
-// and it is not a stronger one.
+// proves currency, not review.
+//
+// What the predicates below buy is narrower than "forgery is hard", and QA round
+// 1 (F2) was right that the first version of this comment overstated it. Stated
+// as exactly what is tested: a `signed_off` record must name an author and a
+// reviewer that are BOTH resolvable to distinct named roles in the roster, each
+// carrying a stakeholder confirmation date; the author's role must be the one the
+// assignment's method calls for and must not be a reviewer role; and
+// `reviewed_at` must fall between the last completed blocking stage and now. Free
+// text in either name field, a machine in `authored_by`, a 2019 date, and a
+// sign-off predating the brief are each refused — those were the gaps.
+//
+// It remains true that a real, stakeholder-confirmed DSL can be recorded as
+// having reviewed something they did not. Nothing here catches that, and only a
+// countersignature from outside the repository could.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** How one locale's copy for one key must be produced. */
@@ -298,24 +307,53 @@ export function loadCopyPipeline(root: string = PACKAGE_ROOT): CopyPipeline {
  * (`entries`), which `T-044` has no way to check because they did not exist when
  * its contract was written.
  */
+/** Which pipeline role must produce copy by a given method. Derived from the plan, not listed twice. */
+const AUTHORING_ROLE_FOR_METHOD: Readonly<Record<CopyMethod, string>> = {
+  authored: 'greek_authoring_safeguarding_practitioner',
+  translated_briefed: 'russian_translator_briefed',
+};
+
+const REVIEWER_ROLES: readonly string[] = ['dsl', 'dsl_deputy'];
+
 export function pipelineIncoherences(
   register: ReviewRegister,
   pipeline: CopyPipeline,
   locales: readonly string[],
   safetyKeys: readonly string[],
+  now: number = Date.now(),
 ): string[] {
   const problems: string[] = [];
 
+  // QA-F2. `authored_by !== reviewed_by` was string inequality over unconstrained
+  // free text, and it did not enforce what the contract claimed. "B. Lead" and
+  // "B. Lead, DSL" are one human and passed; "DeepL Pro v3 (machine)" is not a
+  // human at all and passed, on a register whose entire subject is that machine
+  // translation is prohibited. Both names are now resolved against the roster —
+  // a closed, stakeholder-confirmed set — so distinctness is between two
+  // identified ROLES rather than between two arbitrary strings.
+  const roleOfName = new Map<string, string>();
+  for (const [id, role] of Object.entries(pipeline.roles)) {
+    if (role.named !== null) roleOfName.set(role.named, id);
+  }
   const namedPeople = new Map<string, PipelineRole>();
   for (const role of Object.values(pipeline.roles)) {
     if (role.named !== null) namedPeople.set(role.named, role);
   }
-  const reviewerRoles = new Set(['dsl', 'dsl_deputy']);
+  const reviewerRoles = new Set(REVIEWER_ROLES);
   const reviewerNames = new Set(
     Object.entries(pipeline.roles)
       .filter(([id, r]) => reviewerRoles.has(id) && r.named !== null)
       .map(([, r]) => r.named as string),
   );
+
+  // The latest blocking stage a sign-off must not predate. Derived from the
+  // stages themselves rather than from a hand-written floor date.
+  let latestBlockingStage = Number.NEGATIVE_INFINITY;
+  for (const stage of pipeline.stages) {
+    if (!stage.blocking || stage.completed_at === null) continue;
+    const t = Date.parse(stage.completed_at);
+    if (Number.isFinite(t) && t > latestBlockingStage) latestBlockingStage = t;
+  }
 
   for (const key of safetyKeys) {
     const assignment = pipeline.assignments[key];
@@ -365,10 +403,71 @@ export function pipelineIncoherences(
         );
         continue;
       }
+      // (a) The author must be a NAMED, stakeholder-confirmed person in the
+      // roster, and must be the role the assignment's method calls for. This is
+      // what stops `authored_by: "DeepL Pro v3 (machine)"` and what makes the
+      // distinctness check below mean something.
+      const authorRole = roleOfName.get(record.authored_by);
+      if (authorRole === undefined) {
+        problems.push(
+          `${locale}/${key}: authored_by '${record.authored_by}' is not a named person in pipeline.roles. Safety copy is produced by an identified human in a named role — a free-text author cannot be checked against anything, and a machine can be typed into it.`,
+        );
+      } else {
+        const expectedRole = AUTHORING_ROLE_FOR_METHOD[per.method];
+        if (authorRole !== expectedRole) {
+          problems.push(
+            `${locale}/${key}: authored_by is the '${authorRole}', but the pipeline requires this locale to be produced by the '${expectedRole}' (method '${per.method}')`,
+          );
+        }
+        if (reviewerRoles.has(authorRole)) {
+          problems.push(
+            `${locale}/${key}: authored_by holds a reviewer role ('${authorRole}'). One person cannot be both sides of a four-eyes check, however the two fields are spelled.`,
+          );
+        }
+        const reviewerRole = roleOfName.get(record.reviewed_by);
+        if (reviewerRole !== undefined && reviewerRole === authorRole) {
+          problems.push(
+            `${locale}/${key}: authored_by and reviewed_by are the same person in role '${authorRole}'. Review by the author is not review.`,
+          );
+        }
+      }
       if (record.authored_by === record.reviewed_by) {
         problems.push(
           `${locale}/${key}: '${record.authored_by}' both authored and signed off this safety string. Review by the author is not review.`,
         );
+      }
+
+      // (b) `reviewed_at` was bounded by nothing: a 2019 sign-off passed, and so
+      // did one dated before the translator had been briefed. Bounded now at both
+      // ends, and the lower bound is DERIVED from the stages rather than written
+      // as a floor date that would rot.
+      const reviewedAt = Date.parse(record.reviewed_at);
+      if (!Number.isFinite(reviewedAt)) {
+        problems.push(`${locale}/${key}: reviewed_at '${record.reviewed_at}' is not a date`);
+      } else {
+        if (reviewedAt > now) {
+          problems.push(
+            `${locale}/${key}: reviewed_at ${record.reviewed_at} is in the future. A review that has not happened yet has not happened.`,
+          );
+        }
+        if (Number.isFinite(latestBlockingStage) && reviewedAt < latestBlockingStage) {
+          problems.push(
+            `${locale}/${key}: reviewed_at ${record.reviewed_at} precedes the completion of a blocking pipeline stage. Sign-off before the translator was briefed, or before the copy existed, is not sign-off.`,
+          );
+        }
+        if (reviewedAt < endOfDay(pipeline.engineering_kickoff) - 86_400_000) {
+          problems.push(
+            `${locale}/${key}: reviewed_at ${record.reviewed_at} predates the day this pipeline was opened (${pipeline.engineering_kickoff}). Nothing here can have been reviewed before the register that records it existed.`,
+          );
+        }
+        if (
+          pipeline.external_start !== null &&
+          reviewedAt < endOfDay(pipeline.external_start) - 86_400_000
+        ) {
+          problems.push(
+            `${locale}/${key}: reviewed_at ${record.reviewed_at} predates external_start (${pipeline.external_start}). The copy was not out for authorship yet.`,
+          );
+        }
       }
       if (!reviewerNames.has(record.reviewed_by)) {
         problems.push(
@@ -407,9 +506,18 @@ export function pipelineIncoherences(
  * only caller writes it as a literal in the test file: a register that could
  * raise its own limit would be measuring itself. Cumulative drift is bounded
  * separately and also from outside, by the dated anchor in `review.test.ts`.
- * What this function checks is only that the chain is *continuous* and that it
- * *agrees with* the date it claims to explain — which is what turns a silent
- * date edit into a red test.
+ *
+ * **And neither is the predicate that decides whether the bound applies** — which
+ * is the same question one level down, and the first version of this function got
+ * it wrong (QA round 1, F1). Exemption is granted against the waiver's **actual**
+ * `external_start`, never against the row's own account of itself. A row cannot
+ * certify its own exemption, and a row whose claim contradicts the waiver is
+ * reported rather than silently declined.
+ *
+ * What this function checks, exactly: that the chain is *continuous*, that it
+ * *agrees with* the date it claims to explain, and that every claimed exemption
+ * is consistent with the one recorded start date. It does **not** check that any
+ * of it is true of the world — see `pipelineIncoherences`' own limit.
  */
 export function reAnchorProblems(
   waiver: PendingPipeline,
@@ -460,10 +568,59 @@ export function reAnchorProblems(
     }
   }
 
-  const unstarted = chain.filter((r) => r.external_start_at_decision === null).length;
+  // QA-F1. The bound was moved outside the register correctly, but the predicate
+  // deciding whether it APPLIES was still inside it: this filtered on
+  // `external_start_at_decision`, a field the row writes ABOUT ITSELF and which
+  // was never compared against the waiver's actual `external_start` — in scope,
+  // and `null`. Typing a date into that one field bought an exemption from a
+  // bound that was otherwise unreachable. The §5.1 question, one level down.
+  //
+  // The exemption's principle stays, because it is right: once the pipeline is
+  // genuinely running, moving a date is scheduling and not drift, and a bound
+  // that punished real scheduling would be worked around rather than obeyed. What
+  // changes is that a row can no longer certify its own exemption. It is granted
+  // against the waiver's ACTUAL state, and a row that disagrees with that state
+  // is reported rather than quietly declining the exemption — a wrong claim about
+  // provenance is a finding, not a no-op.
+  const actualStart = waiver.external_start ?? null;
+  let unstarted = 0;
+  for (const [i, row] of chain.entries()) {
+    const claimed = row.external_start_at_decision;
+    if (actualStart === null) {
+      // Nothing has started, and a start cannot be un-started, so nothing had
+      // started at any earlier decision either. Every row is unstarted whatever
+      // it says about itself, and a row that says otherwise is making a false
+      // claim about a fact recorded elsewhere in the same file.
+      if (claimed !== null) {
+        problems.push(
+          `re_anchors[${String(i)}] claims external_start_at_decision '${claimed}', but the waiver's external_start is null — nothing has been engaged, and a start cannot be un-started. A re-anchor cannot certify its own exemption from the bound.`,
+        );
+      }
+      unstarted += 1;
+      continue;
+    }
+    if (claimed === null) {
+      unstarted += 1;
+      continue;
+    }
+    if (claimed !== actualStart) {
+      problems.push(
+        `re_anchors[${String(i)}] claims external_start_at_decision '${claimed}', but the waiver's external_start is '${actualStart}'. There is one start date, not one per row.`,
+      );
+      unstarted += 1;
+      continue;
+    }
+    if (endOfDay(row.decided_on) < endOfDay(actualStart)) {
+      problems.push(
+        `re_anchors[${String(i)}] was decided on ${row.decided_on}, before the external start it claims to be exempt under (${actualStart}). An exemption cannot be backdated to before the thing that grants it.`,
+      );
+      unstarted += 1;
+    }
+  }
+
   if (unstarted > maxUnstartedReAnchors) {
     problems.push(
-      `${String(unstarted)} re-anchors have been made with no external_start recorded, over a bound of ${String(maxUnstartedReAnchors)}. Repeatedly moving the date while nothing has been engaged is the shape of an open-ended waiver, which this mechanism exists to not become. Raising the bound is an orchestrator decision against BOARD RK-2 and must cost an edit to the literal in src/pipeline.test.ts.`,
+      `${String(unstarted)} re-anchors have been made with no external_start actually recorded, over a bound of ${String(maxUnstartedReAnchors)}. Repeatedly moving the date while nothing has been engaged is the shape of an open-ended waiver, which this mechanism exists to not become. Raising the bound is an orchestrator decision against BOARD RK-2 and must cost an edit to the literal in src/pipeline.test.ts.`,
     );
   }
   return problems;

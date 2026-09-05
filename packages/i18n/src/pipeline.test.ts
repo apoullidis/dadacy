@@ -197,15 +197,104 @@ test('NEGATIVE — a second re-anchor with nothing engaged exceeds the bound', (
     problems.some((p) => /over a bound of 1/.test(p)),
     JSON.stringify(problems, null, 2),
   );
-  // And the same move, once the pipeline is genuinely running, is scheduling
-  // rather than drift — so it is permitted.
+  // And the same move, once the pipeline is GENUINELY running, is scheduling
+  // rather than drift — so it is permitted. Note what had to change for that to
+  // be true: the waiver's own `external_start`, not just the row's account of
+  // itself. The earlier version of this test set only the row, which is exactly
+  // the hole QA-F1 found: it asserted the exemption held while the waiver still
+  // said nothing had started, and it passed.
   const started = {
     ...waiver,
+    external_start: '2026-10-24',
     re_anchors: waiver.re_anchors.map((r, i) =>
-      i === waiver.re_anchors.length - 1 ? { ...r, external_start_at_decision: '2026-10-24' } : r,
+      i === waiver.re_anchors.length - 1
+        ? { ...r, decided_on: '2026-12-05', external_start_at_decision: '2026-10-24' }
+        : { ...r, external_start_at_decision: '2026-10-24', decided_on: '2026-10-24' },
     ),
   };
   assert.deepEqual(reAnchorProblems(started, ORIGINAL_EXPECTED_BY, MAX_UNSTARTED_RE_ANCHORS), []);
+});
+
+test('NEGATIVE — QA-F1: a re-anchor cannot certify its own exemption from the bound', () => {
+  // The forgery the first version of this mechanism allowed, and the reason it
+  // was a rework rather than a note: the BOUND was outside the register, but the
+  // predicate deciding whether it APPLIED was inside it. Filtering on
+  // `external_start_at_decision` — a field the row writes about itself — meant a
+  // date typed into that one field bought an exemption from a limit that was
+  // otherwise unreachable. Exemption is now granted against the waiver's actual
+  // `external_start`, which is null.
+  const register = loadReviewRegister();
+  const base = register.pending_pipeline!;
+  assert.equal(base.external_start, null, 'precondition: nothing has been engaged');
+  const forged = {
+    ...base,
+    expected_by: '2027-01-16',
+    re_anchors: [
+      ...(base.re_anchors ?? []),
+      {
+        from: DEADLINE,
+        to: '2027-01-16',
+        decided_on: '2026-12-05',
+        decided_by: 'whoever was editing',
+        reason: 'still nothing has started',
+        // The single field that used to buy the exemption.
+        external_start_at_decision: '2026-10-24',
+      },
+    ],
+  };
+  const problems = reAnchorProblems(forged, ORIGINAL_EXPECTED_BY, MAX_UNSTARTED_RE_ANCHORS);
+  assert.ok(
+    problems.some((p) => /cannot certify its own exemption from the bound/.test(p)),
+    JSON.stringify(problems, null, 2),
+  );
+  assert.ok(
+    problems.some((p) => /over a bound of 1/.test(p)),
+    'and it must still count against the bound',
+  );
+});
+
+test('NEGATIVE — an exemption cannot be backdated to before the start that grants it', () => {
+  const register = loadReviewRegister();
+  const base = register.pending_pipeline!;
+  const forged = {
+    ...base,
+    external_start: '2026-10-24',
+    expected_by: '2027-01-16',
+    re_anchors: [
+      { ...base.re_anchors![0]!, external_start_at_decision: '2026-10-24' }, // decided_on 2026-09-05
+      {
+        from: DEADLINE,
+        to: '2027-01-16',
+        decided_on: '2026-12-05',
+        decided_by: 'x',
+        reason: 'y',
+        external_start_at_decision: '2026-10-24',
+      },
+    ],
+  };
+  const problems = reAnchorProblems(forged, ORIGINAL_EXPECTED_BY, MAX_UNSTARTED_RE_ANCHORS);
+  assert.ok(
+    problems.some((p) => /before the external start it claims to be exempt under/.test(p)),
+    JSON.stringify(problems, null, 2),
+  );
+});
+
+test('NEGATIVE — a row claiming a start date the waiver does not have', () => {
+  const register = loadReviewRegister();
+  const base = register.pending_pipeline!;
+  const forged = {
+    ...base,
+    external_start: '2026-10-24',
+    re_anchors: (base.re_anchors ?? []).map((r) => ({
+      ...r,
+      external_start_at_decision: '2026-09-01',
+    })),
+  };
+  const problems = reAnchorProblems(forged, ORIGINAL_EXPECTED_BY, MAX_UNSTARTED_RE_ANCHORS);
+  assert.ok(
+    problems.some((p) => /There is one start date, not one per row/.test(p)),
+    JSON.stringify(problems, null, 2),
+  );
 });
 
 test('external_start is recorded as an explicit null, and an absent key fails closed', () => {
@@ -345,33 +434,65 @@ function withRecord(locale: string, key: string, patch: Record<string, unknown>)
   };
 }
 
+/** A delivery that genuinely happened, expressed in dates a test can reason about. */
+const START = '2026-10-24';
+const STAGES_DONE = '2026-12-01T09:00:00Z';
+const REVIEWED = '2026-12-02T09:00:00Z';
+const NOW = Date.parse('2026-12-03T00:00:00Z');
+
+const PRACTITIONER = 'P. Practitioner, safeguarding practitioner (Cyprus)';
+const TRANSLATOR = 'T. Translator, professional translator';
+const DSL = 'B. Lead, DSL';
+const DEPUTY = 'D. Deputy, deputy DSL';
+
+/** A coherent Russian sign-off: translated by the briefed translator, reviewed by the DSL. */
 const SIGNED = {
   provenance: 'translated_professional',
   status: 'signed_off',
-  authored_by: 'A. Translator, professional translator',
-  reviewed_by: 'B. Lead, DSL',
-  reviewed_at: '2026-10-14T09:00:00Z',
+  authored_by: TRANSLATOR,
+  reviewed_by: DSL,
+  reviewed_at: REVIEWED,
 };
 
 /** A pipeline in the state it would be in AFTER a real delivery — everything else valid. */
 function deliveredPipeline(): CopyPipeline {
   const p = loadCopyPipeline();
+  const names: Record<string, string> = {
+    greek_authoring_safeguarding_practitioner: PRACTITIONER,
+    russian_translator_briefed: TRANSLATOR,
+    dsl: DSL,
+    dsl_deputy: DEPUTY,
+  };
   return {
     ...p,
-    external_start: '2026-09-05',
+    external_start: START,
     roles: Object.fromEntries(
       Object.entries(p.roles).map(([id, r]) => [
         id,
-        {
-          ...r,
-          named: id === 'dsl' ? 'B. Lead, DSL' : `${id} person`,
-          confirmed_by_stakeholder_on: '2026-09-05',
-        },
+        { ...r, named: names[id] ?? `${id} person`, confirmed_by_stakeholder_on: '2026-10-20' },
       ]),
     ),
-    stages: p.stages.map((s) => ({ ...s, completed_at: '2026-10-14T09:00:00Z' })),
+    stages: p.stages.map((s) => ({ ...s, completed_at: STAGES_DONE })),
+    // `session.checkins_missed` must have a decided channel before anything can
+    // be signed off — the fixture below signs off a key that is not it, but the
+    // channel rule is per key and this keeps the baseline honest.
+    assignments: p.assignments,
   };
 }
+
+test('the coherence predicates are SATISFIABLE — a genuine delivery reports nothing', () => {
+  // The test that stops the whole predicate set being vacuous. A check nothing
+  // can ever pass is as useless as one nothing can fail, and after QA-F2 tightened
+  // five rules at once this is the one that proves they can all hold together.
+  const problems = pipelineIncoherences(
+    withRecord('ru', 'safety.sos.confirm', SIGNED),
+    deliveredPipeline(),
+    LOCALES,
+    SAFETY_KEYS,
+    NOW,
+  );
+  assert.deepEqual(problems, [], JSON.stringify(problems, null, 2));
+});
 
 test('the coherence predicates are silent on the register as it actually stands', () => {
   assert.deepEqual(
@@ -390,6 +511,7 @@ test('NEGATIVE — a sign-off whose provenance is not the method the pipeline re
     deliveredPipeline(),
     LOCALES,
     SAFETY_KEYS,
+    NOW,
   );
   assert.ok(
     problems.some((p) =>
@@ -403,10 +525,11 @@ test('NEGATIVE — a sign-off whose provenance is not the method the pipeline re
 
 test('NEGATIVE — the author signed off their own safety copy', () => {
   const problems = pipelineIncoherences(
-    withRecord('ru', 'safety.sos.confirm', { ...SIGNED, authored_by: 'B. Lead, DSL' }),
+    withRecord('ru', 'safety.sos.confirm', { ...SIGNED, authored_by: DSL }),
     deliveredPipeline(),
     LOCALES,
     SAFETY_KEYS,
+    NOW,
   );
   assert.ok(
     problems.some((p) => /both authored and signed off this safety string/.test(p)),
@@ -420,6 +543,7 @@ test('NEGATIVE — signed off by someone who is not the named DSL or deputy', ()
     deliveredPipeline(),
     LOCALES,
     SAFETY_KEYS,
+    NOW,
   );
   assert.ok(
     problems.some((p) => /not the named DSL or deputy in pipeline\.roles/.test(p)),
@@ -441,6 +565,7 @@ test('NEGATIVE — a reviewer named in the roster but never confirmed by a stake
     unconfirmed,
     LOCALES,
     SAFETY_KEYS,
+    NOW,
   );
   assert.ok(
     problems.some((p) => /carries no stakeholder confirmation date/.test(p)),
@@ -465,6 +590,7 @@ test('NEGATIVE — signed off while a blocking stage never completed', () => {
     unbriefed,
     LOCALES,
     SAFETY_KEYS,
+    NOW,
   );
   assert.ok(
     problems.some((p) => /blocking pipeline stage 'brief_ru_translator' is not complete/.test(p)),
@@ -485,6 +611,7 @@ test('NEGATIVE — signed off while nobody has decided whether the string is spo
     deliveredPipeline(),
     LOCALES,
     SAFETY_KEYS,
+    NOW,
   );
   assert.ok(
     problems.some((p) => /signed off while its channel is undetermined/.test(p)),
@@ -495,7 +622,7 @@ test('NEGATIVE — signed off while nobody has decided whether the string is spo
 test('NEGATIVE — a safety_critical key with no pipeline assignment at all', () => {
   const pipeline = loadCopyPipeline();
   const stripped: CopyPipeline = { ...pipeline, assignments: {} };
-  const problems = pipelineIncoherences(loadReviewRegister(), stripped, LOCALES, SAFETY_KEYS);
+  const problems = pipelineIncoherences(loadReviewRegister(), stripped, LOCALES, SAFETY_KEYS, NOW);
   assert.equal(problems.length, SAFETY_KEYS.length, JSON.stringify(problems, null, 2));
   assert.ok(problems.every((p) => /has nobody who must author it/.test(p)));
 });
@@ -504,5 +631,98 @@ test('NEGATIVE — an absent pipeline block fails closed rather than reading as 
   assert.throws(
     () => loadCopyPipeline('/nonexistent-root-for-t-049'),
     (err: unknown) => err instanceof Error,
+  );
+});
+
+// ─── QA-F2: five forgeries the first version of these predicates let through ───
+
+function ruProblems(patch: Record<string, unknown>, pipeline = deliveredPipeline()): string[] {
+  return pipelineIncoherences(
+    withRecord('ru', 'safety.sos.confirm', { ...SIGNED, ...patch }),
+    pipeline,
+    LOCALES,
+    SAFETY_KEYS,
+    NOW,
+  );
+}
+
+test('NEGATIVE — QA-F2: one human spelled two ways passes string inequality', () => {
+  // The load-bearing one. `authored_by !== reviewed_by` was string inequality over
+  // unconstrained free text, so "B. Lead" and "B. Lead, DSL" are one person and
+  // the four-eyes check saw two. Both names now resolve against the roster, so
+  // distinctness is between identified ROLES rather than between two strings —
+  // and a name that resolves to nothing is refused outright, which is what
+  // catches this spelling.
+  const problems = ruProblems({ authored_by: 'B. Lead' });
+  assert.ok(
+    problems.some((p) => /authored_by 'B\. Lead' is not a named person in pipeline\.roles/.test(p)),
+    JSON.stringify(problems, null, 2),
+  );
+  // And the same human properly named is caught as a role collision, not a typo.
+  const asRole = ruProblems({ authored_by: DSL });
+  assert.ok(
+    asRole.some((p) => /authored_by holds a reviewer role/.test(p)),
+    JSON.stringify(asRole, null, 2),
+  );
+});
+
+test('NEGATIVE — QA-F2: a machine in authored_by, on a register whose subject is that MT is banned', () => {
+  const problems = ruProblems({ authored_by: 'DeepL Pro v3 (machine)' });
+  assert.ok(
+    problems.some((p) => /is not a named person in pipeline\.roles/.test(p)),
+    JSON.stringify(problems, null, 2),
+  );
+});
+
+test('NEGATIVE — QA-F2: the wrong role produced the copy', () => {
+  // The practitioner authoring Russian, or the translator authoring Greek: both
+  // are named, confirmed humans, and both are the wrong human for the method the
+  // pipeline recorded. Derived from `AUTHORING_ROLE_FOR_METHOD`, not hand-listed.
+  const problems = ruProblems({ authored_by: PRACTITIONER });
+  assert.ok(
+    problems.some((p) =>
+      /authored_by is the 'greek_authoring_safeguarding_practitioner', but the pipeline requires this locale to be produced by the 'russian_translator_briefed'/.test(
+        p,
+      ),
+    ),
+    JSON.stringify(problems, null, 2),
+  );
+});
+
+test('NEGATIVE — QA-F2: reviewed_at was bounded by nothing at either end', () => {
+  const old = ruProblems({ reviewed_at: '2019-04-01T09:00:00Z' });
+  assert.ok(
+    old.some((p) => /predates the day this pipeline was opened/.test(p)),
+    JSON.stringify(old, null, 2),
+  );
+  const future = ruProblems({ reviewed_at: '2027-06-01T09:00:00Z' });
+  assert.ok(
+    future.some((p) => /is in the future/.test(p)),
+    JSON.stringify(future, null, 2),
+  );
+});
+
+test('NEGATIVE — QA-F2: signed off before the translator was briefed', () => {
+  // The most likely real version: every stage genuinely completed, the reviewer
+  // real, the author real — and the sign-off dated before the brief landed. The
+  // floor is DERIVED from the blocking stages' own completion dates rather than
+  // written as a fixed date that would rot the moment the schedule moved.
+  const problems = ruProblems({ reviewed_at: '2026-11-01T09:00:00Z' });
+  assert.ok(
+    problems.some((p) => /precedes the completion of a blocking pipeline stage/.test(p)),
+    JSON.stringify(problems, null, 2),
+  );
+});
+
+test('NEGATIVE — QA-F2: signed off before the copy was even sent out for authorship', () => {
+  const p = deliveredPipeline();
+  const noStages: CopyPipeline = {
+    ...p,
+    stages: p.stages.map((s) => ({ ...s, completed_at: null })),
+  };
+  const problems = ruProblems({ reviewed_at: '2026-10-01T09:00:00Z' }, noStages);
+  assert.ok(
+    problems.some((p2) => /predates external_start/.test(p2)),
+    JSON.stringify(problems, null, 2),
   );
 });

@@ -6,5 +6,9 @@
   "ltr_mark": "116 111 — children's helpline.",
   "bare_combining_mark": "1466 — Hope For Children helpline.",
   "nbsp": "199 — police and ambulance.",
-  "checkins_missed": "{count, plural, one {# missed check-in} other {# missed check-ins}}"
+  "checkins_missed": "{count, plural, one {# missed check-in} other {# missed check-ins}}",
+  "braille_blank": "Hold to send an SOS. An operator will call you.",
+  "c0_control": "Call 112 now.",
+  "interlinear": "Read the address to the operator.",
+  "noncharacter": "116 111 - children's helpline."
 }

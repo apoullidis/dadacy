@@ -1,10 +1,14 @@
 {
-  "//": "What an external copy handoff actually produces. Each value below is EXACTLY ONE invisible code point (or, for `nbsp`, the one shape String.trim() already caught). All seven look like filled cells in a spreadsheet, a CAT tool and a code review.",
+  "//": "What an external copy handoff actually produces. Each value below is EXACTLY ONE code point that renders nothing (or, for `nbsp`, the one shape String.trim() already caught). All eleven look like filled cells in a spreadsheet, a CAT tool and a code review. The last four were found by QA driving the FIRST version of this predicate: U+2800 BRAILLE PATTERN BLANK in particular carries no Unicode property that distinguishes it from an ordinary symbol.",
   "zwsp": "​",
   "soft_hyphen": "­",
   "word_joiner": "⁠",
   "ltr_mark": "‎",
   "bare_combining_mark": "́",
   "nbsp": " ",
-  "checkins_missed": "{count, plural, one {Пропущена # отметка} few {Пропущено # отметки} many {​} other {Пропущено # отметок}}"
+  "checkins_missed": "{count, plural, one {Пропущена # отметка} few {Пропущено # отметки} many {​} other {Пропущено # отметок}}",
+  "braille_blank": "⠀",
+  "c0_control": "\u0000",
+  "interlinear": "￹",
+  "noncharacter": "﷐"
 }
