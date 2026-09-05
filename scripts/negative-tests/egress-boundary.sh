@@ -119,6 +119,12 @@ mut scripts/dev 'toolbox_refuse_root "scripts/dev" || exit 1' ': # removed' && r
 mut scripts/dev '    --user "$(id -u):$(id -g)" \' '    --privileged \
     --user "$(id -u):$(id -g)" \' && run_case "16 scripts/dev --privileged" FAIL
 
+echo; echo "=== OD-16 — the socket's group id must be DERIVED, not written down ==="
+mut scripts/lib/toolbox.sh '        --group-add "${gid}"' '        --group-add "987"' \
+  && run_case "18 --group-add given the literal 987" FAIL
+mut scripts/lib/toolbox.sh "gid=\"\$(stat -c '%g' \"\${sock}\" 2>/dev/null)\"" 'gid="987"' \
+  && run_case "19 the stat-based derivation replaced" FAIL
+
 echo; echo "=== fail-closed: the gate cannot locate what it must check ==="
 mut scripts/lib/toolbox.sh '
 toolbox_mount_args() {' '
@@ -127,5 +133,5 @@ toolbox_mount_args_renamed() {' && run_case "17 toolbox_mount_args renamed" FAIL
 echo
 run_case "99 tree restored" PASS
 echo
-if [[ $bad -eq 0 ]]; then echo "ALL 19 CASES BEHAVED AS EXPECTED"; else echo "!! $bad CASE(S) MISBEHAVED"; fi
+if [[ $bad -eq 0 ]]; then echo "ALL 21 CASES BEHAVED AS EXPECTED"; else echo "!! $bad CASE(S) MISBEHAVED"; fi
 exit $bad

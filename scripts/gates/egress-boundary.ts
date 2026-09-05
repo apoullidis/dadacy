@@ -391,6 +391,33 @@ if (svcScript !== null) {
   }
 }
 
+// The gid must be DERIVED. OD-16 measured 987 on this host; a literal there
+// is correct exactly once and then silently wrong on the next machine — and
+// "silently" because the symptom is EACCES inside a test process, which reads
+// as a broken harness and whose cheapest wrong repair is --user 0:0.
+{
+  const lib = read('scripts/lib/toolbox.sh');
+  if (lib !== null) {
+    const live = lib.split('\n').map(codeOf).join('\n');
+    const literal = /--group-add[^\n]*["']?\d+/.exec(live);
+    if (literal !== null) {
+      failures.push(
+        `scripts/lib/toolbox.sh passes a NUMERIC LITERAL to --group-add: ${literal[0].trim()}. ` +
+          `The Docker socket's group id is host-specific (987 here, measured in OD-16) and must ` +
+          `be derived with stat. A literal is right once and then gives EACCES on the next ` +
+          `machine, which reads as a broken harness and whose cheapest wrong repair is root.`,
+      );
+    }
+    if (!/--group-add "\$\{gid\}"/.test(live) || !/stat -c '%g'/.test(live)) {
+      failures.push(
+        `scripts/lib/toolbox.sh no longer derives the socket's group id with stat and passes ` +
+          `it to --group-add. See OD-16: mount-only gives EACCES, mount + derived --group-add ` +
+          `gives OK 200.`,
+      );
+    }
+  }
+}
+
 const libShell = read('scripts/lib/toolbox.sh');
 if (libShell === null) {
   failures.push('scripts/lib/toolbox.sh is missing');
