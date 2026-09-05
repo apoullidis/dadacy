@@ -54,8 +54,13 @@ docker kill -s TERM "${CONTAINER}" >/dev/null
 date +%s.%N > "${DIR}/sigterm-sent"
 echo "SIGTERM sent to ${CONTAINER}"
 
-for _ in $(seq 1 900); do
-  [[ "$(docker inspect "${CONTAINER}" --format '{{.State.Status}}')" == "exited" ]] && break
+# Wait a little beyond the grace period, then stop. A process that ignores
+# SIGTERM would otherwise hold this loop for as long as it is given.
+limit=$(( (GRACE + 10) * 10 ))
+status=running
+for _ in $(seq 1 "${limit}"); do
+  status="$(docker inspect "${CONTAINER}" --format '{{.State.Status}}')"
+  [[ "${status}" == "exited" ]] && break
   sleep 0.1
 done
 elapsed="$(awk -v a="$(date +%s.%N)" -v b="${start}" 'BEGIN{printf "%.2f", a-b}')"
@@ -68,8 +73,13 @@ probe_exit="$(sed -n 's/^PROBE_EXIT=//p' "${DIR}/probe.log")"
 
 fails=0
 mark() { if [[ "$1" == 0 ]]; then printf 'PASS'; else printf 'FAIL'; fails=$((fails+1)); fi; }
-printf 'C  the container exited 0 (not 137/143 — not SIGKILLed)          '; [[ "${code}" == 0 ]]; mark $?; printf '  (exit=%s oom=%s)\n' "${code}" "${oom}"
-printf 'D  it exited well inside stop_grace_period=%ss, not on the axe   ' "${GRACE}"; awk -v e="${elapsed}" -v g="${GRACE}" 'BEGIN{exit !(e < g-1)}'; mark $?; printf '  (%ss)\n' "${elapsed}"
+# NOTE ON C. `docker inspect .State.ExitCode` is 0 for a container that is
+# STILL RUNNING, so "exit code is 0" on its own is vacuously true for a process
+# that ignored the signal entirely. The status is asserted first, and this is
+# not hypothetical: the negative test below caught exactly that in an earlier
+# version of this script.
+printf 'C  the container actually EXITED, and exited 0 (not 137/143)      '; [[ "${status}" == "exited" && "${code}" == 0 ]]; mark $?; printf '  (status=%s exit=%s oom=%s)\n' "${status}" "${code}" "${oom}"
+printf 'D  it exited well inside stop_grace_period=%ss, not on the axe   ' "${GRACE}"; { [[ "${status}" == "exited" ]] && awk -v e="${elapsed}" -v g="${GRACE}" 'BEGIN{exit !(e < g-1)}'; }; mark $?; printf '  (%ss)\n' "${elapsed}"
 [[ "${probe_exit}" != "0" ]] && fails=$((fails+1))
 
 echo

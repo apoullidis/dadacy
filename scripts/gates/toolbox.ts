@@ -364,7 +364,7 @@ if (!/^\.pnpm-store\/?$/m.test(gitignore)) {
 console.log('\n6. ISOLATION — a gate run has no route to the Docker daemon\n');
 
 const SOCKET = '/var/run/docker.sock';
-let socketVisible = false;
+let socketVisible: boolean;
 try {
   socketVisible = fs.statSync(SOCKET).isSocket();
 } catch {

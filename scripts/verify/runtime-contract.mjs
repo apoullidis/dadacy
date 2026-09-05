@@ -30,7 +30,11 @@ const get = async (path) => {
     const res = await fetch(new URL(path, base), { signal: AbortSignal.timeout(15000) });
     const text = await res.text();
     let json;
-    try { json = JSON.parse(text); } catch { json = null; }
+    try {
+      json = JSON.parse(text);
+    } catch {
+      json = null;
+    }
     return { status: res.status, json };
   } catch (e) {
     return { status: 0, error: e.cause?.code ?? e.name ?? String(e), json: null };
@@ -67,6 +71,7 @@ contract.push(`slow.client_waited        ${String(elapsed >= 300)}`);
 for (const line of contract) console.log(line);
 for (const line of env) console.error(line);
 
-const ok = health.status === 200 && ready.status === 200 && unknown.status === 404 && slow.status === 200;
+const ok =
+  health.status === 200 && ready.status === 200 && unknown.status === 404 && slow.status === 200;
 console.log(`CONTRACT ${ok ? 'OK' : 'BROKEN'}`);
 process.exit(ok ? 0 : 1);

@@ -40,7 +40,10 @@ const get = (path, timeout = 30000) =>
         res.on('data', (d) => (b += d));
         res.on('end', () => resolve({ status: res.statusCode, body: b, ms: Date.now() - started }));
       });
-      req.on('timeout', () => { req.destroy(); resolve({ error: 'TIMEOUT', ms: Date.now() - started }); });
+      req.on('timeout', () => {
+        req.destroy();
+        resolve({ error: 'TIMEOUT', ms: Date.now() - started });
+      });
       req.on('error', (e) => resolve({ error: e.code ?? e.message, ms: Date.now() - started }));
       req.end();
     });
@@ -50,8 +53,14 @@ const rawConnect = () =>
   new Promise((resolve) => {
     const s = net.connect({ host: HOST, port: PORT });
     s.setTimeout(4000);
-    s.on('connect', () => { s.destroy(); resolve('CONNECTED'); });
-    s.on('timeout', () => { s.destroy(); resolve('TIMEOUT'); });
+    s.on('connect', () => {
+      s.destroy();
+      resolve('CONNECTED');
+    });
+    s.on('timeout', () => {
+      s.destroy();
+      resolve('TIMEOUT');
+    });
     s.on('error', (e) => resolve(e.code ?? 'ERR'));
   });
 
@@ -83,6 +92,10 @@ fs.writeFileSync(`${DIR}/result.json`, JSON.stringify(out, null, 2));
 
 const okA = out.inflight.status === 200 && out.inflight.ms >= SLEEP_MS;
 const okB = out.new_connection_after_sigterm === 'ECONNREFUSED';
-console.log(`\nA in-flight request completed 200 after the full ${String(SLEEP_MS)}ms sleep   ${okA ? 'PASS' : 'FAIL'}  (status=${String(out.inflight.status)} ms=${String(out.inflight.ms)})`);
-console.log(`B a NEW connection after SIGTERM is refused                  ${okB ? 'PASS' : 'FAIL'}  (${out.new_connection_after_sigterm})`);
+console.log(
+  `\nA in-flight request completed 200 after the full ${String(SLEEP_MS)}ms sleep   ${okA ? 'PASS' : 'FAIL'}  (status=${String(out.inflight.status)} ms=${String(out.inflight.ms)})`,
+);
+console.log(
+  `B a NEW connection after SIGTERM is refused                  ${okB ? 'PASS' : 'FAIL'}  (${out.new_connection_after_sigterm})`,
+);
 process.exit(okA && okB ? 0 : 1);

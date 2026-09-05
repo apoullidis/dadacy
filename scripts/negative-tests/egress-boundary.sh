@@ -38,35 +38,49 @@ run_case() {
   restore
 }
 
-ADD_NO_NET="services:
-  qa-f5-addition:
-    image: alpine:3.20
-    command: ['sleep', '30']
-"
+# compose.verify.yml is populated now (T-018), so the anchor is the
+# `services:` key itself and each planted service is inserted as the first
+# entry under it. mutate.mjs exits non-zero if the anchor is absent, so a
+# stale anchor is a HARNESS ERROR and never a silent pass — which is exactly
+# what happened when this file was populated and these anchors still said
+# `services: {}`.
+ANCHOR='
+services:
+'
 echo "=== baseline ==="
 run_case "00 unmodified tree" PASS
 
 echo; echo "=== QA-F5 — an ADDITION in an overlay must declare networks: ==="
-mut "$VERIFY" 'services: {}' "$ADD_NO_NET" && run_case "01 verify-only service, NO networks:" FAIL
-mut "$VERIFY" 'services: {}' "services:
+mut "$VERIFY" "$ANCHOR" "
+services:
+  qa-f5-addition:
+    image: alpine:3.20
+    command: ['sleep', '30']
+" && run_case "01 verify-only service, NO networks:" FAIL
+mut "$VERIFY" "$ANCHOR" "
+services:
   qa-f5-addition:
     image: alpine:3.20
     networks: [kinvara-int]
 " && run_case "02 verify-only service, networks: [kinvara-int]" PASS
-mut "$VERIFY" 'services: {}' "services:
+mut "$VERIFY" "$ANCHOR" "
+services:
   qa-f5-addition:
     image: alpine:3.20
     networks: []
 " && run_case "03 verify-only service, EMPTY networks: []" FAIL
-mut "$VERIFY" 'services: {}' "services:
+mut "$VERIFY" "$ANCHOR" "
+services:
   qa-f5-addition:
     networks: [kinvara-int]
     command: ['sleep', '30']
 " && run_case "04 verify-only service, no image: and no build:" FAIL
-mut "$VERIFY" 'services: {}' "services:
+mut "$VERIFY" "$ANCHOR" "
+services:
   qa-f5-addition: { image: alpine:3.20, command: ['sleep','30'] }
 " && run_case "05 the same, as a FLOW MAPPING (the QA-F2 shape)" FAIL
-mut "$VERIFY" 'services: {}' "services:
+mut "$VERIFY" "$ANCHOR" "
+services:
   qa-f5-addition:
     image: alpine:3.20
     networks: [kinvara-int, kinvara-pub]
@@ -77,13 +91,18 @@ mut "$CHAOS" 'services: {}' "services:
 " && run_case "07 chaos-only service, NO networks: (T-126's file)" FAIL
 
 echo; echo "=== QA-F5 — an OVERRIDE keeps the exemption ==="
-mut "$VERIFY" 'services: {}' "services:
-  core:
+# `mailpit`, not `core`: compose.verify.yml already overrides core, and a
+# second `core:` key in the same mapping is a duplicate-key document whose
+# behaviour would be the thing under test rather than the rule.
+mut "$VERIFY" "$ANCHOR" "
+services:
+  mailpit:
     environment:
-      NODE_ENV: production
-" && run_case "08 override of compose.yml 'core', no networks:" PASS
-mut "$VERIFY" 'services: {}' "services:
-  core:
+      MP_MAX_MESSAGES: '500'
+" && run_case "08 override of compose.yml 'mailpit', no networks:" PASS
+mut "$VERIFY" "$ANCHOR" "
+services:
+  mailpit:
     networks: [kinvara-int, some-other-net]
 " && run_case "09 override that ADDS a second network" FAIL
 

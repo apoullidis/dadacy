@@ -48,6 +48,13 @@ const req = http.request(
     });
   },
 );
-req.on('timeout', () => { req.destroy(); console.error('healthz timed out'); process.exit(1); });
-req.on('error', (e) => { console.error(`healthz: ${e.code ?? e.message}`); process.exit(1); });
+req.on('timeout', () => {
+  req.destroy();
+  console.error('healthz timed out');
+  process.exit(1);
+});
+req.on('error', (e) => {
+  console.error(`healthz: ${e.code ?? e.message}`);
+  process.exit(1);
+});
 req.end();

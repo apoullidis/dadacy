@@ -49,12 +49,20 @@ export default tseslint.config(
     },
   },
   {
-    // The vendor fakes (T-017) are plain ESM, run by Node INSIDE a container,
-    // with no build step, no bundler and no dependency. They are linted like
+    // Plain ESM run directly by Node, with no build step, no bundler and no
+    // dependency: the vendor fakes (T-017, docker/fakes), the application
+    // image's entrypoint and healthcheck (T-018, docker/app-runtime) and the
+    // verification probes (T-018, scripts/verify). They are linted like
     // everything else — but Node's globals have to be declared for them,
     // because the rest of this repo is TypeScript and typescript-eslint turns
     // `no-undef` off for TS files (the compiler already answers that question).
-    files: ['docker/fakes/**/*.mjs'],
+    //
+    // The glob is `**/*.mjs`, NOT a list of the three directories. A list is a
+    // thing to forget: the fourth directory of hand-written ESM would lint
+    // clean against `no-undef` by simply not matching, which is a check that
+    // quietly stops applying rather than one that fails. T-018 widened it for
+    // that reason, having been the fourth directory.
+    files: ['**/*.mjs'],
     languageOptions: {
       sourceType: 'module',
       globals: {
@@ -65,6 +73,8 @@ export default tseslint.config(
         URL: 'readonly',
         setTimeout: 'readonly',
         clearTimeout: 'readonly',
+        setInterval: 'readonly',
+        clearInterval: 'readonly',
         AbortSignal: 'readonly',
       },
     },

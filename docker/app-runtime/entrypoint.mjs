@@ -160,7 +160,12 @@ function runPlaceholder() {
       const wait = () => {
         const remaining = ms - (Date.now() - startedAt);
         if (remaining > 0) return void setTimeout(wait, remaining);
-        done(200, { status: 'ok', app: APP, mode: 'placeholder', slept_ms: Date.now() - startedAt });
+        done(200, {
+          status: 'ok',
+          app: APP,
+          mode: 'placeholder',
+          slept_ms: Date.now() - startedAt,
+        });
       };
       wait();
       return;
@@ -170,7 +175,9 @@ function runPlaceholder() {
   });
 
   server.keepAliveTimeout = 5_000;
-  server.listen(PORT, '0.0.0.0', () => log(`mode=placeholder  listening on 0.0.0.0:${String(PORT)}`));
+  server.listen(PORT, '0.0.0.0', () =>
+    log(`mode=placeholder  listening on 0.0.0.0:${String(PORT)}`),
+  );
 
   const finish = () => {
     log(`drained: 0 in flight, exiting 0`);
@@ -186,7 +193,9 @@ function runPlaceholder() {
     shuttingDown = true;
     log(`SIGTERM: refusing new connections, ${String(inFlight)} request(s) in flight`);
     // Stop accepting NEW connections; sockets already mid-request are kept.
-    server.close(() => { if (!hardStop) finish(); });
+    server.close(() => {
+      if (!hardStop) finish();
+    });
     server.closeIdleConnections();
     if (inFlight === 0) finish();
   };
@@ -200,7 +209,10 @@ function runWorkerPlaceholder() {
   let busyUntil = 0;
   let stopping = false;
   const tick = () => {
-    fs.writeFileSync(HEARTBEAT, JSON.stringify({ app: APP, at: Date.now(), pid: process.pid, mode: 'placeholder' }));
+    fs.writeFileSync(
+      HEARTBEAT,
+      JSON.stringify({ app: APP, at: Date.now(), pid: process.pid, mode: 'placeholder' }),
+    );
   };
   tick();
   const timer = setInterval(tick, 2_000);
@@ -212,7 +224,10 @@ function runWorkerPlaceholder() {
     clearInterval(timer);
     const wait = Math.max(0, busyUntil - Date.now());
     log(`SIGTERM: finishing current unit (${String(wait)}ms), then exiting 0`);
-    setTimeout(() => { log('drained, exiting 0'); process.exit(0); }, wait);
+    setTimeout(() => {
+      log('drained, exiting 0');
+      process.exit(0);
+    }, wait);
   };
   process.on('SIGTERM', drain);
   process.on('SIGINT', drain);

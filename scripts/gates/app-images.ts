@@ -134,7 +134,10 @@ if (verifyText !== null) {
 if (nodePin !== undefined) {
   for (const rel of [DOCKERFILE, VERIFY_FILE]) {
     const text = read(rel);
-    if (text !== null && text.split('\n').some((l) => !l.trimStart().startsWith('#') && l.includes(nodePin))) {
+    if (
+      text !== null &&
+      text.split('\n').some((l) => !l.trimStart().startsWith('#') && l.includes(nodePin))
+    ) {
       failures.push(
         `${rel} contains the literal Node pin '${nodePin}' in live (non-comment) text. ` +
           `The version must come from .tool-versions through scripts/svc — a second copy ` +
@@ -192,7 +195,9 @@ if (verify !== null) {
     }
     const args = build['args'];
     if (!isRecord(args) || typeof args['APP'] !== 'string' || args['APP'] === '') {
-      failures.push(`${VERIFY_FILE}: '${name}' passes no APP build arg — app.Dockerfile requires it`);
+      failures.push(
+        `${VERIFY_FILE}: '${name}' passes no APP build arg — app.Dockerfile requires it`,
+      );
     }
     if (svc['pull_policy'] !== 'build') {
       failures.push(
@@ -211,10 +216,14 @@ const memToMb = (v: unknown): number | null => {
   if (m === null) return null;
   const n = Number(m[1]);
   switch ((m[2] ?? 'b').toLowerCase()) {
-    case 'g': return n * 1024;
-    case 'm': return n;
-    case 'k': return n / 1024;
-    default: return n / (1024 * 1024);
+    case 'g':
+      return n * 1024;
+    case 'm':
+      return n;
+    case 'k':
+      return n / 1024;
+    default:
+      return n / (1024 * 1024);
   }
 };
 
@@ -233,7 +242,12 @@ if (verify !== null && base !== null) {
       if (!(key in svc)) continue;
       const overlay = key === 'mem_limit' ? memToMb(svc[key]) : Number(svc[key]);
       const original = key === 'mem_limit' ? memToMb(baseSvc[key]) : Number(baseSvc[key]);
-      if (overlay === null || original === null || Number.isNaN(overlay) || Number.isNaN(original)) {
+      if (
+        overlay === null ||
+        original === null ||
+        Number.isNaN(overlay) ||
+        Number.isNaN(original)
+      ) {
         failures.push(`${VERIFY_FILE}: '${name}' ${key} is not comparable with ${BASE_FILE}'s`);
       } else if (overlay > original) {
         failures.push(
@@ -255,7 +269,9 @@ for (const name of declaredByLabel) {
   const appDir = path.join(REPO_ROOT, 'apps', name);
   const pkgPath = path.join(appDir, 'package.json');
   if (!fs.existsSync(pkgPath)) {
-    failures.push(`apps/${name}/package.json does not exist, but ${BASE_FILE} builds an image from it`);
+    failures.push(
+      `apps/${name}/package.json does not exist, but ${BASE_FILE} builds an image from it`,
+    );
     continue;
   }
   appsChecked += 1;
@@ -265,7 +281,9 @@ for (const name of declaredByLabel) {
   withSource += 1;
   let scripts: unknown;
   try {
-    scripts = (JSON.parse(fs.readFileSync(pkgPath, 'utf8') as string) as Record<string, unknown>)['scripts'];
+    scripts = (JSON.parse(fs.readFileSync(pkgPath, 'utf8') as string) as Record<string, unknown>)[
+      'scripts'
+    ];
   } catch (err) {
     failures.push(`apps/${name}/package.json is not parseable JSON: ${String(err)}`);
     continue;
@@ -314,12 +332,18 @@ if (dockerfile !== null) {
   }
 }
 
-console.log(`  node pin (from .tool-versions)  ${nodePin ?? '(unset)'}  — derived, not written down`);
-console.log(`  services labelled built-by ${BUILT_BY}  ${String(declaredByLabel.length)}: ${declaredByLabel.join(' ')}`);
+console.log(
+  `  node pin (from .tool-versions)  ${nodePin ?? '(unset)'}  — derived, not written down`,
+);
+console.log(
+  `  services labelled built-by ${BUILT_BY}  ${String(declaredByLabel.length)}: ${declaredByLabel.join(' ')}`,
+);
 console.log(`  apps checked                    ${String(appsChecked)}`);
 console.log(
   `  apps with src/                  ${String(withSource)}` +
-    (withSource === 0 ? '  (all five still T-001 placeholders — the images run the reference entrypoint)' : ''),
+    (withSource === 0
+      ? '  (all five still T-001 placeholders — the images run the reference entrypoint)'
+      : ''),
 );
 
 finish('gate:app-images', failures);

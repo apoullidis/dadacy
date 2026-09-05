@@ -7,7 +7,9 @@ import fs from 'node:fs';
 const [, , file, from, to] = process.argv;
 const s = fs.readFileSync(file, 'utf8');
 if (!s.includes(from)) {
-  console.error(`MUTATION FAILED: anchor not found in ${file}: ${JSON.stringify(from.slice(0, 60))}`);
+  console.error(
+    `MUTATION FAILED: anchor not found in ${file}: ${JSON.stringify(from.slice(0, 60))}`,
+  );
   process.exit(1);
 }
 fs.writeFileSync(file, s.replace(from, to));
