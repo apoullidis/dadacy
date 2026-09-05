@@ -237,7 +237,7 @@ int_network_for() {
 # io.kinvara.built-by label in compose.yml, so this is not a second list of
 # services to drift out of date.
 check_local_images() {
-    local project="$1" want_build="$2" cfg
+    local project="$1" cfg
     cfg="$(dc "${project}" config --format json 2>/dev/null)" || return 0
     [[ -n "${cfg}" ]] || return 0
 
@@ -255,7 +255,13 @@ for name, svc in sorted(cfg.get("services", {}).items()):
     if not image.startswith("kinvara/"):
         continue
     buildable = bool(svc.get("build"))
-    if buildable and sys.argv[1] == "1":   # --verify + --build: it is about to be built
+    # A service that declares a `build:` in the EFFECTIVE config is not
+    # missing — it is unbuilt, and `docker compose up` builds a missing image
+    # that has one. Saying "not built yet, blocked on T-018" about an image
+    # compose is about to build itself would be false, and it would block the
+    # `db` profile outright now that docker/postgres.Dockerfile exists (T-017).
+    # The rule is the presence of `build:`, not a list of service names.
+    if buildable:
         continue
     if subprocess.run(["docker", "image", "inspect", image],
                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
@@ -265,7 +271,7 @@ for name, svc in sorted(cfg.get("services", {}).items()):
             else labels.get("io.kinvara.built-by-title", ""))
     print("\t".join([name, image,
                       labels.get("io.kinvara.built-by", "?"), note]))
-' "${want_build}" 2>/dev/null)"
+' 2>/dev/null)"
 
     [[ -n "${missing}" ]] || return 0
 
@@ -329,7 +335,7 @@ cmd_up() {
         printf 'scripts/svc: kinvara-dev is the shared FIXED-PORT stack. Never produce ticket evidence against it (DOCKER.md §4.1).\n' >&2
     fi
 
-    check_local_images "${project}" "${do_build}"
+    check_local_images "${project}"
 
     # Images are pulled BEFORE the internal network is attached (DOCKER.md §7),
     # so an egress-less network does not break the first start. Buildable

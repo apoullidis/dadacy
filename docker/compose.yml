@@ -93,25 +93,46 @@ volumes:
 
 services:
   # =========================================================================
-  # profile: db — Postgres 18 + PostGIS 3.6
+  # profile: db — Postgres 18 + PostGIS 3.6, DERIVED (T-017)
   #
   # THE PINNED POSTGRES IMAGE. Testcontainers (T-115) and every migration
-  # ticket must use this exact tag; it is published in T-016's contract and
+  # ticket must use this exact tag; it is published in T-017's contract and
   # nothing else declares it (DOCKER.md §1).
+  #
+  # It is `kinvara/postgres:18-3.6-kinvara1`, built here from
+  # docker/postgres.Dockerfile, NOT `postgis/postgis:18-3.6` directly. T-016
+  # used the base image; four defects were then found against it while landing
+  # T-020's 0001 migration, and three of the four are unrepairable after
+  # `CREATE DATABASE`:
+  #
+  #   OD-5  libc collation where SD §DB-16 requires ICU `und` deterministic
+  #   OD-6  no pg_partman, and no route to fetch it (kinvara-int is internal)
+  #   OD-7  empty shared_preload_libraries — pg_stat_statements half-installs
+  #   OD-8  the base image auto-created four undeclared extensions, leaving
+  #         13 PUBLIC-readable relations that 0001 never names
+  #
+  # THE FIXES LIVE IN THE DOCKERFILE, NOT HERE, and that is deliberate: T-115
+  # starts this image through Testcontainers with compose.yml nowhere in the
+  # picture, so a setting that only exists in this file is a setting the
+  # constraint suites do not get. Read docker/postgres.Dockerfile for the
+  # whole story. There is no POSTGRES_INITDB_ARGS below for that reason —
+  # the image sets it, and repeating it here would be two places to drift.
+  #
   # The Debian-based variant is deliberate, not the -alpine one: the Greek
   # collation and text-search behaviour T-098 checks depends on the ICU and
   # snowball build, and Debian is what RDS is closest to.
   # =========================================================================
   postgres:
-    image: postgis/postgis:18-3.6
+    image: kinvara/postgres:18-3.6-kinvara1
+    build:
+      context: .
+      dockerfile: postgres.Dockerfile
     profiles: ['db']
     networks: [kinvara-int]
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-app}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-app_local_dev_only}
       POSTGRES_DB: ${POSTGRES_DB:-kinvara}
-      # Deterministic across agents and identical to what T-019 will map to RDS.
-      POSTGRES_INITDB_ARGS: '--encoding=UTF8 --locale=C.UTF-8'
       TZ: UTC
       PGTZ: UTC
     expose:
