@@ -126,21 +126,32 @@ happened. `content_hash` binds a record to the _current_ source — it proves
 **currency, not review**. Nothing here is a cryptographic countersignature from
 an external party, and this document does not claim one.
 
-What the predicates in `pipelineIncoherences()` buy is that a forged sign-off is
-**no longer a one-word edit**. To make one, all of the following must be written
-in the same commit, in the file whose entire subject is provenance:
+What the predicates in `pipelineIncoherences()` buy is exactly this list, and no
+more than this list. Each row is proven in `src/pipeline.test.ts` by
+**constructing** the record it refuses and asserting the problem comes back —
+and, because several of these were tightened at once, by proving that a
+_coherent_ delivery reports nothing, so the set is not vacuous.
 
-| Predicate                                                  | The forgery it refuses                                                                                                |
-| ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `provenance` must equal the method the assignment required | Greek produced by translating the English and recorded as if authored                                                 |
-| `authored_by ≠ reviewed_by`                                | The author signing off their own safety copy                                                                          |
-| `reviewed_by` ∈ the named DSL or deputy                    | A sign-off by whoever happened to be editing                                                                          |
-| that person carries `confirmed_by_stakeholder_on`          | A DSL invented in the same commit                                                                                     |
-| every **blocking** stage `completed_at` is set             | Russian translated by a competent professional who was **never briefed** — the most likely real-world version of this |
-| `channel ≠ "undetermined"`                                 | A string signed off before anyone decided whether it is spoken aloud, so the read-aloud pass silently did not apply   |
+| Predicate                                                                                                                                               | The forgery it refuses                                                                                                           |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `provenance` equals the method the assignment required                                                                                                  | Greek produced by translating the English and recorded as if authored                                                            |
+| **`authored_by` resolves to a named person in the roster**                                                                                              | `authored_by: "DeepL Pro v3 (machine)"` — a machine, on a register whose whole subject is that machine translation is prohibited |
+| **the author's role is the one the method calls for**                                                                                                   | The practitioner recorded as having produced the Russian, or the translator the Greek                                            |
+| **the author's role is not a reviewer role, and differs from the reviewer's**                                                                           | One human filling both sides of a four-eyes check                                                                                |
+| `authored_by ≠ reviewed_by` as strings, _as well_                                                                                                       | _(kept, but the role comparison is what carries the weight — see below)_                                                         |
+| `reviewed_by` ∈ the named DSL or deputy                                                                                                                 | A sign-off by whoever happened to be editing                                                                                     |
+| that person carries `confirmed_by_stakeholder_on`                                                                                                       | A DSL invented in the same commit                                                                                                |
+| **`reviewed_at` is not in the future, not before the latest completed blocking stage, not before the pipeline opened, and not before `external_start`** | A 2019 sign-off; a sign-off dated before the translator was briefed                                                              |
+| every **blocking** stage `completed_at` is set                                                                                                          | Russian translated by a competent professional who was **never briefed** — the most likely real-world version of this            |
+| `channel ≠ "undetermined"`                                                                                                                              | A string signed off before anyone decided whether it is spoken aloud, so the read-aloud pass silently did not apply              |
 
-Each of those is proven in `src/pipeline.test.ts` by **constructing** the
-forgery and asserting it comes back as a problem.
+> **Why the role comparison and not the string comparison.** The first version of
+> this table claimed `authored_by ≠ reviewed_by` enforced "a different reviewer".
+> It did not: it was string inequality over unconstrained free text, so
+> `"B. Lead"` and `"B. Lead, DSL"` are one human and passed silently. Both fields
+> now resolve against the roster — a closed, stakeholder-confirmed set — so
+> distinctness is between two identified _roles_, and a name that resolves to
+> nothing is refused outright.
 
 ## 4. The strings — eight keys, three locales, 24 records
 
@@ -224,13 +235,21 @@ And one that lives inside, but is checkable: `pending_pipeline.re_anchors` is an
 **A date moved without a row explaining it is a red test**, even when every
 literal above is moved with it — demonstrated in `T-049`'s evidence, case C.
 
-> **The §5.1 question, asked of this record.** _Could it report "we are on track"
-> while nothing has been engaged?_ On its own, **yes** — append a row every time
-> the date approaches, and the chain stays perfectly coherent while nothing
-> happens. That is why the _bound_ is a literal in a test file rather than a
-> field in the register: a register that could raise its own limit would be
-> measuring itself. A second unstarted re-anchor reds the suite and costs an
-> orchestrator decision against BOARD RK-2.
+> **The §5.1 question, asked of this record — and then asked again one level
+> down.** _Could it report "we are on track" while nothing has been engaged?_ On
+> its own, **yes** — append a row every time the date approaches, and the chain
+> stays perfectly coherent while nothing happens. That is why the _bound_ is a
+> literal in a test file rather than a field in the register: a register that
+> could raise its own limit would be measuring itself.
+>
+> **The first version stopped there, and that was not far enough.** The bound was
+> outside, but the predicate deciding whether it _applied_ was inside: it
+> filtered on `external_start_at_decision`, a field each row writes **about
+> itself**, and never compared it against the waiver's actual `external_start`. A
+> date typed into that one field bought an exemption from a limit that was
+> otherwise unreachable. Exemption is now granted against the waiver's **actual**
+> state, and a row claiming a start the waiver does not have — or decided before
+> the start it invokes — is reported rather than silently declined.
 
 `external_start` is recorded as an **explicit `null`**, in both
 `pipeline` and `pending_pipeline`, and `loadCopyPipeline()` **refuses to load a
@@ -279,8 +298,9 @@ decision instead of an edit.
    unstarted re-anchor and it must be an explicit orchestrator decision against
    BOARD **RK-2**, moving `pending_pipeline.expected_by`, the `2026-12-05`
    literals in both test files, `MAX_UNSTARTED_RE_ANCHORS`, and a new
-   `re_anchors` row — **together**. Four deliberate edits, which is the intended
-   cost. What must not happen is the date arriving unattended: the cheapest
+   `re_anchors` row, plus `pipeline.deadline` and
+   `pipeline.latest_external_start` — **together**. That cost is the intended
+   mechanism. What must not happen is the date arriving unattended: the cheapest
    repair under pressure is deleting the waiver, and deleting the waiver deletes
    the only record saying this copy is unreviewed.
 
