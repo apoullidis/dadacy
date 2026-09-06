@@ -582,19 +582,20 @@ for (const [rel, users] of [...dockerfilesInUse].sort(([a], [b]) => a.localeComp
 }
 
 console.log(
-  `  node pin (from .tool-versions)  ${nodePin ?? '(unset)'}  — derived, not written down`,
+  `  node pin (from .tool-versions)  ${nodePin ?? '(unset)'}` +
+    `  — the SCOPE of the pin checks is under measurement: T-036 (OD-21, OD-23, OD-25)`,
 );
 console.log(
   `  services labelled built-by ${BUILT_BY}  ${String(declaredByLabel.length)}: ${declaredByLabel.join(' ')}`,
 );
-console.log(`  dockerfiles checked             ${String(dockerfilesInUse.size)}`);
+console.log(`  dockerfiles read (the §2a set)  ${String(dockerfilesInUse.size)}`);
 for (const [df, users] of [...dockerfilesInUse].sort(([a], [b]) => a.localeCompare(b))) {
   // Print WHO, not just how many. `dockerfiles checked 1` was printed by the
   // version that had enumerated the wrong set entirely, and it read as
   // coverage (QA, round 2).
   console.log(`    ${df}  <-  ${users.join(', ')}`);
 }
-console.log(`  apps checked                    ${String(appsChecked)}`);
+console.log(`  apps read                       ${String(appsChecked)}`);
 console.log(
   `  apps with src/                  ${String(withSource)}` +
     (withSource === 0

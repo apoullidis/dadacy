@@ -34,7 +34,7 @@ const GATES: readonly Gate[] = [
   },
   {
     name: 'gate:app-images',
-    why: 'the app images derive their Node pin from .tool-versions, declare no host port IN THE --verify OVERLAY, cannot raise a budget, and cannot ship a placeholder over real source (DOCKER.md §5). NOT checked: the pnpm literal, and a ports: key on a compose.yml service — T-036 (OD-21, OD-22)',
+    why: 'static checks over the app Dockerfile(s) and the compose overlays (DOCKER.md §5). THE SCOPE OF THESE CHECKS IS UNDER MEASUREMENT IN T-036 (OD-21..OD-25) and must not be coded against: green here means this gate ran and exited 0, not that a property is covered. Anchor image properties on docker image inspect and on the build',
   },
 ];
 

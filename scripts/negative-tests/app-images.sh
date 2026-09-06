@@ -45,14 +45,14 @@ CORE_BUILD="  core:
 
 run_case "00 unmodified tree" PASS
 
-echo; echo "=== no host ports IN THE --verify OVERLAY (OD-4; a ports: key on a compose.yml service is checked by nothing — OD-22, T-036) ==="
+echo; echo "=== case 01: a ports: key in compose.verify.yml (OD-4). SCOPE of this check is UNDER MEASUREMENT — T-036 (OD-22); do not read a PASS as coverage ==="
 mut "$VERIFY" "$CORE_BUILD" "  core:
     ports: ['3000:3000']
     build:
       context: ..
       dockerfile: docker/app.Dockerfile" && run_case "01 a ports: key on a verify service" FAIL
 
-echo; echo "=== an overlay may not escape the DOCKER.md §3 budget ==="
+echo; echo "=== cases 02-03: a mem_limit raise in compose.verify.yml (DOCKER.md §3). SCOPE UNDER MEASUREMENT — T-036 (OD-24) ==="
 mut "$VERIFY" "$CORE_BUILD" "  core:
     mem_limit: 2g
     build:
@@ -64,7 +64,7 @@ mut "$VERIFY" "$CORE_BUILD" "  core:
       context: ..
       dockerfile: docker/app.Dockerfile" && run_case "03 mem_limit LOWERED (allowed)" PASS
 
-echo; echo "=== the Node pin is derived from .tool-versions, not written down ==="
+echo; echo "=== cases 04-06: the Node pin planted in the Dockerfile, the overlay and scripts/svc. SCOPE UNDER MEASUREMENT — T-036 (OD-21, OD-23, OD-25) ==="
 mut "$DF" '
 ARG NODE_VERSION
 ' '
@@ -75,7 +75,7 @@ mut "$VERIFY" '        APP: core' '        NODE_VERSION_PINNED: 24.20.0
 mut scripts/svc 'KINVARA_NODE_VERSION="$(toolbox_require_pin nodejs)"' 'KINVARA_NODE_VERSION="24.20.0" #' \
   && run_case "06 scripts/svc hard-codes the version instead" FAIL
 
-echo; echo "=== every service compose.yml says T-018 builds is built here ==="
+echo; echo "=== cases 07-08: a labelled service whose build:/APP arg is missing from compose.verify.yml. SCOPE UNDER MEASUREMENT — T-036 ==="
 mut "$VERIFY" "$CORE_BUILD" "  core:
     build_disabled:
       context: ..
@@ -139,7 +139,7 @@ mut "$VERIFY" 'services:' 'services:
   && run_case "17a a Dockerfile using 'pnpm i' and no guard" FAIL
 rm -f docker/rogue.Dockerfile
 
-echo; echo "=== the image contract follows the SERVICE, not one hard-coded path ==="
+echo; echo "=== cases 18-20: the image-contract checks read a service's own Dockerfile (§2a). SCOPE UNDER MEASUREMENT — T-036 (OD-25: §1's pin checks do NOT) ==="
 # QA's escape, reproduced. T-018's own contract §6 tells the Next.js tickets to
 # split the Dockerfile, and the first version of this gate pinned its
 # image-contract checks to docker/app.Dockerfile — so it stopped checking at
@@ -236,7 +236,7 @@ fs.writeFileSync(p, s.slice(0, j) + 'target: next-runtime' + s.slice(j + 'target
 JS
 run_case "20a next-runtime target: no USER/HEALTHCHECK/ENTRYPOINT (KNOWN GAP)" PASS
 
-echo; echo "=== a placeholder may not outlive real source ==="
+echo; echo "=== cases 21-22: apps/<name>/src present with no start script. SCOPE UNDER MEASUREMENT — T-036 ==="
 mkdir -p apps/core/src && echo 'export const x = 1;' > apps/core/src/index.ts
 run_case "21 apps/core has src/ but declares no start script" FAIL
 mkdir -p apps/core/src && echo 'export const x = 1;' > apps/core/src/index.ts
