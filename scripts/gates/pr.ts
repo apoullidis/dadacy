@@ -34,7 +34,7 @@ const GATES: readonly Gate[] = [
   },
   {
     name: 'gate:app-images',
-    why: 'the app images derive their Node from .tool-versions, publish no host port, cannot raise a budget, and cannot ship a placeholder over real source (DOCKER.md §5)',
+    why: 'the app images derive their Node pin from .tool-versions, declare no host port IN THE --verify OVERLAY, cannot raise a budget, and cannot ship a placeholder over real source (DOCKER.md §5). NOT checked: the pnpm literal, and a ports: key on a compose.yml service — T-036 (OD-21, OD-22)',
   },
 ];
 

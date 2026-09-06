@@ -45,7 +45,7 @@ CORE_BUILD="  core:
 
 run_case "00 unmodified tree" PASS
 
-echo; echo "=== no host ports on a ticket project (OD-4) ==="
+echo; echo "=== no host ports IN THE --verify OVERLAY (OD-4; a ports: key on a compose.yml service is checked by nothing — OD-22, T-036) ==="
 mut "$VERIFY" "$CORE_BUILD" "  core:
     ports: ['3000:3000']
     build:
