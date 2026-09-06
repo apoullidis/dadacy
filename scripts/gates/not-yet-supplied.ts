@@ -16,7 +16,7 @@ const OWED: ReadonlyMap<string, string> = new Map([
   ],
   [
     'gate:heavy',
-    'platform-infrastructure T-006 — Lighthouse CI, axe-core, Playwright, Testcontainers (SD §QD-4 "PR (heavy)"). Blocked on T-005, T-115, T-018.',
+    'platform-infrastructure T-006 — Lighthouse CI, axe-core, Playwright, Testcontainers (SD §QD-4 "PR (heavy)"). Blocked on T-005, T-115, T-034 (T-018 was retired under PROTOCOL §4 and re-cut into T-034 + T-035).',
   ],
 ]);
 
