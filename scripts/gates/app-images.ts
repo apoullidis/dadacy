@@ -214,6 +214,15 @@ const declaredByLabel: string[] = [];
  * this ticket and T-126 own.
  */
 const dockerfilesInUse = new Map<string, string[]>();
+/**
+ * `<dockerfile> <target>  <-  ancestry` for every stage the image-contract
+ * checks below actually resolved. Printed, because `dockerfiles checked 1`
+ * was printed by a version that had enumerated the wrong set entirely and it
+ * read as coverage (QA, round 2). A reader can now see WHICH STAGE was
+ * checked and what it inherits from, which is the thing OE-7 and OD-29 were
+ * both invisible in.
+ */
+const stagesChecked: string[] = [];
 if (base !== null) {
   for (const [name, svc] of Object.entries(base)) {
     const labels = svc['labels'];
@@ -396,6 +405,12 @@ for (const name of declaredByLabel) {
  */
 interface Stage {
   readonly name: string;
+  /**
+   * The `FROM` argument, verbatim: another stage's name, or an external image
+   * reference. It is what makes the ancestry walk below possible, and it is
+   * the difference between modelling Docker and pattern-matching a file.
+   */
+  readonly parent: string;
   readonly lines: readonly string[];
 }
 
@@ -448,18 +463,81 @@ function stagesOf(text: string): Stage[] {
   if (acc.trim() !== '') joined.push(acc.trim());
 
   const stages: Stage[] = [];
-  let current: { name: string; lines: string[] } | null = null;
+  let current: { name: string; parent: string; lines: string[] } | null = null;
   for (const line of joined) {
-    const from = /^FROM\s+(\S+)(?:\s+AS\s+(\S+))?$/i.exec(line);
+    // The flag group is not decoration: `FROM --platform=$BUILDPLATFORM node:x
+    // AS y` is ordinary, and the previous pattern did not match it — so that
+    // FROM was read as an INSTRUCTION OF THE PREVIOUS STAGE and the whole new
+    // stage's lines were attributed to its predecessor. A mis-parse in the
+    // silent direction, in the function the checks below now depend on.
+    const from = /^FROM\s+((?:--\S+\s+)*)(\S+)(?:\s+AS\s+(\S+))?$/i.exec(line);
     if (from !== null) {
       if (current !== null) stages.push(current);
-      current = { name: from[2] ?? `#${String(stages.length)}`, lines: [] };
+      current = {
+        name: from[3] ?? `#${String(stages.length)}`,
+        parent: from[2] ?? '',
+        lines: [],
+      };
       continue;
     }
     if (current !== null) current.lines.push(line);
   }
   if (current !== null) stages.push(current);
   return stages;
+}
+
+/**
+ * The stages a target stage inherits its image config from, ANCESTOR FIRST,
+ * ending with the target itself. `null` if the target is not a stage here.
+ *
+ * A `FROM` whose argument names another stage in this file continues the walk;
+ * one naming an external image ends it. That end is not a hole: nothing in an
+ * external base gives an image a non-root `USER` or the healthcheck this
+ * contract requires — `node:*-alpine` has no `USER` and no `HEALTHCHECK` at
+ * all — so a chain that reaches an external base having set neither is exactly
+ * the image this gate must refuse.
+ */
+function ancestryOf(stages: readonly Stage[], target: string): Stage[] | null {
+  const byName = new Map(stages.map((s) => [s.name.toLowerCase(), s]));
+  let cur = byName.get(target.toLowerCase());
+  if (cur === undefined) return null;
+  const chain: Stage[] = [];
+  const seen = new Set<string>();
+  while (cur !== undefined && !seen.has(cur.name.toLowerCase())) {
+    seen.add(cur.name.toLowerCase());
+    chain.unshift(cur);
+    cur = byName.get(cur.parent.toLowerCase());
+  }
+  return chain;
+}
+
+interface Setting {
+  /** Everything after the instruction keyword, trimmed. */
+  readonly value: string;
+  /** The stage that set it — named in the failure so the fix is findable. */
+  readonly stage: string;
+}
+
+/**
+ * LAST-WINS ALONG THE ANCESTRY. Docker resolves `USER`, `ENTRYPOINT` and
+ * `HEALTHCHECK` as IMAGE CONFIG, not as file contents: a child stage starts
+ * from its parent's config and every later instruction overwrites the earlier
+ * one. So the resolved value is the last occurrence in ancestor-first order —
+ * which is neither "anywhere in the file" (OE-7: three appended lines, or
+ * `USER root` alone, make the shipping stage root with the gate green) nor
+ * "somewhere in this stage" (which would refuse a legitimate
+ * `FROM runtime AS next-runtime` that inherits all three correctly).
+ */
+function resolveSetting(chain: readonly Stage[], instruction: string): Setting | null {
+  const re = new RegExp(`^${instruction}\\b\\s*(.*)$`, 'i');
+  let last: Setting | null = null;
+  for (const stage of chain) {
+    for (const line of stage.lines) {
+      const m = re.exec(line);
+      if (m !== null) last = { value: (m[1] ?? '').trim(), stage: stage.name };
+    }
+  }
+  return last;
 }
 
 // ---------------------------------------------------------------------------
@@ -479,33 +557,115 @@ for (const [rel, users] of [...dockerfilesInUse].sort(([a], [b]) => a.localeComp
   if (text === null) continue; // already reported by §2
   const who = `${rel} (built as: ${users.join(', ')})`;
 
-  if (!/^ENTRYPOINT \[/m.test(text)) {
+  // --- the stages this file actually ships -----------------------------------
+  //
+  // THE TARGET IS TAKEN FROM COMPOSE, NOT FROM THE DOCKERFILE, and that is
+  // half of the fix rather than a detail (OD-29). `docker/compose.verify.yml`
+  // chooses each service's stage; a perfect ancestry walk anchored on the last
+  // stage of the file would close OE-7's documented route and leave the one
+  // that edits no Dockerfile at all — `safety-gw` moved from `target: runtime`
+  // to `target: prod-deps` — wide open. Measured before this fix: exit 0,
+  // while the gate PRINTED `compose.verify.yml:safety-gw→prod-deps` in its own
+  // summary. `users` carries that `→target`, so the checks below run over the
+  // stage compose names and a changed `target:` moves them with it.
+  const stages = stagesOf(text);
+  const targets = new Set(
+    users.map((u) => (u.includes('→') ? (u.split('→')[1] ?? '') : '')).filter((t) => t !== ''),
+  );
+  if (targets.size === 0 && stages.length > 0) targets.add(stages[stages.length - 1]?.name ?? '');
+  if (targets.size === 0) {
     failures.push(
-      `${who}: ENTRYPOINT is not in exec form. Shell form puts /bin/sh at PID 1, ` +
-        `and sh does not forward SIGTERM to its child: 'docker stop' would wait out the ` +
-        `whole stop_grace_period and then SIGKILL the app mid-request.`,
+      `${who}: no FROM instruction — this gate would then check the image contract of ` +
+        `nothing while reporting on the file.`,
     );
+    continue;
   }
-  if (!/^HEALTHCHECK /m.test(text)) {
-    failures.push(
-      `${who}: no HEALTHCHECK. It belongs in the image, not only in compose, so it ` +
-        `travels with what ships (T-003's ECS task definitions read it from here).`,
-    );
+
+  const resolved: { readonly target: string; readonly chain: readonly Stage[] }[] = [];
+  for (const target of targets) {
+    const chain = ancestryOf(stages, target);
+    if (chain === null) {
+      failures.push(`${who}: compose builds target '${target}', which is not a stage in this file`);
+      continue;
+    }
+    resolved.push({ target, chain });
+    stagesChecked.push(`${rel} ${target}  <-  ${chain.map((st) => st.name).join(' -> ')}`);
   }
-  const user = /^USER (\S+)/m.exec(text);
-  if (user === null) {
-    failures.push(`${who}: no USER instruction — the image would run as root`);
-  } else {
-    const uid = user[1] ?? '';
-    if (/^(0|root)(:|$)/.test(uid)) failures.push(`${who}: USER is root (${uid})`);
-    if (/^(1000|node)(:|$)/.test(uid)) {
+
+  // --- the image contract, resolved the way Docker resolves it ---------------
+  for (const { target, chain } of resolved) {
+    const via = chain.map((s) => s.name).join(' -> ');
+    // Name only the services that build THIS target. `who` lists all five, and
+    // a failure that reads the same whichever service caused it makes the
+    // OD-29 route — one word changed on `safety-gw` alone — look like a
+    // whole-file problem.
+    const mine = users.filter((u) => (u.includes('→') ? u.split('→')[1] : target) === target);
+    const where = `${rel} stage '${target}' (ancestry ${via}; built as ${mine.join(', ')})`;
+
+    const entrypoint = resolveSetting(chain, 'ENTRYPOINT');
+    if (entrypoint === null) {
       failures.push(
-        `${who}: USER is ${uid}. uid 1000 is the toolbox's uid and this host's repo ` +
-          `owner, so "runs as a non-root user" and "happens to match the bind mount" become ` +
-          `indistinguishable and a permission defect surfaces first in ECS.`,
+        `${where}: no ENTRYPOINT resolves for this stage. Its ancestry sets none, so the ` +
+          `base image's own entrypoint ships — for node:*-alpine that is ` +
+          `docker-entrypoint.sh, a shell, at PID 1.`,
+      );
+    } else if (!entrypoint.value.startsWith('[')) {
+      failures.push(
+        `${where}: the ENTRYPOINT that wins is shell form, set in stage ` +
+          `'${entrypoint.stage}': ${entrypoint.value}. Shell form puts /bin/sh at PID 1, ` +
+          `and sh does not forward SIGTERM to its child: 'docker stop' would wait out the ` +
+          `whole stop_grace_period and then SIGKILL the app mid-request.`,
+      );
+    } else if (/^\[\s*\]$/.test(entrypoint.value)) {
+      failures.push(
+        `${where}: ENTRYPOINT [] in stage '${entrypoint.stage}' RESETS the entrypoint. ` +
+          `Docker treats an empty array as clearing it, so the image has none.`,
       );
     }
+
+    const healthcheck = resolveSetting(chain, 'HEALTHCHECK');
+    if (healthcheck === null) {
+      failures.push(
+        `${where}: no HEALTHCHECK resolves for this stage. It belongs in the image, not ` +
+          `only in compose, so it travels with what ships (T-003's ECS task definitions ` +
+          `read it from here).`,
+      );
+    } else if (/^NONE\b/i.test(healthcheck.value)) {
+      failures.push(
+        `${where}: the HEALTHCHECK that wins is 'HEALTHCHECK NONE', set in stage ` +
+          `'${healthcheck.stage}'. That is not a healthcheck: Docker records ` +
+          `Healthcheck.Test = ["NONE"] and the container is never probed at all. A check ` +
+          `that only asked whether the file contains the word HEALTHCHECK would pass this.`,
+      );
+    }
+
+    const user = resolveSetting(chain, 'USER');
+    if (user === null) {
+      failures.push(
+        `${where}: no USER resolves for this stage — the image would run as root. A USER ` +
+          `in a stage this one does not inherit from does not reach it.`,
+      );
+    } else {
+      const uid = user.value.split(/\s+/)[0] ?? '';
+      if (/^(0|root)(:|$)/.test(uid)) {
+        failures.push(
+          `${where}: the USER that wins is root (${uid}), set in stage '${user.stage}'. ` +
+            `A later USER overrides an earlier one, so switching to root for an apk add ` +
+            `or a chown and not switching back ships a root image — and BuildKit says ` +
+            `nothing about it (OD-20: the warning count does not move).`,
+        );
+      }
+      if (/^(1000|node)(:|$)/.test(uid)) {
+        failures.push(
+          `${where}: the USER that wins is ${uid}, set in stage '${user.stage}'. uid 1000 ` +
+            `is the toolbox's uid and this host's repo owner, so "runs as a non-root user" ` +
+            `and "happens to match the bind mount" become indistinguishable and a ` +
+            `permission defect surfaces first in ECS.`,
+        );
+      }
+    }
   }
+
   // The devDependency guard is a BUILD-TIME assertion, because that is the only
   // place the property is visible: this gate cannot see inside an image, and the
   // leak is invisible from outside until someone measures a layer — which is
@@ -543,21 +703,15 @@ for (const [rel, users] of [...dockerfilesInUse].sort(([a], [b]) => a.localeComp
     .map(dfCode)
     .some((l) => /\bpnpm\b|node_modules/.test(l));
   if (buildsFromWorkspace) {
-    const stages = stagesOf(text);
-    // The target stage: what compose names, else the last stage in the file.
-    const targets = new Set(
-      users.map((u) => (u.includes('→') ? (u.split('→')[1] ?? '') : '')).filter((t) => t !== ''),
-    );
-    if (targets.size === 0 && stages.length > 0) targets.add(stages[stages.length - 1]?.name ?? '');
-
-    for (const target of targets) {
-      const stage = stages.find((st) => st.name === target);
-      if (stage === undefined) {
-        failures.push(
-          `${who}: compose builds target '${target}', which is not a stage in this file`,
-        );
-        continue;
-      }
+    // The same target set the image-contract checks above resolved. This guard
+    // check is deliberately STAGE-LOCAL and not an ancestry walk: it asks
+    // whether the tree that ships was assertedly clean AFTER THE LAST COPY, and
+    // a child stage that copies anything in has copied it in after its parent's
+    // guard ran. The two questions are different, and answering the second one
+    // with the first is the mistake that shipped 112.2 MB of devDependencies.
+    for (const { target, chain } of resolved) {
+      const stage = chain[chain.length - 1];
+      if (stage === undefined) continue; // ancestryOf never returns an empty chain
       const guardAt = stage.lines.findIndex(runsGuard);
       if (guardAt === -1) {
         failures.push(
@@ -595,6 +749,8 @@ for (const [df, users] of [...dockerfilesInUse].sort(([a], [b]) => a.localeCompa
   // coverage (QA, round 2).
   console.log(`    ${df}  <-  ${users.join(', ')}`);
 }
+console.log(`  stages resolved (§6, last-wins) ${String(stagesChecked.length)}`);
+for (const line of [...stagesChecked].sort()) console.log(`    ${line}`);
 console.log(`  apps read                       ${String(appsChecked)}`);
 console.log(
   `  apps with src/                  ${String(withSource)}` +
