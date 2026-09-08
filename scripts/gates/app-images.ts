@@ -624,6 +624,42 @@ for (const [arg, value] of pinValues) {
   }
 }
 
+// --- 1a2. RECONCILE: PIN_ARGS is a SECOND ENUMERATION of .tool-versions ------
+//
+// Found by this ticket's own scope audit, not by a report. PIN_ARGS lists two
+// pins under the sentence "the toolchain pins that reach an image build". That
+// is true on the delivered tree — app.Dockerfile's only pin-shaped ARGs are
+// NODE_VERSION and PNPM_VERSION — but it is a constant list checked against
+// nothing, which is OD-1's shape and QA-F6's shape and the shape of every
+// defect in this file's history. If .tool-versions grew a pin an application
+// Dockerfile consumed, every rule in §1 would silently skip it.
+//
+// So: fold every pin key the way scripts/lib/toolbox.sh folds it (upper-cased,
+// non-alphanumerics to '_', the single alias nodejs -> NODE, T-016 § contract
+// 8) and fail if an application Dockerfile declares an ARG for one PIN_ARGS
+// does not cover. gate:toolbox §1a does exactly this for its probe table; this
+// is the same instrument pointed at this file's table.
+const foldPinKey = (key: string): string =>
+  (key === 'nodejs' ? 'node' : key).toUpperCase().replace(/[^A-Z0-9]/g, '_');
+const coveredArgs = new Set<string>(PIN_ARGS.map((p) => p.arg));
+for (const rel of [...dockerfilesInUse.keys()].sort()) {
+  const text = read(rel);
+  if (text === null) continue;
+  const live = liveLines(text);
+  for (const [key] of pins) {
+    const arg = `${foldPinKey(key)}_VERSION`;
+    if (coveredArgs.has(arg)) continue;
+    if (live.some((l) => new RegExp(`^ARG\\s+${arg}\\b`).test(l))) {
+      failures.push(
+        `${rel} declares 'ARG ${arg}', which is a .tool-versions pin ('${key}') that ` +
+          `PIN_ARGS in this gate does not cover — so none of §1's rules apply to it: not ` +
+          `the literal-pin forbid, not the no-default rule, not the per-service ':?' ` +
+          `requirement. Add it to PIN_ARGS.`,
+      );
+    }
+  }
+}
+
 // --- 1b. REQUIRE, per Dockerfile: a bare ARG, never one with a default. -----
 for (const rel of [...dockerfilesInUse.keys()].sort()) {
   const text = read(rel);

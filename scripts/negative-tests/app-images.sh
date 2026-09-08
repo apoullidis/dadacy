@@ -695,6 +695,14 @@ RUN true
 DF
 run_case "57 a 2nd stage appended to a single-stage exempt Dockerfile" FAIL
 
+echo; echo "=== case 58 (T-036 rework): PIN_ARGS is a second enumeration of .tool-versions ==="
+# Found by the scope audit, not by a report. PIN_ARGS lists two pins under the
+# sentence "the toolchain pins that reach an image build" — true today, and
+# checked against nothing, which is OD-1's shape. If .tool-versions grew a pin
+# an application Dockerfile consumed, every §1 rule would skip it in silence.
+mut "$DF" 'ARG PNPM_VERSION' 'ARG TERRAFORM_VERSION
+ARG PNPM_VERSION' && run_case "58 an app Dockerfile takes a pin PIN_ARGS omits" FAIL
+
 echo
 run_case "99 tree restored" PASS
 echo
