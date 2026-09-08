@@ -20,6 +20,30 @@
  *
  * This gate runs INSIDE the toolbox (`scripts/dev pnpm gate:toolbox`), which is
  * the only place the properties can be observed at all.
+ *
+ * THE RAW-VS-LIVE AUDIT (T-036, OD-26 / OD-28). `T-034` § contract 2 warned
+ * that this gate "was never audited this way" — i.e. for *require*-shaped
+ * checks that read RAW source text, which a `# ` in front of the line then
+ * satisfies. It has been now, and the result is that this gate has none:
+ *
+ *   §1 / §2   run the tool and read its stdout — behavioural, not textual.
+ *   §1a       reconciles two in-memory lists (`.tool-versions` vs PROBES /
+ *             STRUCTURALLY_ASSERTED). No source text is read.
+ *   §3        reads `process.env`.
+ *   §4        writes a file and stats it.
+ *   §5        `package.json` is JSON, which has no comments; `.npmrc` is an
+ *             existence test; `pnpm store path` is behavioural; and the ONE
+ *             source-text require in this file is the `.gitignore` clause,
+ *             whose regex is ANCHORED — /^\.pnpm-store\/?$/m — so a gitignore
+ *             comment (which must begin with '#') cannot satisfy it. Measured
+ *             both ways: commenting the line out gives exit 1, and so does
+ *             deleting it, where the family's whole signature is that the two
+ *             directions disagree.
+ *   §6        stats the container this gate is running in.
+ *
+ * If you add a check here that reads a file as text and requires something to
+ * be present, anchor it or strip comments. That is the rule the other two gate
+ * files now follow.
  */
 import fs from 'node:fs';
 import os from 'node:os';

@@ -310,10 +310,11 @@ if (svcScript === null) {
         `svc run gets services and NO egress (DOCKER.md §7b).`,
     );
   }
-  if (!/refusing to attach/.test(svcScript)) {
+  if (!live.some((l) => /refusing to attach/.test(l))) {
     failures.push(
-      `scripts/svc no longer contains its refusal assertion for ${BUILD_NETWORK}. ` +
-        `That assertion is the runtime half of this gate; do not delete it.`,
+      `scripts/svc no longer NAMES its refusal assertion for ${BUILD_NETWORK} in live ` +
+        `(non-comment) code. That assertion is the runtime half of this gate; do not ` +
+        `delete it and do not comment it out.`,
     );
   }
 }
@@ -365,6 +366,23 @@ if (devScript === null) {
 //    already covers behaviourally, by stat-ing a file the toolbox actually
 //    wrote. Two checks, two different derivations: this one reads the script,
 //    that one observes the container.
+//
+//    EVERY CHECK IN THIS FILE — forbid AND require — READS THE COMMENT-STRIPPED
+//    TEXT (OD-26 / OD-28, and T-036's enumeration). It did not used to: every
+//    *forbid* read `live` and exactly three *require*-checks read the RAW file
+//    (`refusing to attach`, `--docker) die`, `toolbox_refuse_root`), so putting
+//    a `# ` in front of the line satisfied all three at exit 0 while the
+//    behaviour was gone. `gate:pr` was 9/9 through it. The asymmetry is worth
+//    naming rather than just fixing: a *forbid* over raw text is merely
+//    over-strict (a comment mentioning the forbidden thing reds the gate, which
+//    is visible and arguable), while a *require* over raw text is a hole, and
+//    it is the hole that is silent. If you add a check here, that is the rule.
+//
+//    The one deliberate exception is the `toolbox_mount_args` body scan below:
+//    it locates the function over the raw text and FAILS CLOSED when it cannot
+//    (a commented-out definition is not found, so the gate goes red), and it
+//    then forbids the socket over that raw body — over-strict in the safe
+//    direction, on purpose.
 // ---------------------------------------------------------------------------
 const SOCKET_PATH = 'docker.sock';
 const SOCKET_HELPER = 'toolbox_docker_socket_args';
@@ -383,10 +401,11 @@ if (svcScript !== null) {
       );
     }
   }
-  if (!/--docker\)\s*die/.test(svcScript)) {
+  if (!/--docker\)\s*die/.test(live)) {
     failures.push(
-      `scripts/svc no longer refuses '--docker' by name. Falling through to "unknown ` +
-        `option" loses the reason, and the reason is the whole ruling (OD-16).`,
+      `scripts/svc no longer NAMES a '--docker) die' arm in live (non-comment) code. ` +
+        `Commenting it out is enough: the flag then falls through to "unknown option", ` +
+        `which loses the reason, and the reason is the whole ruling (OD-16/OD-28).`,
     );
   }
 }
@@ -462,10 +481,13 @@ for (const [rel, text] of [
   if (rootish.length > 0) {
     failures.push(`${rel} runs the toolbox as root or privileged: ${rootish.join(' | ')}`);
   }
-  if (!/toolbox_refuse_root/.test(text)) {
+  if (!live.some((l) => /toolbox_refuse_root/.test(l))) {
     failures.push(
-      `${rel} no longer calls toolbox_refuse_root. That is the runtime half of the ` +
-        `same property (OD-16).`,
+      `${rel} no longer NAMES toolbox_refuse_root in live (non-comment) code. That is ` +
+        `the runtime half of the same property (OD-16). Note what this does and does ` +
+        `not say: a static check can see that the name is there, not that the call ` +
+        `runs — the behavioural anchor is gate:toolbox §4, which stats a file the ` +
+        `toolbox actually wrote.`,
     );
   }
 }
@@ -481,5 +503,8 @@ console.log(
 console.log(`  parser                     yaml (a real one — see QA-F2)`);
 console.log(`  entry points checked       scripts/dev, scripts/svc`);
 console.log(`  docker socket              scripts/dev --docker only (OD-16)`);
+console.log(
+  `  script checks read         live (comment-stripped) text — forbid AND require (OD-28)`,
+);
 
 finish('gate:egress-boundary', failures);

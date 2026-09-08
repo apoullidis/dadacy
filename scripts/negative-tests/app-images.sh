@@ -10,14 +10,31 @@ set -uo pipefail
 cd "$(dirname "$0")/../.."
 VERIFY=docker/compose.verify.yml
 CHAOS=docker/compose.chaos.yml
+# T-036: compose.yml is now in the backup set because the no-ports rule reads it
+# (OD-22 — it used to be checked in the overlay and nowhere else).
+BASE=docker/compose.yml
 DF=docker/app.Dockerfile
 BK="$(mktemp -d)"
-cp "$VERIFY" "$BK/verify"; cp "$CHAOS" "$BK/chaos"; cp "$DF" "$BK/df"; cp scripts/svc "$BK/svc"; cp apps/core/package.json "$BK/corepkg"
+cp "$VERIFY" "$BK/verify"; cp "$CHAOS" "$BK/chaos"; cp "$BASE" "$BK/base"; cp "$DF" "$BK/df"; cp scripts/svc "$BK/svc"; cp apps/core/package.json "$BK/corepkg"
 restore() {
-  cp "$BK/verify" "$VERIFY"; cp "$BK/chaos" "$CHAOS"; cp "$BK/df" "$DF"; cp "$BK/svc" scripts/svc; cp "$BK/corepkg" apps/core/package.json
+  cp "$BK/verify" "$VERIFY"; cp "$BK/chaos" "$CHAOS"; cp "$BK/base" "$BASE"; cp "$BK/df" "$DF"; cp "$BK/svc" scripts/svc; cp "$BK/corepkg" apps/core/package.json
   rm -rf apps/core/src docker/next.Dockerfile docker/rogue.Dockerfile
 }
 trap 'restore; rm -rf "$BK"' EXIT
+
+# THE DIFFERENTIAL HARNESS (T-036). Which implementation of the gate to judge
+# each case with. The default is the committed gate and nothing in this repo
+# ever sets it; it exists so a case can be judged by the gate AS AT another
+# commit, on the IDENTICAL mutated file, which is the only way to show that a
+# new case attacks a direction the old gate accepted rather than a direction
+# nobody had written a case for:
+#
+#   git show main:scripts/gates/app-images.ts > scripts/gates/.main-app-images.ts
+#   KINVARA_GATE_IMPL=scripts/gates/.main-app-images.ts bash scripts/negative-tests/app-images.sh
+#
+# The banner the verdict matches is the gate's own name, which does not change
+# between implementations, so the two runs are directly comparable.
+GATE_IMPL="${KINVARA_GATE_IMPL:-scripts/gates/app-images.ts}"
 
 bad=0
 # The number of cases actually RUN, kept by run_case. The footer prints this
@@ -45,7 +62,7 @@ mut() { node scripts/negative-tests/mutate.mjs "$@" || { echo "   HARNESS ERROR"
 # CRASH, which equals no expectation and therefore always misbehaves.
 run_case() {
   local label="$1" expect="$2" out code
-  out="$(node scripts/gates/app-images.ts 2>&1)"; code=$?
+  out="$(node "$GATE_IMPL" 2>&1)"; code=$?
   local verdict
   if [[ $code -eq 0 && "$out" == *"GATE PASS  gate:app-images"* ]]; then verdict=PASS
   elif [[ $code -eq 1 && "$out" == *"GATE FAIL  gate:app-images"* ]]; then verdict=FAIL
@@ -65,14 +82,14 @@ CORE_BUILD="  core:
 
 run_case "00 unmodified tree" PASS
 
-echo; echo "=== case 01: a ports: key in compose.verify.yml (OD-4). SCOPE of this check is UNDER MEASUREMENT — T-036 (OD-22); do not read a PASS as coverage ==="
+echo; echo "=== case 01: a ports: key in compose.verify.yml (OD-4). The base-file and chaos directions are cases 35-36 (OD-22) ==="
 mut "$VERIFY" "$CORE_BUILD" "  core:
     ports: ['3000:3000']
     build:
       context: ..
       dockerfile: docker/app.Dockerfile" && run_case "01 a ports: key on a verify service" FAIL
 
-echo; echo "=== cases 02-03: a mem_limit raise in compose.verify.yml (DOCKER.md §3). SCOPE UNDER MEASUREMENT — T-036 (OD-24) ==="
+echo; echo "=== cases 02-03: a mem_limit raise in compose.verify.yml (DOCKER.md §3). The chaos and ADDITION directions are cases 39-42 (OD-24) ==="
 mut "$VERIFY" "$CORE_BUILD" "  core:
     mem_limit: 2g
     build:
@@ -84,7 +101,7 @@ mut "$VERIFY" "$CORE_BUILD" "  core:
       context: ..
       dockerfile: docker/app.Dockerfile" && run_case "03 mem_limit LOWERED (allowed)" PASS
 
-echo; echo "=== cases 04-06: the Node pin planted in the Dockerfile, the overlay and scripts/svc. SCOPE UNDER MEASUREMENT — T-036 (OD-21, OD-23, OD-25) ==="
+echo; echo "=== cases 04-06: the Node pin planted in the Dockerfile, the overlay and scripts/svc. The pnpm, per-service, second-Dockerfile and comment directions are cases 32-34, 37-38, 43-45, 49 (OD-21, OD-23, OD-25, OD-28) ==="
 mut "$DF" '
 ARG NODE_VERSION
 ' '
@@ -95,7 +112,7 @@ mut "$VERIFY" '        APP: core' '        NODE_VERSION_PINNED: 24.20.0
 mut scripts/svc 'KINVARA_NODE_VERSION="$(toolbox_require_pin nodejs)"' 'KINVARA_NODE_VERSION="24.20.0" #' \
   && run_case "06 scripts/svc hard-codes the version instead" FAIL
 
-echo; echo "=== cases 07-08: a labelled service whose build:/APP arg is missing from compose.verify.yml. SCOPE UNDER MEASUREMENT — T-036 ==="
+echo; echo "=== cases 07-08: a labelled service whose build:/APP arg is missing from compose.verify.yml ==="
 mut "$VERIFY" "$CORE_BUILD" "  core:
     build_disabled:
       context: ..
@@ -159,7 +176,7 @@ mut "$VERIFY" 'services:' 'services:
   && run_case "17a a Dockerfile using 'pnpm i' and no guard" FAIL
 rm -f docker/rogue.Dockerfile
 
-echo; echo "=== cases 18-20: the image-contract checks read a service's own Dockerfile (§2a). SCOPE UNDER MEASUREMENT — T-036 (OD-25: §1's pin checks do NOT) ==="
+echo; echo "=== cases 18-20: the image-contract checks read a service's own Dockerfile (§2a). §1's pin checks now read the same set — cases 43-45 (OD-25) ==="
 # QA's escape, reproduced. T-018's own contract §6 tells the Next.js tickets to
 # split the Dockerfile, and the first version of this gate pinned its
 # image-contract checks to docker/app.Dockerfile — so it stopped checking at
@@ -263,7 +280,7 @@ fs.writeFileSync(p, s.slice(0, j) + 'target: next-runtime' + s.slice(j + 'target
 JS
 run_case "20a next-runtime inheriting NOTHING: no USER/HC/ENTRYPOINT" FAIL
 
-echo; echo "=== cases 21-22: apps/<name>/src present with no start script. SCOPE UNDER MEASUREMENT — T-036 ==="
+echo; echo "=== cases 21-22: apps/<name>/src present with no start script ==="
 mkdir -p apps/core/src && echo 'export const x = 1;' > apps/core/src/index.ts
 run_case "21 apps/core has src/ but declares no start script" FAIL
 mkdir -p apps/core/src && echo 'export const x = 1;' > apps/core/src/index.ts
@@ -362,6 +379,178 @@ next_stage 'USER root' && run_case "29 the same stage, then USER root" FAIL
 next_stage 'HEALTHCHECK NONE' && run_case "30 the same stage, then HEALTHCHECK NONE" FAIL
 next_stage 'ENTRYPOINT node /srv/kinvara/app-runtime/entrypoint.mjs' \
   && run_case "31 the same stage, then a shell-form ENTRYPOINT" FAIL
+
+echo; echo "=== cases 32-34 (T-036, OD-21/OD-25): the PNPM pin, and the CHAOS file — the directions the literal anchor never read ==="
+# OD-21, measured by QA on T-034 with a control: the anchor looped `nodePin`
+# alone, so `ENV KINVARA_PNPM_HINT=11.25.0` in app.Dockerfile was exit 0 GATE
+# PASS while the same shape with 24.20.0 was exit 1. `RUN corepack prepare
+# pnpm@11.25.0 --activate` is the ordinary idiom, so the unguarded spelling is
+# the one people write.
+mut "$DF" 'ARG PNPM_VERSION' 'ARG PNPM_VERSION
+ENV KINVARA_PNPM_HINT=11.25.0' && run_case "32 the literal PNPM pin in app.Dockerfile" FAIL
+mut "$VERIFY" '        APP: core' '        QA_PNPM_HINT: 11.25.0
+        APP: core' && run_case "33 the literal PNPM pin in compose.verify.yml" FAIL
+mut "$CHAOS" 'services: {}' 'services:
+  qa-chaos-literal:
+    image: kinvara/qa:dev
+    networks: [kinvara-int]
+    mem_limit: 64m
+    cpus: 0.25
+    environment:
+      QA_NODE_HINT: 24.20.0' && run_case "34 the literal NODE pin in compose.chaos.yml" FAIL
+
+echo; echo "=== cases 35-36 (T-036, OD-22): a ports: key OUTSIDE compose.verify.yml ==="
+# Measured before this fix: `ports: ['53999:3000']` on core in compose.yml left
+# gate:app-images AND gate:egress-boundary at exit 0 and gate:pr at 9/9. Worse
+# than a plain gap because OD-4 makes it silent — Docker drops publishing on an
+# internal network with no error, so the line reads as working and takes effect
+# the day a service gains a second network.
+mut "$BASE" '  core:
+    image:' "  core:
+    ports: ['53999:3000']
+    image:" && run_case "35 a ports: key on a BASE service (compose.yml)" FAIL
+mut "$CHAOS" 'services: {}' "services:
+  qa-chaos-ports:
+    image: kinvara/qa:dev
+    networks: [kinvara-int]
+    mem_limit: 64m
+    cpus: 0.25
+    ports: ['53999:3000']" && run_case "36 a ports: key on a CHAOS addition" FAIL
+
+echo; echo "=== cases 37-38 (T-036, OD-23): the \${KINVARA_*_VERSION:?} form dropped by ONE service of five ==="
+# The clause was `verifyText.includes(...)` over the whole file, so it asserted
+# "the file mentions the form somewhere", not "every build gets it": removing it
+# from one of five services was exit 0, and only replacing all five turned it
+# red. Measured in both variable directions.
+SAFETY_BUILD='      target: runtime
+      args:
+        NODE_VERSION: ${KINVARA_NODE_VERSION:?derived from .tool-versions by scripts/svc}
+        PNPM_VERSION: ${KINVARA_PNPM_VERSION:?derived from .tool-versions by scripts/svc}
+        APP: safety-gw'
+mut "$VERIFY" "$SAFETY_BUILD" '      target: runtime
+      args:
+        NODE_VERSION: ${KINVARA_NODE_VERSION}
+        PNPM_VERSION: ${KINVARA_PNPM_VERSION:?derived from .tool-versions by scripts/svc}
+        APP: safety-gw' && run_case "37 safety-gw alone drops the NODE ':?' (1 of 5)" FAIL
+mut "$VERIFY" "$SAFETY_BUILD" '      target: runtime
+      args:
+        NODE_VERSION: ${KINVARA_NODE_VERSION:?derived from .tool-versions by scripts/svc}
+        PNPM_VERSION: ${KINVARA_PNPM_VERSION}
+        APP: safety-gw' && run_case "38 safety-gw alone drops the PNPM ':?' (1 of 5)" FAIL
+
+echo; echo "=== cases 39-42 (T-036, OD-24): the budget, in the CHAOS file and for an ADDITION ==="
+# `mem_limit: 4g` on chaos's core passed both gates where the identical key on
+# compose.verify.yml's core failed — nine lines apart in the same table. A chaos
+# run is when the 4-core box is under the MOST pressure.
+mut "$CHAOS" 'services: {}' 'services:
+  core:
+    mem_limit: 4g' && run_case "39 a mem_limit raise on a CHAOS override of core" FAIL
+mut "$CHAOS" 'services: {}' 'services:
+  qa-chaos-fat:
+    image: kinvara/qa:dev
+    networks: [kinvara-int]
+    mem_limit: 4g
+    cpus: 0.25' && run_case "40 a CHAOS addition above the compose.yml ceiling" FAIL
+mut "$CHAOS" 'services: {}' 'services:
+  qa-chaos-unbounded:
+    image: kinvara/qa:dev
+    networks: [kinvara-int]' && run_case "41 a CHAOS addition with no mem_limit/cpus (§9.2)" FAIL
+# The control that makes the three above mean something: a chaos sidecar sized
+# inside the budget table is exactly what T-126 is supposed to be able to add.
+mut "$CHAOS" 'services: {}' 'services:
+  qa-chaos-ok:
+    image: kinvara/qa:dev
+    networks: [kinvara-int]
+    mem_limit: 128m
+    cpus: 0.25' && run_case "42 a CHAOS addition INSIDE the budget (must stay green)" PASS
+
+echo; echo "=== cases 43-45 (T-036, OD-25): a SECOND Dockerfile, which §1's pin checks never read ==="
+# QA's measurement on T-034, reproduced: docker/next.Dockerfile with a literal
+# FROM tag and literal ARG defaults, pointed at by compose.verify.yml's web, was
+# GATE PASS exit 0 — while the gate printed `dockerfiles checked 2` and
+# `node pin (from .tool-versions) 24.20.0 — derived, not written down`.
+repoint_web() {   # $1 = the dockerfile to point compose.verify.yml's web at
+  mut "$VERIFY" '      dockerfile: docker/app.Dockerfile
+      target: runtime
+      args:
+        NODE_VERSION: ${KINVARA_NODE_VERSION:?derived from .tool-versions by scripts/svc}
+        PNPM_VERSION: ${KINVARA_PNPM_VERSION:?derived from .tool-versions by scripts/svc}
+        APP: web' "      dockerfile: $1
+      target: runtime
+      args:
+        NODE_VERSION: \${KINVARA_NODE_VERSION:?derived from .tool-versions by scripts/svc}
+        PNPM_VERSION: \${KINVARA_PNPM_VERSION:?derived from .tool-versions by scripts/svc}
+        APP: web"
+}
+cat > docker/next.Dockerfile <<'DF'
+ARG NODE_VERSION=24.20.0
+ARG PNPM_VERSION=11.25.0
+FROM node:24.20.0-alpine AS runtime
+USER 10001:10001
+HEALTHCHECK CMD ["node", "/x.mjs"]
+ENTRYPOINT ["node", "/x.mjs"]
+DF
+repoint_web docker/next.Dockerfile && run_case "43 a 2nd Dockerfile with literal pins (OD-25 verbatim)" FAIL
+cat > docker/next.Dockerfile <<'DF'
+ARG NODE_VERSION
+ARG PNPM_VERSION
+FROM node:${NODE_VERSION}-alpine AS runtime
+ENV KINVARA_PNPM_HINT=11.25.0
+USER 10001:10001
+HEALTHCHECK CMD ["node", "/x.mjs"]
+ENTRYPOINT ["node", "/x.mjs"]
+DF
+repoint_web docker/next.Dockerfile && run_case "44 a 2nd Dockerfile, PNPM literal only" FAIL
+# The control: the same second Dockerfile with nothing written down must PASS,
+# or cases 43-44 would only be evidence that the gate dislikes new files.
+cat > docker/next.Dockerfile <<'DF'
+ARG NODE_VERSION
+ARG PNPM_VERSION
+FROM node:${NODE_VERSION}-alpine AS runtime
+USER 10001:10001
+HEALTHCHECK CMD ["node", "/x.mjs"]
+ENTRYPOINT ["node", "/x.mjs"]
+DF
+repoint_web docker/next.Dockerfile && run_case "45 the same 2nd Dockerfile, pins derived (must stay green)" PASS
+
+echo; echo "=== cases 46-47 (T-036, OD-30/OD-32): a build: with NO target: — the last stage shipping unchecked ==="
+# This is the route to a root safety-gw image that survived T-035. Delete ONE
+# line and the service resolves to nothing; append any stage after `runtime` and
+# docker builds root / docker-entrypoint.sh at PID 1 / Healthcheck=null, at gate
+# exit 0 and gate:pr 9/9, with no BuildKit warning. What stopped it was that
+# `runtime` HAPPENS to be last — an ordering accident nothing asserted, and
+# T-034 § contract 6 instructs the very next ticket to append a stage.
+NO_TARGET='      dockerfile: docker/app.Dockerfile
+      args:
+        NODE_VERSION: ${KINVARA_NODE_VERSION:?derived from .tool-versions by scripts/svc}
+        PNPM_VERSION: ${KINVARA_PNPM_VERSION:?derived from .tool-versions by scripts/svc}
+        APP: safety-gw'
+mut "$VERIFY" "      dockerfile: docker/app.Dockerfile
+$SAFETY_BUILD" "$NO_TARGET" && run_case "46 safety-gw's target: deleted (nothing appended)" FAIL
+mut "$VERIFY" "      dockerfile: docker/app.Dockerfile
+$SAFETY_BUILD" "$NO_TARGET" && cat >> "$DF" <<'DF'
+
+FROM node:${NODE_VERSION}-alpine AS tail-stage
+RUN true
+DF
+run_case "47 the same, plus a tail stage — the OD-32 route" FAIL
+
+echo; echo "=== case 48 (T-036, OD-31): exec form is JSON, and only JSON ==="
+# Anchored on the artefact, not on the regex: a built probe image with
+# ENTRYPOINT ['/bin/sleep', '1'] reports Entrypoint=["/bin/sh","-c","['/bin/sleep', '1']"]
+# — /bin/sh at PID 1, the exact thing the check exists to refuse — and
+# `startsWith('[')` said yes to it.
+mut "$DF" 'ENTRYPOINT ["node", "/srv/kinvara/app-runtime/entrypoint.mjs"]' \
+          "ENTRYPOINT ['node', '/srv/kinvara/app-runtime/entrypoint.mjs']" \
+  && run_case "48 single-quoted ENTRYPOINT (shell form to Docker)" FAIL
+
+echo; echo "=== case 49 (T-036, OD-28 family in THIS gate): a require-check reading raw text ==="
+# Case 06 REPLACES the derivation; this comments it out, which is the direction
+# a raw-text presence test is blind to. Found by the enumeration this ticket
+# owns, in app-images.ts rather than in egress-boundary.ts.
+mut scripts/svc '        KINVARA_NODE_VERSION="$(toolbox_require_pin nodejs)" || exit 1' \
+                '        #KINVARA_NODE_VERSION="$(toolbox_require_pin nodejs)" || exit 1' \
+  && run_case "49 svc's pin derivation COMMENTED OUT (cf. 06)" FAIL
 
 echo
 run_case "99 tree restored" PASS

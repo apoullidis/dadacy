@@ -24,6 +24,20 @@ restore() {
 }
 trap 'restore; rm -rf "$BK"' EXIT
 
+# THE DIFFERENTIAL HARNESS (T-036). Which implementation of the gate to judge
+# each case with. The default is the committed gate and nothing in this repo
+# ever sets it; it exists so a case can be judged by the gate AS AT another
+# commit, on the IDENTICAL mutated file, which is the only way to show that a
+# new case attacks a direction the old gate accepted rather than a direction
+# nobody had written a case for:
+#
+#   git show main:scripts/gates/egress-boundary.ts > scripts/gates/.main-egress-boundary.ts
+#   KINVARA_GATE_IMPL=scripts/gates/.main-egress-boundary.ts bash scripts/negative-tests/egress-boundary.sh
+#
+# The banner the verdict matches is the gate's own name, which does not change
+# between implementations, so the two runs are directly comparable.
+GATE_IMPL="${KINVARA_GATE_IMPL:-scripts/gates/egress-boundary.ts}"
+
 bad=0
 # The number of cases actually RUN, kept by run_case. The footer prints this
 # counter, not a literal: app-images.sh claimed "ALL 25 CASES" while running 24,
@@ -31,17 +45,40 @@ bad=0
 # old number when a case is deleted, which is the same defect pointed the other
 # way. A mutation that fails to apply skips run_case, so a drop here is visible.
 ran=0
-mut() { node scripts/negative-tests/mutate.mjs "$@" || { echo "   HARNESS ERROR"; bad=$((bad+1)); return 1; }; }
+# OD-27, first half — the copy of the defect T-035 fixed in app-images.sh and
+# left here, because this is the other gate's suite. `bad` used to count
+# HARNESS ERRORS AND MISBEHAVING CASES while `ran` counted only cases run_case
+# reached: two populations in one ratio, which is how the footer printed
+# `!! 24 of 4 CASE(S) MISBEHAVED`. They are counted apart now and both are
+# reported; the exit status is still their sum, because either one means this
+# suite proved nothing.
+harness=0
+mut() { node scripts/negative-tests/mutate.mjs "$@" || { echo "   HARNESS ERROR"; harness=$((harness+1)); return 1; }; }
 
+# OD-27, second half, and it is not cosmetic. The verdict was
+# `[[ $code -eq 0 ]] && PASS || FAIL`, so ANY non-zero exit read as FAIL and a
+# case whose expectation IS FAIL passed on a CRASH — observed on the host,
+# where `node` does not exist and every case exited 127. An uncaught exception
+# in egress-boundary.ts also exits 1 and would be indistinguishable from a
+# refusal. That matters most for the comment-direction cases below (20-22),
+# whose whole point is that a check now REFUSES something it used to accept: a
+# suite that cannot tell a refusal from a crash cannot evidence any of them.
+# So a verdict requires the exit status AND the gate's own banner
+# (PROTOCOL §5.1: assert the exit status, not just the bytes). Anything else is
+# CRASH, which equals no expectation and therefore always misbehaves.
 run_case() {
   local label="$1" expect="$2"
   local out code
-  out="$(node scripts/gates/egress-boundary.ts 2>&1)"; code=$?
-  local verdict; [[ $code -eq 0 ]] && verdict=PASS || verdict=FAIL
+  out="$(node "$GATE_IMPL" 2>&1)"; code=$?
+  local verdict
+  if [[ $code -eq 0 && "$out" == *"GATE PASS  gate:egress-boundary"* ]]; then verdict=PASS
+  elif [[ $code -eq 1 && "$out" == *"GATE FAIL  gate:egress-boundary"* ]]; then verdict=FAIL
+  else verdict="CRASH"; fi
   ran=$((ran+1))
   local mark="  "; [[ "$verdict" == "$expect" ]] || { mark="!!"; bad=$((bad+1)); }
-  printf '%s %-48s exit=%d  %-4s (expected %s)\n' "$mark" "$label" "$code" "$verdict" "$expect"
+  printf '%s %-52s exit=%d  %-5s (expected %s)\n' "$mark" "$label" "$code" "$verdict" "$expect"
   [[ "$verdict" == FAIL ]] && printf '%s\n' "$out" | grep -E '^  - ' | head -1 | cut -c1-160 | sed 's/^/       /'
+  [[ "$verdict" == CRASH ]] && printf '%s\n' "$out" | tail -3 | sed 's/^/       /'
   restore
 }
 
@@ -137,8 +174,31 @@ mut scripts/lib/toolbox.sh '
 toolbox_mount_args() {' '
 toolbox_mount_args_renamed() {' && run_case "17 toolbox_mount_args renamed" FAIL
 
+echo; echo "=== OD-26/OD-28 — THE COMMENT DIRECTION, which is the direction that was missed ==="
+# Cases 12, 15 and the pair above probe DELETION and RENAMING. Those are the
+# directions a raw-text presence test is strongest in, so the suite confirmed
+# the misreading instead of attacking it — PROTOCOL §5.1's own defect, inside a
+# negative-test suite, for the second time in this component.
+#
+# Commenting a line out is an ordinary thing to commit (bisecting, a temporary
+# local disable that gets pushed). Each case below left gate:egress-boundary at
+# GATE PASS exit 0 and `pnpm gate:pr` at 9/9 before T-036, with the behaviour
+# gone in every case. The DELETION control for each is the case named beside it.
+mut scripts/svc '            --docker)     die' '            #--docker)     die' \
+  && run_case "20 svc's '--docker) die' arm COMMENTED OUT (cf. 12)" FAIL
+mut scripts/svc '        || die "refusing to attach' '        #|| die "refusing to attach' \
+  && run_case "21 svc's kinvara-build refusal COMMENTED OUT" FAIL
+mut scripts/dev 'toolbox_refuse_root "scripts/dev" || exit 1' '# toolbox_refuse_root "scripts/dev" || exit 1' \
+  && run_case "22 dev's runtime root refusal COMMENTED OUT (cf. 15)" FAIL
+mut scripts/svc 'toolbox_refuse_root "scripts/svc run" || exit 1' '# toolbox_refuse_root "scripts/svc run" || exit 1' \
+  && run_case "23 svc's runtime root refusal COMMENTED OUT" FAIL
+
 echo
 run_case "99 tree restored" PASS
 echo
-if [[ $bad -eq 0 ]]; then echo "ALL $ran CASES BEHAVED AS EXPECTED"; else echo "!! $bad of $ran CASE(S) MISBEHAVED"; fi
-exit $bad
+if [[ $bad -eq 0 && $harness -eq 0 ]]; then
+  echo "ALL $ran CASES BEHAVED AS EXPECTED"
+else
+  echo "!! $bad of $ran CASE(S) MISBEHAVED; $harness HARNESS ERROR(S)"
+fi
+exit $((bad + harness))

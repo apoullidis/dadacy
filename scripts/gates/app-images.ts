@@ -1,47 +1,51 @@
 /**
- * gate:app-images — the application images stay honest (T-018).
+ * gate:app-images — the static checks over the application Dockerfiles and the
+ * compose overlays (T-018, carried by T-034; stage semantics T-035; SCOPE T-036).
  *
  * `docker/app.Dockerfile` + `docker/compose.verify.yml` are what make every
  * later ticket's evidence real: DOCKER.md §5 says a service-dependent ticket
  * is only done when the app ran AS ITS IMAGE, because signal handling, DNS,
  * paths, env resolution and non-root permissions are invisible outside it.
  *
- * Five properties, each stated so that the check IS the claim.
+ * WHAT THIS HEADER USED TO SAY, AND WHY IT DOES NOT SAY IT ANY MORE (TL-F4).
+ * It said "five properties, each stated so that the check IS the claim". That
+ * sentence was false for five of the checks below at once, and the falsehood
+ * was always the same shape: THE CHECK'S SCOPE WAS ONE STEP NARROWER THAN THE
+ * SENTENCE DESCRIBING IT (decisions.md OD-21…OD-32, escalation OE-8). The
+ * literal-pin anchor read the Node pin and not the pnpm pin; `ports:` was read
+ * in one overlay of two; the `:?` clause was a whole-file `includes()` over
+ * five services; a budget raise was read in `verify` and not in `chaos`; §1's
+ * pin checks read two constant paths while §6 read a derived set; a `build:`
+ * with no `target:` was never resolved at all. Every one of them was green.
  *
- * 1. THE NODE VERSION IS DERIVED, NOT WRITTEN DOWN. `ARG NODE_VERSION` has no
- *    default, compose.verify.yml passes `${KINVARA_NODE_VERSION:?...}`, and
- *    `scripts/svc` sets that from `.tool-versions`. The anchor that makes this
- *    more than a spelling check is the LAST clause: the literal pin value must
- *    not appear in either file. A second copy of "24.20.0" is OD-1's shape —
- *    one fact in two places, and the copy goes stale silently.
+ * SO THE ORGANISING RULE OF THIS FILE IS NOW A SCOPE RULE, and it is the thing
+ * to preserve when you edit it:
  *
- * 2. EVERY SERVICE compose.yml SAYS T-018 BUILDS IS ACTUALLY BUILT HERE. The
- *    set comes from the `io.kinvara.built-by` label in compose.yml, not from a
- *    list in this file, so adding a sixth app to compose.yml with that label
- *    turns this gate red until the overlay builds it. `scripts/svc`'s
- *    missing-image message reads the same label (QA-F8) — one source.
+ *     EVERY CHECK READS A DERIVED SET, NOT A CONSTANT PATH, AND ITERATES
+ *     WHAT IT CLAIMS TO COVER — PER FILE, PER SERVICE, PER PIN, PER STAGE.
  *
- * 3. NO `ports:` IN THE OVERLAY. A ticket-scoped project publishes none and
- *    cannot: Docker drops publishing on an `internal: true` network silently
- *    (OD-4). A `ports:` line there does nothing while reading as though it
- *    works, and starts working the day someone adds a second network.
+ *   * the files: `COMPOSE_FILES` (base + every overlay) and `dockerfilesInUse`
+ *     (every Dockerfile an overlay service actually builds). Neither is a
+ *     constant path, and `PRIMARY_DOCKERFILE` no longer exists.
+ *   * the pins: both of them, looped, never one spelled out.
+ *   * the services: `Object.entries(...)` of each parsed file, never a
+ *     whole-file `text.includes(...)` standing in for "every service does X".
+ *   * the stages: the target COMPOSE names (T-035), and a `build:` with no
+ *     `target:` is a FAILURE rather than a silent skip (OD-30/OD-32) — so the
+ *     stage that ships can never be decided by which stage happens to be last.
  *
- * 4. THE OVERLAY CANNOT RAISE A BUDGET. DOCKER.md §3's table is what the
- *    orchestrator sums before dispatching a wave; an overlay that quietly
- *    doubles a mem_limit breaks arithmetic that keeps a 4-core box alive.
- *
- * 5. A PLACEHOLDER CANNOT OUTLIVE REAL SOURCE. The image entrypoint runs the
- *    app's own `start` script if it declares one and a reference placeholder
- *    otherwise. That conditional is derived from package.json, which is right,
- *    but on its own "still on the placeholder" is the kind of thing that stays
- *    true for six months. So: an app with a `src/` directory MUST declare
- *    `start`. The trigger is the filesystem — something outside both the
- *    Dockerfile and the entrypoint that reads it — which is the point.
+ * A SECOND RULE, from the other half of the family (OD-26/OD-28): a check that
+ * REQUIRES a line to be present reads the file with comments stripped. Over
+ * raw text, `# ` in front of the line satisfies the check, which is the exact
+ * edit the check exists to catch.
  *
  * What this gate does NOT do: build anything, or run a container. It has no
  * Docker socket by design (OD-16), and a gate that needed a daemon could not
  * be part of `gate:pr`. That the images BUILD and pass their healthchecks is
- * `svc up --verify --build`, evidenced per ticket.
+ * `svc up --verify --build`, evidenced per ticket. What each check covers is
+ * published in state/EP-1/T-036.md § Published contract, and every row there
+ * names the negative case in `scripts/negative-tests/app-images.sh` that would
+ * fail if it were false.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -50,32 +54,43 @@ import { REPO_ROOT, finish, toolVersions } from './lib/run.ts';
 
 const BASE_FILE = 'docker/compose.yml';
 const VERIFY_FILE = 'docker/compose.verify.yml';
-/**
- * The Dockerfile the pin/derivation checks in §1 read. It is NOT the set §6
- * runs over — that set is `dockerfilesInUse`, derived in §2a from every
- * OVERLAY service declaring a `build.dockerfile`.
- *
- * Two rounds of QA on this one line of design, and both are worth keeping:
- *   round 1 — §6 was pinned to this constant. Repointing `web` at a second
- *             Dockerfile with USER root, a shell-form ENTRYPOINT and no
- *             HEALTHCHECK left the gate GREEN — and T-018's own contract §6
- *             invites exactly that split for the Next.js apps.
- *   round 2 — §6 was then pinned to the `built-by: T-018` label set, which is
- *             the same defect in a different hat. An UNLABELLED overlay
- *             service with a build.dockerfile was checked by nothing, and the
- *             gate still printed `dockerfiles checked 1` as though it had
- *             enumerated.
- * A check that disarms itself when a documented next step is taken is worse
- * than no check, because its green is read as coverage.
- */
-const PRIMARY_DOCKERFILE = 'docker/app.Dockerfile';
 const CHAOS_FILE = 'docker/compose.chaos.yml';
 /**
- * Every overlay. §6's set of Dockerfiles is derived from ALL of these — see
- * `dockerfilesInUse` for why it is not derived from the `built-by` label.
+ * Every overlay. `compose.dev.yml` is deliberately NOT one: it is the shared
+ * `kinvara-dev` stack, the single project that publishes host ports on
+ * purpose, and holding it to the no-ports rule below would red a file whose
+ * fixed ports are the documented exception (T-016 § contract 6).
  */
-const OVERLAY_FILES = [VERIFY_FILE, CHAOS_FILE];
+const OVERLAY_FILES = [VERIFY_FILE, CHAOS_FILE] as const;
+/**
+ * The files the no-host-port rule (§3) covers: the base file AND every
+ * overlay.
+ *
+ * OD-22, and it is the reason this constant exists rather than a literal
+ * `VERIFY_FILE` nine lines down. The rule is a property of a TICKET-SCOPED
+ * PROJECT — `docker compose -p kinvara-<t> -f compose.yml [-f overlay]` — so
+ * a `ports:` key anywhere in that set is the same defect. Measured before this
+ * fix: `ports: ['53999:3000']` on `core` in compose.yml passed this gate AND
+ * gate:egress-boundary at exit 0, and the identical key on a chaos addition
+ * passed both too. Worse than a plain gap, because OD-4 makes the wrong edit
+ * SILENT: Docker drops publishing on an `internal: true` network with no
+ * error, so it reads as working until a service gains a second network.
+ */
+const PORT_FREE_FILES = [BASE_FILE, ...OVERLAY_FILES] as const;
 const BUILT_BY = 'T-018';
+/**
+ * The toolchain pins that reach an image build, LOOPED — never one of them
+ * spelled out.
+ *
+ * OD-21: the literal-pin anchor below used to read `nodePin` alone, so
+ * `RUN corepack prepare pnpm@11.25.0 --activate` — the ordinary idiom, and the
+ * spelling people actually write — passed in both files it read. One fact in
+ * two places is OD-1's shape and the copy goes stale in silence.
+ */
+const PIN_ARGS = [
+  { arg: 'NODE_VERSION', env: 'KINVARA_NODE_VERSION', pinKey: 'nodejs' },
+  { arg: 'PNPM_VERSION', env: 'KINVARA_PNPM_VERSION', pinKey: 'pnpm' },
+] as const;
 
 const failures: string[] = [];
 const read = (rel: string): string | null => {
@@ -85,113 +100,97 @@ const read = (rel: string): string | null => {
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
 
+/** Strip a Dockerfile comment line and any trailing shell comment. */
+const dfCode = (line: string): string => (line.split('#')[0] ?? '').trim();
+/** The live (comment-stripped) lines of a shell script or a Dockerfile. */
+const liveLines = (text: string): string[] => text.split('\n').map(dfCode);
+
+/**
+ * Does this Dockerfile install from the pnpm workspace, and therefore have a
+ * node_modules that could hold devDependencies (and a Node/pnpm pin that must
+ * be derived)? Read from the file, never from a list of which images are "app"
+ * images: a chaos sidecar built from some other base has neither, and
+ * demanding either of it would be a rule nobody could satisfy honestly.
+ *
+ * Deliberately WIDE, and it over-approximates on purpose. The previous version
+ * matched three literals (`pnpm-lock.yaml`, `pnpm install`, `pnpm --filter`)
+ * and QA found the obvious hole: `pnpm i` is the same command, is the SHORTER
+ * and commoner spelling, and skipped the guard. Over-approximating fails SAFE
+ * — a false positive asks you to add a guard or an ARG to an image that may
+ * not need one, which is visible and arguable; a false negative is an
+ * unguarded image, which is silent, and silence shipped 112.2 MB of
+ * devDependencies.
+ */
+const buildsFromWorkspace = (text: string): boolean =>
+  liveLines(text).some((l) => /\bpnpm\b|node_modules/.test(l));
+
+/** Parsed `services:` of a compose file. Memoised: each file is reported once. */
+const servicesCache = new Map<string, Record<string, Record<string, unknown>> | null>();
 const servicesOf = (rel: string): Record<string, Record<string, unknown>> | null => {
-  const text = read(rel);
-  if (text === null) {
-    failures.push(`${rel} does not exist`);
-    return null;
-  }
-  let doc: unknown;
-  try {
-    doc = parseYaml(text);
-  } catch (err) {
-    failures.push(`${rel} is not parseable YAML: ${String(err)}`);
-    return null;
-  }
-  if (!isRecord(doc) || !isRecord(doc['services'])) {
-    failures.push(`${rel}: no services: mapping — refusing to report a pass on it`);
-    return null;
-  }
-  const out: Record<string, Record<string, unknown>> = {};
-  for (const [k, v] of Object.entries(doc['services'])) if (isRecord(v)) out[k] = v;
-  return out;
+  const cached = servicesCache.get(rel);
+  if (cached !== undefined) return cached;
+  const compute = (): Record<string, Record<string, unknown>> | null => {
+    const text = read(rel);
+    if (text === null) {
+      failures.push(`${rel} does not exist`);
+      return null;
+    }
+    let doc: unknown;
+    try {
+      doc = parseYaml(text);
+    } catch (err) {
+      failures.push(`${rel} is not parseable YAML: ${String(err)}`);
+      return null;
+    }
+    if (!isRecord(doc) || !isRecord(doc['services'])) {
+      failures.push(`${rel}: no services: mapping — refusing to report a pass on it`);
+      return null;
+    }
+    const out: Record<string, Record<string, unknown>> = {};
+    for (const [k, v] of Object.entries(doc['services'])) if (isRecord(v)) out[k] = v;
+    return out;
+  };
+  const result = compute();
+  servicesCache.set(rel, result);
+  return result;
 };
 
 const base = servicesOf(BASE_FILE);
 const verify = servicesOf(VERIFY_FILE);
-const dockerfile = read(PRIMARY_DOCKERFILE);
-if (dockerfile === null) failures.push(`${PRIMARY_DOCKERFILE} does not exist`);
 
 const pins = toolVersions();
-const nodePin = pins.get('nodejs');
-const pnpmPin = pins.get('pnpm');
-if (nodePin === undefined || pnpmPin === undefined) {
-  failures.push('.tool-versions does not pin both nodejs and pnpm');
+/** arg name -> the pinned value it must carry. Both, always both. */
+const pinValues = new Map<string, string>();
+for (const { arg, pinKey } of PIN_ARGS) {
+  const v = pins.get(pinKey);
+  if (v === undefined) failures.push(`.tool-versions does not pin '${pinKey}'`);
+  else pinValues.set(arg, v);
 }
 
 // ---------------------------------------------------------------------------
-// 1. The Node/pnpm versions are derived from .tool-versions.
+// 2a. THE DERIVED SET — every overlay service that builds, and every
+//     Dockerfile they build from. Everything below reads this; nothing below
+//     reads a constant path.
+//
+//     It runs FIRST now (it used to sit between §2 and §3), because §1's pin
+//     checks were the half of OD-25 that still read two constants while §6
+//     read this set — so a SECOND Dockerfile, which T-034 § contract 6 tells
+//     the Next.js tickets to add, passed §1 with literal pins in both ARGs
+//     while the gate printed `dockerfiles checked 2`.
 // ---------------------------------------------------------------------------
-if (dockerfile !== null) {
-  for (const argName of ['NODE_VERSION', 'PNPM_VERSION']) {
-    const decl = new RegExp(`^ARG ${argName}\\s*$`, 'm');
-    const withDefault = new RegExp(`^ARG ${argName}=`, 'm');
-    if (withDefault.test(dockerfile)) {
-      failures.push(
-        `${PRIMARY_DOCKERFILE}: 'ARG ${argName}' has a DEFAULT. A default makes a build that ` +
-          `forgets to pass the pin succeed against some other version, silently. It must ` +
-          `have none, so the build fails at the FROM line instead.`,
-      );
-    } else if (!decl.test(dockerfile)) {
-      failures.push(`${PRIMARY_DOCKERFILE}: no bare 'ARG ${argName}' declaration`);
-    }
-  }
+interface BuildUse {
+  /** The overlay file the service is declared in. */
+  readonly file: string;
+  readonly service: string;
+  readonly dockerfile: string;
+  /** The stage compose names. Never '' — a missing target is a failure below. */
+  readonly target: string;
+  /** `build.args`, verbatim from the YAML: compose does no substitution here. */
+  readonly args: Record<string, unknown>;
 }
-
-const verifyText = read(VERIFY_FILE);
-if (verifyText !== null) {
-  for (const [argName, envName] of [
-    ['NODE_VERSION', 'KINVARA_NODE_VERSION'],
-    ['PNPM_VERSION', 'KINVARA_PNPM_VERSION'],
-  ] as const) {
-    if (!verifyText.includes(`${argName}: \${${envName}:?`)) {
-      failures.push(
-        `${VERIFY_FILE}: ${argName} is not passed as \${${envName}:?...}. The ':?' form is ` +
-          `what makes a bare 'docker compose -f ...' run fail loudly instead of building ` +
-          `against an unset variable.`,
-      );
-    }
-  }
-}
-
-// The anchor. Everything above is spelling; this is the property.
-if (nodePin !== undefined) {
-  for (const rel of [PRIMARY_DOCKERFILE, VERIFY_FILE]) {
-    const text = read(rel);
-    if (
-      text !== null &&
-      text.split('\n').some((l) => !l.trimStart().startsWith('#') && l.includes(nodePin))
-    ) {
-      failures.push(
-        `${rel} contains the literal Node pin '${nodePin}' in live (non-comment) text. ` +
-          `The version must come from .tool-versions through scripts/svc — a second copy ` +
-          `is one fact in two places and it goes stale silently (OD-1).`,
-      );
-    }
-  }
-}
-
-const svcScript = read('scripts/svc');
-if (svcScript === null) {
-  failures.push('scripts/svc is missing');
-} else if (
-  !/KINVARA_NODE_VERSION="\$\(toolbox_require_pin nodejs\)"/.test(svcScript) ||
-  !/KINVARA_PNPM_VERSION="\$\(toolbox_require_pin pnpm\)"/.test(svcScript)
-) {
-  failures.push(
-    `scripts/svc no longer derives KINVARA_NODE_VERSION / KINVARA_PNPM_VERSION from ` +
-      `.tool-versions with toolbox_require_pin. Without it the ':?' in ${VERIFY_FILE} ` +
-      `makes every --verify build fail, and the obvious repair is to hard-code a version.`,
-  );
-}
-
-// ---------------------------------------------------------------------------
-// 2. Every service compose.yml says T-018 builds is built by the overlay.
-// ---------------------------------------------------------------------------
-const declaredByLabel: string[] = [];
-
+const buildUses: BuildUse[] = [];
 /**
- * dockerfile path -> `<file>:<service>[:<target>]` for every OVERLAY service
+ * dockerfile path -> `<file>:<service>→<target>` for every OVERLAY service
  * that declares a `build.dockerfile`, whatever its labels say.
  *
  * DERIVED FROM THE OVERLAYS, NOT FROM `declaredByLabel`, and that is QA's
@@ -202,7 +201,7 @@ const declaredByLabel: string[] = [];
  * HEALTHCHECK and no guard, and left it unlabelled: GATE PASS, with the gate
  * printing `dockerfiles checked 1` as though it had enumerated something.
  *
- * `compose.chaos.yml` is in the set for a concrete reason: T-018's own
+ * `compose.chaos.yml` is in the set for a concrete reason: T-034's own
  * published contract hands that file to T-126, and a built sidecar — a proxy
  * that throttles the network, say — is exactly what lands there.
  *
@@ -211,7 +210,7 @@ const declaredByLabel: string[] = [];
  * pnpm workspace, and the application-image contract below — a non-root uid of
  * this shape, a Node healthcheck, the devDependency guard — does not describe
  * them. The boundary is "an image an OVERLAY builds", which is the boundary
- * this ticket and T-126 own.
+ * T-034 and T-126 own.
  */
 const dockerfilesInUse = new Map<string, string[]>();
 /**
@@ -223,6 +222,188 @@ const dockerfilesInUse = new Map<string, string[]>();
  * both invisible in.
  */
 const stagesChecked: string[] = [];
+
+for (const rel of OVERLAY_FILES) {
+  const svcs = servicesOf(rel);
+  if (svcs === null) continue; // already reported
+  for (const [name, svc] of Object.entries(svcs)) {
+    const build = svc['build'];
+    if (!isRecord(build)) continue;
+    const df = String(build['dockerfile'] ?? '');
+    if (df === '') {
+      failures.push(
+        `${rel}: '${name}' declares build: with no dockerfile:. This gate cannot then ` +
+          `check the image contract of something this repository builds, and a build with ` +
+          `no dockerfile: silently means './Dockerfile' relative to the context.`,
+      );
+      continue;
+    }
+    if (!fs.existsSync(path.join(REPO_ROOT, df))) {
+      failures.push(`${rel}: '${name}' names dockerfile '${df}', which does not exist`);
+      continue;
+    }
+    const target = typeof build['target'] === 'string' ? build['target'].trim() : '';
+    if (target === '') {
+      // OD-30 / OD-32, and it is the strongest of the two available fixes.
+      //
+      // A `build:` with no `target:` used to contribute an empty string that
+      // was filtered out, so the service was resolved to NOTHING while its
+      // siblings resolved normally — and the last-stage fallback below it was
+      // dead the moment any sibling named a target. Measured: delete
+      // `target: runtime` from `safety-gw` and append ANY stage after
+      // `runtime` in app.Dockerfile, and docker builds a safety-gateway image
+      // that is root, `docker-entrypoint.sh` at PID 1 and `Healthcheck=null`,
+      // with this gate at exit 0, `gate:pr` 9/9 and no BuildKit warning.
+      //
+      // The cheap fix — fall back to the last stage — re-points the checks and
+      // leaves the property resting on an ORDERING ACCIDENT nothing asserts:
+      // `runtime` merely happens to be last today, and T-034 § contract 6
+      // instructs the very next ticket to append a stage. Failing outright
+      // makes the stage an asserted fact instead of luck, and it costs
+      // nothing, because every service in the overlays names a target already.
+      failures.push(
+        `${rel}: '${name}' declares build: with no target:. Docker then builds the LAST ` +
+          `stage of ${df}, which is decided by file order and by nothing else — append a ` +
+          `stage and the image this service ships changes, silently, with every check in ` +
+          `this gate still pointed at the old one (OD-30/OD-32). Name the stage.`,
+      );
+      continue;
+    }
+    const label = `${rel.replace('docker/', '')}:${name}→${target}`;
+    dockerfilesInUse.set(df, [...(dockerfilesInUse.get(df) ?? []), label]);
+    buildUses.push({
+      file: rel,
+      service: name,
+      dockerfile: df,
+      target,
+      args: isRecord(build['args']) ? build['args'] : {},
+    });
+  }
+}
+
+if (dockerfilesInUse.size === 0) {
+  failures.push(
+    `no service in ${OVERLAY_FILES.join(' or ')} names a build.dockerfile with a build.target ` +
+      `this gate could read — every check below would then assert nothing.`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 1. THE NODE AND PNPM VERSIONS ARE DERIVED FROM .tool-versions — over every
+//    Dockerfile in use, every overlay file, both pins, and PER SERVICE.
+//
+//    Four measured defects lived in this block and every one of them was the
+//    same shape, a scope one step narrower than the sentence describing it:
+//      OD-21  the literal anchor looped the Node pin only;
+//      OD-23  the `:?` clause was a whole-file `includes()` across FIVE
+//             services, so one of them could drop it and stay green;
+//      OD-25  the checks read two constant paths while §6 read the derived
+//             set, so a second Dockerfile passed with literal pins in both;
+//      OD-28  the `scripts/svc` clause read the RAW file, so commenting the
+//             derivation out satisfied it (see §1d).
+// ---------------------------------------------------------------------------
+
+// --- 1a. FORBID: the literal pin value, in any file that feeds a build. -----
+// The anchor of the whole section. Everything else here is spelling; this is
+// the property — a second copy of the version is one fact in two places and it
+// goes stale silently (OD-1).
+const pinnedFiles = [...new Set<string>([...dockerfilesInUse.keys(), ...OVERLAY_FILES])].sort();
+for (const [arg, value] of pinValues) {
+  for (const rel of pinnedFiles) {
+    const text = read(rel);
+    if (text === null) continue; // reported elsewhere
+    if (liveLines(text).some((l) => l !== '' && l.includes(value))) {
+      failures.push(
+        `${rel} contains the literal ${arg} pin '${value}' in live (non-comment) text. ` +
+          `The version must come from .tool-versions through scripts/svc — a second copy ` +
+          `is one fact in two places and it goes stale silently (OD-1, OD-21).`,
+      );
+    }
+  }
+}
+
+// --- 1b. REQUIRE, per Dockerfile: a bare ARG, never one with a default. -----
+for (const rel of [...dockerfilesInUse.keys()].sort()) {
+  const text = read(rel);
+  if (text === null) continue;
+  const live = liveLines(text);
+  const workspace = buildsFromWorkspace(text);
+  for (const { arg } of PIN_ARGS) {
+    const withDefault = live.some((l) => new RegExp(`^ARG\\s+${arg}=`).test(l));
+    const bare = live.some((l) => new RegExp(`^ARG\\s+${arg}\\s*$`).test(l));
+    if (withDefault) {
+      failures.push(
+        `${rel}: 'ARG ${arg}' has a DEFAULT. A default makes a build that forgets to pass ` +
+          `the pin succeed against some other version, silently. It must have none, so the ` +
+          `build fails at the FROM line instead.`,
+      );
+    } else if (!bare && workspace) {
+      failures.push(
+        `${rel}: no bare 'ARG ${arg}' declaration, and this file installs from the pnpm ` +
+          `workspace (it names pnpm or node_modules). The version it builds against would ` +
+          `then come from the base image tag or from nowhere, not from .tool-versions.`,
+      );
+    }
+  }
+}
+
+// --- 1c. REQUIRE, PER SERVICE: the `:?` form of every ARG its Dockerfile ----
+//     declares. OD-23: this was `verifyText.includes('NODE_VERSION: ${KINVARA_
+//     NODE_VERSION:?')` over the whole file, so removing the form from ONE of
+//     five services left the gate at exit 0 and only replacing all five turned
+//     it red. The clause asserted "the file mentions the form somewhere", not
+//     "every build gets it" — and a service quietly building against an unset
+//     variable is precisely what the `:?` exists to prevent.
+//
+//     Which ARGs are required is DERIVED FROM THE DOCKERFILE, not listed here:
+//     a service must pass exactly the pin ARGs the file it builds declares. A
+//     sidecar whose Dockerfile takes neither is asked for neither.
+for (const use of buildUses) {
+  const text = read(use.dockerfile);
+  if (text === null) continue;
+  const live = liveLines(text);
+  for (const { arg, env } of PIN_ARGS) {
+    if (!live.some((l) => new RegExp(`^ARG\\s+${arg}\\b`).test(l))) continue;
+    const passed = use.args[arg];
+    const wanted = `\${${env}:?`;
+    if (typeof passed !== 'string' || !passed.startsWith(wanted)) {
+      failures.push(
+        `${use.file}: '${use.service}' builds ${use.dockerfile}, which declares ` +
+          `'ARG ${arg}', but the service passes ${arg} as ` +
+          `${passed === undefined ? '(nothing)' : JSON.stringify(passed)} rather than ` +
+          `'${wanted}...}'. The ':?' form is what makes a bare 'docker compose -f ...' run ` +
+          `fail loudly instead of building against an unset variable — and it is required ` +
+          `of EVERY service, not of the file somewhere (OD-23).`,
+      );
+    }
+  }
+}
+
+// --- 1d. REQUIRE: scripts/svc still derives both, read LIVE. ---------------
+// OD-26/OD-28's shape, found in this file by the enumeration this ticket owns:
+// the clause tested the RAW text, so `# KINVARA_NODE_VERSION="$(toolbox_require
+// _pin nodejs)"` satisfied it while the export was gone.
+const svcScript = read('scripts/svc');
+if (svcScript === null) {
+  failures.push('scripts/svc is missing');
+} else {
+  const live = liveLines(svcScript).join('\n');
+  for (const { env, pinKey } of PIN_ARGS) {
+    if (!new RegExp(`${env}="\\$\\(toolbox_require_pin ${pinKey}\\)"`).test(live)) {
+      failures.push(
+        `scripts/svc no longer derives ${env} from .tool-versions with ` +
+          `toolbox_require_pin in live (non-comment) code. Without it the ':?' in the ` +
+          `overlays makes every --verify build fail, and the obvious repair is to ` +
+          `hard-code a version.`,
+      );
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 2. Every service compose.yml says T-018 builds is built by the overlay.
+// ---------------------------------------------------------------------------
+const declaredByLabel: string[] = [];
 if (base !== null) {
   for (const [name, svc] of Object.entries(base)) {
     const labels = svc['labels'];
@@ -267,35 +448,12 @@ if (verify !== null) {
 }
 
 // ---------------------------------------------------------------------------
-// 2a. The Dockerfiles §6 checks: EVERY overlay service that declares one.
-// ---------------------------------------------------------------------------
-for (const rel of OVERLAY_FILES) {
-  const svcs = servicesOf(rel);
-  if (svcs === null) continue; // already reported
-  for (const [name, svc] of Object.entries(svcs)) {
-    const build = svc['build'];
-    if (!isRecord(build)) continue;
-    const df = String(build['dockerfile'] ?? '');
-    if (df === '') {
-      failures.push(
-        `${rel}: '${name}' declares build: with no dockerfile:. This gate cannot then ` +
-          `check the image contract of something this repository builds, and a build with ` +
-          `no dockerfile: silently means './Dockerfile' relative to the context.`,
-      );
-      continue;
-    }
-    if (!fs.existsSync(path.join(REPO_ROOT, df))) {
-      failures.push(`${rel}: '${name}' names dockerfile '${df}', which does not exist`);
-      continue;
-    }
-    const target = typeof build['target'] === 'string' ? build['target'] : '';
-    const label = `${rel.replace('docker/', '')}:${name}${target === '' ? '' : `→${target}`}`;
-    dockerfilesInUse.set(df, [...(dockerfilesInUse.get(df) ?? []), label]);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// 3 + 4. No host ports, and no budget raised (DOCKER.md §3, OD-4).
+// 3 + 4. No host ports anywhere in a ticket-scoped project, and no budget
+//        raised (DOCKER.md §3, §9.2, OD-4, OD-22, OD-24).
+//
+//        Both used to read `compose.verify.yml` alone. They now read
+//        PORT_FREE_FILES / OVERLAY_FILES, which is what the sentences
+//        describing them always said.
 // ---------------------------------------------------------------------------
 const memToMb = (v: unknown): number | null => {
   const m = /^(\d+(?:\.\d+)?)\s*([bkmg])?$/i.exec(String(v).trim());
@@ -313,17 +471,78 @@ const memToMb = (v: unknown): number | null => {
   }
 };
 
-if (verify !== null && base !== null) {
-  for (const [name, svc] of Object.entries(verify)) {
+/**
+ * The largest single budget compose.yml declares — the ceiling an overlay
+ * ADDITION may not exceed.
+ *
+ * DERIVED from the base file rather than written down, and that is the point:
+ * DOCKER.md §3's table IS compose.yml's mem_limits (T-016 reconciled them
+ * service by service), so the ceiling moves only when the budget table does.
+ * An addition has no base definition to be compared against — which is how a
+ * chaos-only sidecar with `mem_limit: 4g` passed both gates — so the rule for
+ * one is: declare mem_limit and cpus (DOCKER.md §9.2, "EVERY service"), and do
+ * not exceed the largest service the machine is already budgeted for.
+ */
+let additionCeilingMb: number | null = null;
+if (base !== null) {
+  for (const svc of Object.values(base)) {
+    const mb = memToMb(svc['mem_limit']);
+    if (mb !== null && (additionCeilingMb === null || mb > additionCeilingMb)) {
+      additionCeilingMb = mb;
+    }
+  }
+}
+
+let portFreeChecked = 0;
+let budgetsChecked = 0;
+for (const rel of PORT_FREE_FILES) {
+  const svcs = servicesOf(rel);
+  if (svcs === null) continue; // already reported
+  for (const [name, svc] of Object.entries(svcs)) {
+    portFreeChecked += 1;
     if ('ports' in svc) {
       failures.push(
-        `${VERIFY_FILE}: '${name}' declares ports:. A ticket-scoped project publishes no ` +
-          `host port and cannot — Docker drops publishing on an internal: true network ` +
-          `SILENTLY (OD-4). The line would do nothing while reading as though it worked.`,
+        `${rel}: '${name}' declares ports:. A ticket-scoped project publishes no host port ` +
+          `and cannot — Docker drops publishing on an internal: true network SILENTLY ` +
+          `(OD-4). The line would do nothing while reading as though it worked, and it ` +
+          `would start working the day the service gains a second, non-internal network. ` +
+          `Use expose:. (The shared kinvara-dev stack is the documented exception and ` +
+          `lives in compose.dev.yml, which this rule deliberately does not cover.)`,
       );
     }
+
+    if (rel === BASE_FILE || base === null) continue;
+    budgetsChecked += 1;
     const baseSvc = base[name];
-    if (baseSvc === undefined) continue; // an addition; gate:egress-boundary owns that case
+
+    if (baseSvc === undefined) {
+      // An ADDITION (OD-24). gate:egress-boundary owns its networks; its
+      // resource budget is nobody else's.
+      for (const key of ['mem_limit', 'cpus'] as const) {
+        if (!(key in svc)) {
+          failures.push(
+            `${rel}: '${name}' is an ADDITION — the name is not in ${BASE_FILE} — and it ` +
+              `declares no ${key}. DOCKER.md §9.2: EVERY service declares mem_limit and ` +
+              `cpus, because an unbounded container on a 4-core box takes the machine down ` +
+              `and every agent in the wave loses its work in progress.`,
+          );
+        }
+      }
+      const mb = memToMb(svc['mem_limit']);
+      if ('mem_limit' in svc && mb === null) {
+        failures.push(`${rel}: '${name}' mem_limit is not a size this gate can compare`);
+      } else if (mb !== null && additionCeilingMb !== null && mb > additionCeilingMb) {
+        failures.push(
+          `${rel}: '${name}' is an ADDITION with mem_limit ${String(mb)} MB, above the ` +
+            `largest service ${BASE_FILE} budgets (${String(additionCeilingMb)} MB). ` +
+            `DOCKER.md §3's table is what the orchestrator sums before dispatching a wave; ` +
+            `a new service bigger than anything in it needs that table amended, not an ` +
+            `overlay edit — and a chaos run is when the box is under the MOST pressure.`,
+        );
+      }
+      continue;
+    }
+
     for (const key of ['mem_limit', 'cpus'] as const) {
       if (!(key in svc)) continue;
       const overlay = key === 'mem_limit' ? memToMb(svc[key]) : Number(svc[key]);
@@ -334,12 +553,13 @@ if (verify !== null && base !== null) {
         Number.isNaN(overlay) ||
         Number.isNaN(original)
       ) {
-        failures.push(`${VERIFY_FILE}: '${name}' ${key} is not comparable with ${BASE_FILE}'s`);
+        failures.push(`${rel}: '${name}' ${key} is not comparable with ${BASE_FILE}'s`);
       } else if (overlay > original) {
         failures.push(
-          `${VERIFY_FILE}: '${name}' raises ${key} from ${String(original)} to ` +
+          `${rel}: '${name}' raises ${key} from ${String(original)} to ` +
             `${String(overlay)}. DOCKER.md §3's budget table is what the orchestrator sums ` +
-            `before dispatching a wave; an overlay may not escape it.`,
+            `before dispatching a wave; an overlay may not escape it — and that is as true ` +
+            `of compose.chaos.yml as of compose.verify.yml (OD-24).`,
         );
       }
     }
@@ -398,7 +618,8 @@ for (const name of declaredByLabel) {
  *     the guard exists to prevent.
  *
  * So the check is: the guard must run IN THE TARGET STAGE — the one compose
- * names in `build.target`, or the last stage if it names none — and no COPY or
+ * names in `build.target`, which is now always named because a `build:` with
+ * no `target:` is refused in §2a (OD-30/OD-32) — and no COPY or
  * ADD may follow it there. Anything copied in after it is outside what it saw,
  * and `COPY --from=deps ./node_modules` is precisely how QA put 23.6 MB of
  * typescript back into the image with an earlier version of the guard green.
@@ -413,9 +634,6 @@ interface Stage {
   readonly parent: string;
   readonly lines: readonly string[];
 }
-
-/** Strip a Dockerfile comment line and any trailing shell comment. */
-const dfCode = (line: string): string => (line.split('#')[0] ?? '').trim();
 
 /**
  * Does this instruction EXECUTE the devDependency guard?
@@ -545,13 +763,6 @@ function resolveSetting(chain: readonly Stage[], instruction: string): Setting |
 //    built from, derived in §2 from `build.dockerfile`, never from a constant.
 //    See PRIMARY_DOCKERFILE for what this cost when it was a constant.
 // ---------------------------------------------------------------------------
-if (dockerfilesInUse.size === 0) {
-  failures.push(
-    `no service in ${VERIFY_FILE} names a build.dockerfile this gate could read — the ` +
-      `image-contract checks below would then assert nothing.`,
-  );
-}
-
 for (const [rel, users] of [...dockerfilesInUse].sort(([a], [b]) => a.localeCompare(b))) {
   const text = read(rel);
   if (text === null) continue; // already reported by §2
@@ -569,11 +780,20 @@ for (const [rel, users] of [...dockerfilesInUse].sort(([a], [b]) => a.localeComp
   // summary. `users` carries that `→target`, so the checks below run over the
   // stage compose names and a changed `target:` moves them with it.
   const stages = stagesOf(text);
-  const targets = new Set(
-    users.map((u) => (u.includes('→') ? (u.split('→')[1] ?? '') : '')).filter((t) => t !== ''),
-  );
-  if (targets.size === 0 && stages.length > 0) targets.add(stages[stages.length - 1]?.name ?? '');
+  // Every label in `users` carries a `→target`, because §2a refuses a `build:`
+  // with no `target:` (OD-30/OD-32). There is therefore no last-stage fallback
+  // here and no empty string to filter out — the previous version had both,
+  // and the fallback was DEAD the moment any sibling service named a target,
+  // which is how the last stage of this file came to be checked by nothing.
+  const targets = new Set(users.map((u) => u.split('→')[1] ?? '').filter((t) => t !== ''));
   if (targets.size === 0) {
+    failures.push(
+      `${who}: no build.target resolved for this file — this gate would then check the ` +
+        `image contract of nothing while reporting on the file.`,
+    );
+    continue;
+  }
+  if (stages.length === 0) {
     failures.push(
       `${who}: no FROM instruction — this gate would then check the image contract of ` +
         `nothing while reporting on the file.`,
@@ -599,7 +819,12 @@ for (const [rel, users] of [...dockerfilesInUse].sort(([a], [b]) => a.localeComp
     // a failure that reads the same whichever service caused it makes the
     // OD-29 route — one word changed on `safety-gw` alone — look like a
     // whole-file problem.
-    const mine = users.filter((u) => (u.includes('→') ? u.split('→')[1] : target) === target);
+    // OD-32(3): this used to read `u.includes('→') ? u.split('→')[1] : target`,
+    // so a TARGET-LESS service matched EVERY resolved target and the failure
+    // text asserted `compose.verify.yml:safety-gw` was built as `runtime` when
+    // it was not. A missing target is now refused outright in §2a, and this
+    // filter no longer has a branch that treats one as a wildcard.
+    const mine = users.filter((u) => u.split('→')[1] === target);
     const where = `${rel} stage '${target}' (ancestry ${via}; built as ${mine.join(', ')})`;
 
     const entrypoint = resolveSetting(chain, 'ENTRYPOINT');
@@ -609,18 +834,35 @@ for (const [rel, users] of [...dockerfilesInUse].sort(([a], [b]) => a.localeComp
           `base image's own entrypoint ships — for node:*-alpine that is ` +
           `docker-entrypoint.sh, a shell, at PID 1.`,
       );
-    } else if (!entrypoint.value.startsWith('[')) {
-      failures.push(
-        `${where}: the ENTRYPOINT that wins is shell form, set in stage ` +
-          `'${entrypoint.stage}': ${entrypoint.value}. Shell form puts /bin/sh at PID 1, ` +
-          `and sh does not forward SIGTERM to its child: 'docker stop' would wait out the ` +
-          `whole stop_grace_period and then SIGKILL the app mid-request.`,
-      );
-    } else if (/^\[\s*\]$/.test(entrypoint.value)) {
-      failures.push(
-        `${where}: ENTRYPOINT [] in stage '${entrypoint.stage}' RESETS the entrypoint. ` +
-          `Docker treats an empty array as clearing it, so the image has none.`,
-      );
+    } else {
+      // EXEC FORM IS JSON, AND ONLY JSON (OD-31). `startsWith('[')` said yes to
+      // ENTRYPOINT ['node', '/srv/…/entrypoint.mjs'] — single quotes, which is
+      // not JSON — and Docker reads that as SHELL form: measured on a built
+      // image, `Entrypoint=["/bin/sh","-c","['/bin/sleep', '1']"]`, i.e. the
+      // exact /bin/sh at PID 1 this check exists to refuse. BuildKit does warn
+      // (JSONArgsRecommended), so this one is not silent — but a warning in a
+      // build log is not a gate.
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(entrypoint.value);
+      } catch {
+        parsed = undefined;
+      }
+      if (!Array.isArray(parsed)) {
+        failures.push(
+          `${where}: the ENTRYPOINT that wins is shell form, set in stage ` +
+            `'${entrypoint.stage}': ${entrypoint.value}. Exec form is a JSON array and ` +
+            `Docker parses it as JSON: single quotes, a trailing comma or an unquoted ` +
+            `token all fall back to shell form, which puts /bin/sh at PID 1, and sh does ` +
+            `not forward SIGTERM to its child: 'docker stop' would wait out the whole ` +
+            `stop_grace_period and then SIGKILL the app mid-request.`,
+        );
+      } else if (parsed.length === 0) {
+        failures.push(
+          `${where}: ENTRYPOINT [] in stage '${entrypoint.stage}' RESETS the entrypoint. ` +
+            `Docker treats an empty array as clearing it, so the image has none.`,
+        );
+      }
     }
 
     const healthcheck = resolveSetting(chain, 'HEALTHCHECK');
@@ -679,30 +921,10 @@ for (const [rel, users] of [...dockerfilesInUse].sort(([a], [b]) => a.localeComp
   // node_modules and no devDependencies, and demanding the guard of it would
   // be a rule nobody could satisfy honestly.
   //
-  // WHICH DOCKERFILES NEED THE GUARD AT ALL. Derived from the file, not from a
-  // list of which images are "app" images: a chaos sidecar built from some
-  // other base has no node_modules and no devDependencies, and demanding the
-  // guard of it would be a rule nobody could satisfy honestly.
-  //
-  // The condition is deliberately WIDE — any live mention of pnpm or of
-  // node_modules — and it over-approximates on purpose. The previous version
-  // matched three literals (`pnpm-lock.yaml`, `pnpm install`, `pnpm --filter`)
-  // and QA found the obvious hole: `pnpm i` is the same command, is the
-  // SHORTER and commoner spelling, and skipped the guard, so two Dockerfiles
-  // differing by one word were guarded and unguarded. An enumeration of
-  // spellings is the wrong shape for this question; the right one is "does
-  // this image have a node_modules that could hold devDependencies", and a
-  // mention of either word is the cheap over-approximation of that.
-  //
-  // Over-approximating fails SAFE: the cost of a false positive is being asked
-  // to add a guard to an image that does not need one, which is visible and
-  // arguable. The cost of a false negative is an unguarded image, which is
-  // silent — and silence is what shipped 112.2 MB of devDependencies.
-  const buildsFromWorkspace = text
-    .split('\n')
-    .map(dfCode)
-    .some((l) => /\bpnpm\b|node_modules/.test(l));
-  if (buildsFromWorkspace) {
+  // Whether this file needs the guard at all is `buildsFromWorkspace`, hoisted
+  // to the top of this file because §1b asks the same question of the same
+  // files. See its docblock for why the condition is deliberately wide.
+  if (buildsFromWorkspace(text)) {
     // The same target set the image-contract checks above resolved. This guard
     // check is deliberately STAGE-LOCAL and not an ancestry walk: it asks
     // whether the tree that ships was assertedly clean AFTER THE LAST COPY, and
@@ -736,11 +958,21 @@ for (const [rel, users] of [...dockerfilesInUse].sort(([a], [b]) => a.localeComp
 }
 
 console.log(
-  `  node pin (from .tool-versions)  ${nodePin ?? '(unset)'}` +
-    `  — the SCOPE of the pin checks is under measurement: T-036 (OD-21, OD-23, OD-25)`,
+  `  pins (from .tool-versions)      ` +
+    [...pinValues].map(([arg, v]) => `${arg}=${v}`).join('  ') +
+    `  — both, in every file below (OD-21)`,
 );
 console.log(
   `  services labelled built-by ${BUILT_BY}  ${String(declaredByLabel.length)}: ${declaredByLabel.join(' ')}`,
+);
+console.log(
+  `  files held to the no-ports rule ${String(PORT_FREE_FILES.length)}: ${PORT_FREE_FILES.join(' ')}`,
+);
+console.log(`  services read for ports         ${String(portFreeChecked)}`);
+console.log(`  services read for budgets       ${String(budgetsChecked)} (overlay only)`);
+console.log(
+  `  addition mem_limit ceiling      ` +
+    `${additionCeilingMb === null ? '(none — compose.yml declared none)' : `${String(additionCeilingMb)} MB, derived from ${BASE_FILE}`}`,
 );
 console.log(`  dockerfiles read (the §2a set)  ${String(dockerfilesInUse.size)}`);
 for (const [df, users] of [...dockerfilesInUse].sort(([a], [b]) => a.localeCompare(b))) {
@@ -749,6 +981,7 @@ for (const [df, users] of [...dockerfilesInUse].sort(([a], [b]) => a.localeCompa
   // coverage (QA, round 2).
   console.log(`    ${df}  <-  ${users.join(', ')}`);
 }
+console.log(`  overlay builds read (§1c, §2a)  ${String(buildUses.length)}`);
 console.log(`  stages resolved (§6, last-wins) ${String(stagesChecked.length)}`);
 for (const line of [...stagesChecked].sort()) console.log(`    ${line}`);
 console.log(`  apps read                       ${String(appsChecked)}`);
