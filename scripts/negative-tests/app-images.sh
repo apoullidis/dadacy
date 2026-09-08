@@ -19,7 +19,7 @@ BK="$(mktemp -d)"
 cp "$VERIFY" "$BK/verify"; cp "$CHAOS" "$BK/chaos"; cp "$BASE" "$BK/base"; cp "$DEV" "$BK/dev"; cp "$DF" "$BK/df"; cp scripts/svc "$BK/svc"; cp apps/core/package.json "$BK/corepkg"
 restore() {
   cp "$BK/verify" "$VERIFY"; cp "$BK/chaos" "$CHAOS"; cp "$BK/base" "$BASE"; cp "$BK/dev" "$DEV"; cp "$BK/df" "$DF"; cp "$BK/svc" scripts/svc; cp "$BK/corepkg" apps/core/package.json
-  rm -rf apps/core/src docker/next.Dockerfile docker/rogue.Dockerfile
+  rm -rf apps/core/src apps/qa-newapp docker/next.Dockerfile docker/rogue.Dockerfile
 }
 trap 'restore; rm -rf "$BK"' EXIT
 
@@ -593,6 +593,28 @@ mut "$DEV" 'services:' 'services:
       target: runtime
     pull_policy: build' && run_case "51 a build: in compose.dev.yml pointing at a rogue image" FAIL
 rm -f docker/rogue.Dockerfile
+
+echo; echo "=== case 52 (T-036): the placeholder rule read the LABEL SET, which an overlay build can sidestep ==="
+# Same shape as T-034 QA round 2 found in §6: an overlay service that builds an
+# image and is simply not labelled in compose.yml contributed an app nothing
+# read. The rule now unions the label set with every APP a build actually
+# passes, so a new app reaches it however it was declared.
+mkdir -p apps/qa-newapp/src
+printf '{ "name": "@kinvara/qa-newapp", "private": true, "type": "module", "version": "0.0.0" }\n' > apps/qa-newapp/package.json
+printf 'export const x = 1;\n' > apps/qa-newapp/src/index.ts
+mut "$VERIFY" 'services:' 'services:
+  qa-newapp:
+    image: kinvara/qa-newapp:dev
+    networks: [kinvara-int]
+    build:
+      context: ..
+      dockerfile: docker/app.Dockerfile
+      target: runtime
+      args:
+        NODE_VERSION: ${KINVARA_NODE_VERSION:?derived from .tool-versions by scripts/svc}
+        PNPM_VERSION: ${KINVARA_PNPM_VERSION:?derived from .tool-versions by scripts/svc}
+        APP: qa-newapp
+    pull_policy: build' && run_case "52 an UNLABELLED overlay build of an app with src/, no start" FAIL
 
 echo
 run_case "99 tree restored" PASS

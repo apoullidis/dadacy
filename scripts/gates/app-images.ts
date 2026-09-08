@@ -600,12 +600,31 @@ for (const rel of PORT_FREE_FILES) {
 // ---------------------------------------------------------------------------
 let appsChecked = 0;
 let withSource = 0;
-for (const name of declaredByLabel) {
+/**
+ * The apps this rule covers: every service compose.yml LABELS as built here,
+ * UNION every APP a build in one of the BUILD_FILES actually passes.
+ *
+ * The label set alone is the same narrow scope the §6 checks were found to
+ * have (T-034 QA round 2): an overlay service that builds an image and is
+ * simply not labelled contributes an app nothing reads. Deriving from both
+ * means a new app reaches this rule the moment ANY of the three files builds
+ * it, whichever way it was declared.
+ */
+const appsToCheck = [
+  ...new Set<string>([
+    ...declaredByLabel,
+    ...buildUses.map((u) => (typeof u.args['APP'] === 'string' ? u.args['APP'] : '')),
+  ]),
+]
+  .filter((a) => a !== '')
+  .sort();
+for (const name of appsToCheck) {
   const appDir = path.join(REPO_ROOT, 'apps', name);
   const pkgPath = path.join(appDir, 'package.json');
   if (!fs.existsSync(pkgPath)) {
     failures.push(
-      `apps/${name}/package.json does not exist, but ${BASE_FILE} builds an image from it`,
+      `apps/${name}/package.json does not exist, but a compose service builds an image ` +
+        `from it (APP=${name})`,
     );
     continue;
   }
