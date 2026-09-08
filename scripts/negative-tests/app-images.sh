@@ -13,11 +13,12 @@ CHAOS=docker/compose.chaos.yml
 # T-036: compose.yml is now in the backup set because the no-ports rule reads it
 # (OD-22 — it used to be checked in the overlay and nowhere else).
 BASE=docker/compose.yml
+DEV=docker/compose.dev.yml
 DF=docker/app.Dockerfile
 BK="$(mktemp -d)"
-cp "$VERIFY" "$BK/verify"; cp "$CHAOS" "$BK/chaos"; cp "$BASE" "$BK/base"; cp "$DF" "$BK/df"; cp scripts/svc "$BK/svc"; cp apps/core/package.json "$BK/corepkg"
+cp "$VERIFY" "$BK/verify"; cp "$CHAOS" "$BK/chaos"; cp "$BASE" "$BK/base"; cp "$DEV" "$BK/dev"; cp "$DF" "$BK/df"; cp scripts/svc "$BK/svc"; cp apps/core/package.json "$BK/corepkg"
 restore() {
-  cp "$BK/verify" "$VERIFY"; cp "$BK/chaos" "$CHAOS"; cp "$BK/base" "$BASE"; cp "$BK/df" "$DF"; cp "$BK/svc" scripts/svc; cp "$BK/corepkg" apps/core/package.json
+  cp "$BK/verify" "$VERIFY"; cp "$BK/chaos" "$CHAOS"; cp "$BK/base" "$BASE"; cp "$BK/dev" "$DEV"; cp "$BK/df" "$DF"; cp "$BK/svc" scripts/svc; cp "$BK/corepkg" apps/core/package.json
   rm -rf apps/core/src docker/next.Dockerfile docker/rogue.Dockerfile
 }
 trap 'restore; rm -rf "$BK"' EXIT
@@ -551,6 +552,47 @@ echo; echo "=== case 49 (T-036, OD-28 family in THIS gate): a require-check read
 mut scripts/svc '        KINVARA_NODE_VERSION="$(toolbox_require_pin nodejs)" || exit 1' \
                 '        #KINVARA_NODE_VERSION="$(toolbox_require_pin nodejs)" || exit 1' \
   && run_case "49 svc's pin derivation COMMENTED OUT (cf. 06)" FAIL
+
+echo; echo "=== cases 50-51 (T-036): two holes found by ATTACKING this ticket's own fix, not by running it ==="
+# 50. Compose's SHORT FORM for build: is a string, and `if (!isRecord(build))
+#     continue` skipped such a service entirely — no Dockerfile derived, no
+#     image contract, no pin check. `build: ..` is a spelling compose accepts,
+#     not a construction. Same family shape, one level down from OD-25.
+cat > docker/rogue.Dockerfile <<'DF'
+FROM alpine:3.20 AS runtime
+USER root
+ENTRYPOINT /nope
+DF
+mut "$CHAOS" 'services: {}' 'services:
+  qa-chaos-shortform:
+    image: kinvara/qa:dev
+    networks: [kinvara-int]
+    mem_limit: 64m
+    cpus: 0.25
+    build: ..' && run_case "50 an overlay service using compose's SHORT build: form" FAIL
+rm -f docker/rogue.Dockerfile
+# 51. compose.dev.yml can point a service at a Dockerfile too. It is exempt from
+#     the no-ports rule (its fixed ports ARE the documented exception) and is
+#     NOT exempt from the image contract — the images the dev stack runs are the
+#     same images. Nothing in it declares a build: today, which is why closing
+#     this direction costs nothing.
+cat > docker/rogue.Dockerfile <<'DF'
+ARG NODE_VERSION
+FROM node:${NODE_VERSION}-alpine AS runtime
+RUN echo "pnpm install" > /dev/null
+USER root
+ENTRYPOINT node /nope.mjs
+DF
+mut "$DEV" 'services:' 'services:
+  qa-dev-rogue:
+    image: kinvara/qa-dev-rogue:dev
+    networks: [kinvara-int]
+    build:
+      context: ..
+      dockerfile: docker/rogue.Dockerfile
+      target: runtime
+    pull_policy: build' && run_case "51 a build: in compose.dev.yml pointing at a rogue image" FAIL
+rm -f docker/rogue.Dockerfile
 
 echo
 run_case "99 tree restored" PASS

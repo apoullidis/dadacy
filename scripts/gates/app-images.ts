@@ -62,6 +62,20 @@ const CHAOS_FILE = 'docker/compose.chaos.yml';
  * fixed ports are the documented exception (T-016 § contract 6).
  */
 const OVERLAY_FILES = [VERIFY_FILE, CHAOS_FILE] as const;
+const DEV_FILE = 'docker/compose.dev.yml';
+/**
+ * Every file that can point a service at a Dockerfile — the set §2a derives
+ * `dockerfilesInUse` from, and the set §1's pin checks read.
+ *
+ * `compose.dev.yml` IS here and is NOT in `PORT_FREE_FILES`, and the split is
+ * the point rather than an inconsistency. Its host ports are the one
+ * documented exception in the programme (T-016 § contract 6); the images it
+ * runs are the same images, and a `build:` added there pointing at a second
+ * Dockerfile with a literal pin is OD-25's defect in a third file. Nothing in
+ * it declares a `build:` today, so this costs nothing and closes the direction
+ * before someone takes it.
+ */
+const BUILD_FILES = [...OVERLAY_FILES, DEV_FILE] as const;
 /**
  * The files the no-host-port rule (§3) covers: the base file AND every
  * overlay.
@@ -223,12 +237,27 @@ const dockerfilesInUse = new Map<string, string[]>();
  */
 const stagesChecked: string[] = [];
 
-for (const rel of OVERLAY_FILES) {
+for (const rel of BUILD_FILES) {
   const svcs = servicesOf(rel);
   if (svcs === null) continue; // already reported
   for (const [name, svc] of Object.entries(svcs)) {
+    if (!('build' in svc)) continue;
     const build = svc['build'];
-    if (!isRecord(build)) continue;
+    if (!isRecord(build)) {
+      // Compose's SHORT FORM — `build: ..` — is a string, and the previous
+      // line here was `if (!isRecord(build)) continue`, so a service written
+      // that way was skipped ENTIRELY: no Dockerfile derived, no image
+      // contract, no pin check, gate green. Found by attacking this fix rather
+      // than by running it; it is the same family shape one level down, and it
+      // is a spelling compose accepts, not a construction.
+      failures.push(
+        `${rel}: '${name}' declares build: in the short form (${JSON.stringify(build)}). ` +
+          `This gate reads build.dockerfile and build.target, so the short form would ` +
+          `leave the image it builds checked by nothing. Use the long form with an ` +
+          `explicit dockerfile: and target:.`,
+      );
+      continue;
+    }
     const df = String(build['dockerfile'] ?? '');
     if (df === '') {
       failures.push(
@@ -283,7 +312,7 @@ for (const rel of OVERLAY_FILES) {
 
 if (dockerfilesInUse.size === 0) {
   failures.push(
-    `no service in ${OVERLAY_FILES.join(' or ')} names a build.dockerfile with a build.target ` +
+    `no service in ${BUILD_FILES.join(' or ')} names a build.dockerfile with a build.target ` +
       `this gate could read — every check below would then assert nothing.`,
   );
 }
@@ -307,7 +336,7 @@ if (dockerfilesInUse.size === 0) {
 // The anchor of the whole section. Everything else here is spelling; this is
 // the property — a second copy of the version is one fact in two places and it
 // goes stale silently (OD-1).
-const pinnedFiles = [...new Set<string>([...dockerfilesInUse.keys(), ...OVERLAY_FILES])].sort();
+const pinnedFiles = [...new Set<string>([...dockerfilesInUse.keys(), ...BUILD_FILES])].sort();
 for (const [arg, value] of pinValues) {
   for (const rel of pinnedFiles) {
     const text = read(rel);
@@ -966,7 +995,11 @@ console.log(
   `  services labelled built-by ${BUILT_BY}  ${String(declaredByLabel.length)}: ${declaredByLabel.join(' ')}`,
 );
 console.log(
-  `  files held to the no-ports rule ${String(PORT_FREE_FILES.length)}: ${PORT_FREE_FILES.join(' ')}`,
+  `  files read for build: (§1, §2a)  ${String(BUILD_FILES.length)}: ${BUILD_FILES.join(' ')}`,
+);
+console.log(
+  `  files held to the no-ports rule ${String(PORT_FREE_FILES.length)}: ${PORT_FREE_FILES.join(' ')}` +
+    `  (compose.dev.yml is the documented exception — T-016 § contract 6)`,
 );
 console.log(`  services read for ports         ${String(portFreeChecked)}`);
 console.log(`  services read for budgets       ${String(budgetsChecked)} (overlay only)`);

@@ -34,7 +34,7 @@ const GATES: readonly Gate[] = [
   },
   {
     name: 'gate:app-images',
-    why: 'static checks over the app Dockerfile(s) and the compose overlays (DOCKER.md §5). THE SCOPE OF THESE CHECKS IS UNDER MEASUREMENT IN T-036 (OD-21..OD-25) and must not be coded against: green here means this gate ran and exited 0, not that a property is covered. Anchor image properties on docker image inspect and on the build',
+    why: 'static checks over EVERY Dockerfile an overlay service builds and over compose.yml + every overlay (DOCKER.md §5, §3). The scope of each check is published in state/EP-1/T-036.md § Published contract, with the negative case that falsifies it; this gate is static and still cannot look inside an image — anchor image properties on docker image inspect and on the build',
   },
 ];
 
