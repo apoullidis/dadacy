@@ -16,9 +16,10 @@ BASE=docker/compose.yml
 DEV=docker/compose.dev.yml
 DF=docker/app.Dockerfile
 BK="$(mktemp -d)"
-cp "$VERIFY" "$BK/verify"; cp "$CHAOS" "$BK/chaos"; cp "$BASE" "$BK/base"; cp "$DEV" "$BK/dev"; cp "$DF" "$BK/df"; cp scripts/svc "$BK/svc"; cp apps/core/package.json "$BK/corepkg"
+PGDF=docker/postgres.Dockerfile
+cp "$VERIFY" "$BK/verify"; cp "$CHAOS" "$BK/chaos"; cp "$BASE" "$BK/base"; cp "$DEV" "$BK/dev"; cp "$DF" "$BK/df"; cp "$PGDF" "$BK/pgdf"; cp scripts/svc "$BK/svc"; cp apps/core/package.json "$BK/corepkg"
 restore() {
-  cp "$BK/verify" "$VERIFY"; cp "$BK/chaos" "$CHAOS"; cp "$BK/base" "$BASE"; cp "$BK/dev" "$DEV"; cp "$BK/df" "$DF"; cp "$BK/svc" scripts/svc; cp "$BK/corepkg" apps/core/package.json
+  cp "$BK/verify" "$VERIFY"; cp "$BK/chaos" "$CHAOS"; cp "$BK/base" "$BASE"; cp "$BK/dev" "$DEV"; cp "$BK/df" "$DF"; cp "$BK/pgdf" "$PGDF"; cp "$BK/svc" scripts/svc; cp "$BK/corepkg" apps/core/package.json
   rm -rf apps/core/src apps/qa-newapp docker/next.Dockerfile docker/rogue.Dockerfile
 }
 trap 'restore; rm -rf "$BK"' EXIT
@@ -602,10 +603,16 @@ echo; echo "=== case 52 (T-036): the placeholder rule read the LABEL SET, which 
 mkdir -p apps/qa-newapp/src
 printf '{ "name": "@kinvara/qa-newapp", "private": true, "type": "module", "version": "0.0.0" }\n' > apps/qa-newapp/package.json
 printf 'export const x = 1;\n' > apps/qa-newapp/src/index.ts
+# QA-F2: this addition originally declared no mem_limit and no cpus, so the
+# gate red on THREE problems and the case would have been exit=1 even if the
+# union claim it is cited for were false. The budget keys are here so the case
+# isolates the property § contract 7 names it as the falsifying test for.
 mut "$VERIFY" 'services:' 'services:
   qa-newapp:
     image: kinvara/qa-newapp:dev
     networks: [kinvara-int]
+    mem_limit: 128m
+    cpus: 0.25
     build:
       context: ..
       dockerfile: docker/app.Dockerfile
@@ -615,6 +622,78 @@ mut "$VERIFY" 'services:' 'services:
         PNPM_VERSION: ${KINVARA_PNPM_VERSION:?derived from .tool-versions by scripts/svc}
         APP: qa-newapp
     pull_policy: build' && run_case "52 an UNLABELLED overlay build of an app with src/, no start" FAIL
+
+echo; echo "=== cases 53-57 (T-036 rework, OD-33): a build: in docker/compose.yml — the file BUILD_FILES did not read ==="
+# QA-F1. `docker/compose.yml` points two services at Dockerfiles today, so the
+# first version of BUILD_FILES was false on the delivered tree — and a build:
+# declared there was read by NOTHING. QA added a target-less build: to
+# compose.yml's safety-gw plus an appended tail stage, got exit 0, and built the
+# image: User=[], Entrypoint=["docker-entrypoint.sh"], Healthcheck=null,
+# 167,508,709 B — OD-32's figure to the byte. Adding -f compose.verify.yml
+# restores target: runtime, so a --verify evidence run is blind to it and every
+# other route is not.
+SAFETY_BASE='  safety-gw:
+    image: kinvara/safety-gw:dev'
+mut "$BASE" "$SAFETY_BASE" '  safety-gw:
+    image: kinvara/safety-gw:dev
+    build:
+      context: ..
+      dockerfile: docker/app.Dockerfile' \
+  && run_case "53 a target-less build: on compose.yml's safety-gw (OD-33)" FAIL
+mut "$BASE" "$SAFETY_BASE" '  safety-gw:
+    image: kinvara/safety-gw:dev
+    build:
+      context: ..
+      dockerfile: docker/app.Dockerfile' && cat >> "$DF" <<'DF'
+
+FROM node:${NODE_VERSION}-alpine AS tail-stage
+RUN true
+DF
+run_case "54 the same, plus a tail stage — QA's exact two-part edit" FAIL
+# The narrow control that isolates the FILE rather than the mutation: the same
+# literal string was exit=1 in compose.dev.yml (a build file) and exit=0 in
+# compose.yml (the base file).
+# NOT via a second `environment:` key — that made compose.yml a duplicate-key
+# document and the case red on a YAML parse error instead of on the pin, which
+# is QA-F2's defect in a case written to fix QA-F2. It goes INSIDE the existing
+# environment block, and the failure message is checked to name the pin.
+mut "$BASE" '      NODE_ENV: ${NODE_ENV:-development}' '      NODE_ENV: ${NODE_ENV:-development}
+      QA_NODE_HINT: 24.20.0' && run_case "55 a live literal NODE pin in compose.yml" FAIL
+# QA's second shape, for width: a NEW app service in the base file, with every
+# §1 and §6 property violated at once. Before the fix, all of them were silent.
+cat > docker/rogue.Dockerfile <<'DF'
+ARG NODE_VERSION=24.20.0
+ARG PNPM_VERSION=11.25.0
+FROM node:24.20.0-alpine AS runtime
+RUN pnpm i --prod
+USER root
+ENTRYPOINT node /nope.mjs
+DF
+mut "$BASE" '  core:
+    image:' '  qa-base-rogue:
+    image: kinvara/qa-base-rogue:dev
+    profiles: [api]
+    networks: [kinvara-int]
+    mem_limit: 64m
+    cpus: 0.25
+    build:
+      context: ..
+      dockerfile: docker/rogue.Dockerfile
+  core:
+    image:' && run_case "56 a NEW app service in compose.yml, no target, literal pins" FAIL
+rm -f docker/rogue.Dockerfile
+# THE EXEMPTION IS SELF-CLOSING, and this is the case that proves it rather
+# than asserting it. postgres.Dockerfile is one of the two legitimate
+# target-less builds on this tree; it is exempt only because it has exactly ONE
+# stage, so "the last stage" and "the only stage" are the same stage. Append a
+# second and the ordering risk appears — and the gate reds in the same instant,
+# with no rule change and no list to maintain.
+cat >> "$PGDF" <<'DF'
+
+FROM alpine:3.20 AS qa-appended
+RUN true
+DF
+run_case "57 a 2nd stage appended to a single-stage exempt Dockerfile" FAIL
 
 echo
 run_case "99 tree restored" PASS

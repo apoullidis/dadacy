@@ -56,41 +56,52 @@ const BASE_FILE = 'docker/compose.yml';
 const VERIFY_FILE = 'docker/compose.verify.yml';
 const CHAOS_FILE = 'docker/compose.chaos.yml';
 /**
- * Every overlay. `compose.dev.yml` is deliberately NOT one: it is the shared
- * `kinvara-dev` stack, the single project that publishes host ports on
- * purpose, and holding it to the no-ports rule below would red a file whose
- * fixed ports are the documented exception (T-016 § contract 6).
+ * The two `-f` overlays. `compose.dev.yml` is deliberately NOT one: it is the
+ * shared `kinvara-dev` stack, applied only for the literal `dev` project.
+ * §4's budget rule reads this set.
  */
 const OVERLAY_FILES = [VERIFY_FILE, CHAOS_FILE] as const;
 const DEV_FILE = 'docker/compose.dev.yml';
 /**
- * Every file that can point a service at a Dockerfile — the set §2a derives
- * `dockerfilesInUse` from, and the set §1's pin checks read.
+ * EVERY compose file that can declare a `build:` — the base file included.
  *
- * `compose.dev.yml` IS here and is NOT in `PORT_FREE_FILES`, and the split is
- * the point rather than an inconsistency. Its host ports are the one
- * documented exception in the programme (T-016 § contract 6); the images it
- * runs are the same images, and a `build:` added there pointing at a second
- * Dockerfile with a literal pin is OD-25's defect in a third file. Nothing in
- * it declares a `build:` today, so this costs nothing and closes the direction
- * before someone takes it.
+ * OD-33, and it is this ticket's own defect rather than an inherited one. The
+ * first version of this constant was `[VERIFY, CHAOS, DEV]` under a heading
+ * reading "every compose file that can point a service at a Dockerfile", and
+ * `docker/compose.yml` points two services at Dockerfiles on the delivered
+ * tree (`postgres` :127, `fake-telephony` :275). So a `build:` declared there
+ * was read by NOTHING: not the target rule, not the pin checks, not the image
+ * contract, not the app set. QA added a target-less `build:` to
+ * `compose.yml`'s `safety-gw` plus an appended tail stage, got exit 0, and
+ * built the image — `User=[]`, `Entrypoint=["docker-entrypoint.sh"]`,
+ * `Healthcheck=null`, 167,508,709 B, OD-32's figure to the byte. Adding
+ * `-f compose.verify.yml` restores `target: runtime`, so a `--verify`
+ * evidence run is blind to it and every other way of bringing the service up
+ * is not.
+ *
+ * A file-set constant that disagreed with the sentence describing it, inside
+ * the ticket whose whole purpose was to remove exactly that.
  */
-const BUILD_FILES = [...OVERLAY_FILES, DEV_FILE] as const;
+const BUILD_DECLARING_FILES = [BASE_FILE, VERIFY_FILE, CHAOS_FILE, DEV_FILE] as const;
 /**
  * The files the no-host-port rule (§3) covers: the base file AND every
  * overlay.
  *
- * OD-22, and it is the reason this constant exists rather than a literal
- * `VERIFY_FILE` nine lines down. The rule is a property of a TICKET-SCOPED
- * PROJECT — `docker compose -p kinvara-<t> -f compose.yml [-f overlay]` — so
- * a `ports:` key anywhere in that set is the same defect. Measured before this
- * fix: `ports: ['53999:3000']` on `core` in compose.yml passed this gate AND
+ * OD-22. The rule is a property of a TICKET-SCOPED PROJECT —
+ * `docker compose -p kinvara-<t> -f compose.yml [-f overlay]` — so a `ports:`
+ * key anywhere in that set is the same defect. Measured before that fix:
+ * `ports: ['53999:3000']` on `core` in compose.yml passed this gate AND
  * gate:egress-boundary at exit 0, and the identical key on a chaos addition
- * passed both too. Worse than a plain gap, because OD-4 makes the wrong edit
+ * passed both. Worse than a plain gap, because OD-4 makes the wrong edit
  * SILENT: Docker drops publishing on an `internal: true` network with no
  * error, so it reads as working until a service gains a second network.
+ *
+ * `compose.dev.yml` is absent BY DESIGN: its fixed host ports are the one
+ * documented exception in the programme (`T-016` § contract 6). It is the only
+ * set below from which that file is excluded, and § Published contract §4 says
+ * so rather than leaving it to inference.
  */
-const PORT_FREE_FILES = [BASE_FILE, ...OVERLAY_FILES] as const;
+const PORT_FREE_FILES = [BASE_FILE, VERIFY_FILE, CHAOS_FILE] as const;
 const BUILT_BY = 'T-018';
 /**
  * The toolchain pins that reach an image build, LOOPED — never one of them
@@ -138,6 +149,41 @@ const liveLines = (text: string): string[] => text.split('\n').map(dfCode);
 const buildsFromWorkspace = (text: string): boolean =>
   liveLines(text).some((l) => /\bpnpm\b|node_modules/.test(l));
 
+/**
+ * Is this build an APPLICATION image — one §6's contract actually describes (a
+ * non-root uid of a particular shape, a Node healthcheck, an exec entrypoint,
+ * the devDependency guard)?
+ *
+ * DERIVED PER BUILD, FROM THE ARTEFACT AND FROM COMPOSE — never from which
+ * file the service is declared in. The first attempt at OD-33's fix used a
+ * file list (`APP_IMAGE_FILES = [verify, chaos, dev]`) and negative case 56
+ * caught it within the hour: a new app service declared in `docker/compose.yml`
+ * with `RUN pnpm i`, literal `ARG` pins, `USER root` and a shell ENTRYPOINT was
+ * GATE PASS, because the file it was declared in said it was not an app image.
+ * That is OD-33's own defect reproduced inside OD-33's own fix, which is why
+ * the file list is gone rather than corrected.
+ *
+ * Two signals, either is sufficient, both anchored outside this file:
+ *
+ *  - the Dockerfile installs from the pnpm workspace (`buildsFromWorkspace`) —
+ *    this is `T-034` § contract 5's own words for why `postgres` and
+ *    `fake-telephony` are out of scope: *"they are T-017's images, they are not
+ *    built from the pnpm workspace"*. Both have zero live mentions of pnpm or
+ *    node_modules, so both stay exempt without being named anywhere;
+ *  - the service passes an `APP` build arg, i.e. compose says this build IS one
+ *    of this workspace's applications. That covers the Next.js split `T-034`
+ *    § contract 6 invites — a `docker/next.Dockerfile` need not mention pnpm at
+ *    all, and negative case 18 is exactly that shape.
+ */
+const isApplicationBuild = (
+  dockerfileText: string | null,
+  build: Record<string, unknown>,
+): boolean => {
+  if (dockerfileText !== null && buildsFromWorkspace(dockerfileText)) return true;
+  const args = build['args'];
+  return isRecord(args) && typeof args['APP'] === 'string' && args['APP'].trim() !== '';
+};
+
 /** Parsed `services:` of a compose file. Memoised: each file is reported once. */
 const servicesCache = new Map<string, Record<string, Record<string, unknown>> | null>();
 const servicesOf = (rel: string): Record<string, Record<string, unknown>> | null => {
@@ -181,6 +227,159 @@ for (const { arg, pinKey } of PIN_ARGS) {
   else pinValues.set(arg, v);
 }
 
+/**
+ * The instruction lines of one stage of a Dockerfile.
+ *
+ * WHY THE CHECK BELOW HAS TO KNOW ABOUT STAGES. The previous version looked
+ * for a line matching /^RUN.*assert-no-dev-deps/ anywhere in the file. QA
+ * showed two ways past that, and only the first is adversarial:
+ *   - `RUN echo skipping assert-no-dev-deps.mjs` — a mention, not a run;
+ *   - moving the real RUN into a stage the target does not depend on. That is
+ *     an ORDINARY REFACTOR, not sabotage, and it left the gate green while the
+ *     guard never executed. Present-but-unreachable is the exact failure mode
+ *     the guard exists to prevent.
+ *
+ * So the check is: the guard must run IN THE TARGET STAGE — the one compose
+ * names in `build.target`, which is now always named because a `build:` with
+ * no `target:` is refused in §2a (OD-30/OD-32) — and no COPY or
+ * ADD may follow it there. Anything copied in after it is outside what it saw,
+ * and `COPY --from=deps ./node_modules` is precisely how QA put 23.6 MB of
+ * typescript back into the image with an earlier version of the guard green.
+ */
+interface Stage {
+  readonly name: string;
+  /**
+   * The `FROM` argument, verbatim: another stage's name, or an external image
+   * reference. It is what makes the ancestry walk below possible, and it is
+   * the difference between modelling Docker and pattern-matching a file.
+   */
+  readonly parent: string;
+  readonly lines: readonly string[];
+}
+
+/**
+ * Does this instruction EXECUTE the devDependency guard?
+ *
+ * "Contains the filename" is not the question, and asking it that way was
+ * wrong twice. `text.includes(...)` was satisfied by the COPY line;
+ * `/^RUN.*assert-no-dev-deps\.mjs/` is satisfied by
+ * `RUN echo skipping assert-no-dev-deps.mjs`, which QA wrote and which
+ * passed. So: split the RUN's body on shell operators and require some
+ * command whose FIRST TOKEN is `node` and which names the script. `echo …`
+ * and `echo node …` both fail that; `true && node …assert-no-dev-deps.mjs`
+ * passes it, correctly, because it runs.
+ *
+ * WHAT THIS CANNOT DO. Deciding whether an arbitrary shell line executes a
+ * program is not a thing a regex settles, and this does not claim to: a
+ * `RUN node -e '0' …assert-no-dev-deps.mjs` would satisfy it. It catches the
+ * ways the guard ordinarily stops running — deleted, replaced by a mention,
+ * moved into a stage the target does not build, or outrun by a later COPY —
+ * and the thing that actually observes the guard running is the build, which
+ * prints `assert-no-dev-deps: OK — none of them is present` once per image.
+ */
+const runsGuard = (line: string): boolean => {
+  if (!/^RUN\b/i.test(line)) return false;
+  const body = line.replace(/^RUN\s+/i, '').replace(/^--mount=\S+\s+/, '');
+  return body
+    .split(/&&|\|\||;|\|/)
+    .map((seg) => seg.trim())
+    .some((seg) => /^node\b/.test(seg) && /(^|[\s/])assert-no-dev-deps\.mjs(\s|$)/.test(seg));
+};
+
+/** Split a Dockerfile into stages, joining continuation lines. */
+function stagesOf(text: string): Stage[] {
+  const joined: string[] = [];
+  let acc = '';
+  for (const raw of text.split('\n')) {
+    const code = dfCode(raw);
+    if (code === '') continue;
+    if (code.endsWith('\\')) {
+      acc += `${code.slice(0, -1)} `;
+      continue;
+    }
+    joined.push((acc + code).trim());
+    acc = '';
+  }
+  if (acc.trim() !== '') joined.push(acc.trim());
+
+  const stages: Stage[] = [];
+  let current: { name: string; parent: string; lines: string[] } | null = null;
+  for (const line of joined) {
+    // The flag group is not decoration: `FROM --platform=$BUILDPLATFORM node:x
+    // AS y` is ordinary, and the previous pattern did not match it — so that
+    // FROM was read as an INSTRUCTION OF THE PREVIOUS STAGE and the whole new
+    // stage's lines were attributed to its predecessor. A mis-parse in the
+    // silent direction, in the function the checks below now depend on.
+    const from = /^FROM\s+((?:--\S+\s+)*)(\S+)(?:\s+AS\s+(\S+))?$/i.exec(line);
+    if (from !== null) {
+      if (current !== null) stages.push(current);
+      current = {
+        name: from[3] ?? `#${String(stages.length)}`,
+        parent: from[2] ?? '',
+        lines: [],
+      };
+      continue;
+    }
+    if (current !== null) current.lines.push(line);
+  }
+  if (current !== null) stages.push(current);
+  return stages;
+}
+
+/**
+ * The stages a target stage inherits its image config from, ANCESTOR FIRST,
+ * ending with the target itself. `null` if the target is not a stage here.
+ *
+ * A `FROM` whose argument names another stage in this file continues the walk;
+ * one naming an external image ends it. That end is not a hole: nothing in an
+ * external base gives an image a non-root `USER` or the healthcheck this
+ * contract requires — `node:*-alpine` has no `USER` and no `HEALTHCHECK` at
+ * all — so a chain that reaches an external base having set neither is exactly
+ * the image this gate must refuse.
+ */
+function ancestryOf(stages: readonly Stage[], target: string): Stage[] | null {
+  const byName = new Map(stages.map((s) => [s.name.toLowerCase(), s]));
+  let cur = byName.get(target.toLowerCase());
+  if (cur === undefined) return null;
+  const chain: Stage[] = [];
+  const seen = new Set<string>();
+  while (cur !== undefined && !seen.has(cur.name.toLowerCase())) {
+    seen.add(cur.name.toLowerCase());
+    chain.unshift(cur);
+    cur = byName.get(cur.parent.toLowerCase());
+  }
+  return chain;
+}
+
+interface Setting {
+  /** Everything after the instruction keyword, trimmed. */
+  readonly value: string;
+  /** The stage that set it — named in the failure so the fix is findable. */
+  readonly stage: string;
+}
+
+/**
+ * LAST-WINS ALONG THE ANCESTRY. Docker resolves `USER`, `ENTRYPOINT` and
+ * `HEALTHCHECK` as IMAGE CONFIG, not as file contents: a child stage starts
+ * from its parent's config and every later instruction overwrites the earlier
+ * one. So the resolved value is the last occurrence in ancestor-first order —
+ * which is neither "anywhere in the file" (OE-7: three appended lines, or
+ * `USER root` alone, make the shipping stage root with the gate green) nor
+ * "somewhere in this stage" (which would refuse a legitimate
+ * `FROM runtime AS next-runtime` that inherits all three correctly).
+ */
+function resolveSetting(chain: readonly Stage[], instruction: string): Setting | null {
+  const re = new RegExp(`^${instruction}\\b\\s*(.*)$`, 'i');
+  let last: Setting | null = null;
+  for (const stage of chain) {
+    for (const line of stage.lines) {
+      const m = re.exec(line);
+      if (m !== null) last = { value: (m[1] ?? '').trim(), stage: stage.name };
+    }
+  }
+  return last;
+}
+
 // ---------------------------------------------------------------------------
 // 2a. THE DERIVED SET — every overlay service that builds, and every
 //     Dockerfile they build from. Everything below reads this; nothing below
@@ -219,14 +418,19 @@ const buildUses: BuildUse[] = [];
  * published contract hands that file to T-126, and a built sidecar — a proxy
  * that throttles the network, say — is exactly what lands there.
  *
- * compose.yml's own builds (postgres, fake-telephony) are NOT in the set. That
- * is not an omission: they are T-017's images, they are not built from the
- * pnpm workspace, and the application-image contract below — a non-root uid of
- * this shape, a Node healthcheck, the devDependency guard — does not describe
- * them. The boundary is "an image an OVERLAY builds", which is the boundary
- * T-034 and T-126 own.
+ * compose.yml's own builds (postgres, fake-telephony) are NOT in THIS map, and
+ * `isApplicationBuild` is what keeps them out — not a file list. They are
+ * T-017's images, they are not built from the pnpm workspace and they pass no
+ * APP arg, so the application-image contract below — a non-root uid of this
+ * shape, a Node healthcheck, the devDependency guard — does not describe them.
+ *
+ * They ARE held to the target rule, because that rule is not about application
+ * images: it is about which stage ships being decided by file order. Both are
+ * single-stage, so both resolve unambiguously and stay green (OD-33).
  */
 const dockerfilesInUse = new Map<string, string[]>();
+/** `<file>:<service>` -> the repo-root-relative Dockerfile, for EVERY build. */
+const allBuilds: { readonly where: string; readonly dockerfile: string }[] = [];
 /**
  * `<dockerfile> <target>  <-  ancestry` for every stage the image-contract
  * checks below actually resolved. Printed, because `dockerfiles checked 1`
@@ -237,7 +441,26 @@ const dockerfilesInUse = new Map<string, string[]>();
  */
 const stagesChecked: string[] = [];
 
-for (const rel of BUILD_FILES) {
+/**
+ * Resolve a `build.dockerfile` the way Docker does: relative to `context:`,
+ * which is itself relative to the COMPOSE FILE's own directory. Returns a
+ * repo-root-relative path, or null if it escapes the repository.
+ *
+ * The previous version did `path.join(REPO_ROOT, df)`, which is right only
+ * because every overlay build happens to use `context: ..` with a
+ * root-relative `dockerfile:`. `compose.yml`'s two builds do NOT — `postgres`
+ * is `context: .` + `dockerfile: postgres.Dockerfile`, and `fake-telephony` is
+ * `context: ./fakes/telephony` + `dockerfile: Dockerfile` (T-034 § contract 5
+ * records this difference). Reading them the old way reports "does not exist"
+ * for two files that do, which is the wrong failure and would have made
+ * OD-33's fix look impossible.
+ */
+function resolveDockerfile(composeFile: string, context: string, df: string): string | null {
+  const joined = path.normalize(path.join(path.dirname(composeFile), context, df));
+  return joined.startsWith('..') || path.isAbsolute(joined) ? null : joined;
+}
+
+for (const rel of BUILD_DECLARING_FILES) {
   const svcs = servicesOf(rel);
   if (svcs === null) continue; // already reported
   for (const [name, svc] of Object.entries(svcs)) {
@@ -258,8 +481,8 @@ for (const rel of BUILD_FILES) {
       );
       continue;
     }
-    const df = String(build['dockerfile'] ?? '');
-    if (df === '') {
+    const rawDf = String(build['dockerfile'] ?? '');
+    if (rawDf === '') {
       failures.push(
         `${rel}: '${name}' declares build: with no dockerfile:. This gate cannot then ` +
           `check the image contract of something this repository builds, and a build with ` +
@@ -267,37 +490,78 @@ for (const rel of BUILD_FILES) {
       );
       continue;
     }
-    if (!fs.existsSync(path.join(REPO_ROOT, df))) {
-      failures.push(`${rel}: '${name}' names dockerfile '${df}', which does not exist`);
-      continue;
-    }
-    const target = typeof build['target'] === 'string' ? build['target'].trim() : '';
-    if (target === '') {
-      // OD-30 / OD-32, and it is the strongest of the two available fixes.
-      //
-      // A `build:` with no `target:` used to contribute an empty string that
-      // was filtered out, so the service was resolved to NOTHING while its
-      // siblings resolved normally — and the last-stage fallback below it was
-      // dead the moment any sibling named a target. Measured: delete
-      // `target: runtime` from `safety-gw` and append ANY stage after
-      // `runtime` in app.Dockerfile, and docker builds a safety-gateway image
-      // that is root, `docker-entrypoint.sh` at PID 1 and `Healthcheck=null`,
-      // with this gate at exit 0, `gate:pr` 9/9 and no BuildKit warning.
-      //
-      // The cheap fix — fall back to the last stage — re-points the checks and
-      // leaves the property resting on an ORDERING ACCIDENT nothing asserts:
-      // `runtime` merely happens to be last today, and T-034 § contract 6
-      // instructs the very next ticket to append a stage. Failing outright
-      // makes the stage an asserted fact instead of luck, and it costs
-      // nothing, because every service in the overlays names a target already.
+    const ctx = typeof build['context'] === 'string' ? build['context'] : '.';
+    const df = resolveDockerfile(rel, ctx, rawDf);
+    if (df === null) {
       failures.push(
-        `${rel}: '${name}' declares build: with no target:. Docker then builds the LAST ` +
-          `stage of ${df}, which is decided by file order and by nothing else — append a ` +
-          `stage and the image this service ships changes, silently, with every check in ` +
-          `this gate still pointed at the old one (OD-30/OD-32). Name the stage.`,
+        `${rel}: '${name}' resolves dockerfile '${rawDf}' (context '${ctx}') outside this ` +
+          `repository. This gate can only read what is in the repo.`,
       );
       continue;
     }
+    if (!fs.existsSync(path.join(REPO_ROOT, df))) {
+      failures.push(
+        `${rel}: '${name}' names dockerfile '${rawDf}' (context '${ctx}' -> ${df}), ` +
+          `which does not exist`,
+      );
+      continue;
+    }
+    allBuilds.push({ where: `${rel.replace('docker/', '')}:${name}`, dockerfile: df });
+    const dfText = read(df);
+    const stages = dfText === null ? [] : stagesOf(dfText);
+
+    // --- the target rule, over EVERY build in EVERY file (OD-30/OD-32/OD-33) -
+    const declared = typeof build['target'] === 'string' ? build['target'].trim() : '';
+    let target = declared;
+    if (declared === '') {
+      const stageCount = stages.length;
+      if (stageCount === 1) {
+        // Unambiguous: "the last stage" and "the only stage" are the same
+        // stage, so the build still resolves and the checks below still run
+        // over it. This is a resolution, not a skip — the previous version
+        // `continue`d here, and negative case 56 walked straight through the
+        // gap.
+        target = stages[0]?.name ?? '';
+      } else {
+        // THE RULE, AND WHY THE EXEMPTION IS SHAPED LIKE THIS.
+        //
+        // The risk is not "an app image is unchecked" — it is "WHICH STAGE
+        // SHIPS IS DECIDED BY FILE ORDER AND BY NOTHING ELSE". Append a stage
+        // and the image this service builds changes, silently, with every
+        // check still pointed at the old one. That is what OD-32 measured on
+        // `safety-gw` and what OD-33 measured again one compose file over.
+        //
+        // A file with EXACTLY ONE stage has no ordering to disturb: "the last
+        // stage" and "the only stage" are the same stage, and there is nothing
+        // a target: could disambiguate. The two legitimate target-less builds
+        // on this tree — postgres.Dockerfile and fakes/telephony/Dockerfile,
+        // both T-017's — are single-stage, and both stay green.
+        //
+        // The exemption is DERIVED FROM THE ARTEFACT AND SELF-CLOSING: append
+        // a second stage to either file and the risk appears and the gate reds
+        // in the same instant. That is why it is a stage count and not
+        // `buildsFromWorkspace`, which QA offered: that predicate answers "does
+        // this image have devDependencies to hide", a different question. It
+        // would exempt a multi-stage chaos sidecar — precisely the thing T-126
+        // is expected to add — and would demand a target of a single-stage
+        // workspace build for no reason. Borrowing a predicate for a question
+        // it does not answer is how this family started.
+        failures.push(
+          `${rel}: '${name}' declares build: with no target:, and ${df} has ` +
+            `${String(stageCount)} stages. Docker then builds the LAST one, which is ` +
+            `decided by file order and by nothing else — append a stage and the image ` +
+            `this service ships changes, silently (OD-30/OD-32/OD-33). Name the stage. ` +
+            `(A single-stage Dockerfile is exempt: there is nothing for a target: to ` +
+            `disambiguate, and adding a second stage turns this red by itself.)`,
+        );
+        continue;
+      }
+    }
+
+    // --- the application-image set (§1b, §1c, §6) ---------------------------
+    // Derived per build, not from which file it was declared in — see
+    // `isApplicationBuild` for what case 56 cost the file-list version.
+    if (!isApplicationBuild(dfText, build)) continue;
     const label = `${rel.replace('docker/', '')}:${name}→${target}`;
     dockerfilesInUse.set(df, [...(dockerfilesInUse.get(df) ?? []), label]);
     buildUses.push({
@@ -312,8 +576,8 @@ for (const rel of BUILD_FILES) {
 
 if (dockerfilesInUse.size === 0) {
   failures.push(
-    `no service in ${BUILD_FILES.join(' or ')} names a build.dockerfile with a build.target ` +
-      `this gate could read — every check below would then assert nothing.`,
+    `no build in ${BUILD_DECLARING_FILES.join(' or ')} resolves to an APPLICATION image ` +
+      `this gate could read — §1b, §1c and §6 would then assert nothing.`,
   );
 }
 
@@ -336,7 +600,16 @@ if (dockerfilesInUse.size === 0) {
 // The anchor of the whole section. Everything else here is spelling; this is
 // the property — a second copy of the version is one fact in two places and it
 // goes stale silently (OD-1).
-const pinnedFiles = [...new Set<string>([...dockerfilesInUse.keys(), ...BUILD_FILES])].sort();
+// The app Dockerfiles, plus EVERY compose file that can declare a build —
+// compose.yml included, which is the file OD-33's narrow control isolated: a
+// live literal '24.20.0' in compose.dev.yml was exit 1 and the identical
+// string in compose.yml was exit 0.
+//
+// T-017's own Dockerfiles are deliberately NOT here; see § Published contract
+// § What is NOT claimed, and decisions.md OD-34.
+const pinnedFiles = [
+  ...new Set<string>([...dockerfilesInUse.keys(), ...BUILD_DECLARING_FILES]),
+].sort();
 for (const [arg, value] of pinValues) {
   for (const rel of pinnedFiles) {
     const text = read(rel);
@@ -522,8 +795,8 @@ if (base !== null) {
   }
 }
 
+// --- 3. no host ports, over PORT_FREE_FILES ---------------------------------
 let portFreeChecked = 0;
-let budgetsChecked = 0;
 for (const rel of PORT_FREE_FILES) {
   const svcs = servicesOf(rel);
   if (svcs === null) continue; // already reported
@@ -539,8 +812,23 @@ for (const rel of PORT_FREE_FILES) {
           `lives in compose.dev.yml, which this rule deliberately does not cover.)`,
       );
     }
+  }
+}
 
-    if (rel === BASE_FILE || base === null) continue;
+// --- 4. budgets, over OVERLAY_FILES -----------------------------------------
+//
+// A SEPARATE LOOP OVER A SEPARATE, NAMED SET. It used to ride on §3's loop and
+// skip the base file with `if (rel === BASE_FILE) continue`, so its scope was
+// "PORT_FREE_FILES minus one" — a set derived by exclusion, which is readable
+// only by tracing control flow and is the shape this whole ticket is about.
+// The two rules genuinely cover different sets (compose.dev.yml is exempt from
+// §3 and simply unmeasured for §4 — see § Published contract § What is NOT
+// claimed), so they get one loop each and each names its own set.
+let budgetsChecked = 0;
+for (const rel of OVERLAY_FILES) {
+  const svcs = servicesOf(rel);
+  if (svcs === null || base === null) continue;
+  for (const [name, svc] of Object.entries(svcs)) {
     budgetsChecked += 1;
     const baseSvc = base[name];
 
@@ -602,7 +890,7 @@ let appsChecked = 0;
 let withSource = 0;
 /**
  * The apps this rule covers: every service compose.yml LABELS as built here,
- * UNION every APP a build in one of the BUILD_FILES actually passes.
+ * UNION every APP an APPLICATION build actually passes.
  *
  * The label set alone is the same narrow scope the §6 checks were found to
  * have (T-034 QA round 2): an overlay service that builds an image and is
@@ -651,159 +939,6 @@ for (const name of appsToCheck) {
         `piece of evidence produced against its container is about the placeholder.`,
     );
   }
-}
-
-/**
- * The instruction lines of one stage of a Dockerfile.
- *
- * WHY THE CHECK BELOW HAS TO KNOW ABOUT STAGES. The previous version looked
- * for a line matching /^RUN.*assert-no-dev-deps/ anywhere in the file. QA
- * showed two ways past that, and only the first is adversarial:
- *   - `RUN echo skipping assert-no-dev-deps.mjs` — a mention, not a run;
- *   - moving the real RUN into a stage the target does not depend on. That is
- *     an ORDINARY REFACTOR, not sabotage, and it left the gate green while the
- *     guard never executed. Present-but-unreachable is the exact failure mode
- *     the guard exists to prevent.
- *
- * So the check is: the guard must run IN THE TARGET STAGE — the one compose
- * names in `build.target`, which is now always named because a `build:` with
- * no `target:` is refused in §2a (OD-30/OD-32) — and no COPY or
- * ADD may follow it there. Anything copied in after it is outside what it saw,
- * and `COPY --from=deps ./node_modules` is precisely how QA put 23.6 MB of
- * typescript back into the image with an earlier version of the guard green.
- */
-interface Stage {
-  readonly name: string;
-  /**
-   * The `FROM` argument, verbatim: another stage's name, or an external image
-   * reference. It is what makes the ancestry walk below possible, and it is
-   * the difference between modelling Docker and pattern-matching a file.
-   */
-  readonly parent: string;
-  readonly lines: readonly string[];
-}
-
-/**
- * Does this instruction EXECUTE the devDependency guard?
- *
- * "Contains the filename" is not the question, and asking it that way was
- * wrong twice. `text.includes(...)` was satisfied by the COPY line;
- * `/^RUN.*assert-no-dev-deps\.mjs/` is satisfied by
- * `RUN echo skipping assert-no-dev-deps.mjs`, which QA wrote and which
- * passed. So: split the RUN's body on shell operators and require some
- * command whose FIRST TOKEN is `node` and which names the script. `echo …`
- * and `echo node …` both fail that; `true && node …assert-no-dev-deps.mjs`
- * passes it, correctly, because it runs.
- *
- * WHAT THIS CANNOT DO. Deciding whether an arbitrary shell line executes a
- * program is not a thing a regex settles, and this does not claim to: a
- * `RUN node -e '0' …assert-no-dev-deps.mjs` would satisfy it. It catches the
- * ways the guard ordinarily stops running — deleted, replaced by a mention,
- * moved into a stage the target does not build, or outrun by a later COPY —
- * and the thing that actually observes the guard running is the build, which
- * prints `assert-no-dev-deps: OK — none of them is present` once per image.
- */
-const runsGuard = (line: string): boolean => {
-  if (!/^RUN\b/i.test(line)) return false;
-  const body = line.replace(/^RUN\s+/i, '').replace(/^--mount=\S+\s+/, '');
-  return body
-    .split(/&&|\|\||;|\|/)
-    .map((seg) => seg.trim())
-    .some((seg) => /^node\b/.test(seg) && /(^|[\s/])assert-no-dev-deps\.mjs(\s|$)/.test(seg));
-};
-
-/** Split a Dockerfile into stages, joining continuation lines. */
-function stagesOf(text: string): Stage[] {
-  const joined: string[] = [];
-  let acc = '';
-  for (const raw of text.split('\n')) {
-    const code = dfCode(raw);
-    if (code === '') continue;
-    if (code.endsWith('\\')) {
-      acc += `${code.slice(0, -1)} `;
-      continue;
-    }
-    joined.push((acc + code).trim());
-    acc = '';
-  }
-  if (acc.trim() !== '') joined.push(acc.trim());
-
-  const stages: Stage[] = [];
-  let current: { name: string; parent: string; lines: string[] } | null = null;
-  for (const line of joined) {
-    // The flag group is not decoration: `FROM --platform=$BUILDPLATFORM node:x
-    // AS y` is ordinary, and the previous pattern did not match it — so that
-    // FROM was read as an INSTRUCTION OF THE PREVIOUS STAGE and the whole new
-    // stage's lines were attributed to its predecessor. A mis-parse in the
-    // silent direction, in the function the checks below now depend on.
-    const from = /^FROM\s+((?:--\S+\s+)*)(\S+)(?:\s+AS\s+(\S+))?$/i.exec(line);
-    if (from !== null) {
-      if (current !== null) stages.push(current);
-      current = {
-        name: from[3] ?? `#${String(stages.length)}`,
-        parent: from[2] ?? '',
-        lines: [],
-      };
-      continue;
-    }
-    if (current !== null) current.lines.push(line);
-  }
-  if (current !== null) stages.push(current);
-  return stages;
-}
-
-/**
- * The stages a target stage inherits its image config from, ANCESTOR FIRST,
- * ending with the target itself. `null` if the target is not a stage here.
- *
- * A `FROM` whose argument names another stage in this file continues the walk;
- * one naming an external image ends it. That end is not a hole: nothing in an
- * external base gives an image a non-root `USER` or the healthcheck this
- * contract requires — `node:*-alpine` has no `USER` and no `HEALTHCHECK` at
- * all — so a chain that reaches an external base having set neither is exactly
- * the image this gate must refuse.
- */
-function ancestryOf(stages: readonly Stage[], target: string): Stage[] | null {
-  const byName = new Map(stages.map((s) => [s.name.toLowerCase(), s]));
-  let cur = byName.get(target.toLowerCase());
-  if (cur === undefined) return null;
-  const chain: Stage[] = [];
-  const seen = new Set<string>();
-  while (cur !== undefined && !seen.has(cur.name.toLowerCase())) {
-    seen.add(cur.name.toLowerCase());
-    chain.unshift(cur);
-    cur = byName.get(cur.parent.toLowerCase());
-  }
-  return chain;
-}
-
-interface Setting {
-  /** Everything after the instruction keyword, trimmed. */
-  readonly value: string;
-  /** The stage that set it — named in the failure so the fix is findable. */
-  readonly stage: string;
-}
-
-/**
- * LAST-WINS ALONG THE ANCESTRY. Docker resolves `USER`, `ENTRYPOINT` and
- * `HEALTHCHECK` as IMAGE CONFIG, not as file contents: a child stage starts
- * from its parent's config and every later instruction overwrites the earlier
- * one. So the resolved value is the last occurrence in ancestor-first order —
- * which is neither "anywhere in the file" (OE-7: three appended lines, or
- * `USER root` alone, make the shipping stage root with the gate green) nor
- * "somewhere in this stage" (which would refuse a legitimate
- * `FROM runtime AS next-runtime` that inherits all three correctly).
- */
-function resolveSetting(chain: readonly Stage[], instruction: string): Setting | null {
-  const re = new RegExp(`^${instruction}\\b\\s*(.*)$`, 'i');
-  let last: Setting | null = null;
-  for (const stage of chain) {
-    for (const line of stage.lines) {
-      const m = re.exec(line);
-      if (m !== null) last = { value: (m[1] ?? '').trim(), stage: stage.name };
-    }
-  }
-  return last;
 }
 
 // ---------------------------------------------------------------------------
@@ -1014,14 +1149,24 @@ console.log(
   `  services labelled built-by ${BUILT_BY}  ${String(declaredByLabel.length)}: ${declaredByLabel.join(' ')}`,
 );
 console.log(
-  `  files read for build: (§1, §2a)  ${String(BUILD_FILES.length)}: ${BUILD_FILES.join(' ')}`,
+  `  files read for build: (§2a)     ${String(BUILD_DECLARING_FILES.length)}: ${BUILD_DECLARING_FILES.join(' ')}`,
 );
+console.log(
+  `  application builds (§1b/1c/§6)  ${String(buildUses.length)}` +
+    `  (derived per build: pnpm workspace, or an APP build arg)`,
+);
+console.log(`  builds read (target rule)       ${String(allBuilds.length)}`);
+for (const b of [...allBuilds].sort((x, y) => x.where.localeCompare(y.where))) {
+  console.log(`    ${b.where.padEnd(34)} ${b.dockerfile}`);
+}
 console.log(
   `  files held to the no-ports rule ${String(PORT_FREE_FILES.length)}: ${PORT_FREE_FILES.join(' ')}` +
     `  (compose.dev.yml is the documented exception — T-016 § contract 6)`,
 );
 console.log(`  services read for ports         ${String(portFreeChecked)}`);
-console.log(`  services read for budgets       ${String(budgetsChecked)} (overlay only)`);
+console.log(
+  `  services read for budgets       ${String(budgetsChecked)}: ${OVERLAY_FILES.join(' ')}`,
+);
 console.log(
   `  addition mem_limit ceiling      ` +
     `${additionCeilingMb === null ? '(none — compose.yml declared none)' : `${String(additionCeilingMb)} MB, derived from ${BASE_FILE}`}`,
