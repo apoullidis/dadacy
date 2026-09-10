@@ -24,9 +24,21 @@
  *     EVERY CHECK READS A DERIVED SET, NOT A CONSTANT PATH, AND ITERATES
  *     WHAT IT CLAIMS TO COVER — PER FILE, PER SERVICE, PER PIN, PER STAGE.
  *
- *   * the files: `COMPOSE_FILES` (base + every overlay) and `dockerfilesInUse`
- *     (every Dockerfile an overlay service actually builds). Neither is a
- *     constant path, and `PRIMARY_DOCKERFILE` no longer exists.
+ *   * the files: the composed set is read out of `scripts/svc`'s own
+ *     `compose_files_for()` (T-037, OD-37) — not a constant, and not a
+ *     `docker/compose*.yml` glob, which is the same enumeration in another
+ *     spelling. `dockerfilesInUse` is every Dockerfile an application build
+ *     actually points at. `PRIMARY_DOCKERFILE` no longer exists.
+ *   * the services the image contract is asserted OVER: `apps/*` UNION the
+ *     `io.kinvara.built-by` label set, and a NON-application build declared
+ *     for one of them is itself a failure (T-037, OD-36). That is an
+ *     inversion, not a fourth enumerated route: three reviewers each found a
+ *     different route to a root, healthcheck-less `safety-gw` image, and each
+ *     fix closed the route it was given (OE-10).
+ *   * the membership of that label set is asserted against `apps/*`, OUTSIDE
+ *     the file the labels live in (T-037, OD-38). Its only previous check
+ *     fired when the set was EMPTY, so losing one member was silent — and the
+ *     member could be removed by the same edit that exploited its absence.
  *   * the pins: both of them, looped, never one spelled out.
  *   * the services: `Object.entries(...)` of each parsed file, never a
  *     whole-file `text.includes(...)` standing in for "every service does X".
