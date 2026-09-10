@@ -21,6 +21,11 @@ cp "$VERIFY" "$BK/verify"; cp "$CHAOS" "$BK/chaos"; cp "$BASE" "$BK/base"; cp "$
 restore() {
   cp "$BK/verify" "$VERIFY"; cp "$BK/chaos" "$CHAOS"; cp "$BK/base" "$BASE"; cp "$BK/dev" "$DEV"; cp "$BK/df" "$DF"; cp "$BK/pgdf" "$PGDF"; cp "$BK/svc" scripts/svc; cp "$BK/corepkg" apps/core/package.json
   rm -rf apps/core/src apps/qa-newapp docker/next.Dockerfile docker/rogue.Dockerfile
+  # T-037: the OD-36 / OD-37 / OD-38 cases. `chaos-extra.yml` is named
+  # deliberately — it is the file `tech-lead` cited to reject a
+  # `docker/compose*.yml` glob as the fix for OD-37.
+  rm -rf docker/rogue-single.Dockerfile docker/rogue-two-stage.Dockerfile \
+         docker/compose.extra.yml docker/chaos-extra.yml
 }
 trap 'restore; rm -rf "$BK"' EXIT
 
@@ -516,7 +521,14 @@ DF
 repoint_web docker/next.Dockerfile && run_case "45 the same 2nd Dockerfile, pins derived (must stay green)" PASS
 
 echo; echo "=== cases 46-47 (T-036, OD-30/OD-32): a build: with NO target: — the last stage shipping unchecked ==="
-# This is the route to a root safety-gw image that survived T-035. Delete ONE
+# This is A route to a root safety-gw image that survived T-035 — not THE route.
+# [CORRECTED BY T-037, per its brief item (e). The original sentence read "the
+# route", the definite article OE-10 WITHDREW rather than restated: it is an
+# absence claim over an unenumerated space, and three reviewers found three
+# different routes (OD-32, OD-33, OD-36). The orchestrator withdrew it in
+# platform-infrastructure.md and in T-036's contract but may not edit app/
+# (PROTOCOL §10), so the live copy was named in T-037's brief and is corrected
+# here.] Delete ONE
 # line and the service resolves to nothing; append any stage after `runtime` and
 # docker builds root / docker-entrypoint.sh at PID 1 / Healthcheck=null, at gate
 # exit 0 and gate:pr 9/9, with no BuildKit warning. What stopped it was that
@@ -702,6 +714,213 @@ echo; echo "=== case 58 (T-036 rework): PIN_ARGS is a second enumeration of .too
 # an application Dockerfile consumed, every §1 rule would skip it in silence.
 mut "$DF" 'ARG PNPM_VERSION' 'ARG TERRAFORM_VERSION
 ARG PNPM_VERSION' && run_case "58 an app Dockerfile takes a pin PIN_ARGS omits" FAIL
+
+
+echo; echo "=== cases 59-63 (T-037, OD-36): a labelled service DEMOTED out of the application set, in EACH composed file ==="
+# THE DIRECTION THAT WAS MISSED. T-036 closed two routes to a root,
+# healthcheck-less safety-gw image by enumerating them (OD-32: a build with no
+# target:; OD-33: a build in a file the list omitted). tech-lead then found a
+# third on T-036's own branch: point compose.yml's safety-gw at a SINGLE-STAGE,
+# NON-APPLICATION Dockerfile and three checks decline it in sequence, each
+# correctly by its own rule — the target rule exempts a single-stage file,
+# isApplicationBuild is false so the image contract skips it, and row L is
+# satisfied by the untouched overlay. Built: User=[root], a shell at PID 1,
+# Healthcheck=null, gate:pr 9/9 exit 0 (OD-36).
+#
+# Enumerating a fourth route would have been the same mistake a fourth time, so
+# T-037 inverts it: NO COMPOSED FILE MAY DECLARE A NON-APPLICATION BUILD FOR A
+# SERVICE IN THE APPLICATION SET. These cases are that universal, instantiated
+# once per composed file, which is what a universal has to be evidenced by.
+mk_single() {   # the demoted build's Dockerfile; restore() removes it after each case
+  cat > docker/rogue-single.Dockerfile <<'DF'
+FROM node:24-alpine
+RUN echo "no workspace install, no APP arg — nothing here says application image"
+ENTRYPOINT docker-entrypoint.sh
+DF
+}
+DEMOTED_BUILD='    build:
+      context: ..
+      dockerfile: docker/rogue-single.Dockerfile'
+# 59. compose.yml — OD-36 verbatim, tech-lead's own edit.
+mk_single && mut "$BASE" "$SAFETY_BASE" "  safety-gw:
+    image: kinvara/safety-gw:dev
+$DEMOTED_BUILD" && run_case "59 safety-gw demoted in compose.yml (OD-36 verbatim)" FAIL
+# 60. compose.verify.yml. Recorded as expected FAIL and explicitly NOT claimed
+#     as a differential: row L already demanded an APP build arg of every
+#     labelled service in THIS file, and an APP arg is itself one of the two
+#     things that make a build an application build — so a demotion here was
+#     exit 1 at main too, for a different reason. It is here because a
+#     universal has to hold in every composed file, and a case that is red for
+#     one reason at main and two here is still the case that says so.
+mk_single && mut "$VERIFY" '  safety-gw:
+    build:
+      context: ..
+      dockerfile: docker/app.Dockerfile
+      target: runtime' "  safety-gw:
+$DEMOTED_BUILD
+    x-unused:" && run_case "60 safety-gw demoted in compose.verify.yml" FAIL
+# 61. compose.chaos.yml — T-126's file, empty today.
+mk_single && mut "$CHAOS" 'services: {}' "services:
+  safety-gw:
+$DEMOTED_BUILD" && run_case "61 safety-gw demoted in compose.chaos.yml" FAIL
+# 62. compose.dev.yml — the shared stack. Exempt from the no-ports rule and
+#     from nothing else.
+mk_single && mut "$DEV" '  safety-gw:
+    networks: [kinvara-int, kinvara-pub]' "  safety-gw:
+$DEMOTED_BUILD
+    networks: [kinvara-int, kinvara-pub]" && run_case "62 safety-gw demoted in compose.dev.yml" FAIL
+# 63. THE CONTROL THAT MAKES 59-62 MEAN SOMETHING. The identical single-stage
+#     non-application build, on a service that is NOT in the application set,
+#     must stay green — otherwise these cases would only show that the gate
+#     dislikes a small Dockerfile. This is also why postgres and fake-telephony
+#     keep their target-less non-application builds without being named
+#     anywhere: the rule is keyed on the SERVICE SET, not on the build.
+mk_single && mut "$BASE" '  valkey:
+    image:' "  qa-sidecar:
+    image: alpine:3.20
+    profiles: [cache]
+    networks: [kinvara-int]
+    mem_limit: 64m
+    cpus: 0.25
+$DEMOTED_BUILD
+  valkey:
+    image:" && run_case "63 the SAME build on an unlabelled service (must stay green)" PASS
+
+echo; echo "=== cases 64-65 (T-037, OD-38): the anchor the universal keys on, removed by the same edit that exploits it ==="
+# tech-lead, measured on 93969b3 while confirming T-037's brief: declaredByLabel
+# is read out of docker/compose.yml — THE SAME FILE AN ATTACKER EDITS — and its
+# only self-check fired when the set was EMPTY. Delete safety-gw's two
+# io.kinvara.built-by lines and nothing else: the gate printed
+# `services labelled built-by T-018  4: core worker web admin` and exited 0.
+# Then, with the label still gone, delete safety-gw's ENTIRE build: stanza from
+# compose.verify.yml: still exit 0 — where case 07, the same deletion for core
+# with its label intact, is exit 1. Row L's own trigger was defeated by first
+# removing the label, and row L, the placeholder rule and the new universal
+# went silent for that service together. PROTOCOL §5.1: a check must not be
+# derived from the same reading as the thing it checks. Membership is now
+# asserted against apps/*/package.json.
+LABEL_LINES="    labels:
+      io.kinvara.built-by: 'T-018'
+      io.kinvara.built-by-title: 'the application Dockerfiles + the verify overlay'
+    networks: [kinvara-int]
+    expose:
+      - '3010'"
+NO_LABEL_LINES="    networks: [kinvara-int]
+    expose:
+      - '3010'"
+VERIFY_SAFETY_STANZA='  safety-gw:
+    build:
+      context: ..
+      dockerfile: docker/app.Dockerfile
+      target: runtime
+      args:
+        NODE_VERSION: ${KINVARA_NODE_VERSION:?derived from .tool-versions by scripts/svc}
+        PNPM_VERSION: ${KINVARA_PNPM_VERSION:?derived from .tool-versions by scripts/svc}
+        APP: safety-gw
+        APP_KIND: http
+        APP_PORT: '"'"'3010'"'"'
+    pull_policy: build
+'
+mut "$BASE" "$LABEL_LINES" "$NO_LABEL_LINES" \
+  && run_case "64 safety-gw built-by labels deleted from compose.yml" FAIL
+mut "$BASE" "$LABEL_LINES" "$NO_LABEL_LINES" \
+  && mut "$VERIFY" "$VERIFY_SAFETY_STANZA" '' \
+  && run_case "65 the same, PLUS safety-gw build: deleted from verify" FAIL
+# 66. THE RESIDUE OF 64, probed rather than assumed: delete the label AND the
+#     whole service from compose.yml. This is expected FAIL on the gate at main
+#     as well — the overlay ADDITION rules catch it, because verify's safety-gw
+#     then has no base definition to inherit a budget (here) or a network
+#     (gate:egress-boundary) from. Recorded as a BOUND, not as a differential:
+#     it is what stops "delete the label" from becoming "delete both".
+SAFETY_BASE_HEAD="  safety-gw:
+    image: kinvara/safety-gw:dev
+    profiles: ['safety']"
+mut "$BASE" "$LABEL_LINES" "$NO_LABEL_LINES" \
+  && mut "$BASE" "$SAFETY_BASE_HEAD" "  safety-gw-removed:
+    image: kinvara/safety-gw:dev
+    profiles: ['safety']" \
+  && run_case "66 label AND base service both removed (a bound)" FAIL
+
+echo; echo "=== cases 67-71 (T-037, OD-37): the composed file set is DERIVED from scripts/svc, not listed ==="
+# THE SAME SHAPE ONE LEVEL UP, and the claim that justified keeping the list
+# hand-written: T-036 § Evidence 9a/10 said a fifth compose file "fails
+# closed". It does not — `does not exist` fires on a LISTED file MISSING, never
+# on one APPEARING — so a fifth file was read by NOTHING in either gate.
+# Measured by tech-lead on 93969b3 and reproduced on this branch before the fix.
+# The fix derives the set from scripts/svc's own compose_files_for(), because
+# that function is what decides which files reach a ticket-scoped project
+# (T-016 § contract 2). NOT a docker/compose*.yml glob: that is the same
+# enumeration in another spelling, which is exactly why case 68's file is
+# called chaos-extra.yml.
+CHAOS_F_LINE='    [[ "${USE_CHAOS:-0}" -eq 1 ]] && COMPOSE_FILES+=(-f "${CHAOS_FILE}")'
+write_extra_overlay() {   # $1 = the compose file body; wires it in behind a flag
+  printf '%s\n' "$1" > docker/compose.extra.yml
+  mut scripts/svc "$CHAOS_F_LINE" "$CHAOS_F_LINE
+    [[ \"\${USE_EXTRA:-0}\" -eq 1 ]] && COMPOSE_FILES+=(-f \"\${DOCKER_DIR}/compose.extra.yml\")"
+}
+cat > docker/rogue-two-stage.Dockerfile <<'DF'
+ARG NODE_VERSION=24.20.0
+ARG PNPM_VERSION=11.25.0
+FROM node:24.20.0-alpine AS builder
+RUN pnpm i --prod
+FROM node:24.20.0-alpine AS tail
+USER root
+ENTRYPOINT node /nope.mjs
+DF
+# 67. tech-lead's exact fifth file: a target-less two-stage application build,
+#     literal pins in both directions, a host port and mem_limit: 8g. Every
+#     rule T-036 added was silent in it.
+write_extra_overlay "services:
+  rogue:
+    image: kinvara/rogue:dev
+    profiles: [api]
+    networks: [kinvara-int]
+    ports:
+      - '53999:3000'
+    mem_limit: 8g
+    cpus: 2.0
+    build:
+      context: ..
+      dockerfile: docker/rogue-two-stage.Dockerfile
+      args:
+        NODE_VERSION: 24.20.0
+        PNPM_VERSION: 11.25.0
+        APP: safety-gw" && run_case "67 a FIFTH compose file, wired into svc's -f assembly" FAIL
+# 68. The other direction, which a derivation from svc alone cannot see: a
+#     compose file that exists and is composed by NOTHING. It reads as live and
+#     is checked by nothing. Named chaos-extra.yml on purpose.
+cat > docker/chaos-extra.yml <<'YML'
+services:
+  rogue:
+    image: kinvara/rogue:dev
+    ports:
+      - '53999:3000'
+YML
+run_case "68 a compose file svc composes from nothing" FAIL
+# 69. And the narrowing edit: delete one -f from the assembly and the file it
+#     named stays on disk, unread by these gates and applied by no bring-up. At
+#     main both gates read compose.chaos.yml from a constant, so this was
+#     invisible — and it is the edit that would otherwise let someone move the
+#     new derivation out from under a file they then rewrite.
+mut scripts/svc "$CHAOS_F_LINE" '    : # the chaos overlay, removed from the assembly' \
+  && run_case "69 an -f removed from svc, the file left on disk" FAIL
+# 70. THE CONTROL FOR 67-69: a fifth compose file that is wired in AND
+#     well-formed must stay green, or those cases would only show that the gate
+#     dislikes a fifth file.
+write_extra_overlay "services:
+  qa-extra-sidecar:
+    image: alpine:3.20
+    profiles: [api]
+    networks: [kinvara-int]
+    mem_limit: 128m
+    cpus: 0.25" && run_case "70 a well-formed fifth compose file, wired in (must stay green)" PASS
+rm -f docker/rogue-two-stage.Dockerfile
+# 71. The derivation itself must fail closed. If scripts/svc no longer states
+#     what a project is composed from, this gate has no scope it can establish
+#     — and an unknown scope is a FAILURE, never a smaller one. This is the
+#     property that stops OD-37's fix from becoming OD-37's shape again.
+mut scripts/svc 'compose_files_for() {' 'compose_files_for_renamed() {' \
+  && run_case "71 svc's compose_files_for() renamed away (fail closed)" FAIL
 
 echo
 run_case "99 tree restored" PASS

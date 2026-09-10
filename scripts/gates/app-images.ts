@@ -297,14 +297,28 @@ if (base !== null) {
 }
 declaredByLabel.sort();
 if (base !== null && appServices.length > 0) {
+  // The direction OD-38 measured: a service `compose.yml` DECLARES, for an
+  // application this workspace HAS, must carry the label. The requirement
+  // comes from `apps/`, so deleting the label from `compose.yml` cannot
+  // satisfy it — which is the whole point.
+  //
+  // Scoped to services the base file declares, deliberately: an application
+  // that `compose.yml` does not declare at all is not a labelling defect, and
+  // widening this to "every apps/* directory" would make negative case 52 —
+  // an app declared only by an overlay build — red on two problems instead of
+  // the one it is cited for, which is the isolation QA-F2 fixed. The residue
+  // (deleting the label AND the whole service) is probed by case 71 and is
+  // caught by the overlay ADDITION rules in both gates.
   for (const name of appServices) {
-    if (!declaredByLabel.includes(name)) {
+    if (base[name] !== undefined && !declaredByLabel.includes(name)) {
       failures.push(
-        `${APPS_DIR}/${name} is an application in this workspace, but ${BASE_FILE} labels no ` +
-          `service '${name}' with 'io.kinvara.built-by: ${BUILT_BY}'. That label is what puts ` +
-          `a service inside the image contract — row L, the placeholder rule, and the rule ` +
-          `that no composed file may declare a NON-application build for it. Removing the ` +
-          `label removes the service from all three AT ONCE and used to be silent (OD-38).`,
+        `${BASE_FILE} declares service '${name}' and ${APPS_DIR}/${name} is an application ` +
+          `in this workspace, but the service is not labelled ` +
+          `'io.kinvara.built-by: ${BUILT_BY}'. That label is what puts a service inside the ` +
+          `image contract — row L, the placeholder rule, and the rule that no composed file ` +
+          `may declare a NON-application build for it. Deleting the label used to remove the ` +
+          `service from all three AT ONCE, in silence, because the only check on this set was ` +
+          `that it is not EMPTY (OD-38). Membership is asserted now, against ${APPS_DIR}/.`,
       );
     }
   }

@@ -21,6 +21,9 @@ cp scripts/lib/toolbox.sh "$BK/toolbox.sh"
 restore() {
   cp "$BK/compose.verify.yml" "$VERIFY"; cp "$BK/compose.chaos.yml" "$CHAOS"
   cp "$BK/dev" scripts/dev; cp "$BK/svc" scripts/svc; cp "$BK/toolbox.sh" scripts/lib/toolbox.sh
+  # T-037, OD-37: this gate's file set is derived from scripts/svc's own -f
+  # assembly, so the cases below add and remove compose files.
+  rm -f docker/compose.extra.yml docker/chaos-extra.yml
 }
 trap 'restore; rm -rf "$BK"' EXIT
 
@@ -192,6 +195,57 @@ mut scripts/dev 'toolbox_refuse_root "scripts/dev" || exit 1' '# toolbox_refuse_
   && run_case "22 dev's runtime root refusal COMMENTED OUT (cf. 15)" FAIL
 mut scripts/svc 'toolbox_refuse_root "scripts/svc run" || exit 1' '# toolbox_refuse_root "scripts/svc run" || exit 1' \
   && run_case "23 svc's runtime root refusal COMMENTED OUT" FAIL
+
+
+echo; echo "=== cases 24-27 (T-037, OD-37): this gate's file set is DERIVED from scripts/svc, not listed ==="
+# The constant this replaces was justified by a sentence with a direction it
+# had no behaviour in: T-036 § Evidence 9a/10 said a fifth compose file "fails
+# closed". `does not exist` fires on a LISTED file MISSING, never on one
+# APPEARING, so a fifth file was read by NOTHING here — including the OD-12
+# rule that is the whole point of this gate: a service with `networks:
+# [default]` lands on an ordinary bridge WITH EGRESS, comes up healthy, and
+# completes a TCP connection to 1.1.1.1:443 (measured by QA on T-017).
+CHAOS_F_LINE='    [[ "${USE_CHAOS:-0}" -eq 1 ]] && COMPOSE_FILES+=(-f "${CHAOS_FILE}")'
+write_extra_overlay() {   # $1 = the compose file body; wires it in behind a flag
+  printf '%s\n' "$1" > docker/compose.extra.yml
+  mut scripts/svc "$CHAOS_F_LINE" "$CHAOS_F_LINE
+    [[ \"\${USE_EXTRA:-0}\" -eq 1 ]] && COMPOSE_FILES+=(-f \"\${DOCKER_DIR}/compose.extra.yml\")"
+}
+write_extra_overlay "services:
+  rogue:
+    image: kinvara/rogue:dev
+    profiles: [api]
+    networks: [default]
+    mem_limit: 128m
+    cpus: 0.25" && run_case "24 a FIFTH compose file puts a service on the default bridge" FAIL
+write_extra_overlay "services:
+  rogue:
+    image: kinvara/rogue:dev
+    profiles: [api]
+    networks: [kinvara-int, kinvara-build]
+    mem_limit: 128m
+    cpus: 0.25" && run_case "25 a FIFTH compose file attaches a service to kinvara-build" FAIL
+# The control: the same fifth file, well-formed, must stay green — or 24-25
+# would only show that the gate dislikes a fifth file.
+write_extra_overlay "services:
+  rogue:
+    image: kinvara/rogue:dev
+    profiles: [api]
+    networks: [kinvara-int]
+    mem_limit: 128m
+    cpus: 0.25" && run_case "26 the same fifth file, well-formed (must stay green)" PASS
+rm -f docker/compose.extra.yml
+# The other direction: a compose file that exists and is composed by nothing.
+# Named chaos-extra.yml on purpose — a docker/compose*.yml glob would not match
+# it, which is why the glob was rejected as the fix for OD-37.
+cat > docker/chaos-extra.yml <<'YML'
+services:
+  rogue:
+    image: kinvara/rogue:dev
+    networks: [default]
+YML
+run_case "27 a compose file svc composes from nothing" FAIL
+rm -f docker/chaos-extra.yml
 
 echo
 run_case "99 tree restored" PASS
