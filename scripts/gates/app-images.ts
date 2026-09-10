@@ -51,41 +51,41 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { REPO_ROOT, finish, toolVersions } from './lib/run.ts';
+import { composedFiles } from './lib/composed-files.ts';
 
-const BASE_FILE = 'docker/compose.yml';
-const VERIFY_FILE = 'docker/compose.verify.yml';
-const CHAOS_FILE = 'docker/compose.chaos.yml';
 /**
- * The two `-f` overlays. `compose.dev.yml` is deliberately NOT one: it is the
- * shared `kinvara-dev` stack, applied only for the literal `dev` project.
- * §4's budget rule reads this set.
- */
-const OVERLAY_FILES = [VERIFY_FILE, CHAOS_FILE] as const;
-const DEV_FILE = 'docker/compose.dev.yml';
-/**
- * EVERY compose file that can declare a `build:` — the base file included.
+ * EVERY compose file a ticket-scoped project is composed from — DERIVED FROM
+ * `scripts/svc`'s own `-f` assembly, never written down here (T-037, OD-37).
  *
- * OD-33, and it is this ticket's own defect rather than an inherited one. The
- * first version of this constant was `[VERIFY, CHAOS, DEV]` under a heading
- * reading "every compose file that can point a service at a Dockerfile", and
- * `docker/compose.yml` points two services at Dockerfiles on the delivered
- * tree (`postgres` :127, `fake-telephony` :275). So a `build:` declared there
- * was read by NOTHING: not the target rule, not the pin checks, not the image
- * contract, not the app set. QA added a target-less `build:` to
- * `compose.yml`'s `safety-gw` plus an appended tail stage, got exit 0, and
- * built the image — `User=[]`, `Entrypoint=["docker-entrypoint.sh"]`,
- * `Healthcheck=null`, 167,508,709 B, OD-32's figure to the byte. Adding
- * `-f compose.verify.yml` restores `target: runtime`, so a `--verify`
- * evidence run is blind to it and every other way of bringing the service up
- * is not.
+ * WHAT THIS REPLACES, AND WHY THE PREVIOUS FIX WAS NOT ENOUGH. The four
+ * constants that used to sit here were a hand-written enumeration under a
+ * heading reading "EVERY compose file that can declare a `build:`". `T-036`
+ * corrected their CONTENTS (OD-33: `docker/compose.yml` was missing from the
+ * build set, and a root, healthcheck-less `safety-gw` came out of the gap) and
+ * left them enumerations. `tech-lead` then measured the level above: a FIFTH
+ * compose file, wired into `scripts/svc`, carrying a target-less two-stage
+ * application build, literal pins, `ports:` and `mem_limit: 8g`, is read by
+ * NOTHING in either gate and is exit 0 on both — because `does not exist —
+ * this gate's file list is stale` fires on a LISTED file MISSING, never on one
+ * APPEARING. Reproduced on this branch before the fix (§ Evidence 1).
  *
- * A file-set constant that disagreed with the sentence describing it, inside
- * the ticket whose whole purpose was to remove exactly that.
+ * A glob (`docker/compose*.yml`) was considered and REJECTED, on `tech-lead`'s
+ * recommendation adopted in `T-037`'s brief: it is a second enumeration of the
+ * same kind, and `docker/chaos-extra.yml` would not match it. `scripts/svc`'s
+ * `compose_files_for()` is what actually decides which files reach a project,
+ * so it IS the set. See `lib/composed-files.ts` for the derivation, its
+ * fail-closed behaviour, and the straggler scan that catches a compose file
+ * `svc` composes from nothing.
  */
-const BUILD_DECLARING_FILES = [BASE_FILE, VERIFY_FILE, CHAOS_FILE, DEV_FILE] as const;
+const composed = composedFiles();
+/** Passed unconditionally: the file the addition/override difference is against. */
+const BASE_FILE = composed.files.find((f) => f.role === 'base')?.rel ?? 'docker/compose.yml';
+/** The file `--verify` adds, derived from the flag rather than from its name (row L). */
+const VERIFY_FILE = composed.files.find((f) => f.guard === 'USE_VERIFY')?.rel ?? '';
+const BUILD_DECLARING_FILES: readonly string[] = composed.files.map((f) => f.rel);
 /**
- * The files the no-host-port rule (§3) covers: the base file AND every
- * overlay.
+ * The files the no-host-port rule (§3) covers: everything composed EXCEPT the
+ * dev-only file.
  *
  * OD-22. The rule is a property of a TICKET-SCOPED PROJECT —
  * `docker compose -p kinvara-<t> -f compose.yml [-f overlay]` — so a `ports:`
@@ -96,12 +96,21 @@ const BUILD_DECLARING_FILES = [BASE_FILE, VERIFY_FILE, CHAOS_FILE, DEV_FILE] as 
  * SILENT: Docker drops publishing on an `internal: true` network with no
  * error, so it reads as working until a service gains a second network.
  *
- * `compose.dev.yml` is absent BY DESIGN: its fixed host ports are the one
- * documented exception in the programme (`T-016` § contract 6). It is the only
- * set below from which that file is excluded, and § Published contract §4 says
- * so rather than leaving it to inference.
+ * The exclusion is now DERIVED TOO: the excluded file is the one `scripts/svc`
+ * adds only for the literal `dev` project (`IS_DEV`), which is exactly the
+ * documented exception — the shared stack is the one project that publishes
+ * (`T-016` § contract 6). It is not excluded by name.
  */
-const PORT_FREE_FILES = [BASE_FILE, VERIFY_FILE, CHAOS_FILE] as const;
+const PORT_FREE_FILES: readonly string[] = composed.files
+  .filter((f) => f.role !== 'dev')
+  .map((f) => f.rel);
+/**
+ * The `-f` overlays — every file `svc` adds behind a FLAG. §4's budget rule
+ * reads this set. `compose.dev.yml` is not one: it is applied by project name.
+ */
+const OVERLAY_FILES: readonly string[] = composed.files
+  .filter((f) => f.role === 'overlay')
+  .map((f) => f.rel);
 const BUILT_BY = 'T-018';
 /**
  * The toolchain pins that reach an image build, LOOPED — never one of them
@@ -118,6 +127,18 @@ const PIN_ARGS = [
 ] as const;
 
 const failures: string[] = [];
+// Every diagnostic from the derivation is a failure of THIS gate: a gate that
+// cannot establish what it is supposed to read must go red, never green over a
+// set it guessed.
+failures.push(...composed.problems);
+if (VERIFY_FILE === '') {
+  failures.push(
+    `scripts/svc's compose_files_for() adds no compose file behind USE_VERIFY, so this ` +
+      `gate cannot tell which file '--verify' builds the application images from. Row L ` +
+      `below (every labelled service has a build: there) is what 'svc up --verify --build' ` +
+      `depends on, and it cannot be checked against a file that is not composed.`,
+  );
+}
 const read = (rel: string): string | null => {
   const p = path.join(REPO_ROOT, rel);
   return fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : null;
@@ -216,7 +237,95 @@ const servicesOf = (rel: string): Record<string, Record<string, unknown>> | null
 };
 
 const base = servicesOf(BASE_FILE);
-const verify = servicesOf(VERIFY_FILE);
+const verify = VERIFY_FILE === '' ? null : servicesOf(VERIFY_FILE);
+
+// ---------------------------------------------------------------------------
+// THE APPLICATION-SERVICE SET, AND WHERE ITS MEMBERSHIP IS ANCHORED (T-037,
+// OD-38).
+//
+// `declaredByLabel` — the services `docker/compose.yml` labels
+// `io.kinvara.built-by` — is what row L, §5's app set and §2b's universal all
+// key on. It was read out of THE SAME FILE AN ATTACKER EDITS, and its only
+// self-check fired when the set was EMPTY. `tech-lead` measured the
+// consequence on `93969b3`: delete `safety-gw`'s two label lines from
+// `compose.yml` and nothing else, and the gate prints
+// `services labelled built-by T-018  4: core worker web admin` at exit 0,
+// GATE PASS; then delete `safety-gw`'s entire `build:` stanza from
+// `compose.verify.yml` and it is STILL exit 0 — where negative case 07, the
+// same deletion for `core` with its label intact, is exit 1. Row L's own
+// trigger was defeated by first removing the label, and every rule keyed on
+// this set went silent for that service together. Reproduced on this branch
+// before the fix (§ Evidence 1).
+//
+// PROTOCOL.md §5.1: "a check must not be derived from the same reading as the
+// thing it checks... anchor one of them outside". So MEMBERSHIP is asserted,
+// not non-emptiness, and it is asserted against `apps/*/package.json` — a
+// different tree, owned by different agents, and the same set DOCKER.md §3's
+// profile table names. An application whose service loses its label now reds
+// the gate at the moment the label goes, rather than at the moment somebody
+// notices.
+//
+// DELIBERATELY OVER-APPROXIMATING, in the same direction and for the same
+// reason as `buildsFromWorkspace`: if `apps/` gains a directory that is not a
+// compose service, this gate reds and asks for a label. That is visible and
+// arguable. The other direction — a service quietly leaving the set — is
+// silent, and silence is what shipped OD-38.
+const APPS_DIR = 'apps';
+const appServices: string[] = (() => {
+  const abs = path.join(REPO_ROOT, APPS_DIR);
+  if (!fs.existsSync(abs)) return [];
+  return fs
+    .readdirSync(abs, { withFileTypes: true })
+    .filter((e) => e.isDirectory() && fs.existsSync(path.join(abs, e.name, 'package.json')))
+    .map((e) => e.name)
+    .sort();
+})();
+if (appServices.length === 0) {
+  failures.push(
+    `${APPS_DIR}/ contains no application package.json. That set is what anchors the ` +
+      `io.kinvara.built-by membership check below, and an empty anchor would make it ` +
+      `assert nothing (OD-38).`,
+  );
+}
+
+const declaredByLabel: string[] = [];
+if (base !== null) {
+  for (const [name, svc] of Object.entries(base)) {
+    const labels = svc['labels'];
+    if (isRecord(labels) && labels['io.kinvara.built-by'] === BUILT_BY) declaredByLabel.push(name);
+  }
+}
+declaredByLabel.sort();
+if (base !== null && appServices.length > 0) {
+  for (const name of appServices) {
+    if (!declaredByLabel.includes(name)) {
+      failures.push(
+        `${APPS_DIR}/${name} is an application in this workspace, but ${BASE_FILE} labels no ` +
+          `service '${name}' with 'io.kinvara.built-by: ${BUILT_BY}'. That label is what puts ` +
+          `a service inside the image contract — row L, the placeholder rule, and the rule ` +
+          `that no composed file may declare a NON-application build for it. Removing the ` +
+          `label removes the service from all three AT ONCE and used to be silent (OD-38).`,
+      );
+    }
+  }
+  for (const name of declaredByLabel) {
+    if (!appServices.includes(name)) {
+      failures.push(
+        `${BASE_FILE} labels '${name}' as built by ${BUILT_BY}, but there is no ` +
+          `${APPS_DIR}/${name}/package.json. Either the label names a service this ` +
+          `workspace does not build, or the app was removed and the label was not.`,
+      );
+    }
+  }
+}
+/**
+ * The services the image contract is asserted OVER, whichever composed file
+ * declares their build (T-037, OD-36). The union, not the label set alone:
+ * `appServices` is the anchor that survives an edit to `docker/compose.yml`,
+ * and `declaredByLabel` catches a labelled service that is not (yet) an
+ * `apps/*` directory.
+ */
+const protectedServices = new Set<string>([...appServices, ...declaredByLabel]);
 
 const pins = toolVersions();
 /** arg name -> the pinned value it must carry. Both, always both. */
@@ -509,6 +618,47 @@ for (const rel of BUILD_DECLARING_FILES) {
     allBuilds.push({ where: `${rel.replace('docker/', '')}:${name}`, dockerfile: df });
     const dfText = read(df);
     const stages = dfText === null ? [] : stagesOf(dfText);
+    const isApp = isApplicationBuild(dfText, build);
+
+    // --- 2b. THE UNIVERSAL (T-037, OD-36) ------------------------------------
+    //
+    //   NO COMPOSED FILE MAY DECLARE A NON-APPLICATION BUILD FOR A SERVICE IN
+    //   THE APPLICATION SET.
+    //
+    // This is the INVERSION the OE-10 ruling asked for, and it is the reason
+    // this ticket exists. Every previous fix here enumerated a bad route —
+    // a `build:` with no `target:` (OD-32), a `build:` in a file the list
+    // omitted (OD-33) — and each closed the route it was given. Then
+    // `tech-lead` found a third: give `docker/compose.yml`'s `safety-gw` a
+    // `build:` pointing at a SINGLE-STAGE, NON-APPLICATION Dockerfile and it is
+    // DEMOTED OUT of the application set. Three checks then decline it in
+    // sequence, each correctly by its own rule — the target rule exempts a
+    // single-stage file, `isApplicationBuild` is false so §1b/§1c/§6 skip it,
+    // and row L is satisfied by the untouched overlay. Built: `User=[root]`,
+    // a shell at PID 1, `Healthcheck=null`, `gate:pr` 9/9 exit 0 (OD-36).
+    //
+    // Enumerating a fourth route would have been the same mistake a fourth
+    // time. So the question is turned round: instead of asking "is this build
+    // one of the shapes we refuse", ask "is this service one whose image must
+    // satisfy the contract" — and if it is, a build that cannot be checked
+    // against that contract is itself the failure. `postgres` and
+    // `fake-telephony` stay green because neither is in the set, and nothing
+    // names them anywhere.
+    //
+    // Membership is anchored on `apps/*` as well as on the label, so the
+    // demotion cannot be performed by first deleting the label (OD-38).
+    if (!isApp && protectedServices.has(name)) {
+      failures.push(
+        `${rel}: '${name}' is an APPLICATION SERVICE (apps/${name} exists, and/or ` +
+          `${BASE_FILE} labels it 'io.kinvara.built-by: ${BUILT_BY}'), but the build it ` +
+          `declares here is not an application build: ${df} neither installs from the pnpm ` +
+          `workspace nor takes an APP build arg. Its image would then be exempt from the ` +
+          `non-root uid, the healthcheck, the exec-form entrypoint, the derived pins and ` +
+          `the devDependency guard — every one of them, silently, because being outside ` +
+          `the application set is how a build escapes all of them at once (OD-36). ` +
+          `An application service is built from the application Dockerfile.`,
+      );
+    }
 
     // --- the target rule, over EVERY build in EVERY file (OD-30/OD-32/OD-33) -
     const declared = typeof build['target'] === 'string' ? build['target'].trim() : '';
@@ -561,7 +711,7 @@ for (const rel of BUILD_DECLARING_FILES) {
     // --- the application-image set (§1b, §1c, §6) ---------------------------
     // Derived per build, not from which file it was declared in — see
     // `isApplicationBuild` for what case 56 cost the file-list version.
-    if (!isApplicationBuild(dfText, build)) continue;
+    if (!isApp) continue;
     const label = `${rel.replace('docker/', '')}:${name}→${target}`;
     dockerfilesInUse.set(df, [...(dockerfilesInUse.get(df) ?? []), label]);
     buildUses.push({
@@ -741,19 +891,8 @@ if (svcScript === null) {
 // ---------------------------------------------------------------------------
 // 2. Every service compose.yml says T-018 builds is built by the overlay.
 // ---------------------------------------------------------------------------
-const declaredByLabel: string[] = [];
-if (base !== null) {
-  for (const [name, svc] of Object.entries(base)) {
-    const labels = svc['labels'];
-    if (isRecord(labels) && labels['io.kinvara.built-by'] === BUILT_BY) declaredByLabel.push(name);
-  }
-}
-if (declaredByLabel.length === 0) {
-  failures.push(
-    `${BASE_FILE} labels no service 'io.kinvara.built-by: ${BUILT_BY}' — this gate would ` +
-      `then assert nothing about the images it exists to check.`,
-  );
-}
+// `declaredByLabel` and its MEMBERSHIP check are computed near the top of this
+// file, against the `apps/*` anchor (OD-38). Row L follows.
 if (verify !== null) {
   for (const name of declaredByLabel) {
     const svc = verify[name];
@@ -1182,10 +1321,25 @@ console.log(
     `  — both, in every file below (OD-21)`,
 );
 console.log(
-  `  services labelled built-by ${BUILT_BY}  ${String(declaredByLabel.length)}: ${declaredByLabel.join(' ')}`,
+  `  application services (anchor)   ${String(appServices.length)}: ${appServices.join(' ')}` +
+    `  (from ${APPS_DIR}/*/package.json — outside docker/, OD-38)`,
+);
+console.log(
+  `  services labelled built-by ${BUILT_BY}  ${String(declaredByLabel.length)}: ${declaredByLabel.join(' ')}` +
+    `  (membership asserted against the anchor above, not merely non-empty)`,
+);
+console.log(
+  `  image contract asserted over    ${String(protectedServices.size)}: ` +
+    `${[...protectedServices].sort().join(' ')}` +
+    `  (no composed file may declare a NON-application build for one — OD-36)`,
 );
 console.log(
   `  files read for build: (§2a)     ${String(BUILD_DECLARING_FILES.length)}: ${BUILD_DECLARING_FILES.join(' ')}`,
+);
+console.log(
+  `  composed set derived from       scripts/svc compose_files_for()  ` +
+    composed.files.map((f) => `${f.rel}[${f.role}]`).join(' ') +
+    `  (OD-37 — not a list, not a glob)`,
 );
 console.log(
   `  application builds (§1b/1c/§6)  ${String(buildUses.length)}` +

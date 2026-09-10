@@ -83,22 +83,54 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { REPO_ROOT, finish } from './lib/run.ts';
+import { composedFiles } from './lib/composed-files.ts';
 
 const BUILD_NETWORK = 'kinvara-build';
 const INT_NETWORK = 'kinvara-int';
 /** The one non-internal network, and the one file allowed to name it. */
 const PUB_NETWORK = 'kinvara-pub';
-const PUB_FILE = 'docker/compose.dev.yml';
-const BASE_FILE = 'docker/compose.yml';
 
-const COMPOSE_FILES = [
-  BASE_FILE,
-  PUB_FILE,
-  'docker/compose.verify.yml',
-  'docker/compose.chaos.yml',
-];
+/**
+ * THE FILES THIS GATE READS ARE DERIVED FROM `scripts/svc`'s `-f` ASSEMBLY
+ * (T-037, OD-37) — this used to be a four-element constant.
+ *
+ * The constant was described by a sentence with a direction it had no
+ * behaviour in: a fifth compose file "fails closed". It does not. `does not
+ * exist — this gate's file list is stale` fires when a LISTED file is MISSING;
+ * a file APPEARING is not a listed file missing, so nothing fired. Measured by
+ * `tech-lead` on `93969b3` and reproduced on this branch: a fifth compose file
+ * with `networks: [default]` on its service — the OD-12 shape, a container on
+ * an ordinary bridge with FULL EGRESS — was exit 0 here.
+ *
+ * `scripts/svc`'s `compose_files_for()` is what decides which files reach a
+ * ticket-scoped project, so it is the set. Not a `docker/compose*.yml` glob:
+ * that is the same enumeration in another spelling, and `chaos-extra.yml`
+ * evades it. `lib/composed-files.ts` also reports any compose-shaped file
+ * under `docker/` that `svc` composes from nothing, which is the direction the
+ * derivation alone cannot see.
+ */
+const composed = composedFiles();
+const COMPOSE_FILES: readonly string[] = composed.files.map((f) => f.rel);
+/** Passed unconditionally — the file the addition/override difference is against. */
+const BASE_FILE = composed.files.find((f) => f.role === 'base')?.rel ?? 'docker/compose.yml';
+/**
+ * The one file allowed to name `kinvara-pub`: the shared `kinvara-dev` stack,
+ * identified by `svc` adding it only for the literal `dev` project (`IS_DEV`),
+ * not by its name.
+ */
+const PUB_FILE = composed.files.find((f) => f.role === 'dev')?.rel ?? '';
 
 const failures: string[] = [];
+// A gate that cannot establish which files it is meant to read goes RED. An
+// unknown scope is a failure, never a smaller scope.
+failures.push(...composed.problems);
+if (PUB_FILE === '') {
+  failures.push(
+    `scripts/svc's compose_files_for() adds no compose file for the literal 'dev' project ` +
+      `(IS_DEV), so this gate cannot tell which file is allowed to name ${PUB_NETWORK}. ` +
+      `That exemption is the shared dev stack's and nothing else's (T-016 § contract 6).`,
+  );
+}
 
 const read = (rel: string): string | null => {
   const p = path.join(REPO_ROOT, rel);
@@ -146,7 +178,11 @@ if (COMPOSE_FILES[0] !== BASE_FILE) {
 for (const rel of COMPOSE_FILES) {
   const text = read(rel);
   if (text === null) {
-    failures.push(`${rel} does not exist — this gate's file list is stale`);
+    failures.push(
+      `${rel} does not exist, but scripts/svc's compose_files_for() composes it — every ` +
+        `'svc up' would fail on it. The set this gate reads is derived from that ` +
+        `assembly (OD-37), so a -f naming a missing file is reported here too.`,
+    );
     continue;
   }
 
@@ -493,6 +529,11 @@ for (const [rel, text] of [
 }
 
 console.log(`  compose files parsed       ${String(filesParsed)}/${String(COMPOSE_FILES.length)}`);
+console.log(
+  `  file set derived from      scripts/svc compose_files_for()  ` +
+    composed.files.map((f) => `${f.rel}[${f.role}]`).join(' ') +
+    `  (OD-37 — not a list, not a glob)`,
+);
 console.log(`  services checked           ${String(servicesChecked)}`);
 console.log(
   `  overlay-only additions     ${String(additionsChecked)}` +
