@@ -64,14 +64,53 @@
 # docker/app.Dockerfile is ONE file for all five, parameterised by APP. Read
 # its header for why that is not laziness.
 #
-# THE REPETITION BELOW IS DELIBERATE. A YAML anchor with a `<<:` merge key
-# would collapse it, and it would also plant a real parser disagreement in the
-# one file this programme's egress gate parses: YAML 1.2 (the `yaml` package
-# the gate uses) does NOT resolve `<<`, while compose's own Go parser (YAML
-# 1.1) does. T-017's QA found exactly that difference and used it to prove an
-# anti-vacuity check. `args:` maps do not merge anyway — the child map
-# replaces the parent's — so the anchor would have saved two lines and bought
-# a divergence between what the gate reads and what compose runs.
+# THE REPETITION BELOW IS DELIBERATE, AND THE REASON CHANGED IN T-037 — the
+# original reason is retired and this is what replaced it. Both halves of the
+# old wording are now false and are struck rather than reworded:
+#
+#   ~~"YAML 1.2 (the `yaml` package the gate uses) does NOT resolve `<<`,
+#     while compose's own Go parser (YAML 1.1) does"~~
+#
+#   * the GATE now resolves merge keys. `scripts/gates/lib/compose-parse.ts`
+#     is the one place any gate reads a compose file, and it models `<<`
+#     deliberately, so that a build reached through a fragment is subject to
+#     every per-build rule (decisions.md OD-39). Negative case 72 is a build
+#     merged in and refused; case 74 is a harmless merge that must stay green.
+#     An anchor here would no longer buy any divergence for `<<`.
+#   * the VERSION IDENTITY was wrong. Compose is not "YAML 1.1": measured with
+#     `docker compose config`, it resolves `<<` (1.1's behaviour), reads
+#     `A: on` as the STRING 'on' (1.2's) and `B: 0777` as 511 (1.1's) — it
+#     splits within one document. Withdrawn at its origin, T-017 §R3, by
+#     signed orchestrator correction; this was the copy in app/.
+#     T-037 § Published contract §0 is the authority for what this gate's
+#     reader models and what it refuses.
+#
+# WHAT SURVIVES, AND IT IS WHY THE REPETITION STAYS — measured against
+# compose, not argued: `<<` IS A SHALLOW MERGE. A child `args:` map REPLACES
+# the parent's; it does not extend it. Probe, resolved by `docker compose
+# config`:
+#
+#     x-build: &build   ->   args: {NODE_VERSION: ..., PNPM_VERSION: ...}
+#     a.build           ->   {<<: *build, args: {APP: a}}
+#     b.build           ->   {<<: *build}
+#
+#     resolved:
+#       a.build.args = {APP: a}                    <- THE PINS ARE GONE
+#       b.build.args = {NODE_VERSION, PNPM_VERSION}
+#
+# Every one of the five services below must declare its own `args:` for APP,
+# APP_KIND and APP_PORT. So an anchor could not carry NODE_VERSION and
+# PNPM_VERSION for any of them: it would save three lines (context,
+# dockerfile, target) and make the two lines that matter most — the pins,
+# derived from .tool-versions — LOOK inherited while every service silently
+# built without them. That is not hypothetical and it is not unguarded:
+# gate:app-images requires every service to pass each pin ARG its Dockerfile
+# declares as the `:?` form, per service and not per file (OD-23, negative
+# cases 37 and 38), so the anchor turns the gate red — measured on the
+# anchored form of THIS file: exit 1, ten problems, two per service, each one
+# naming a pin the merge dropped. The repetition stays because it is honest
+# about a merge that does not do what it looks like it does, not because the
+# gate cannot read it.
 # ---------------------------------------------------------------------------
 
 services:
