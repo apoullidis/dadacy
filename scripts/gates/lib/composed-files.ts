@@ -54,8 +54,8 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { parse as parseYaml } from 'yaml';
 import { REPO_ROOT } from './run.ts';
+import { parseCompose } from './compose-parse.ts';
 
 /**
  * `base` — passed unconditionally, so it is in every project. It is the file
@@ -243,21 +243,14 @@ function stragglers(composed: readonly string[]): string[] {
   for (const abs of walk(dir).sort()) {
     const rel = path.relative(REPO_ROOT, abs);
     if (composed.includes(rel)) continue;
-    let doc: unknown;
-    try {
-      doc = parseYaml(fs.readFileSync(abs, 'utf8'));
-    } catch {
-      continue; // not YAML this gate can read; it is not a compose file it can be sure of
-    }
-    if (
-      typeof doc === 'object' &&
-      doc !== null &&
-      !Array.isArray(doc) &&
-      'services' in (doc as Record<string, unknown>) &&
-      typeof (doc as Record<string, unknown>)['services'] === 'object' &&
-      (doc as Record<string, unknown>)['services'] !== null &&
-      !Array.isArray((doc as Record<string, unknown>)['services'])
-    ) {
+    // OD-39: the same reader every other site uses — YAML 1.1, compose's own
+    // version. A straggler that only LOOKS like a compose file under 1.2 (or
+    // only under 1.1) would otherwise be classified by a third parse, which is
+    // how this family started.
+    const { doc } = parseCompose(rel, fs.readFileSync(abs, 'utf8'));
+    if (doc === null) continue; // not a compose file this gate can be sure of
+    const svcs = doc['services'];
+    if (typeof svcs === 'object' && svcs !== null && !Array.isArray(svcs)) {
       out.push(
         `${rel} is a compose file — it has a top-level services: mapping — and ` +
           `${SVC}'s compose_files_for() composes it from nothing. Either wire it into that ` +

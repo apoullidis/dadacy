@@ -15,6 +15,8 @@ BK="$(mktemp -d)"
 
 cp "$VERIFY" "$BK/compose.verify.yml"
 cp "$CHAOS" "$BK/compose.chaos.yml"
+BASE=docker/compose.yml
+cp "$BASE" "$BK/base"
 cp scripts/dev "$BK/dev"
 cp scripts/svc "$BK/svc"
 cp scripts/lib/toolbox.sh "$BK/toolbox.sh"
@@ -24,6 +26,8 @@ restore() {
   # T-037, OD-37: this gate's file set is derived from scripts/svc's own -f
   # assembly, so the cases below add and remove compose files.
   rm -f docker/compose.extra.yml docker/chaos-extra.yml
+  cp "$BK/base" "$BASE"
+  return 0
 }
 trap 'restore; rm -rf "$BK"' EXIT
 
@@ -246,6 +250,52 @@ services:
 YML
 run_case "27 a compose file svc composes from nothing" FAIL
 rm -f docker/chaos-extra.yml
+
+
+echo; echo "=== cases 28-32 (T-037 rework, OD-39): this gate's parser differed from compose's, and T-017 §R3 knew ==="
+# T-017 §R3 measured the YAML 1.1/1.2 merge-key divergence in THIS FILE on
+# 2026-09-05 and found it fails closed — but only through an invariant derived
+# from outside the parse: every service declares image: or build:. OD-39 is the
+# shape that SATISFIES that invariant while still being misread, and case 28 is
+# the direction §R3's cases did not reach: an OVERRIDE (a name that IS in
+# compose.yml) is exempt from the networks: requirement when it declares no
+# networks: key, so a merge key that supplies a BAD network to an override was
+# invisible. `networks: [default]` and not [kinvara-build], deliberately: rule 1
+# scans the whole document text for kinvara-build and would catch the anchor
+# itself, which would make the case pass for a reason that is not this one.
+mut "$VERIFY" 'services:' "x-t037-net: &t037_net
+  networks: [default]
+
+services:" \
+  && mut "$VERIFY" '  core:
+    build:' '  core:
+    <<: *t037_net
+    build:' \
+  && run_case "28 a bad network MERGED into an override (OD-39)" FAIL
+# 29. THE CONTROL: merge keys are MODELLED, not refused. A fragment that
+#     violates nothing must stay green, or 28 would pass for the wrong reason
+#     and a documented Compose Spec feature would be unusable.
+mut "$VERIFY" 'services:' "x-t037-ok: &t037_ok
+  stop_grace_period: 30s
+
+services:" \
+  && mut "$VERIFY" '  core:
+    build:' '  core:
+    <<: *t037_ok
+    build:' \
+  && run_case "29 a harmless <<: merge (must stay green)" PASS
+# 30-32. The rest of the enumerated divergence class, shared with
+#        gate:app-images through lib/compose-parse.ts: a scalar the two YAML
+#        versions read differently, a tag no reader resolves, and the two
+#        compose features nothing models.
+mut "$BASE" '      NODE_ENV: ${NODE_ENV:-development}' '      NODE_ENV: ${NODE_ENV:-development}
+      QA_T037_FLAG: on' && run_case "30 a scalar YAML 1.1 and 1.2 read differently" FAIL
+mut "$BASE" '      NODE_ENV: ${NODE_ENV:-development}' '      NODE_ENV: !reset ${NODE_ENV:-development}' \
+  && run_case "31 an unresolvable !reset tag (fail closed)" FAIL
+mut "$BASE" 'services:' 'include:
+  - docker/compose.verify.yml
+
+services:' && run_case "32 a top-level include: (fail closed)" FAIL
 
 echo
 run_case "99 tree restored" PASS

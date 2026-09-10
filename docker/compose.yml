@@ -125,7 +125,7 @@ services:
   postgres:
     image: kinvara/postgres:18-3.6-kinvara1
     build:
-      context: .
+      context: '.'
       dockerfile: postgres.Dockerfile
     profiles: ['db']
     networks: [kinvara-int]
