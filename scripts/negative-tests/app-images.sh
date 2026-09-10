@@ -27,7 +27,7 @@ restore() {
   rm -rf docker/rogue-single.Dockerfile docker/rogue-two-stage.Dockerfile \
          docker/compose.extra.yml docker/chaos-extra.yml
   # T-037 rework (OD-39) and the folded-in attack round.
-  rm -rf apps/qa-attack apps/safety-gw/package.json.t037 docker/zz-thing.yaml
+  rm -rf apps/qa-attack apps/qa-x apps/safety-gw/package.json.t037 docker/zz-thing.yaml
   [[ -f "$BK/sgwpkg" ]] && cp "$BK/sgwpkg" apps/safety-gw/package.json
   return 0
 }
@@ -1066,6 +1066,49 @@ services:
 YML
 run_case "84 infra/compose.rogue.yml — the stated bound (expected PASS)" PASS
 rm -f infra/compose.rogue.yml; rmdir infra 2>/dev/null
+
+
+echo; echo "=== cases 85-87 (T-037 rework, QA-N2): the three combinations of a half-declared new app ==="
+# § contract 6 step 2 used to say "gate:app-images will tell you which of those
+# you missed". QA found that missing BOTH is green; measuring all three showed
+# missing the LABEL alone is green too, so the sentence was wrong in two
+# directions rather than one. These cases put all three outcomes in the gate's
+# own output, so the published scope is re-executable rather than asserted.
+NEWAPP='{"name":"@kinvara/qa-x","private":true,"version":"0.0.0","type":"module"}'
+mk_qa_x() { mkdir -p apps/qa-x && printf '%s\n' "$NEWAPP" > apps/qa-x/package.json; }
+# 85. Neither half. GREEN, and correctly: an apps/ directory no composed file
+#     references is a package, not a service, and nothing builds it.
+mk_qa_x && run_case "85 a new apps/* declared in no compose file (green)" PASS
+# 86. The label without the overlay build. RED — row L, naming the missing build.
+mk_qa_x && mut "$BASE" '  valkey:
+    image:' "  qa-x:
+    image: kinvara/qa-x:dev
+    profiles: [cache]
+    networks: [kinvara-int]
+    mem_limit: 64m
+    cpus: 0.25
+    labels:
+      io.kinvara.built-by: 'T-018'
+  valkey:
+    image:" && run_case "86 the label without an overlay build (row L)" FAIL
+# 87. The overlay build without the label. GREEN, and correctly: nothing needs
+#     the label to reach this build — the image contract reads it through the
+#     derived Dockerfile set and the universal reads it through apps/*.
+mk_qa_x && mut "$VERIFY" 'services:' 'services:
+  qa-x:
+    image: kinvara/qa-x:dev
+    networks: [kinvara-int]
+    mem_limit: 128m
+    cpus: 0.25
+    build:
+      context: ..
+      dockerfile: docker/app.Dockerfile
+      target: runtime
+      args:
+        NODE_VERSION: ${KINVARA_NODE_VERSION:?derived from .tool-versions by scripts/svc}
+        PNPM_VERSION: ${KINVARA_PNPM_VERSION:?derived from .tool-versions by scripts/svc}
+        APP: qa-x
+    pull_policy: build' && run_case "87 an overlay build without the label (green)" PASS
 
 echo
 run_case "99 tree restored" PASS
