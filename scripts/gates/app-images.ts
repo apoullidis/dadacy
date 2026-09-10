@@ -319,7 +319,7 @@ if (base !== null && appServices.length > 0) {
   // widening this to "every apps/* directory" would make negative case 52 —
   // an app declared only by an overlay build — red on two problems instead of
   // the one it is cited for, which is the isolation QA-F2 fixed. The residue
-  // (deleting the label AND the whole service) is probed by case 71 and is
+  // (deleting the label AND the whole service) is probed by case 66 and is
   // caught by the overlay ADDITION rules in both gates.
   for (const name of appServices) {
     if (base[name] !== undefined && !declaredByLabel.includes(name)) {
@@ -1400,8 +1400,14 @@ for (const line of [...stagesChecked].sort()) console.log(`    ${line}`);
 console.log(`  apps read                       ${String(appsChecked)}`);
 console.log(
   `  apps with src/                  ${String(withSource)}` +
+    // QA-N1's sibling, found by tech-lead on this same tree (T-037 § TL-4):
+    // this line read "all five" — a literal, printed beside a set the same
+    // commit made DERIVED. With a sixth apps/* directory present the gate
+    // printed `application services (anchor) 6:` and "all five" in one run.
+    // The number now comes from the variable the sentence is about, which is
+    // `appsChecked`, printed on the line directly above this one.
     (withSource === 0
-      ? '  (all five still T-001 placeholders — the images run the reference entrypoint)'
+      ? `  (all ${String(appsChecked)} apps read are still T-001 placeholders — the images run the reference entrypoint)`
       : ''),
 );
 
