@@ -12,7 +12,7 @@
  * session: that keeps the session's authenticated identity and its
  * `rolbypassrls`, so it is a weaker claim about a different thing.
  */
-import { after, before, describe, test } from 'node:test';
+import { afterAll, beforeAll, describe, test } from 'vitest';
 import assert from 'node:assert/strict';
 import {
   ACCOUNT_ID,
@@ -27,15 +27,12 @@ import { assertPermitted, assertRefused, SQLSTATE_INSUFFICIENT_PRIVILEGE } from 
 const SUITE = 'int10-write-only';
 let db: Cluster;
 
-before(
-  async () => {
-    db = await acquireMigratedCluster(SUITE);
-    await installInt10Fixtures(db);
-  },
-  { timeout: 300_000 },
-);
+beforeAll(async () => {
+  db = await acquireMigratedCluster(SUITE);
+  await installInt10Fixtures(db);
+}, 300_000);
 
-after(async () => {
+afterAll(async () => {
   if (db !== undefined) await db.stop();
 });
 

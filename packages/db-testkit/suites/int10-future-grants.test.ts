@@ -13,7 +13,7 @@
  * against a guard that refused every `CREATE FUNCTION`, and "the guard is a
  * scalpel, not a blanket" would be an assertion rather than a measurement.
  */
-import { after, before, describe, test } from 'node:test';
+import { afterAll, beforeAll, describe, test } from 'vitest';
 import assert from 'node:assert/strict';
 import {
   ACCOUNT_EMAIL,
@@ -27,15 +27,12 @@ import { assertPermitted, assertRefused, INT10_RAISE } from '../src/expect.ts';
 const SUITE = 'int10-future-grants';
 let db: Cluster;
 
-before(
-  async () => {
-    db = await acquireMigratedCluster(SUITE);
-    await installInt10Fixtures(db);
-  },
-  { timeout: 300_000 },
-);
+beforeAll(async () => {
+  db = await acquireMigratedCluster(SUITE);
+  await installInt10Fixtures(db);
+}, 300_000);
 
-after(async () => {
+afterAll(async () => {
   if (db !== undefined) await db.stop();
 });
 

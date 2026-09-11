@@ -10,7 +10,7 @@
  * refusal below has a control, so "refused" and "refuses everything" are
  * distinguishable.
  */
-import { after, before, describe, test } from 'node:test';
+import { afterAll, beforeAll, describe, test } from 'vitest';
 import assert from 'node:assert/strict';
 import {
   acquireCluster,
@@ -27,15 +27,12 @@ const SUITE = 'harness-refusals';
 let db: Cluster;
 let startedAt = 0;
 
-before(
-  async () => {
-    startedAt = Date.now();
-    db = await acquireCluster(SUITE);
-  },
-  { timeout: 300_000 },
-);
+beforeAll(async () => {
+  startedAt = Date.now();
+  db = await acquireCluster(SUITE);
+}, 300_000);
 
-after(async () => {
+afterAll(async () => {
   if (db !== undefined) await db.stop();
 });
 

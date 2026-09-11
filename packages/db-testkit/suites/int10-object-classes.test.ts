@@ -22,7 +22,7 @@
  * adds a fifth detective-only class, and this file goes red the first time it
  * runs on that version — rather than waiting for someone to be surprised.
  */
-import { after, before, describe, test } from 'node:test';
+import { afterAll, beforeAll, describe, test } from 'vitest';
 import assert from 'node:assert/strict';
 import {
   APP_DATABASE,
@@ -44,15 +44,12 @@ const LO_PAYLOAD = 'child name: Α. Χριστοδούλου, phone +99170000009
 
 let db: Cluster;
 
-before(
-  async () => {
-    db = await acquireMigratedCluster(SUITE);
-    await installInt10Fixtures(db);
-  },
-  { timeout: 300_000 },
-);
+beforeAll(async () => {
+  db = await acquireMigratedCluster(SUITE);
+  await installInt10Fixtures(db);
+}, 300_000);
 
-after(async () => {
+afterAll(async () => {
   if (db !== undefined) await db.stop();
 });
 

@@ -8,9 +8,13 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "test:integration": "node --test --test-concurrency=1 --test-reporter=spec 'suites/*.test.ts'"
+    "test:integration": "vitest run --no-file-parallelism --reporter=verbose --hookTimeout=300000 --testTimeout=120000"
   },
   "dependencies": {
     "yaml": "2.8.1"
+  },
+  "devDependencies": {
+    "vite": "8.2.2",
+    "vitest": "5.0.0"
   }
 }

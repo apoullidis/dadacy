@@ -11,30 +11,27 @@
  *
  * P3 — the cluster-level parameter — is in `preflight-p3.test.ts`. It needs a
  * cluster started with a different server command, and a suite FILE holds at
- * most one cluster: `--test-concurrency=1` serialises files, not the clusters
- * inside one, and this file used to hold two at once — measured by T-115 as a
+ * most one cluster: the runner's `--no-file-parallelism` serialises files, not
+ * the clusters inside one, and this file used to hold two at once — measured by T-115 as a
  * 1 GB peak against the `db` profile's 512 MB budget. `gate:constraint-suite`
  * now refuses a second acquire call site in one file.
  */
-import { after, before, describe, test } from 'node:test';
+import { afterAll, beforeAll, describe, test } from 'vitest';
 import assert from 'node:assert/strict';
 import { acquireCluster, applyBaseline, type Cluster } from '../src/index.ts';
 
 const SUITE = 'preflight';
 let db: Cluster;
 
-before(
-  async () => {
-    // NOT acquireMigratedCluster: this suite watches 0001 fail, so it must own a
-    // cluster in which 0001 has never run. Nothing here creates the five roles,
-    // which is why three probe databases can share one cluster — every one of
-    // them is refused before Section 2.
-    db = await acquireCluster(SUITE);
-  },
-  { timeout: 300_000 },
-);
+beforeAll(async () => {
+  // NOT acquireMigratedCluster: this suite watches 0001 fail, so it must own a
+  // cluster in which 0001 has never run. Nothing here creates the five roles,
+  // which is why three probe databases can share one cluster — every one of
+  // them is refused before Section 2.
+  db = await acquireCluster(SUITE);
+}, 300_000);
 
-after(async () => {
+afterAll(async () => {
   if (db !== undefined) await db.stop();
 });
 

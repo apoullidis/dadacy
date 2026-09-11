@@ -35,7 +35,8 @@
  *      against without restarting the shared cluster underneath its neighbours.
  *
  * The cost of (a) is honest and bounded: one container start per suite file,
- * ~3 s against a cached image, 512 MB at a time (`--test-concurrency=1`, so the
+ * ~3 s against a cached image, 512 MB at a time (the runner's
+ * `--no-file-parallelism`, plus one acquire call site per suite file, so the
  * peak is one cluster — the `db` profile's own budget, `DOCKER.md` §3).
  */
 import crypto from 'node:crypto';

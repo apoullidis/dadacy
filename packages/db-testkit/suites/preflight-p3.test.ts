@@ -4,43 +4,41 @@
  *
  * Its own FILE, not a `describe` inside `preflight.test.ts`: it needs a cluster
  * started with a different server command, and a suite file holds at most one
- * cluster. `--test-concurrency=1` serialises files, not the clusters inside one;
- * when P3 lived in `preflight.test.ts` a single run held two clusters at once
- * (1 GB against the `db` profile's 512 MB), measured by T-115's sampler.
+ * cluster. The runner's `--no-file-parallelism` serialises files, not the
+ * clusters inside one; when P3 lived in `preflight.test.ts` a single run held
+ * two clusters at once (1 GB against the `db` profile's 512 MB), measured by
+ * T-115's sampler under node:test's equivalent flag, `--test-concurrency=1`.
  *
  * `shared_preload_libraries` is a CLUSTER-level parameter, which is the third
  * reason this harness gives every suite a cluster rather than a database
  * (see `src/cluster.ts`).
  */
-import { after, before, test } from 'node:test';
+import { afterAll, beforeAll, test } from 'vitest';
 import assert from 'node:assert/strict';
 import { acquireCluster, applyBaseline, type Cluster } from '../src/index.ts';
 
 const PSQL_SCRIPT_ERROR = 3;
 let bare: Cluster;
 
-before(
-  async () => {
-    // T-020 produced this state by resetting the parameter and restarting the
-    // container by hand; here it is one line, which is the whole difference
-    // between a one-off run and a suite.
-    bare = await acquireCluster('preflight-no-preload', {
-      // `pg_partman_bgw` and NOT the empty string. An EMPTY value is not a
-      // shorter version of this test — measured on this image, PostgreSQL 18
-      // treats `shared_preload_libraries = ''` as a one-element list whose
-      // element is the empty filename and refuses to start:
-      // `FATAL: could not access file "": No such file or directory`. A P3
-      // cluster that cannot boot would have failed as a harness bug, not as a
-      // preflight refusal. A non-empty list that is MISSING one entry is also
-      // the realistic mistake: OD-9 is a whole finding about getting the names
-      // in this list right.
-      command: ['postgres', '-c', 'shared_preload_libraries=pg_partman_bgw'],
-    });
-  },
-  { timeout: 300_000 },
-);
+beforeAll(async () => {
+  // T-020 produced this state by resetting the parameter and restarting the
+  // container by hand; here it is one line, which is the whole difference
+  // between a one-off run and a suite.
+  bare = await acquireCluster('preflight-no-preload', {
+    // `pg_partman_bgw` and NOT the empty string. An EMPTY value is not a
+    // shorter version of this test — measured on this image, PostgreSQL 18
+    // treats `shared_preload_libraries = ''` as a one-element list whose
+    // element is the empty filename and refuses to start:
+    // `FATAL: could not access file "": No such file or directory`. A P3
+    // cluster that cannot boot would have failed as a harness bug, not as a
+    // preflight refusal. A non-empty list that is MISSING one entry is also
+    // the realistic mistake: OD-9 is a whole finding about getting the names
+    // in this list right.
+    command: ['postgres', '-c', 'shared_preload_libraries=pg_partman_bgw'],
+  });
+}, 300_000);
 
-after(async () => {
+afterAll(async () => {
   if (bare !== undefined) await bare.stop();
 });
 

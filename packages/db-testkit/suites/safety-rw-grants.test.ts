@@ -13,7 +13,7 @@
  * GRANT LEVEL, so `safety-gw` keeps working with `core` entirely down without
  * ever being able to corrupt the read model.
  */
-import { after, before, describe, test } from 'node:test';
+import { afterAll, beforeAll, describe, test } from 'vitest';
 import assert from 'node:assert/strict';
 import {
   acquireMigratedCluster,
@@ -26,15 +26,12 @@ import { assertPermitted, assertRefused } from '../src/expect.ts';
 const SUITE = 'safety-rw-grants';
 let db: Cluster;
 
-before(
-  async () => {
-    db = await acquireMigratedCluster(SUITE);
-    await installSafetyFixtures(db);
-  },
-  { timeout: 300_000 },
-);
+beforeAll(async () => {
+  db = await acquireMigratedCluster(SUITE);
+  await installSafetyFixtures(db);
+}, 300_000);
 
-after(async () => {
+afterAll(async () => {
   if (db !== undefined) await db.stop();
 });
 

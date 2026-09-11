@@ -4,13 +4,13 @@
  * Published contract: `tasks/state/EP-QA/T-115.md` § Published contract.
  *
  * ```ts
- * import { before, after, test } from 'node:test';
+ * import { afterAll, beforeAll, test } from 'vitest';
  * import assert from 'node:assert/strict';
  * import { acquireMigratedCluster, type Cluster } from '@kinvara/db-testkit';
  *
  * let db: Cluster;
- * before(async () => { db = await acquireMigratedCluster('my-suite'); }, { timeout: 180_000 });
- * after(async () => { await db.stop(); });
+ * beforeAll(async () => { db = await acquireMigratedCluster('my-suite'); }, 300_000);
+ * afterAll(async () => { if (db !== undefined) await db.stop(); });
  * ```
  *
  * One cluster per suite FILE. Never share one between files: roles are
