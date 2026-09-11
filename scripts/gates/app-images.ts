@@ -249,7 +249,8 @@ const servicesOf = (rel: string): Record<string, Record<string, unknown>> | null
     // not compared, OD-48; one lexer — it cannot see a SYNTAX difference,
     // T-130 rework 1), refuses a second document (OD-41), the three YAML 1.1
     // line breaks (OD-43), a lone CR and text that is not UTF-8 (OD-45), the
-    // `\/` escape (OD-44) and two keys naming one property (OD-48), and lists
+    // `\/` escape (OD-44) and two SCALAR keys naming one property (OD-48; an
+    // alias or collection key is not modelled, T-131 QA-F1), and lists
     // every member MEASURED in its header — not an exhaustive list.
     const { doc, problems, schemasAgreed } = parseCompose(rel, text);
     failures.push(...problems);
@@ -1438,8 +1439,8 @@ console.log(
 console.log(
   `  compose reader                  lib/compose-parse.ts, shared with gate:egress-boundary` +
     `  (merge keys resolved; one lexer, two SCHEMAS compared value by value and by kind, key order NOT compared. Refused, each by a named case: ` +
-    `a scalar the schemas read differently (75), a 1.1 Date (128), a second document (88), a U+0085/U+2028/U+2029 character (124-127), a lone carriage return (130, 132), ` +
-    `U+0000/U+FFFD e.g. UTF-16 (133), the \\/ escape (135), two keys naming one property (137-139); the other members MEASURED are in its header — not exhaustive)`,
+    `a scalar the schemas read differently (75), a 1.1 Date (128), a second document (88), a U+0085/U+2028/U+2029 character (124-127), a lone carriage return (130, 132; in compose.verify.yml, compose.dev.yml, compose.chaos.yml 141-143), ` +
+    `U+0000/U+FFFD e.g. UTF-16 (133), the \\/ escape (135), two SCALAR keys naming one property (137-139 — an ALIAS or collection key is not modelled and NOT refused); the other members MEASURED are in its header — not exhaustive)`,
 );
 console.log(
   `  files whose 1.1 and 1.2 SCHEMA readings A3 found equal  ${String(schemasAgreedFiles.length)}: ` +

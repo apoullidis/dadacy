@@ -451,7 +451,7 @@ echo; echo "=== cases 58-61 (T-130 rework 1, OD-43): a 1.1/1.2 SYNTAX difference
 # decisions.md OD-43 and TL-F1: U+2028, U+2029 and U+0085 are LINE BREAKS to
 # YAML 1.1 and to Docker Compose, and ordinary characters to YAML 1.2 and to
 # `yaml`'s lexer, which BOTH of this gate's readings use (it targets 1.2; a lone
-# CR, OD-45, is cases 64 and 66). So a whole service can sit after one
+# CR, OD-45, is cases 64, 66 and 75-77). So a whole service can sit after one
 # on a comment line: a comment to every rule here, a service to compose. This
 # gate's shape is its own rule's: `qa-rogue` on the DEFAULT bridge (OD-12, full
 # egress). Measured with `docker compose config` on scratch files: qa-rogue
@@ -535,7 +535,8 @@ mut "$BASE" '  safety-gw:
 mut "$BASE" "$ENV_LINE" "$ENV_LINE
       QA_T131_PATH: \"a\\\\/b\"" \
   && run_case "70 \"a\\\\/b\", an escaped backslash (must stay green)" PASS
-# 71-73. OD-48: two keys that name the SAME property (see app-images 137-139).
+# 71-73. OD-48: two SCALAR keys that name the SAME property (see app-images
+#        137-139; an ALIAS key is not modelled and not refused, T-131 QA-F1).
 #        74: THE CONTROL.
 mut "$BASE" "$ENV_LINE" "$ENV_LINE
       -017: a
@@ -555,6 +556,36 @@ mut "$BASE" "$ENV_LINE" "$ENV_LINE
       \"15\": b
       \"17\": c" \
   && run_case "74 \"15\" and \"17\" alone (must stay green)" PASS
+
+echo; echo "=== cases 75-77 (T-131 rework 1): OD-45 (1), a lone CR, in the three OTHER composed files ==="
+# qa-verification QA-3 / QA-3a, verifying T-131: a default-bridge service hidden
+# behind lone CRs was a live route in compose.verify.yml, compose.dev.yml and
+# compose.chaos.yml at main 7dff12c (exit 0 GATE PASS, while `docker compose
+# config` attached it to 'default'), and A11 already refused it. Nothing
+# re-executed that, so these cases do. They add no refusal. qa-rogue declares
+# its budget, so the only rule the hidden text breaks is this gate's own
+# networks rule (OD-12). 64 and 66 are the compose.yml and straggler members.
+QA_ROGUE="  qa-rogue:${CR}    image: alpine:3.20${CR}    networks: [default]${CR}    mem_limit: 64m${CR}    cpus: 0.1"
+# 75. compose.verify.yml. 76. compose.dev.yml. Both behind a comment line
+#     directly under services:.
+mut "$VERIFY" "$ANCHOR" "
+services:
+  # T-131 rework probe${CR}${QA_ROGUE}
+" && sep_landed "$VERIFY" "$CR" \
+  && run_case "75 OD-45: a lone CR hides a bridge service, verify" FAIL "a LONE CR"
+mut "$DEV" "$ANCHOR" "
+services:
+  # T-131 rework probe${CR}${QA_ROGUE}
+" && sep_landed "$DEV" "$CR" \
+  && run_case "76 OD-45: a lone CR hides a bridge service, dev" FAIL "a LONE CR"
+# 77. compose.chaos.yml (T-126's file), behind a benign core label override, so
+#     that the file still has a services: mapping at main.
+mut "$CHAOS" 'services: {}' "services:
+  core:
+    labels:
+      io.kinvara.qa: probe # T-131 rework probe${CR}${QA_ROGUE}" \
+  && sep_landed "$CHAOS" "$CR" \
+  && run_case "77 OD-45: a lone CR hides a bridge service, chaos" FAIL "a LONE CR"
 
 echo
 run_case "99 tree restored" PASS

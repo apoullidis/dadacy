@@ -1281,7 +1281,7 @@ echo; echo "=== cases 124-127 (T-130 rework 1, OD-43): a 1.1/1.2 SYNTAX differen
 # decisions.md OD-43 (qa-verification) and TL-F1 (tech-lead): U+2028, U+2029
 # and U+0085 are LINE BREAKS to YAML 1.1 and to Docker Compose, and ordinary
 # characters to YAML 1.2 and to `yaml`'s lexer, which BOTH of this gate's
-# readings use (it targets 1.2; a lone CR, OD-45, is cases 130-132). So text
+# readings use (it targets 1.2; a lone CR, OD-45, is cases 130-132, 141-143). So text
 # after one on a comment line is a comment to every rule here and live YAML to
 # compose. Measured: this exact edit gives safety-gw a single-stage
 # non-application build at gate:pr 9/9 on 8236725 AND on main 8b4ef80, while
@@ -1390,7 +1390,8 @@ mut "$BASE" "$SAFETY_BASE" '  safety-gw:
 mut "$BASE" "$ENV_LINE" "$ENV_LINE
       QA_T131_PATH: \"a\\\\/b\"" \
   && run_case "136 \"a\\\\/b\", an escaped backslash (must stay green)" PASS
-# 137-139. OD-48. Two keys that name the SAME property. yaml's own duplicate
+# 137-139. OD-48. Two SCALAR keys that name the SAME property (an ALIAS key is
+#      not modelled and not refused: T-131 QA-F1). yaml's own duplicate
 #      check compared key values with ===, and toJS() names each property
 #      String(key), so the pair became one property with no diagnostic, and
 #      both readings could agree while dropping a value. Compose refuses all
@@ -1420,6 +1421,38 @@ mut "$BASE" "$ENV_LINE" "$ENV_LINE
       \"15\": b
       \"17\": c" \
   && run_case "140 \"15\" and \"17\" alone (must stay green)" PASS
+
+echo; echo "=== cases 141-143 (T-131 rework 1): OD-45 (1), a lone CR, in the three OTHER composed files ==="
+# qa-verification QA-3 / QA-3a, verifying T-131: text hidden behind lone CRs
+# was a live route in compose.verify.yml, compose.dev.yml and compose.chaos.yml
+# at main 7dff12c (exit 0 GATE PASS on both gates, while `docker compose config`
+# read the hidden text), and A11 already refused it. Nothing re-executed that,
+# so these cases do. They add no refusal. Each probe line is valid YAML without
+# what follows its lone CRs, so at main the hidden text was a comment and the
+# rest of the file still read. 130 and 132 are the compose.yml and straggler
+# members.
+# 141. compose.verify.yml: host ports on safety-gw (T-036 § contract 4's rule).
+mut "$VERIFY" "      APP_PORT: '3010'
+    pull_policy: build" "      APP_PORT: '3010'
+    pull_policy: build
+    # T-131 rework probe${CR}    ports: ['53999:3010']" \
+  && sep_landed "$VERIFY" "$CR" \
+  && run_case "141 OD-45: a lone CR hides ports: in compose.verify.yml" FAIL "a LONE CR"
+# 142. compose.dev.yml: a single-stage non-application build: for safety-gw.
+mk_single && mut "$DEV" '  safety-gw:
+    networks: [kinvara-int, kinvara-pub]' "  safety-gw:
+    networks: [kinvara-int, kinvara-pub]
+    # T-131 rework probe${CR}    build:${CR}      context: ..${CR}      dockerfile: docker/rogue-single.Dockerfile" \
+  && sep_landed "$DEV" "$CR" \
+  && run_case "142 OD-45: a lone CR hides a build: in compose.dev.yml" FAIL "a LONE CR"
+# 143. compose.chaos.yml (T-126's file): the same build, behind a benign core
+#      label override, so that the file still has a services: mapping at main.
+mk_single && mut "$CHAOS" 'services: {}' "services:
+  core:
+    labels:
+      io.kinvara.qa: probe # T-131 rework probe${CR}  safety-gw:${CR}    build:${CR}      context: ..${CR}      dockerfile: docker/rogue-single.Dockerfile" \
+  && sep_landed "$CHAOS" "$CR" \
+  && run_case "143 OD-45: a lone CR hides a build: in compose.chaos.yml" FAIL "a LONE CR"
 
 echo
 run_case "99 tree restored" PASS

@@ -47,8 +47,11 @@
  * structurally blind to a SYNTAX difference: a file YAML 1.1 and YAML 1.2
  * tokenise differently is read identically twice. It does NOT read the file
  * "as YAML 1.1"; it tokenises as `yaml`'s lexer does. TWO 1.1/1.2 syntax
- * differences have been measured, and each is refused by presence: the
- * Unicode line breaks (A10) and the `\/` escape (A13).
+ * differences have been measured, and each is refused, in different places:
+ * the Unicode line breaks BY PRESENCE anywhere in the file (A10), and the `\/`
+ * escape only INSIDE A DOUBLE-QUOTED SCALAR (A13). A `\/` in a comment or in a
+ * plain, single-quoted or block scalar is accepted, and compose reads those
+ * literally too (measured, T-131 QA-2; T-131 rework 1, QA-F3).
  *
  * THE CLASS — every member MEASURED, each MODELLED or FAIL-CLOSED. NOT
  * EXHAUSTIVE: a construct nobody has measured is not in this list, and it is
@@ -56,7 +59,9 @@
  * ----------------------------------------------------------------------
  *   A1  `<<` merge keys ................. MODELLED (both readings resolve them)
  *   A2  anchors and plain aliases ....... MODELLED (`yaml` resolves them; both
- *                                         readings agree)
+ *                                         readings agree) — as VALUES. An alias
+ *                                         used as a KEY (`*k : v`) is NOT seen
+ *                                         by A14's collision check (below)
  *   A3  a value whose 1.1- and 1.2-SCHEMA readings differ in KIND or in
  *       scalar value (`on`, `yes`, `0777`, `12:30`, a bare `.`, a 1.1 `Date`
  *       timestamp, …) FAIL CLOSED — derived by comparing the two readings value
@@ -111,7 +116,10 @@
  *       this reader would be reading different text from the file compose loads.
  *       U+0000 is not a YAML character at all. U+FFFD is what an invalid UTF-8
  *       byte decodes to, and the reader cannot tell that from the character
- *       itself, so both are refused. Both entry points.
+ *       itself, so both are refused. Both entry points. A LITERAL U+FFFD in a
+ *       valid UTF-8 file is therefore refused too, and compose ACCEPTS that
+ *       file (measured, T-131 QA-2): an over-refusal, and the message says so
+ *       rather than calling the file not UTF-8 (T-131 rework 1, QA-F2).
  *   A13 the `\/` escape inside a double-quoted scalar
  *       .................................. FAIL CLOSED (OD-44, T-131). YAML 1.2
  *       added it; compose REFUSES the file (measured: "found unknown escape
@@ -120,7 +128,7 @@
  *       the parsed document's double-quoted scalars and their escapes, so `\\/`
  *       (an escaped backslash) and a `\/` in a comment or a single-quoted or
  *       plain scalar are not refused. `parseCompose` only: it changes no key.
- *   A14 two keys in one mapping that name the SAME property
+ *   A14 two SCALAR keys in one mapping that name the SAME property
  *       .................................. FAIL CLOSED (OD-48, T-131). `toJS()`
  *       names each property `String(key)`, and `yaml`'s own duplicate-key
  *       check compares values with `===`, so `1:` and `"1":` (or, under 1.1,
@@ -129,9 +137,17 @@
  *       readings could differ in key order alone. Compose calls such keys
  *       duplicates (measured: `mapping key "1" already defined`). Refused by
  *       giving `yaml` a key equality that also compares the property name, in
- *       both readings and at both entry points. Not modelled: object-valued
- *       keys (a collection, or a 1.1 `Date` timestamp key), which `yaml` names
- *       with its own stringifier. A timestamp key is refused by A3.
+ *       both readings and at both entry points. NOT MODELLED, and so NOT
+ *       refused by A14: a key that is not a scalar node — an ALIAS key
+ *       (`*k : v`, an `Alias` node even when its anchor is a scalar) or a
+ *       COLLECTION key — and an object-valued scalar key (a 1.1 `Date`), which
+ *       `yaml` names with its own stringifier. A timestamp key is refused by
+ *       A3. Measured (T-131 QA-F1, QA-4b): OD-48's two shapes (cases 137 and
+ *       138) written with ALIAS keys pass both gates at exit 0, and so does an
+ *       alias key beside the scalar key it names. Compose refuses the first two
+ *       and keeps the same (later) value as this reader on the third. Two
+ *       collection keys naming one property are accepted here and refused by
+ *       compose. So OD-48 is closed for SCALAR keys only (T-131 rework 1).
  *
  * THE STRAGGLER SCAN (OD-42) is a different question — "is this file a compose
  * file at all?" — so it gets its own entry point, `composeShape()`, over the
@@ -156,11 +172,15 @@
  * WRITING:
  *   - the spec's unenumerated "production bug fixes", and any other departure
  *     of `yaml@2.8.1` from YAML 1.2 — none known, none claimed absent;
- *   - key ORDER, which A3 does not compare (the one order-only construction
- *     measured is refused by A14);
- *   - object-valued keys, which A14 does not model;
+ *   - key ORDER, which A3 does not compare (the order-only construction
+ *     measured is refused by A14 when its keys are scalars, and ACCEPTED when
+ *     two of them are written as alias keys — T-131 QA-F1);
+ *   - keys that are not scalar nodes (alias keys, collection keys) and
+ *     object-valued scalar keys, which A14 does not model: two such keys, or
+ *     one beside the scalar key it names, are NOT refused (QA-F1, QA-4b);
  *   - an encoding other than UTF-8 that decodes WITHOUT U+0000 or U+FFFD (none
- *     known; the three UTF-16 variants measured all carry U+0000).
+ *     known; every UTF-16 and UTF-32 variant measured carries U+0000, T-131
+ *     QA-2).
  * The instrument for finding the next one is `docker compose config`,
  * which these gates cannot run: they have no Docker socket, by design
  * (`gate:toolbox` §6). A UNIVERSAL IS ONLY AS WIDE AS THE PARSE IT IS COMPUTED
@@ -192,8 +212,10 @@ const CORE_TAG_PREFIX = 'tag:yaml.org,2002:';
  * `yaml@2.8.1`'s `stringifyKey` for the keys modelled here: `null` → '' and any
  * other non-object value → `String(value)`. `null` means "not modelled": a
  * merge key (it becomes no property: `addPairToJSMap`'s `addToJSMap` and
- * bare-`<<` branches), a collection key, or an object-valued scalar such as a
- * 1.1 `Date`, which `yaml` names with its own stringifier.
+ * bare-`<<` branches), an ALIAS key (an `Alias` node, not a `Scalar`; it is
+ * not resolved to its anchor here, so a collision through one is not seen —
+ * T-131 QA-F1), a collection key, or an object-valued scalar such as a 1.1
+ * `Date`, which `yaml` names with its own stringifier.
  */
 function propertyName(n: ParsedNode): string | null {
   if (!isScalar(n)) return null;
@@ -368,14 +390,25 @@ function notUtf8Text(text: string): string | null {
   if (nul >= 0) found.push(`U+0000 (NUL) at line ${lineOf(text, nul)}`);
   const bad = text.indexOf('\uFFFD');
   if (bad >= 0) {
-    found.push(`U+FFFD (what a byte that is not UTF-8 decodes to) at line ${lineOf(text, bad)}`);
+    found.push(
+      `U+FFFD (what a byte that is not UTF-8 decodes to, or a literal U+FFFD) at line ` +
+        `${lineOf(text, bad)}`,
+    );
   }
   if (found.length === 0) return null;
+  // T-131 rework 1, QA-F2: the message names both things this check cannot
+  // tell apart. It changes no verdict: the same two characters are refused.
+  const literal =
+    bad >= 0
+      ? ` Or it IS UTF-8 and carries a literal U+FFFD, which this check cannot tell apart ` +
+        `from a byte that is not UTF-8 and refuses as well, although Docker Compose accepts ` +
+        `it (measured, T-131 QA-2).`
+      : '';
   return (
-    `contains ${found.join(' and ')}, so it is not UTF-8 text as this gate reads it. A ` +
+    `contains ${found.join(' and ')}. Either it is not UTF-8 text as this gate reads it: a ` +
     `UTF-16 file reads like this, and Docker Compose reads UTF-16 (measured, OD-45), so ` +
-    `this gate would be checking different text from the file compose loads. Save the ` +
-    `file as UTF-8 (T-131, A12).`
+    `this gate would be checking different text from the file compose loads.${literal} ` +
+    `Save the file as UTF-8, with no U+0000 or U+FFFD in it (T-131, A12).`
   );
 }
 

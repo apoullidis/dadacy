@@ -556,7 +556,8 @@ console.log(
   `  parser                     lib/compose-parse.ts — merge keys RESOLVED; one lexer ` +
     `(yaml@2.8.1's, which targets YAML 1.2 syntax) read under two SCHEMAS (1.2 core, 1.1), compared value by value and by kind, key order NOT compared. ` +
     `Refused, each by a named case: a scalar the schemas read differently (30), a 1.1 Date (62), a second document (33), a U+0085/U+2028/U+2029 character (58-61), ` +
-    `a lone carriage return (64, 66), U+0000/U+FFFD e.g. UTF-16 (67), the \\/ escape (69), two keys naming one property (71-73). A 1.1/1.2 SYNTAX difference is not ` +
+    `a lone carriage return (64, 66; in compose.verify.yml, compose.dev.yml, compose.chaos.yml 75-77), U+0000/U+FFFD e.g. UTF-16 (67), the \\/ escape (69), ` +
+    `two SCALAR keys naming one property (71-73 — an ALIAS or collection key is not modelled and NOT refused). A 1.1/1.2 SYNTAX difference is not ` +
     `detected by the comparison. Not exhaustive — the members MEASURED are in its header; shared with gate:app-images`,
 );
 console.log(
