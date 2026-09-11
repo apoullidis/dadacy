@@ -17,12 +17,15 @@
  * used as a KEY is emitted. Review is the control for extensions.
  *
  * Anything that is not a DomainError becomes a 500 `internal_error` carrying
- * nothing from the thrown value. So does a DomainError whose `code` no longer
- * has `ERROR_CODE`'s shape. The constructor refuses a bad code (errors.ts), but
- * a subclass can still redeclare `code` and assign it after `super()`. This
- * re-check at serialisation keeps that code out of the body, and the
- * construction-time check is what keeps a bad code out of `message` and the
- * stack (T-023 QA-F1).
+ * nothing from the thrown value. So does an object that passes
+ * `instanceof DomainError` but whose `code` does not have `ERROR_CODE`'s shape.
+ * The constructor refuses a bad code, which keeps it out of `message` and the
+ * stack, and then fixes `code` so that it cannot be reassigned or redefined
+ * (errors.ts; T-023 QA-F1, QR-R1). A constructed error therefore reaches this
+ * re-check with the code it was built with. The re-check is for an object that
+ * never ran the constructor (`Object.create(SomeError.prototype)`), and it
+ * checks the SHAPE only: such an object whose code matches the pattern is
+ * emitted with that code, in the body's `code` and `type`.
  *
  * `typeBase` is a required argument, not a constant. OE-15 (stakeholder,
  * 2026-09-11) rules the host `https://errors.kinvara.cy/`. T-022, which owns

@@ -17,7 +17,15 @@
  *      with a TypeError whose message never carries the rejected code. RESIDUE,
  *      open until T-022 publishes the closed error-code enum: an input that
  *      happens to match the pattern (a lower-case surname, `papadopoulou`) is
- *      accepted and reaches all four. The `title` is not pattern-checked: any
+ *      accepted and reaches all four. Once accepted, the code is FIXED: the
+ *      constructor redefines `code` as a non-writable, non-configurable own
+ *      property (T-023 QR-R1, OE-16). A later `e.code = …` throws in strict code
+ *      and is ignored in sloppy code; `Object.defineProperty` and `delete` on it
+ *      fail; a subclass that redeclares `code` as a class field throws at
+ *      construction, because a class field is a define. Not covered: an object
+ *      that never ran this constructor (`Object.create(SomeError.prototype)`),
+ *      and an `identity.code` getter that returns a different value on a later
+ *      read. The `title` is not pattern-checked: any
  *      string a subclass passes is emitted as the body's `title` (it does not
  *      reach `message` or the stack). Pass literals for both, never an input.
  *   2. `field` must be shaped like a property path (`startsAt`,
@@ -83,6 +91,13 @@ export abstract class DomainError extends Error {
     super(identity.code, options.cause === undefined ? undefined : { cause: options.cause });
     this.name = new.target.name;
     this.code = identity.code;
+    // T-023 QR-R1 / OE-16: the code is fixed here. See point 1 above.
+    Object.defineProperty(this, 'code', {
+      value: this.code,
+      enumerable: true,
+      writable: false,
+      configurable: false,
+    });
     this.status = identity.status;
     this.title = identity.title;
     this.retryable = identity.retryable;

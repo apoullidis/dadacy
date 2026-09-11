@@ -51,13 +51,90 @@ class CodeLeak extends ConflictError {
   }
 }
 
-/** A subclass that redeclares `code` and assigns it AFTER super(), past the constructor's check. */
+/** A code-shaped input: it matches ERROR_CODE, so the shape check alone does not refuse it (QR-R1). */
+const SHAPED = 'papadopoulou';
+
+/**
+ * QR-R1's reproduction as QA wrote it (T-023 § qa-verification re-review (rework 1), Q4 B2): a
+ * subclass that redeclares `code` and assigns it after super(). The one change is `override`, which
+ * noImplicitOverride requires and which is erased before the code runs.
+ */
 class LateCodeLeak extends ConflictError {
-  override readonly code: string;
-  constructor(input: string) {
+  override code: string;
+  constructor(i: string) {
     super('late_code_leak', 'Conflict', {});
-    this.code = input;
+    this.code = i;
   }
+}
+
+/** The same late assignment with no redeclaration: a plain assignment to the instance after super(). */
+class LateAssignLeak extends ConflictError {
+  constructor(i: string) {
+    super('late_assign_leak', 'Conflict', {});
+    (this as { code: string }).code = i;
+  }
+}
+
+/** A subclass that redeclares `code` as a class field with an initializer. */
+class FieldCodeLeak extends ConflictError {
+  override readonly code: string = SHAPED;
+  constructor() {
+    super('field_code_leak', 'Conflict', {});
+  }
+}
+
+/**
+ * QR-R1's getter shapes (Q4 D1 and D1b): a `code` accessor on the subclass prototype, with a no-op
+ * setter and without one. Installed with defineProperty rather than a class `get code()`; at run
+ * time it is the same prototype accessor as in QA's classes.
+ */
+class GetterCodeLeak extends ConflictError {
+  readonly qaInput: string;
+  constructor(i: string) {
+    super('getter_code_leak', 'Conflict', {});
+    this.qaInput = i;
+  }
+}
+class GetterOnlyCodeLeak extends ConflictError {
+  readonly qaInput: string;
+  constructor(i: string) {
+    super('getter_only_code_leak', 'Conflict', {});
+    this.qaInput = i;
+  }
+}
+Object.defineProperty(GetterCodeLeak.prototype, 'code', {
+  get(this: GetterCodeLeak) {
+    return this.qaInput;
+  },
+  set: () => undefined,
+  configurable: true,
+});
+Object.defineProperty(GetterOnlyCodeLeak.prototype, 'code', {
+  get(this: GetterOnlyCodeLeak) {
+    return this.qaInput;
+  },
+  configurable: true,
+});
+
+/** What a constructed error puts where, for a failure message: the body, Error.message, the stack. */
+function channels(e: DomainError): string {
+  return `body=${JSON.stringify(toProblem(e, BASE).body)} message=${e.message} stack-has-input=${String(e.stack).includes(SHAPED)}`;
+}
+
+/** Construct, expecting a TypeError. If it constructs, fail with what the late code reached. */
+function refusedAtConstruction(make: () => DomainError): void {
+  let built: DomainError | undefined;
+  let refusal: unknown;
+  try {
+    built = make();
+  } catch (e) {
+    refusal = e;
+  }
+  if (built !== undefined) assert.fail(`constructed: ${channels(built)}`);
+  assert.ok(refusal instanceof TypeError, 'the refusal is a TypeError');
+  assert.equal(refusal.message.includes(SHAPED), false, refusal.message);
+  assert.equal(String(refusal.stack).includes(SHAPED), false);
+  assert.deepEqual(toProblem(refusal, BASE).body, INTERNAL_ERROR_BODY);
 }
 
 /** An input passed as the title. */
@@ -230,15 +307,100 @@ test('a code that is not lower-case ASCII snake_case is refused, and one that is
   for (const code of ['slot_taken', 'a', 'x9_']) assert.equal(new CodeLeak(code).code, code);
 });
 
-test('QA-F1 backstop: a code assigned after construction is not emitted, and toProblem answers 500 internal_error', () => {
-  const late = new LateCodeLeak(QA_CANARY);
-  assert.equal(late.code, QA_CANARY, 'premise: the late assignment landed');
-  assert.equal(late.message, 'late_code_leak');
-  assert.equal(String(late.stack).includes(QA_CANARY), false);
-  const p = toProblem(late, BASE);
+test('QA-F1 backstop: an object that passes instanceof DomainError without running its constructor, with a non-snake_case code, gets the 500', () => {
+  const forged: unknown = Object.create(NotFoundError.prototype, {
+    code: { value: QA_CANARY },
+    title: { value: 'Not found' },
+    status: { value: 404 },
+    retryable: { value: false },
+  });
+  assert.ok(forged instanceof NotFoundError, 'premise: the forged object passes instanceof');
+  const p = toProblem(forged, BASE);
   assert.equal(JSON.stringify(p).includes(QA_CANARY), false, JSON.stringify(p.body));
   assert.equal(p.status, 500);
   assert.deepEqual(p.body, INTERNAL_ERROR_BODY);
+});
+
+// ── QR-R1 (OE-16): a code assigned after construction cannot take effect ──
+test('QR-R1: QA LateCodeLeak, a redeclared code assigned a code-shaped value after super(), cannot be constructed', () => {
+  refusedAtConstruction(() => new LateCodeLeak(SHAPED));
+});
+
+test('QR-R1: a code-shaped value assigned to the code after super() with no redeclaration cannot be constructed', () => {
+  refusedAtConstruction(() => new LateAssignLeak(SHAPED));
+});
+
+test('QR-R1: a subclass that redeclares code as a class field with an initializer cannot be constructed', () => {
+  refusedAtConstruction(() => new FieldCodeLeak());
+});
+
+test('QR-R1: e.code set on a shipped error throws in strict code, is ignored in sloppy code, and the error keeps its code', () => {
+  const e = new StateTransitionInvalidError();
+  const before = JSON.stringify(toProblem(e, BASE));
+  let thrown: unknown;
+  try {
+    (e as { code: string }).code = SHAPED;
+  } catch (x) {
+    thrown = x;
+  }
+  assert.equal(e.code, 'state_transition_invalid', channels(e));
+  const sloppy = new Function('e', 'v', 'e.code = v; return e.code;') as (
+    e: unknown,
+    v: string,
+  ) => unknown;
+  assert.equal(sloppy(e, SHAPED), 'state_transition_invalid', 'the sloppy assignment is ignored');
+  assert.ok(thrown instanceof TypeError, 'the strict assignment throws');
+  assert.equal(thrown.message.includes(SHAPED), false, thrown.message);
+  assert.equal(JSON.stringify(toProblem(e, BASE)), before);
+  assert.equal(e.message, 'state_transition_invalid');
+  assert.equal(String(e.stack).includes(SHAPED), false);
+});
+
+test('QR-R1: Object.defineProperty cannot replace the code of a shipped error, and delete cannot remove it', () => {
+  const e = new NotFoundError();
+  let thrown: unknown;
+  try {
+    Object.defineProperty(e, 'code', { value: SHAPED });
+  } catch (x) {
+    thrown = x;
+  }
+  assert.equal(e.code, 'not_found', channels(e));
+  assert.ok(thrown instanceof TypeError, 'defineProperty throws');
+  assert.equal(thrown.message.includes(SHAPED), false, thrown.message);
+  assert.equal(Reflect.defineProperty(e, 'code', { value: SHAPED }), false);
+  assert.equal(Reflect.deleteProperty(e, 'code'), false);
+  assert.deepEqual(toProblem(e, BASE).body, {
+    type: `${BASE}not_found`,
+    title: 'Not found',
+    status: 404,
+    code: 'not_found',
+    retryable: false,
+  });
+  assert.equal(e.message, 'not_found');
+  assert.equal(String(e.stack).includes(SHAPED), false);
+});
+
+test('QR-R1: a code accessor on a subclass prototype, with a setter or without, is shadowed by the constructed code', () => {
+  for (const e of [new GetterCodeLeak(SHAPED), new GetterOnlyCodeLeak(SHAPED)]) {
+    assert.equal(e.code, e.message, channels(e));
+    assert.equal(JSON.stringify(toProblem(e, BASE)).includes(SHAPED), false, channels(e));
+  }
+});
+
+test('LIMITATION: an object that never ran the constructor, carrying a code-shaped code, is emitted with that code', () => {
+  const forged: unknown = Object.create(NotFoundError.prototype, {
+    code: { value: SHAPED },
+    title: { value: 'Not found' },
+    status: { value: 404 },
+    retryable: { value: false },
+  });
+  assert.deepEqual(toProblem(forged, BASE).body, {
+    type: `${BASE}${SHAPED}`,
+    title: 'Not found',
+    status: 404,
+    code: SHAPED,
+    retryable: false,
+  });
 });
 
 test('LIMITATION until T-022 closes the code enum: a code-shaped input is accepted and reaches code, type, message and stack', () => {
