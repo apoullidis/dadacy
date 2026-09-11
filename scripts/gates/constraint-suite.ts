@@ -1,7 +1,7 @@
 /**
  * gate:constraint-suite — T-115.
  *
- * Three things, in the order a failure is cheapest to diagnose:
+ * Five things, in the order a failure is cheapest to diagnose:
  *
  *   1. THE IMAGE TAG IS IDENTICAL TO COMPOSE'S. `DOCKER.md` §1: "Pin the same
  *      Postgres image tag in all of them." Two readings of two different files —
@@ -9,24 +9,42 @@
  *      with the thing it checks by sharing a mistake with it. Plus one anchor
  *      that comes from neither: OD-10 says the tag must not be the stock
  *      `postgis/postgis:` image, so `compose.yml` and the harness drifting
- *      TOGETHER is still caught.
+ *      TOGETHER is still caught. (The harness repeats the identity check at
+ *      acquisition time, `assertPinnedImage`, so a suite run directly — not
+ *      through this gate — refuses a drifted tag too.)
  *
- *   2. NO SUITE MOCKS THE DATABASE. `qa-verification.md`: "A DB test that mocks
+ *   2. THE BUDGET — one cluster at a time, at the `db` profile's own mem_limit.
+ *
+ *   3. NO SUITE MOCKS THE DATABASE. `qa-verification.md`: "A DB test that mocks
  *      the database" is an automatic FAIL, and `PROTOCOL.md` §5.2 says the
  *      invariant row runs on Testcontainers, "never a mock, and never the
- *      shared dev database". A rule beats a reviewer remembering.
+ *      shared dev database". The rules that REQUIRE something (acquire a
+ *      cluster, stop it, declare a test) are read from the TypeScript SYNTAX
+ *      TREE, not the raw text: a call in a comment or a string is not a call.
+ *      The rules that FORBID something (a mocking library) read the raw text,
+ *      which errs towards a false FAIL, never a false PASS.
  *
- *   3. THE SUITES RUN. Skipped with `--static`, which is what `gate:pr` uses:
- *      the run needs the Docker daemon and the toolbox cannot reach it (OD-16).
+ *   4. THE SUITES RUN. Skipped with `--static`, which is what `gate:pr` uses:
+ *      the run needs the Docker socket, which only `scripts/dev --docker`
+ *      supplies (T-034), and `gate:toolbox` §6 fails `gate:pr` on purpose when
+ *      the socket is present.
  *
- * Every check is anti-vacuous: zero files, zero services or zero suites is a
- * FAILURE, not a pass. `0 of N entries resolved` passing is the defect shape
- * this build has already shipped twice (T-001 QA-F3, T-016/T-017 QA-F2).
+ *   5. THE RUN DID SOMETHING, AND ALL OF IT PASSED. The exit status alone
+ *      cannot tell a pass from a no-op: `test.skip` and `todo` exit 0. So the
+ *      node:test summary is read and every count asserted — and a run that
+ *      prints no summary at all is a FAILURE, not a pass (PROTOCOL §5.1: "if
+ *      your check did nothing at all, would it say so?").
+ *
+ * Every check is anti-vacuous: zero files, zero services, zero suites or zero
+ * tests is a FAILURE, not a pass. `0 of N entries resolved` passing is the
+ * defect shape this build has already shipped twice (T-001 QA-F3, T-016/T-017
+ * QA-F2).
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import ts from 'typescript';
 import YAML from 'yaml';
-import { REPO_ROOT, finish, stream } from './lib/run.ts';
+import { REPO_ROOT, capture, finish } from './lib/run.ts';
 import {
   CLUSTER_MEMORY_BYTES,
   FORBIDDEN_IMAGE_PREFIX,
@@ -111,7 +129,7 @@ if (fromLine === null) {
   fail(`${PG_DOCKERFILE} has no FROM line this gate can read`);
 } else if (fromLine[1] !== POSTGRES_BASE_IMAGE) {
   fail(
-    `base-image drift: postgres.Dockerfile builds FROM '${fromLine[1]}', ` +
+    `base-image drift: postgres.Dockerfile builds FROM '${String(fromLine[1])}', ` +
       `image.ts records '${POSTGRES_BASE_IMAGE}'`,
   );
 } else {
@@ -160,11 +178,9 @@ if (serviceMap !== undefined) {
 console.log('\n== 3. no constraint suite mocks the database');
 
 /**
- * The rule, stated as a property rather than a blocklist of library names:
- * a constraint suite must acquire a REAL cluster through this harness, and must
- * not name a test-double facility. The second half is a list because the
- * ecosystem is; the first half is what actually bites, because a suite that
- * never acquires a cluster cannot be testing a database whatever it imports.
+ * The FORBID half: a blocklist, because the ecosystem of test doubles is a
+ * list. Read over the raw text on purpose — a match in a comment is a false
+ * FAIL, which costs a reword; the opposite error would cost a false PASS.
  */
 const FORBIDDEN: readonly { readonly re: RegExp; readonly what: string }[] = [
   { re: /\bmock\w*\s*\(/i, what: 'a mock() call' },
@@ -175,7 +191,62 @@ const FORBIDDEN: readonly { readonly re: RegExp; readonly what: string }[] = [
   { re: /\bstub\w*\s*\(/i, what: 'a stub() call' },
 ];
 
-const ACQUIRE = /\bacquire(Migrated)?Cluster\s*\(/;
+/**
+ * The REQUIRE half, which is the half that bites: a suite that never acquires a
+ * cluster cannot be testing a database, whatever it imports. Read from the
+ * syntax tree, because a require-check over raw text is satisfied by a comment
+ * — the defect family measured in `gate:egress-boundary` (OD-26, T-034
+ * TL-F1/TL-F2). An acquirer counts only when it is bound by an IMPORT from the
+ * harness (an alias counts; a same-named local function does not).
+ */
+const HARNESS_MODULES = new Set(['../src/index.ts', '../src/cluster.ts', '@kinvara/db-testkit']);
+const ACQUIRERS = new Set(['acquireCluster', 'acquireMigratedCluster']);
+
+interface SuiteShape {
+  readonly acquires: boolean;
+  readonly stops: boolean;
+  readonly tests: number;
+}
+
+function suiteShape(file: string, text: string): SuiteShape {
+  const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const acquirers = new Set<string>();
+  const testFns = new Set<string>();
+  for (const stmt of sf.statements) {
+    if (!ts.isImportDeclaration(stmt) || !ts.isStringLiteral(stmt.moduleSpecifier)) continue;
+    const bindings = stmt.importClause?.namedBindings;
+    if (bindings === undefined || !ts.isNamedImports(bindings)) continue;
+    const from = stmt.moduleSpecifier.text;
+    for (const el of bindings.elements) {
+      const imported = (el.propertyName ?? el.name).text;
+      if (HARNESS_MODULES.has(from) && ACQUIRERS.has(imported)) acquirers.add(el.name.text);
+      if (from === 'node:test' && (imported === 'test' || imported === 'it')) {
+        testFns.add(el.name.text);
+      }
+    }
+  }
+  let acquires = false;
+  let stops = false;
+  let tests = 0;
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node)) {
+      const callee = node.expression;
+      if (ts.isIdentifier(callee)) {
+        if (acquirers.has(callee.text)) acquires = true;
+        if (testFns.has(callee.text)) tests += 1;
+      } else if (
+        ts.isPropertyAccessExpression(callee) &&
+        callee.name.text === 'stop' &&
+        node.arguments.length === 0
+      ) {
+        stops = true;
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return { acquires, stops, tests };
+}
 
 const failuresBefore = failures.length;
 
@@ -200,16 +271,22 @@ if (suiteFiles.length === 0) {
 
 for (const file of suiteFiles) {
   const text = fs.readFileSync(path.join(SUITE_DIR, file), 'utf8');
-  if (!ACQUIRE.test(text)) {
+  const shape = suiteShape(file, text);
+  if (!shape.acquires) {
     fail(
-      `${file} never calls acquireCluster()/acquireMigratedCluster(). A constraint suite that ` +
-        `does not acquire a real cluster is not testing a database (PROTOCOL §5.2, DOCKER.md §1).`,
+      `${file} never calls acquireCluster()/acquireMigratedCluster() imported from the harness. ` +
+        `A constraint suite that does not acquire a real cluster is not testing a database ` +
+        `(PROTOCOL §5.2, DOCKER.md §1). Read from the syntax tree: a call in a comment or a ` +
+        `string does not count.`,
     );
   }
-  if (!/\.stop\s*\(\s*\)/.test(text)) {
+  if (!shape.stops) {
     fail(
       `${file} never calls cluster.stop() — a suite that leaks its cluster starves the next one`,
     );
+  }
+  if (shape.tests === 0) {
+    fail(`${file} declares no test() — it adds nothing to the run and nothing to the count`);
   }
   for (const f of FORBIDDEN) {
     if (f.re.test(text)) {
@@ -234,7 +311,7 @@ for (const file of srcFiles) {
   }
 }
 if (failures.length === failuresBefore) {
-  pass('every suite acquires a real cluster, tears it down, and names no test double');
+  pass('every suite acquires a real cluster, tears it down, declares tests, and names no double');
 }
 
 // ---------------------------------------------------------------------------
@@ -243,15 +320,51 @@ if (failures.length === failuresBefore) {
 if (staticOnly) {
   console.log('\n== 4. running the suites — SKIPPED (--static)');
   console.log(
-    '     The run needs the Docker daemon, which scripts/dev and scripts/svc run do not\n' +
-      '     expose to the toolbox (OD-16). gate:pr uses --static; the full gate belongs in\n' +
-      '     gate:heavy (T-006) once the socket is mounted.',
+    '     The run needs the Docker socket, which only `scripts/dev --docker` supplies\n' +
+      '     (T-034); gate:pr cannot carry it, because gate:toolbox §6 fails on purpose\n' +
+      '     when the socket is present. The full gate:\n' +
+      '         scripts/dev --docker pnpm -w gate:constraint-suite\n' +
+      '     Wiring it into gate:heavy is T-006.',
   );
   finish(GATE, failures);
 }
 
 console.log('\n== 4. the constraint suites, against real disposable clusters');
-const code = stream('pnpm', ['--filter', '@kinvara/db-testkit', 'run', 'test:integration']);
-if (code !== 0) failures.push(`the constraint suites exited ${String(code)}`);
+const run = capture('pnpm', ['--filter', '@kinvara/db-testkit', 'run', 'test:integration']);
+// stderr first: it carries pnpm's `$ node --test …` banner, which belongs above
+// the spec output rather than after it.
+process.stderr.write(run.stderr);
+process.stdout.write(run.stdout);
+if (run.code !== 0) fail(`the constraint suites exited ${String(run.code)}`);
+
+// ---------------------------------------------------------------------------
+// 5. The run did something, and all of it passed
+// ---------------------------------------------------------------------------
+console.log('\n== 5. the run did something, and all of it passed');
+
+const COUNTS = ['tests', 'pass', 'fail', 'cancelled', 'skipped', 'todo'] as const;
+const counts = new Map<string, number>();
+for (const m of run.stdout.matchAll(/^ℹ (tests|pass|fail|cancelled|skipped|todo) (\d+)$/gm)) {
+  const key = m[1];
+  const value = m[2];
+  if (key !== undefined && value !== undefined) counts.set(key, Number(value));
+}
+const missing = COUNTS.filter((k) => !counts.has(k));
+if (missing.length > 0) {
+  fail(
+    `the run printed no node:test summary (missing: ${missing.join(', ')}). Without it this ` +
+      `gate cannot tell a pass from a run that did nothing.`,
+  );
+} else {
+  const n = (k: (typeof COUNTS)[number]): number => counts.get(k) ?? -1;
+  const summary = COUNTS.map((k) => `${k} ${String(n(k))}`).join(' / ');
+  if (n('tests') === 0) fail(`zero tests ran (${summary})`);
+  else if (n('pass') !== n('tests')) fail(`not every test passed (${summary})`);
+  else if (n('fail') + n('cancelled') + n('skipped') + n('todo') !== 0) {
+    fail(`a test failed, was cancelled, skipped or left todo (${summary})`);
+  } else {
+    pass(summary);
+  }
+}
 
 finish(GATE, failures);

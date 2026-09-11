@@ -38,9 +38,11 @@ const GATES: readonly Gate[] = [
   },
   {
     // T-115. The STATIC half only: the tag-identity and no-mock rules need no
-    // Docker and no services, so they block on a PR today. The half that RUNS
-    // the suites needs the daemon, which the toolbox cannot reach (OD-16), and
-    // belongs in gate:heavy — T-006, which is blocked_by T-115 for this reason.
+    // Docker and no services, so they block on a PR. The half that RUNS the
+    // suites needs the Docker socket, which only `scripts/dev --docker` supplies
+    // (T-034) — and gate:toolbox §6 fails gate:pr on purpose when the socket is
+    // present, so the two cannot share one invocation. The full gate belongs in
+    // gate:heavy — T-006, which is blocked_by T-115 for this reason.
     name: 'gate:constraint-suite:static',
     why: "the Testcontainers image tag is compose's, and no constraint suite mocks the database (T-115)",
   },

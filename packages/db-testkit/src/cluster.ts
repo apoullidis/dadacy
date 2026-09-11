@@ -43,7 +43,13 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { CLUSTER_MEMORY_BYTES, CLUSTER_NANO_CPUS, POSTGRES_IMAGE } from './image.ts';
+import YAML from 'yaml';
+import {
+  CLUSTER_MEMORY_BYTES,
+  CLUSTER_NANO_CPUS,
+  FORBIDDEN_IMAGE_PREFIX,
+  POSTGRES_IMAGE,
+} from './image.ts';
 import {
   assertDockerAvailable,
   connectSelfToNetwork,
@@ -187,6 +193,8 @@ export async function acquireCluster(
   suite: string,
   options: AcquireOptions = {},
 ): Promise<Cluster> {
+  // Before anything is created: the tag must be compose's, and not the stock one.
+  assertPinnedImage(POSTGRES_IMAGE);
   await assertDockerAvailable();
 
   if (!(await imagePresent(POSTGRES_IMAGE))) {
@@ -288,47 +296,9 @@ export async function acquireCluster(
     });
 
     // ---- the anti-contamination assertions, before a suite touches anything --
-    //
-    // These are cheap and they are the difference between "this suite has its
-    // own cluster" being a claim and being a checked property.
-    const provider = await cluster.value(
-      `SELECT datlocprovider::text || ':' || coalesce(datlocale,'')
-         FROM pg_database WHERE datname = current_database()`,
-    );
-    if (provider !== 'i:und') {
-      throw new Error(
-        `the harness database is provisioned wrong: datlocprovider:datlocale = ${provider}, expected i:und. ` +
-          `Check that ${POSTGRES_IMAGE} is the image in use (OD-10).`,
-      );
-    }
-
-    // Freshness. A cluster this suite started is at most seconds old; a shared
-    // or leaked one is not. The two clocks are independent — the postmaster's
-    // and this process's — so this cannot pass by agreeing with itself.
-    const ageSeconds = Number(
-      await cluster.value(`SELECT round(extract(epoch from (now() - pg_postmaster_start_time())))`),
-    );
-    const wallSeconds = (Date.now() - startedAt) / 1000;
-    if (!Number.isFinite(ageSeconds) || ageSeconds > wallSeconds + 30) {
-      throw new Error(
-        `the server this suite connected to has been up ${String(ageSeconds)}s but this suite ` +
-          `started it ${wallSeconds.toFixed(1)}s ago. That is not a disposable cluster — refusing ` +
-          `to run a constraint suite against shared state (DOCKER.md §1).`,
-      );
-    }
-
-    // Nothing may pre-exist. `0001` creates the five roles and `CREATE ROLE`
-    // has no IF NOT EXISTS: a cluster that already carries them is a reused one.
-    const preexisting = await cluster.value(
-      `SELECT count(*) FROM pg_roles
-        WHERE rolname IN ('app_rw','app_admin_rw','app_safety_rw','app_ddl','answering_service')`,
-    );
-    if (preexisting !== '0') {
-      throw new Error(
-        `${preexisting} of the five 0001 roles already exist in this cluster. Roles are ` +
-          `cluster-global; this cluster has been used before.`,
-      );
-    }
+    // Exported so `suites/harness-refusals.test.ts` can watch each one REFUSE on
+    // a real cluster; an assertion nobody has seen refuse is decoration.
+    await assertDisposable(cluster, { startedAt });
 
     return cluster;
   } catch (err) {
@@ -399,6 +369,141 @@ function makeCluster(c: {
       await removeNetwork(c.networkId).catch(() => undefined);
     },
   };
+}
+
+// ===========================================================================
+// The harness's own refusals — exported so a suite can watch each one refuse
+// (`suites/harness-refusals.test.ts`). An assertion nobody has seen refuse is
+// decoration (PROTOCOL §5.1).
+// ===========================================================================
+
+/** The one file that declares the Postgres tag (`T-017` § Published contract §2). */
+export const COMPOSE_FILE = 'docker/compose.yml';
+
+/**
+ * `compose.yml`'s `postgres` image, read NOW with a real YAML parser — a
+ * hand-rolled subset is how `gate:egress-boundary` misread flow mappings
+ * (`T-017` QA-F2).
+ */
+export function composePostgresImage(
+  composePath: string = path.join(REPO_ROOT, COMPOSE_FILE),
+): string {
+  const doc: unknown = YAML.parse(fs.readFileSync(composePath, 'utf8'));
+  const services =
+    typeof doc === 'object' && doc !== null
+      ? (doc as Record<string, unknown>)['services']
+      : undefined;
+  const postgres =
+    typeof services === 'object' && services !== null
+      ? (services as Record<string, unknown>)['postgres']
+      : undefined;
+  const image =
+    typeof postgres === 'object' && postgres !== null
+      ? (postgres as Record<string, unknown>)['image']
+      : undefined;
+  if (typeof image !== 'string' || image === '') {
+    throw new Error(
+      `${composePath} declares no postgres image, so the harness cannot confirm it would run ` +
+        `compose's (DOCKER.md §1)`,
+    );
+  }
+  return image;
+}
+
+/**
+ * Refuse, before anything is created, an image that is the stock one or is not
+ * compose's. `gate:constraint-suite` makes the identity check statically; this
+ * is the same rule at the point of use, so a suite run DIRECTLY
+ * (`pnpm --filter @kinvara/db-testkit run test:integration`) refuses a drifted
+ * tag too. Measured before this existed (`state/EP-QA/T-115.md`, Attack A):
+ * with the tag pointed at the stock image, the harness's own provisioning check
+ * PASSED — it creates the database ICU `und` explicitly — and only `0001`'s
+ * preflight refused.
+ */
+export function assertPinnedImage(
+  image: string,
+  composeImage: string = composePostgresImage(),
+): void {
+  if (image.startsWith(FORBIDDEN_IMAGE_PREFIX)) {
+    throw new Error(
+      `refusing the STOCK image ${image} (OD-10): it provisions a libc database with an empty ` +
+        `shared_preload_libraries and four undeclared extensions. Use compose's image.`,
+    );
+  }
+  if (image !== composeImage) {
+    throw new Error(
+      `image drift: the harness would start ${image} but docker/compose.yml's postgres is ` +
+        `${composeImage}. DOCKER.md §1: the same tag in compose and Testcontainers.`,
+    );
+  }
+}
+
+/** The five roles `0001` creates. Cluster-global, and `CREATE ROLE` has no IF NOT EXISTS. */
+export const FIVE_ROLES = [
+  'app_rw',
+  'app_admin_rw',
+  'app_safety_rw',
+  'app_ddl',
+  'answering_service',
+] as const;
+
+export interface DisposableCheck {
+  /** `Date.now()` taken when this suite began creating the cluster. */
+  readonly startedAt: number;
+  /** Tolerance on the freshness comparison, for boot time and clock skew. Default 30 s. */
+  readonly slackSeconds?: number;
+  /** The database whose provisioning is checked. Default `kinvara`. */
+  readonly database?: string;
+}
+
+/**
+ * The three anti-contamination refusals `acquireCluster` makes before a suite
+ * touches anything. They are the difference between "this suite has its own
+ * cluster" being a claim and being a checked property.
+ */
+export async function assertDisposable(cluster: Cluster, check: DisposableCheck): Promise<void> {
+  const database = check.database ?? APP_DATABASE;
+  const slack = check.slackSeconds ?? 30;
+
+  const provider = await cluster.value(
+    `SELECT datlocprovider::text || ':' || coalesce(datlocale,'')
+       FROM pg_database WHERE datname = current_database()`,
+    { database },
+  );
+  if (provider !== 'i:und') {
+    throw new Error(
+      `the harness database is provisioned wrong: ${database} has datlocprovider:datlocale = ` +
+        `${provider}, expected i:und (T-020 § contract §1). Check that ${POSTGRES_IMAGE} is the ` +
+        `image in use (OD-10).`,
+    );
+  }
+
+  // Freshness. A cluster this suite started is at most seconds old; a shared or
+  // leaked one is not. Two independent clocks — the postmaster's and this
+  // process's — so this cannot pass by agreeing with itself.
+  const ageSeconds = Number(
+    await cluster.value(`SELECT extract(epoch from (now() - pg_postmaster_start_time()))`),
+  );
+  const wallSeconds = (Date.now() - check.startedAt) / 1000;
+  if (!Number.isFinite(ageSeconds) || ageSeconds > wallSeconds + slack) {
+    throw new Error(
+      `the server this suite connected to has been up ${ageSeconds.toFixed(1)}s but this suite ` +
+        `started it ${wallSeconds.toFixed(1)}s ago (tolerance ${String(slack)}s). That is not a ` +
+        `disposable cluster — refusing to run a constraint suite against shared state ` +
+        `(DOCKER.md §1).`,
+    );
+  }
+
+  // Nothing may pre-exist: a cluster that already carries the roles is a reused one.
+  const preexisting = await cluster.value(
+    `SELECT count(*) FROM pg_roles WHERE rolname IN (${FIVE_ROLES.map((r) => `'${r}'`).join(',')})`,
+  );
+  if (preexisting !== '0') {
+    throw new Error(
+      `${preexisting} of the five 0001 roles already exist in this cluster. Roles are ` +
+        `cluster-global; this cluster has been used before.`,
+    );
+  }
 }
 
 /** The `0001` baseline, resolved from the repo rather than copied into this package. */

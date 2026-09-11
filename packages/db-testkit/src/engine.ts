@@ -12,18 +12,34 @@
  * `POST /networks/{id}/connect` and two deletes. That is this file, with no
  * dependency and no second image.
  *
- * OD-16. This talks to `/var/run/docker.sock`, which `scripts/dev` and
- * `scripts/svc run` DO NOT MOUNT — measured, see `state/EP-QA/T-115.md`. The
- * diagnostic below is deliberately long: an unmounted socket surfaces as
- * `ENOENT` and a mounted-but-ungrouped socket surfaces as `EACCES`, and both
- * read as "the harness is broken" rather than "the toolbox cannot reach the
- * daemon".
+ * THE SOCKET (OD-16, resolved by T-034). Only `scripts/dev --docker` mounts
+ * it; plain `scripts/dev` does not, and `scripts/svc run` refuses it by name
+ * (T-034 § Published contract §1–§2). `--docker` supplies four things. This
+ * harness depends on TWO of them — the socket and its derived `--group-add` —
+ * and deliberately not on the other two: it never publishes a host port, so
+ * `--add-host host.docker.internal:host-gateway` and
+ * `TESTCONTAINERS_HOST_OVERRIDE` (OD-18) are not on its path. It attaches the
+ * test process to the cluster's own `internal: true` network and connects by
+ * container alias instead (`createAndStartContainer`, `connectSelfToNetwork`),
+ * so the cluster keeps no route off the host.
+ *
+ * The diagnostic below is deliberately long: an unmounted socket surfaces as
+ * `ENOENT` and a mounted-but-ungrouped socket as `EACCES`, and both read as
+ * "the harness is broken" rather than "the toolbox cannot reach the daemon".
  */
 import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
 
-export const DOCKER_SOCKET = '/var/run/docker.sock';
+/**
+ * The socket path. `scripts/lib/toolbox.sh` honours an explicit `unix://`
+ * `DOCKER_HOST` on the host, mounts that socket at the same path, and exports
+ * `DOCKER_HOST` inside the toolbox to match — so read it the same way here.
+ */
+export const DOCKER_SOCKET: string =
+  process.env['DOCKER_HOST']?.startsWith('unix://') === true
+    ? process.env['DOCKER_HOST'].slice('unix://'.length)
+    : '/var/run/docker.sock';
 
 export class DockerUnavailableError extends Error {
   constructor(cause: string) {
@@ -32,20 +48,20 @@ export class DockerUnavailableError extends Error {
         `the Docker daemon is not reachable from this container: ${cause}`,
         '',
         'Testcontainers is the mandated mechanism for constraint and invariant',
-        'suites (DOCKER.md §1) and it needs the daemon. The toolbox does not get',
-        'it today — recorded as OD-16 in tasks/state/decisions.md.',
+        'suites (DOCKER.md §1) and it needs the daemon. Exactly one entry point',
+        'supplies it (T-034 § Published contract §1–§2):',
         '',
-        'The fix is two flags on the `docker run` in scripts/lib/toolbox.sh, and',
-        'it is platform-infrastructure’s file (T-016 § Published contract §9):',
+        '    scripts/dev --docker pnpm -w gate:constraint-suite',
         '',
-        `    --volume ${DOCKER_SOCKET}:${DOCKER_SOCKET} \\`,
-        `    --group-add "$(stat -c %g ${DOCKER_SOCKET})"`,
+        'Plain `scripts/dev` does not mount the socket, and `scripts/svc run`',
+        'refuses it by name, so do not try to run these suites under `svc run`.',
         '',
-        'BOTH are required and the second is the one that gets forgotten. The',
-        'socket is root:docker mode 660 and the toolbox runs as the invoking',
-        'uid:gid, which is not in that group: mounting alone was measured to give',
-        'EACCES on this host, and the cheapest wrong repair for that is running',
-        'the toolbox as root, which would undo T-000’s file-ownership property.',
+        'ENOENT: the socket is not mounted — you ran without `--docker`.',
+        'EACCES: it is mounted without the socket’s group (`--group-add`). That',
+        'is a regression in scripts/lib/toolbox.sh, platform-infrastructure’s',
+        'file: report it. Do NOT repair it by running the toolbox as root —',
+        'that undoes T-000’s file-ownership property and `toolbox_refuse_root`',
+        'exists to stop it.',
       ].join('\n'),
     );
     this.name = 'DockerUnavailableError';

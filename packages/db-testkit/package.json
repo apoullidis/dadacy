@@ -9,5 +9,8 @@
   },
   "scripts": {
     "test:integration": "node --test --test-concurrency=1 --test-reporter=spec 'suites/*.test.ts'"
+  },
+  "dependencies": {
+    "yaml": "2.8.1"
   }
 }
