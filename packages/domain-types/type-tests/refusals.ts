@@ -3,15 +3,22 @@
  * file is never executed; it exists to be compiled.
  *
  * Each line under a `// @ts-expect-error TSnnnn 'A' 'B'` directive is a misuse
- * the compiler must refuse. Two things check it, from two directions:
+ * the compiler must refuse. Two things check it, from two directions, and ONLY
+ * THE WEAKER ONE IS IN A GATE:
  *   - `pnpm -w typecheck` (in `gate:pr`) fails with TS2578 if any such line
  *     stops being an error. That alone would accept ANY error on the line.
  *   - `src/compile-refusals.test.ts` compiles this file with the directives
  *     stripped and requires, per directive, exactly one diagnostic on the next
  *     line, with that code, whose first message line names every quoted type;
- *     and no diagnostic anywhere else.
+ *     and no diagnostic anywhere else. It is in NO gate (OD-57). It runs only
+ *     when someone runs `pnpm --filter @kinvara/domain-types test` or
+ *     `pnpm -w test` by hand.
+ * NEITHER sees a row DELETED, directive and line together. Typecheck stays
+ * green, and the test requires only 20 directives in total (the gate case
+ * once, the money case twice), so any two other rows can vanish unseen.
  * Lines marked CONTROL must compile: they bound what is NOT refused.
  */
+import type { Brand } from '../src/brand.ts';
 import type { AccountId, BookingId, SessionId, Ulid } from '../src/ids.ts';
 import type { MinorUnits } from '../src/money.ts';
 import type { E164 } from '../src/phone.ts';
@@ -42,6 +49,8 @@ declare const zone: IanaZone;
 declare const raw: string;
 declare const rawNumber: number;
 declare const rawBigint: bigint;
+declare const eitherId: Brand<Ulid, 'BookingId' | 'SessionId'>;
+declare const bothIds: BookingId & SessionId;
 
 // ── entity ids: no id is another id ─────────────────────────────────────────
 // @ts-expect-error TS2345 'BookingId' 'SessionId'
@@ -119,5 +128,18 @@ takesMoney(parseMinorUnits(raw, 'amountMinor'));
 takesMoney(minorUnits(money + money, 'total'));
 takesE164(e164(raw, 'phone'));
 takesZone(ianaZone(raw, 'tz'));
+// an `any` flows into every brand. JSON.parse returns `any`, and neither tsc
+// nor gate:lint refuses it (OD-60), a float into MinorUnits included. At a
+// JSON boundary the runtime constructors are the only refusal: call them.
+takesSession(JSON.parse(raw));
+takesMoney(JSON.parse('{"amountMinor":50.42}').amountMinor);
+// a cast through `unknown` reaches any brand, sibling to sibling included
+takesSession(booking as unknown as SessionId);
+// a brand whose tag is a union, or an intersection of two brands, goes to BOTH
+// siblings: the tag record reads "A and B", not "A or B" (T-023 QA-F4)
+takesSession(eitherId);
+takesBooking(eitherId);
+takesSession(bothIds);
+takesBooking(bothIds);
 
 export { sum, asNumber };

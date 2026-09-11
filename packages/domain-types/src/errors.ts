@@ -9,7 +9,17 @@
  *   1. No constructor here takes a message. A concrete error's identity (code,
  *      status, title, retryable) is fixed by its class; the caller supplies only
  *      a `field` name and an optional `cause`. `Error.message` is the code, so a
- *      logged stack reads `NotFoundError: not_found` and never carries prose.
+ *      logged stack reads `NotFoundError: not_found`.
+ *      A subclass of an abstract category (`ConflictError`, …) supplies its own
+ *      `code` and `title`. The `code` reaches the body's `code` and `type`,
+ *      `Error.message` and so every logged stack. It is therefore REFUSED at
+ *      construction unless it matches `ERROR_CODE` (T-023 QA-F1, PROTOCOL §9.2),
+ *      with a TypeError whose message never carries the rejected code. RESIDUE,
+ *      open until T-022 publishes the closed error-code enum: an input that
+ *      happens to match the pattern (a lower-case surname, `papadopoulou`) is
+ *      accepted and reaches all four. The `title` is not pattern-checked: any
+ *      string a subclass passes is emitted as the body's `title` (it does not
+ *      reach `message` or the stack). Pass literals for both, never an input.
  *   2. `field` must be shaped like a property path (`startsAt`,
  *      `address.postalCode`). Anything else — a phone number, an email, text
  *      with spaces — is dropped to `undefined`, so a caller who passes the
@@ -49,6 +59,18 @@ interface ErrorIdentity {
 /** A property path: identifier segments joined by dots. See point 2 above. */
 const FIELD_NAME = /^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)*$/;
 
+/** The shape every error `code` must have: lower-case snake_case, ASCII. See point 1 above. */
+export const ERROR_CODE = /^[a-z][a-z0-9_]*$/;
+
+/** True if `code` is a string of `ERROR_CODE`'s shape. `toProblem` re-checks with this. */
+export function isErrorCode(code: unknown): code is string {
+  return typeof code === 'string' && ERROR_CODE.test(code);
+}
+
+/** Deliberately constant: the refusal must not echo the code it refuses. */
+const CODE_REFUSED =
+  'DomainError: code must match /^[a-z][a-z0-9_]*$/ (the rejected code is not shown)';
+
 export abstract class DomainError extends Error {
   readonly code: string;
   readonly status: number;
@@ -57,6 +79,7 @@ export abstract class DomainError extends Error {
   readonly field: string | undefined;
 
   protected constructor(identity: ErrorIdentity, options: DomainErrorOptions) {
+    if (!isErrorCode(identity.code)) throw new TypeError(CODE_REFUSED);
     super(identity.code, options.cause === undefined ? undefined : { cause: options.cause });
     this.name = new.target.name;
     this.code = identity.code;
@@ -119,7 +142,10 @@ export class NotFoundError extends DomainError {
 }
 
 // ── 409 ────────────────────────────────────────────────────────────────────
-/** A 409. Modules subclass it with their own code (e.g. `slot_taken`). */
+/**
+ * A 409. Modules subclass it with their own code (e.g. `slot_taken`). Pass
+ * literals for `code` and `title`, never an input: see point 1 above.
+ */
 export abstract class ConflictError extends DomainError {
   protected constructor(code: string, title: string, options: DomainErrorOptions) {
     super({ code, status: 409, title, retryable: false }, options);

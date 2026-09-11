@@ -12,14 +12,23 @@
  * free text, which is exactly the channel an echoed input would travel through,
  * and the UI "maps `code` → copy, never parses `detail`".
  *
- * Anything that is not a DomainError becomes a 500 `internal_error` carrying
- * nothing from the thrown value.
+ * The strip goes by exact key name: a top-level `detail` / `instance` and a
+ * `value` at any depth. A nested `detail`, a `Value`, an `input`, or an input
+ * used as a KEY is emitted. Review is the control for extensions.
  *
- * `typeBase` is a required argument, not a constant, because SD writes the
- * error-type host two ways (§BE-2 `errors.kinvara.co`, §BE-15
- * `errors.kinvara.cy`); the caller that owns the HTTP surface decides.
+ * Anything that is not a DomainError becomes a 500 `internal_error` carrying
+ * nothing from the thrown value. So does a DomainError whose `code` no longer
+ * has `ERROR_CODE`'s shape. The constructor refuses a bad code (errors.ts), but
+ * a subclass can still redeclare `code` and assign it after `super()`. This
+ * re-check at serialisation keeps that code out of the body, and the
+ * construction-time check is what keeps a bad code out of `message` and the
+ * stack (T-023 QA-F1).
+ *
+ * `typeBase` is a required argument, not a constant. OE-15 (stakeholder,
+ * 2026-09-11) rules the host `https://errors.kinvara.cy/`. T-022, which owns
+ * the HTTP surface, passes it.
  */
-import { DomainError, type JsonValue } from './errors.ts';
+import { DomainError, isErrorCode, type JsonValue } from './errors.ts';
 
 export interface ProblemBody {
   readonly type: string;
@@ -55,7 +64,7 @@ export function toProblem(error: unknown, typeBase: string): Problem {
   if (!TYPE_BASE.test(typeBase)) {
     throw new TypeError('toProblem: typeBase must be an https URL ending in "/"');
   }
-  if (!(error instanceof DomainError)) {
+  if (!(error instanceof DomainError) || !isErrorCode(error.code)) {
     return {
       status: 500,
       contentType: 'application/problem+json',

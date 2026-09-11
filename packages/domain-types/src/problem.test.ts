@@ -10,6 +10,7 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import {
+  ConflictError,
   DomainRuleViolationError,
   IdempotencyKeyReuseError,
   InvalidInputError,
@@ -28,8 +29,43 @@ import { toProblem } from './problem.ts';
 import { e164 } from './phone.ts';
 import { ulid } from './ids.ts';
 
-const BASE = 'https://errors.example.test/';
-const CANARY = 'T023-CANARY-cert-CY-0042-99123456';
+/** OE-15 (stakeholder, 2026-09-11): the error-type host is errors.kinvara.cy. */
+const BASE = 'https://errors.kinvara.cy/';
+/** Numbers in test data use the ITU-T 991 country code (SQ-27). */
+const CANARY = 'T023-CANARY-cert-CY-0042-99199123456';
+/** QA's canary from T-023 § Review, QA6 P6. */
+const QA_CANARY = 'QA-T023-CANARY-9912';
+
+const INTERNAL_ERROR_BODY = {
+  type: `${BASE}internal_error`,
+  title: 'Internal error',
+  status: 500,
+  code: 'internal_error',
+  retryable: false,
+};
+
+/** QA-F1's reproduction, verbatim (T-023 § Review, QA6 P6): an input passed as the code. */
+class CodeLeak extends ConflictError {
+  constructor(input: string) {
+    super(input, 'Conflict', {});
+  }
+}
+
+/** A subclass that redeclares `code` and assigns it AFTER super(), past the constructor's check. */
+class LateCodeLeak extends ConflictError {
+  override readonly code: string;
+  constructor(input: string) {
+    super('late_code_leak', 'Conflict', {});
+    this.code = input;
+  }
+}
+
+/** An input passed as the title. */
+class TitleLeak extends ConflictError {
+  constructor(input: string) {
+    super('title_leak', input, {});
+  }
+}
 
 class OutsideWindowError extends DomainRuleViolationError {
   constructor(options: DomainErrorOptions = {}) {
@@ -104,7 +140,14 @@ test('a constructor refusal does not echo the offending input into the body, the
 });
 
 test('a value passed where the field NAME belongs is dropped, not emitted', () => {
-  for (const field of [CANARY, '+35799123456', 'maria@example.test', 'two words', '99123456', '']) {
+  for (const field of [
+    CANARY,
+    '+99199123456',
+    'maria@example.test',
+    'two words',
+    '99199123456',
+    '',
+  ]) {
     const error = new InvalidInputError({ field });
     assert.equal(error.field, undefined, field);
     assert.equal('field' in toProblem(error, BASE).body, false, field);
@@ -144,13 +187,126 @@ test('anything that is not a DomainError is a 500 internal_error carrying nothin
     undefined,
   ]) {
     const p = toProblem(thrown, BASE);
-    assert.deepEqual(p.body, {
-      type: `${BASE}internal_error`,
-      title: 'Internal error',
-      status: 500,
-      code: 'internal_error',
-      retryable: false,
-    });
+    assert.deepEqual(p.body, INTERNAL_ERROR_BODY);
+  }
+});
+
+// ── QA-F1: a subclass's code is refused unless it is lower-case snake_case ──
+test('QA-F1: an input passed as a subclass code is refused at construction, and the refusal does not echo it', () => {
+  let built: DomainError | undefined;
+  let refusal: unknown;
+  try {
+    built = new CodeLeak(QA_CANARY);
+  } catch (e) {
+    refusal = e;
+  }
+  if (built !== undefined) {
+    assert.fail(
+      `CodeLeak was constructed, and the input reached code=${built.code} type=${String(toProblem(built, BASE).body.type)} message=${built.message}`,
+    );
+  }
+  assert.ok(refusal instanceof TypeError, 'the refusal is a TypeError');
+  assert.equal(refusal.message.includes(QA_CANARY), false, refusal.message);
+  assert.equal(String(refusal.stack).includes(QA_CANARY), false);
+});
+
+test('a code that is not lower-case ASCII snake_case is refused, and one that is is accepted', () => {
+  for (const code of [
+    'Slot_taken',
+    'SLOT',
+    'slot-taken',
+    'slot taken',
+    'slot.taken',
+    '_slot',
+    '1slot',
+    '',
+    'slot_taken\n',
+    'σλοτ',
+    'slot_tаken',
+    undefined as unknown as string,
+  ]) {
+    assert.throws(() => new CodeLeak(code), TypeError, JSON.stringify(code));
+  }
+  for (const code of ['slot_taken', 'a', 'x9_']) assert.equal(new CodeLeak(code).code, code);
+});
+
+test('QA-F1 backstop: a code assigned after construction is not emitted, and toProblem answers 500 internal_error', () => {
+  const late = new LateCodeLeak(QA_CANARY);
+  assert.equal(late.code, QA_CANARY, 'premise: the late assignment landed');
+  assert.equal(late.message, 'late_code_leak');
+  assert.equal(String(late.stack).includes(QA_CANARY), false);
+  const p = toProblem(late, BASE);
+  assert.equal(JSON.stringify(p).includes(QA_CANARY), false, JSON.stringify(p.body));
+  assert.equal(p.status, 500);
+  assert.deepEqual(p.body, INTERNAL_ERROR_BODY);
+});
+
+test('LIMITATION until T-022 closes the code enum: a code-shaped input is accepted and reaches code, type, message and stack', () => {
+  const surname = 'papadopoulou';
+  const e = new CodeLeak(surname);
+  const p = toProblem(e, BASE);
+  assert.deepEqual([p.body.code, p.body.type, e.message], [surname, `${BASE}${surname}`, surname]);
+  assert.equal(String(e.stack).includes(surname), true);
+});
+
+test('LIMITATION: an input passed as a subclass title is emitted as the body title, and is not in message or stack', () => {
+  const e = new TitleLeak(QA_CANARY);
+  assert.equal(toProblem(e, BASE).body.title, QA_CANARY);
+  assert.equal(e.message, 'title_leak');
+  assert.equal(String(e.stack).includes(QA_CANARY), false);
+});
+
+// ── QA-F6 / QA-F7: the strip and the field check go by shape, not meaning ──
+class ExtensionShapes extends DomainRuleViolationError {
+  constructor() {
+    super('extension_shapes', 'Extension shapes', {});
+  }
+  override problemExtensions(): ProblemExtensions {
+    return {
+      nested: { detail: CANARY, instance: CANARY },
+      Value: CANARY,
+      VALUE: CANARY,
+      values: [CANARY],
+      input: CANARY,
+      deep: { rawValue: CANARY },
+      valuе: CANARY,
+      [CANARY]: true,
+    };
+  }
+}
+
+test('LIMITATION: the strip goes by exact key name, so these shapes are emitted with the input in them', () => {
+  const p = toProblem(new ExtensionShapes(), BASE);
+  assert.deepEqual(p.body, {
+    nested: { detail: CANARY, instance: CANARY },
+    Value: CANARY,
+    VALUE: CANARY,
+    values: [CANARY],
+    input: CANARY,
+    deep: { rawValue: CANARY },
+    valuе: CANARY,
+    [CANARY]: true,
+    type: `${BASE}extension_shapes`,
+    title: 'Extension shapes',
+    status: 422,
+    code: 'extension_shapes',
+    retryable: false,
+  });
+});
+
+test('LIMITATION: an identifier-shaped value passed as the field is kept and emitted', () => {
+  for (const field of [
+    'CY00000000000000000000000000',
+    'K00000000',
+    'XXX000',
+    'Papadopoulou',
+    'papadopoulou',
+    'CERT0042CY',
+  ]) {
+    assert.equal(toProblem(new InvalidInputError({ field }), BASE).body.field, field);
+  }
+  for (const field of ['Παπαδοπούλου', 'Попова', '0K1', '+99199123456', 'x y']) {
+    assert.equal('field' in toProblem(new InvalidInputError({ field }), BASE).body, false, field);
   }
 });
 

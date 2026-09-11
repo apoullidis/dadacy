@@ -9,6 +9,13 @@
  * harness must never infer a verdict from a signal that a no-op also
  * produces"). The compiler is the oracle here; the expected code and type
  * names are written by hand in the directive, not derived from the compiler.
+ *
+ * THIS CHECK IS IN NO GATE (OD-57). `gate:pr` runs only the typecheck half.
+ * This file runs only when someone runs `pnpm --filter @kinvara/domain-types
+ * test` or `pnpm -w test` by hand, until T-005 wires package tests into a gate.
+ * It also cannot see a refusal row DELETED, directive and line together. It
+ * requires only 20 directives in total (the gate case once, the money case
+ * twice), so any two other rows can vanish with typecheck and this file green.
  */
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
