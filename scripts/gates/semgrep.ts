@@ -55,7 +55,10 @@ const rel = (p: string): string => path.relative(REPO_ROOT, p);
 /**
  * The flags every invocation carries. They are constants, not parameters,
  * because the network posture is a property of the gate and not of the caller:
- *   --metrics=off            no telemetry, ever
+ *   --metrics=off            asks semgrep to send no usage metrics. That is a
+ *                            flag we pass, NOT a measured property: the DNS
+ *                            sink below sees resolution attempts, never
+ *                            payloads, so "no telemetry" is not claimed here.
  *   --disable-version-check  no call to semgrep.dev on startup
  *   --error                  exit non-zero on a finding (see no-op 1 above)
  */
