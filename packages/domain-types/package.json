@@ -3,6 +3,20 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Enums, state machines, jurisdiction config, RANKING_INPUT_ALLOWLIST, time.ts",
-  "//": "PLACEHOLDER (T-001). Topology only, per SD §DH-1 — no source, no dependencies, no scripts. The owning agent (tech-lead T-023) adds src/, dependencies and the typecheck/lint/test/build scripts turbo.json already declares."
+  "description": "Branded primitives, the domain-error hierarchy and its problem+json mapping, time.ts (SD §DH-2, §BE-2, §FE-7, §DB-6) — T-023. Enums, state machines, jurisdiction config and RANKING_INPUT_ALLOWLIST land here in later tickets.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "node tools/run-tests.ts"
+  },
+  "dependencies": {
+    "@types/luxon": "3.7.5",
+    "luxon": "3.7.2"
+  },
+  "devDependencies": {
+    "typescript": "6.0.3",
+    "vite": "8.2.2",
+    "vitest": "5.0.0"
+  }
 }
