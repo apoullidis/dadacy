@@ -15,15 +15,24 @@ BK="$(mktemp -d)"
 
 cp "$VERIFY" "$BK/compose.verify.yml"
 cp "$CHAOS" "$BK/compose.chaos.yml"
+# T-130: the base file and compose.dev.yml are mutated by the parse-layer cases
+# below, so they are in the backup set too. Before T-130 no case in this suite
+# edited either, and restore() did not know they existed.
+BASE=docker/compose.yml
+DEV=docker/compose.dev.yml
+cp "$BASE" "$BK/base"
+cp "$DEV" "$BK/devfile"
 cp scripts/dev "$BK/dev"
 cp scripts/svc "$BK/svc"
 cp scripts/lib/toolbox.sh "$BK/toolbox.sh"
 restore() {
   cp "$BK/compose.verify.yml" "$VERIFY"; cp "$BK/compose.chaos.yml" "$CHAOS"
+  cp "$BK/base" "$BASE"; cp "$BK/devfile" "$DEV"
   cp "$BK/dev" scripts/dev; cp "$BK/svc" scripts/svc; cp "$BK/toolbox.sh" scripts/lib/toolbox.sh
   # T-037, OD-37: this gate's file set is derived from scripts/svc's own -f
   # assembly, so the cases below add and remove compose files.
   rm -f docker/compose.extra.yml docker/chaos-extra.yml
+  return 0
 }
 trap 'restore; rm -rf "$BK"' EXIT
 
@@ -69,18 +78,25 @@ mut() { node scripts/negative-tests/mutate.mjs "$@" || { echo "   HARNESS ERROR"
 # So a verdict requires the exit status AND the gate's own banner
 # (PROTOCOL §5.1: assert the exit status, not just the bytes). Anything else is
 # CRASH, which equals no expectation and therefore always misbehaves.
+#
+# T-130 (d1): an optional THIRD argument names the REASON a FAIL case exists
+# for — a substring the gate's failure list must contain. A refusal for some
+# other reason is then `FAIL-OTHER`, which equals no expectation, so a case
+# cannot be satisfied by an unrelated failure its mutation happened to cause.
 run_case() {
-  local label="$1" expect="$2"
+  local label="$1" expect="$2" reason="${3:-}"
   local out code
   out="$(node "$GATE_IMPL" 2>&1)"; code=$?
   local verdict
   if [[ $code -eq 0 && "$out" == *"GATE PASS  gate:egress-boundary"* ]]; then verdict=PASS
-  elif [[ $code -eq 1 && "$out" == *"GATE FAIL  gate:egress-boundary"* ]]; then verdict=FAIL
+  elif [[ $code -eq 1 && "$out" == *"GATE FAIL  gate:egress-boundary"* ]]; then
+    verdict=FAIL
+    [[ -n "$reason" && "$out" != *"$reason"* ]] && verdict=FAIL-OTHER
   else verdict="CRASH"; fi
   ran=$((ran+1))
   local mark="  "; [[ "$verdict" == "$expect" ]] || { mark="!!"; bad=$((bad+1)); }
   printf '%s %-52s exit=%d  %-5s (expected %s)\n' "$mark" "$label" "$code" "$verdict" "$expect"
-  [[ "$verdict" == FAIL ]] && printf '%s\n' "$out" | grep -E '^  - ' | head -1 | cut -c1-160 | sed 's/^/       /'
+  [[ "$verdict" == FAIL* ]] && printf '%s\n' "$out" | grep -E '^  - ' | head -1 | cut -c1-160 | sed 's/^/       /'
   [[ "$verdict" == CRASH ]] && printf '%s\n' "$out" | tail -3 | sed 's/^/       /'
   restore
 }
@@ -246,6 +262,31 @@ services:
 YML
 run_case "27 a compose file svc composes from nothing" FAIL
 rm -f docker/chaos-extra.yml
+
+echo; echo "=== case 33 (T-130 a0, TL-F2): a MULTI-DOCUMENT composed file FAILS CLOSED — T-039 § contract 0 row A, as a guard ==="
+# The property OE-11 made the condition of landing T-039, and until this case
+# nothing in the repository asserted it. decisions.md OD-41: T-037 cycle 1's
+# parseDocument() read the FIRST document only, `docker compose` merges EVERY
+# document, and a second document carrying a host port on safety-gw plus a
+# service on the DEFAULT bridge (full egress — OD-12) with mem_limit: 8g was
+# exit 0 here while compose resolved all three. Committed BEFORE T-130 touched
+# the reader. The REASON is asserted too: a red for another cause is not this.
+append_doc() {   # $1 = file, $2 = body of a SECOND YAML document; asserts it landed
+  local before after
+  before="$(grep -c '^---$' "$1")"
+  printf -- '---\n%s\n' "$2" >> "$1"
+  after="$(grep -c '^---$' "$1")"
+  [[ "$after" -eq $((before + 1)) ]] \
+    || { echo "   HARNESS ERROR (no document appended to $1)"; harness=$((harness+1)); return 1; }
+}
+append_doc "$BASE" "services:
+  safety-gw:
+    ports: ['53999:3010']
+  qa-rogue:
+    image: alpine:3.20
+    networks: [default]
+    mem_limit: 8g" \
+  && run_case "33 OD-41: 2nd document, default bridge + port + 8g" FAIL "multiple documents"
 
 echo
 run_case "99 tree restored" PASS

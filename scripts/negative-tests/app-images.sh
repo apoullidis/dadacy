@@ -67,17 +67,26 @@ mut() { node scripts/negative-tests/mutate.mjs "$@" || { echo "   HARNESS ERROR"
 # a fix. So a verdict now requires the exit status AND the gate's own banner
 # (PROTOCOL §5.1: assert the exit status, not just the bytes). Anything else is
 # CRASH, which equals no expectation and therefore always misbehaves.
+#
+# T-130 (d1): an optional THIRD argument names the REASON a FAIL case exists
+# for — a substring the gate's failure list must contain. A refusal for some
+# other reason is then `FAIL-OTHER`, which equals no expectation, so a case
+# cannot be satisfied by an unrelated failure its mutation happened to cause.
+# "Refused", "refused for the reason cited", "crashed" and "did nothing" are
+# four distinguishable outcomes; the last is `mut`'s HARNESS ERROR.
 run_case() {
-  local label="$1" expect="$2" out code
+  local label="$1" expect="$2" reason="${3:-}" out code
   out="$(node "$GATE_IMPL" 2>&1)"; code=$?
   local verdict
   if [[ $code -eq 0 && "$out" == *"GATE PASS  gate:app-images"* ]]; then verdict=PASS
-  elif [[ $code -eq 1 && "$out" == *"GATE FAIL  gate:app-images"* ]]; then verdict=FAIL
+  elif [[ $code -eq 1 && "$out" == *"GATE FAIL  gate:app-images"* ]]; then
+    verdict=FAIL
+    [[ -n "$reason" && "$out" != *"$reason"* ]] && verdict=FAIL-OTHER
   else verdict="CRASH"; fi
   ran=$((ran+1))
   local mark="  "; [[ "$verdict" == "$expect" ]] || { mark="!!"; bad=$((bad+1)); }
   printf '%s %-52s exit=%d  %-5s (expected %s)\n' "$mark" "$label" "$code" "$verdict" "$expect"
-  [[ "$verdict" == FAIL ]] && printf '%s\n' "$out" | grep -E '^  - ' | head -1 | cut -c1-150 | sed 's/^/       /'
+  [[ "$verdict" == FAIL* ]] && printf '%s\n' "$out" | grep -E '^  - ' | head -1 | cut -c1-150 | sed 's/^/       /'
   [[ "$verdict" == CRASH ]] && printf '%s\n' "$out" | tail -3 | sed 's/^/       /'
   restore
 }
@@ -921,6 +930,34 @@ rm -f docker/rogue-two-stage.Dockerfile
 #     property that stops OD-37's fix from becoming OD-37's shape again.
 mut scripts/svc 'compose_files_for() {' 'compose_files_for_renamed() {' \
   && run_case "71 svc's compose_files_for() renamed away (fail closed)" FAIL
+
+echo; echo "=== case 88 (T-130 a0, TL-F2): a MULTI-DOCUMENT composed file FAILS CLOSED — T-039 § contract 0 row A, as a guard ==="
+# T-039 § contract 0 row A — "a multi-document compose file fails closed" — is
+# the property OE-11 made the condition of landing T-039, and until this case
+# NOTHING in the repository asserted it: no committed case wrote a `---`. It
+# was backed by probes and review measurements, which gate:pr never re-runs.
+# The exposure is recorded, not hypothetical (decisions.md OD-41): T-037
+# cycle 1 replaced parse() — which THROWS above one document — with
+# parseDocument(), which reads the FIRST document only, while `docker compose`
+# merges EVERY document. On that tree one appended document gave safety-gw a
+# single-stage non-application build at gate:pr 9/9, and this suite was 91/91.
+# This case was committed BEFORE T-130 touched the reader, so the moment the
+# reader stops refusing a second document, the suite says so. The REASON is
+# asserted too: a red for some other cause is not this guard.
+append_doc() {   # $1 = file, $2 = body of a SECOND YAML document; asserts it landed
+  local before after
+  before="$(grep -c '^---$' "$1")"
+  printf -- '---\n%s\n' "$2" >> "$1"
+  after="$(grep -c '^---$' "$1")"
+  [[ "$after" -eq $((before + 1)) ]] \
+    || { echo "   HARNESS ERROR (no document appended to $1)"; harness=$((harness+1)); return 1; }
+}
+mk_single && append_doc "$BASE" "services:
+  safety-gw:
+    build:
+      context: ..
+      dockerfile: docker/rogue-single.Dockerfile" \
+  && run_case "88 OD-41: 2nd document demotes compose.yml safety-gw" FAIL "multiple documents"
 
 echo
 run_case "99 tree restored" PASS
