@@ -22,12 +22,23 @@
  *      `${`) must appear with that exact title in Vitest's report FOR THAT FILE,
  *      with status `passed`, once per occurrence in the source. The expected
  *      titles are read from the source text, never from the report, so a lost
- *      test cannot be paid for by a surplus elsewhere in the file (a loop over
- *      `test()` registering more tests than it has call sites).
+ *      literal-titled test cannot be paid for by a surplus of tests with OTHER
+ *      titles elsewhere in the file (QR-F1: a loop over `test()` registering
+ *      more tests than it has call sites).
+ *      Identity is the LEAF title only; `describe` ancestry is not read. So a
+ *      surplus registered under the SAME leaf title in the same file (a
+ *      literal `test('X')` inside a loop, or inside a looped `describe`) does
+ *      pay for a lost `test('X')` (QR2-F2). A renamed or deleted test changes
+ *      the source and the report together, so neither is seen (QR2-F3).
  *   5. Every file registered at run time at least as many tests as it has
  *      `test(` / `it(` call sites at the start of a line in its source. After
- *      4, this only adds cover for tests whose title is NOT a literal, and a
- *      surplus in the same file masks it.
+ *      4, this only adds cover for a test whose title is NOT a literal and
+ *      whose call starts a line, and a surplus in the same file masks it.
+ *      A test whose title is not a literal AND whose call does not start a
+ *      line (a one-line `if (x) test(<template with ${…}>, …)`) is read by
+ *      neither 4 nor 5. It can be lost with every check green and no surplus
+ *      in the file (QR2-F1).
+ *   Each gap above is a committed `limitation` case in run-tests-negatives.ts.
  *   6. The text reporter's summary line reads exactly `Tests  N passed (N)`,
  *      N === total. This second reading is the one that sees an expected-fail.
  *

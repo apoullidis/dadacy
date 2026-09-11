@@ -14,6 +14,12 @@
  * so if one of them is ever closed this script fails and the contract has to
  * change with it.
  *
+ * `limitation` cases (T-132 rework 2, decisions.md OE-14) are asserted the same
+ * way. They are the routes QA's rework 1 re-review found open (QR2-F1, QR2-F2,
+ * QR2-F3), which the contract now discloses. They are limitations, not
+ * refusals: each passes because the gap exists. Whoever closes one must
+ * change its expectation, and the contract, in the same commit.
+ *
  * It must start from a clean `packages/i18n` (read with git) and it takes no
  * arguments. It is not a `*.test.ts` file, so neither Vitest nor run-tests.ts
  * reads it, and `pnpm test` does not run it.
@@ -29,6 +35,8 @@ const TARGET_PATH = join(PKG, TARGET);
 /** The first test in TARGET, the one QA's reproduction loses. */
 const LOST_TITLE = 'the fallback table is exactly SA §TS-12.1';
 const DOLLAR = '$';
+/** QR2-F2: the leaf title a hand-written `en` block and a looped `describe` share. */
+const SHARED_TITLE = 'T132QA the 112 script resolves and is safety_critical';
 
 interface Counts {
   /** tests in the CONTROL run, all files */
@@ -38,7 +46,7 @@ interface Counts {
 }
 interface Case {
   name: string;
-  expect: 'red' | 'bound';
+  expect: 'red' | 'bound' | 'limitation';
   why: string;
   plant: (s: string) => string;
   exit: number;
@@ -160,6 +168,83 @@ const CASES: Case[] = [
         s,
         "(ctx) => {\n  ctx.task.fails = true; throw new Error('T132QA crash'); // T132QA",
       ),
+    exit: 0,
+    mustInclude: ({ n }) => [
+      lostPassLine,
+      `run-tests: ${String(n)} of ${String(n)} tests passed`,
+      'TEST PASS  @kinvara/i18n',
+    ],
+    mustExclude: [],
+  },
+  {
+    name: 'QR2-F1-ONELINE-NONLITERAL',
+    expect: 'limitation',
+    why:
+      "QR2-F1, QA's exact line (ONELINE-NONLITERAL-EXPR): a generated title in a one-line if, " +
+      'never run, in a file with no surplus',
+    plant: (s) =>
+      s +
+      '\n// T132QA one-line conditional, generated title, expression body\n' +
+      `if (process.env.T132QA_NEVER) test(\`${DOLLAR}{EN} T132QA generated\`, () => ` +
+      "assert.equal(EN, 'en'));\n",
+    exit: 0,
+    mustInclude: ({ n }) => [
+      `run-tests: ${String(n)} of ${String(n)} tests passed`,
+      'TEST PASS  @kinvara/i18n',
+    ],
+    mustExclude: ['T132QA generated', 'test( call sites in source'],
+  },
+  {
+    name: 'QR2-F2-PER-LOCALE-EN-LOST',
+    expect: 'limitation',
+    why:
+      "QR2-F2, QA's prettier-formatted plant (PER-LOCALE-EN-LOST-FMT): a lost en block, paid " +
+      'for by a looped describe whose test has the same leaf title',
+    plant: (s) =>
+      replaceOnce(s, "import { test } from 'vitest';", "import { describe, test } from 'vitest';") +
+      '\n// T132QA per-locale blocks, the hand-written en block lost\n' +
+      'if (process.env.T132QA_NEVER) {\n' +
+      "  describe('en', () => {\n" +
+      `    test('${SHARED_TITLE}', () => {\n` +
+      "      assert.equal(resolveMessage('safety.sos.confirm', EN).tier, 'safety_critical');\n" +
+      '    });\n' +
+      '  });\n' +
+      '}\n' +
+      'for (const locale of [EL, RU]) {\n' +
+      '  describe(String(locale), () => {\n' +
+      `    test('${SHARED_TITLE}', () => {\n` +
+      "      assert.equal(resolveMessage('safety.sos.confirm', locale).tier, 'safety_critical');\n" +
+      '    });\n' +
+      '  });\n' +
+      '}\n',
+    exit: 0,
+    mustInclude: ({ n }) => [
+      `✓ ${TARGET} > el > ${SHARED_TITLE}`,
+      `✓ ${TARGET} > ru > ${SHARED_TITLE}`,
+      `run-tests: ${String(n + 2)} of ${String(n + 2)} tests passed`,
+      'TEST PASS  @kinvara/i18n',
+    ],
+    mustExclude: [`> en > ${SHARED_TITLE}`],
+  },
+  {
+    name: 'QR2-F3-RENAME-ONLY',
+    expect: 'limitation',
+    why: "QR2-F3, QA's plant: a renamed test passes, because the source and the report change together",
+    plant: (s) => replaceOnce(s, `\ntest('${LOST_TITLE}`, `\ntest('T132QA renamed: ${LOST_TITLE}`),
+    exit: 0,
+    mustInclude: ({ n }) => [
+      `✓ ${TARGET} > T132QA renamed: ${LOST_TITLE}`,
+      `run-tests: ${String(n)} of ${String(n)} tests passed`,
+      'TEST PASS  @kinvara/i18n',
+    ],
+    mustExclude: [lostPassLine],
+  },
+  {
+    name: 'QR2-F3-CTX-FAILS-ASSERT',
+    expect: 'limitation',
+    why: "QR2-F3, QA's plant: ctx.task.fails = true, then a failed assertion (not a crash), reports as passed",
+    plant: (s) =>
+      prefixFirstBody(s, '(ctx) => {\n  ctx.task.fails = true; assert.equal(1, 2); // T132QA'),
     exit: 0,
     mustInclude: ({ n }) => [
       lostPassLine,
