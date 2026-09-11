@@ -21,9 +21,10 @@
  *      site, because a second one inside a file is a second concurrent cluster
  *      (measured in `preflight.test.ts`, T-115). The runner is configured on the
  *      `test:integration` command line and nowhere else: a Vitest or Vite config
- *      file in the package or any directory above it is refused, because a
- *      config can alias the harness module to a double or add a setup file, and
- *      §3 never reads it.
+ *      file in the package directory is refused, because a config can alias the
+ *      harness module to a double or add a setup file, and §3 never reads it.
+ *      (Only the package directory: measured on Vitest 5.0.0, a config at the
+ *      repository root is NOT loaded by `vitest run` in the package.)
  *
  *   3. NO SUITE MOCKS THE DATABASE. `qa-verification.md`: "A DB test that mocks
  *      the database" is an automatic FAIL, and `PROTOCOL.md` §5.2 says the
@@ -254,16 +255,15 @@ if (badFlags.length > 0) {
       `or what it runs against, and this gate does not read what it points at`,
   );
 }
-// Vitest looks for its config by walking UP from the package, so every
-// directory from the package to the repository root is checked.
+// `vitest run` in the package loads a config file from the package directory.
+// Only that directory is checked: a config at the repository root was measured
+// (Vitest 5.0.0, T-115) NOT to be loaded by this run, so refusing one would be a
+// false FAIL with a false reason.
 const CONFIG_FILE = /^(vitest|vite)\.(config|workspace)\.[cm]?[jt]s$/;
-const configFiles: string[] = [];
-for (let dir = PKG_DIR; ; dir = path.dirname(dir)) {
-  for (const f of fs.readdirSync(dir)) {
-    if (CONFIG_FILE.test(f)) configFiles.push(path.relative(REPO_ROOT, path.join(dir, f)));
-  }
-  if (dir === REPO_ROOT || path.dirname(dir) === dir) break;
-}
+const configFiles = fs
+  .readdirSync(PKG_DIR)
+  .filter((f) => CONFIG_FILE.test(f))
+  .map((f) => path.relative(REPO_ROOT, path.join(PKG_DIR, f)));
 if (configFiles.length > 0) {
   fail(
     `${configFiles.join(', ')}: a Vitest/Vite config file the constraint suites would load. ` +
@@ -272,7 +272,7 @@ if (configFiles.length > 0) {
       `here reads it.`,
   );
 } else {
-  pass('no Vitest/Vite config file from the package up to the repository root');
+  pass('no Vitest/Vite config file in packages/db-testkit');
 }
 
 if (serviceMap !== undefined) {
@@ -554,11 +554,15 @@ if (report === undefined) {
     fail(`the Vitest report carries no ${missing.join(', ')} — this gate cannot read its counts`);
   } else {
     const n = (k: (typeof COUNTS)[number]): number => got.get(k) ?? -1;
+    // Failed FILES are counted from each file's own status. Vitest's
+    // numFailedTestSuites is printed under its own name: it counts describe
+    // blocks as well as files (measured, T-115), so it is not a file count.
+    const failedFiles = [...ran.values()].filter((r) => r.status !== 'passed').length;
     const summary =
       `tests ${String(n('numTotalTests'))} / passed ${String(n('numPassedTests'))} / ` +
       `failed ${String(n('numFailedTests'))} / skipped ${String(n('numPendingTests'))} / ` +
       `todo ${String(n('numTodoTests'))} / files ${String(ran.size)} of ${String(suiteFiles.length)}` +
-      ` (failed files ${String(n('numFailedTestSuites'))})`;
+      `, ${String(failedFiles)} failed (numFailedTestSuites ${String(n('numFailedTestSuites'))})`;
     const before = failures.length;
     if (n('numTotalTests') === 0) fail(`zero tests ran (${summary})`);
     else if (n('numPassedTests') !== n('numTotalTests')) {
@@ -567,7 +571,7 @@ if (report === undefined) {
     if (n('numFailedTests') + n('numPendingTests') + n('numTodoTests') !== 0) {
       fail(`a test failed, was skipped or left todo (${summary})`);
     }
-    if (n('numFailedTestSuites') !== 0 || report['success'] !== true) {
+    if (failedFiles !== 0 || n('numFailedTestSuites') !== 0 || report['success'] !== true) {
       fail(`a suite file failed — to collect, in a hook, or at all (${summary})`);
     }
     if (recountTests !== n('numTotalTests') || recountPassed !== n('numPassedTests')) {
