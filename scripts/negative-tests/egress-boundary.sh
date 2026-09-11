@@ -263,6 +263,52 @@ YML
 run_case "27 a compose file svc composes from nothing" FAIL
 rm -f docker/chaos-extra.yml
 
+
+echo; echo "=== cases 28-32 (T-037 rework, OD-39): this gate's parser differed from compose's, and T-017 §R3 knew ==="
+# T-017 §R3 measured the YAML 1.1/1.2 merge-key divergence in THIS FILE on
+# 2026-09-05 and found it fails closed — but only through an invariant derived
+# from outside the parse: every service declares image: or build:. OD-39 is the
+# shape that SATISFIES that invariant while still being misread, and case 28 is
+# the direction §R3's cases did not reach: an OVERRIDE (a name that IS in
+# compose.yml) is exempt from the networks: requirement when it declares no
+# networks: key, so a merge key that supplies a BAD network to an override was
+# invisible. `networks: [default]` and not [kinvara-build], deliberately: rule 1
+# scans the whole document text for kinvara-build and would catch the anchor
+# itself, which would make the case pass for a reason that is not this one.
+mut "$VERIFY" 'services:' "x-t037-net: &t037_net
+  networks: [default]
+
+services:" \
+  && mut "$VERIFY" '  core:
+    build:' '  core:
+    <<: *t037_net
+    build:' \
+  && run_case "28 a bad network MERGED into an override (OD-39)" FAIL "is attached to 'default'"
+# 29. THE CONTROL: merge keys are MODELLED, not refused. A fragment that
+#     violates nothing must stay green, or 28 would pass for the wrong reason
+#     and a documented Compose Spec feature would be unusable.
+mut "$VERIFY" 'services:' "x-t037-ok: &t037_ok
+  stop_grace_period: 30s
+
+services:" \
+  && mut "$VERIFY" '  core:
+    build:' '  core:
+    <<: *t037_ok
+    build:' \
+  && run_case "29 a harmless <<: merge (must stay green)" PASS
+# 30-32. The rest of the enumerated divergence class, shared with
+#        gate:app-images through lib/compose-parse.ts: a scalar the two YAML
+#        versions read differently, a tag no reader resolves, and the two
+#        compose features nothing models. (T-130: each now asserts its REASON.)
+mut "$BASE" '      NODE_ENV: ${NODE_ENV:-development}' '      NODE_ENV: ${NODE_ENV:-development}
+      QA_T037_FLAG: on' && run_case "30 a scalar YAML 1.1 and 1.2 read differently" FAIL "DIFFERENT under YAML 1.1 and YAML 1.2"
+mut "$BASE" '      NODE_ENV: ${NODE_ENV:-development}' '      NODE_ENV: !reset ${NODE_ENV:-development}' \
+  && run_case "31 an unresolvable !reset tag (fail closed)" FAIL "could not resolve a construct"
+mut "$BASE" 'services:' 'include:
+  - docker/compose.verify.yml
+
+services:' && run_case "32 a top-level include: (fail closed)" FAIL "top-level 'include:'"
+
 echo; echo "=== case 33 (T-130 a0, TL-F2): a MULTI-DOCUMENT composed file FAILS CLOSED — T-039 § contract 0 row A, as a guard ==="
 # The property OE-11 made the condition of landing T-039, and until this case
 # nothing in the repository asserted it. decisions.md OD-41: T-037 cycle 1's
@@ -287,6 +333,119 @@ append_doc "$BASE" "services:
     networks: [default]
     mem_limit: 8g" \
   && run_case "33 OD-41: 2nd document, default bridge + port + 8g" FAIL "multiple documents"
+
+echo; echo "=== cases 34-49 (T-130, OD-41): a SECOND DOCUMENT in EACH composed file, carrying each thing it could hide ==="
+# Case 33 is one file and one shape. OD-41 is not a compose.yml defect: every
+# composed file goes through the same reader, and compose merges every document
+# of every one of them. So: every composed file x every rule a second document
+# could hide from — a demoted build (T-039 § contract 1), a host port (T-036
+# § contract 4), a service on the DEFAULT bridge (OD-12, this gate's own rule)
+# and a raised budget (T-036 § contract 5). Each must be refused FOR THE
+# DOCUMENT COUNT — while a second document is refused outright, no content
+# rule ever sees it, so the reason is what these cases test. Judged by the
+# gate as at 8b4ef80 they are NOT a differential (parse() threw there too);
+# judged by T-037 cycle 1's reader they are the regression.
+V_BUILD="services:
+  safety-gw:
+    build:
+      context: ..
+      dockerfile: docker/rogue-single.Dockerfile"
+V_PORTS="services:
+  safety-gw:
+    ports: ['53999:3010']"
+V_BRIDGE="services:
+  qa-rogue:
+    image: alpine:3.20
+    networks: [default]
+    mem_limit: 128m
+    cpus: 0.25"
+V_BUDGET="services:
+  core:
+    mem_limit: 4g"
+n=34
+for f in "$BASE" "$DEV" "$VERIFY" "$CHAOS"; do
+  for v in BUILD PORTS BRIDGE BUDGET; do
+    body="V_$v"
+    append_doc "$f" "${!body}" \
+      && run_case "$n 2nd document in ${f#docker/}: $v" FAIL "multiple documents"
+    n=$((n + 1))
+  done
+done
+
+echo; echo "=== cases 50-57 (T-130): the rest of the parse-layer class, each in the direction that was missed ==="
+prepend() {   # $1 = file, $2 = text to put before line 1; asserts it landed
+  local first="${2%%$'\n'*}"
+  { printf '%s\n' "$2"; cat "$1"; } > "$1.t130" && mv "$1.t130" "$1"
+  [[ "$(head -1 "$1")" == "$first" ]] \
+    || { echo "   HARNESS ERROR (nothing prepended to $1)"; harness=$((harness+1)); return 1; }
+}
+# 50. THE CONTROL for 33-49: the '---' TOKEN is not the property. One document
+#     that happens to START with '---' must stay green; a rule keyed on the
+#     marker rather than on the document count would red it.
+prepend "$BASE" '---' && run_case "50 ONE document with a leading --- (must stay green)" PASS
+# 51. A5, found by T-130 attacking cycle 1's "never picks a version" claim: a
+#     %YAML directive overrides the reader's version option, so BOTH readings
+#     become that version and the 1.1/1.2 comparison compares a reading with
+#     itself. Planted WITH a scalar the two versions read differently, so the
+#     case shows the comparison being bypassed, not merely a directive present.
+prepend "$BASE" '%YAML 1.1
+---' && mut "$BASE" '      NODE_ENV: ${NODE_ENV:-development}' '      NODE_ENV: ${NODE_ENV:-development}
+      QA_T130_FLAG: on' \
+  && run_case "51 %YAML 1.1 + a 1.1/1.2-divergent scalar" FAIL "%YAML directive"
+# 52. A8, T-039 QA8 isolated by T-130: a self-referential alias. parse() built a
+#     CIRCULAR object and this gate's JSON.stringify threw — exit 1 with NO
+#     banner, which an exit-status-only harness scores as a refusal.
+mut "$BASE" 'services:' 'services:
+  x-t130-self: &t130_self
+    image: alpine:3.20
+    networks: [kinvara-int]
+    self: *t130_self' && run_case "52 a self-referential alias (was a TypeError)" FAIL "refers to itself"
+# 53. A9: the same through a MERGE key makes toJS() itself throw. Any exception
+#     inside the read is a reported problem now, never a crash.
+mut "$BASE" 'services:' 'services:
+  x-t130-selfm: &t130_selfm
+    image: alpine:3.20
+    networks: [kinvara-int]
+    self:
+      <<: *t130_selfm' && run_case "53 a self-referential MERGE (toJS throws)" FAIL "could not read it"
+# 54-56. OD-42, the straggler scan, both directions. It caught parse()'s throw
+#        and `continue`d, so a TWO-document compose file svc composes from
+#        nothing was silent where the same services in ONE document are
+#        reported (case 27).
+cat > docker/chaos-extra.yml <<'YML'
+x-note: a straggler whose services are in its SECOND document
+---
+services:
+  rogue:
+    image: kinvara/rogue:dev
+    networks: [default]
+YML
+run_case "54 OD-42: a TWO-document straggler" FAIL "composes it from nothing"
+rm -f docker/chaos-extra.yml
+# 55. THE CONTROL: multi-document YAML under docker/ with no services: mapping
+#     in ANY document is not a compose file, and must stay green.
+cat > docker/chaos-extra.yml <<'YML'
+a: 1
+---
+b: 2
+YML
+run_case "55 a multi-document NON-compose YAML (must stay green)" PASS
+rm -f docker/chaos-extra.yml
+# 56. The decision OD-42 forced: an UNREADABLE file under docker/ is a failure,
+#     not a skip — this gate cannot tell whether it is a compose file.
+cat > docker/chaos-extra.yml <<'YML'
+services: [unclosed
+YML
+run_case "56 an UNREADABLE straggler (skipped before T-130)" FAIL "cannot read it"
+rm -f docker/chaos-extra.yml
+# 57. B1 in this gate. NOT a differential — this gate always refused extends:
+#     (T-017 §R5) — but the refusal moved into the shared reader, so this is the
+#     case that goes red if the move ever loses it from the gate that ruled it.
+mut "$BASE" '  safety-gw:
+    image: kinvara/safety-gw:dev' '  safety-gw:
+    image: kinvara/safety-gw:dev
+    extends:
+      service: core' && run_case "57 extends: on a base service" FAIL "uses 'extends'"
 
 echo
 run_case "99 tree restored" PASS

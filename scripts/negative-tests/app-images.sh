@@ -17,7 +17,7 @@ DEV=docker/compose.dev.yml
 DF=docker/app.Dockerfile
 BK="$(mktemp -d)"
 PGDF=docker/postgres.Dockerfile
-cp "$VERIFY" "$BK/verify"; cp "$CHAOS" "$BK/chaos"; cp "$BASE" "$BK/base"; cp "$DEV" "$BK/dev"; cp "$DF" "$BK/df"; cp "$PGDF" "$BK/pgdf"; cp scripts/svc "$BK/svc"; cp apps/core/package.json "$BK/corepkg"
+cp "$VERIFY" "$BK/verify"; cp "$CHAOS" "$BK/chaos"; cp "$BASE" "$BK/base"; cp "$DEV" "$BK/dev"; cp "$DF" "$BK/df"; cp "$PGDF" "$BK/pgdf"; cp scripts/svc "$BK/svc"; cp apps/core/package.json "$BK/corepkg"; cp apps/safety-gw/package.json "$BK/sgwpkg"
 restore() {
   cp "$BK/verify" "$VERIFY"; cp "$BK/chaos" "$CHAOS"; cp "$BK/base" "$BASE"; cp "$BK/dev" "$DEV"; cp "$BK/df" "$DF"; cp "$BK/pgdf" "$PGDF"; cp "$BK/svc" scripts/svc; cp "$BK/corepkg" apps/core/package.json
   rm -rf apps/core/src apps/qa-newapp docker/next.Dockerfile docker/rogue.Dockerfile
@@ -26,6 +26,10 @@ restore() {
   # `docker/compose*.yml` glob as the fix for OD-37.
   rm -rf docker/rogue-single.Dockerfile docker/rogue-two-stage.Dockerfile \
          docker/compose.extra.yml docker/chaos-extra.yml
+  # T-037 rework (OD-39) and the folded-in attack round.
+  rm -rf apps/qa-attack apps/qa-x apps/safety-gw/package.json.t037 docker/zz-thing.yaml
+  [[ -f "$BK/sgwpkg" ]] && cp "$BK/sgwpkg" apps/safety-gw/package.json
+  return 0
 }
 trap 'restore; rm -rf "$BK"' EXIT
 
@@ -931,6 +935,192 @@ rm -f docker/rogue-two-stage.Dockerfile
 mut scripts/svc 'compose_files_for() {' 'compose_files_for_renamed() {' \
   && run_case "71 svc's compose_files_for() renamed away (fail closed)" FAIL
 
+
+echo; echo "=== cases 72-77 (T-037 rework, OD-39): the gate's PARSER differed from compose's, and nothing enumerated the divergences ==="
+# THE FOURTH ROUTE, and the first one that is not a scope gap. All three parse
+# sites were `parseYaml(text)` on yaml@2.8.1's DEFAULTS — YAML 1.2, where `<<`
+# is an ORDINARY KEY. Compose resolves merge keys. So a build: reached through
+# an x- fragment was invisible to every per-build rule while compose built it:
+# gate:app-images exit 0, gate:pr 9/9, the summary still printing the
+# clean-tree `builds read 7`, and the artefact at User=[], a shell at PID 1,
+# Healthcheck=null, 167,508,709 B (tech-lead, decisions.md OD-39).
+#
+# The family is NOT `<<`. T-017 §R3 measured this exact divergence five days
+# earlier and found gate:egress-boundary fails closed on it — but only via an
+# invariant derived from outside the parse (every service has image: or
+# build:). OD-39 is the shape that SATISFIES that invariant while being
+# misread, and app-images.ts had no equivalent net. So the fix is one shared
+# reader (lib/compose-parse.ts) that enumerates the divergence class: merge
+# keys MODELLED, every other YAML 1.1/1.2 disagreement and every unmodelled
+# compose feature FAIL CLOSED.
+MERGE_BUILD_FRAGMENT="x-t037-frag: &t037_frag
+  build:
+    context: ..
+    dockerfile: docker/rogue-single.Dockerfile
+"
+# 72. OD-39 verbatim: a build: merged into compose.yml's safety-gw.
+mk_single && mut "$BASE" 'services:' "$MERGE_BUILD_FRAGMENT
+services:" \
+  && mut "$BASE" "$SAFETY_BASE" "  safety-gw:
+    image: kinvara/safety-gw:dev
+    <<: *t037_frag" \
+  && run_case "72 a build: MERGED into compose.yml's safety-gw (OD-39)" FAIL "escapes all of them at once"
+# 73. OD-39's second half, which falsifies T-036 § contract 4 row 1 as well:
+#     the same key hides a base-file ports: from the no-host-port rule.
+mut "$BASE" 'services:' "x-t037-expose: &t037_expose
+  ports:
+    - '53999:3010'
+
+services:" \
+  && mut "$BASE" "$SAFETY_BASE" "  safety-gw:
+    image: kinvara/safety-gw:dev
+    <<: *t037_expose" \
+  && run_case "73 a ports: MERGED into a base service (OD-39, T-036 §4 row 1)" FAIL "declares ports:"
+# 74. THE CONTROL for 72-73, and it is the one that says merge keys are
+#     MODELLED rather than refused: a fragment merged in that violates nothing
+#     must stay GREEN. Refusing `<<` outright would pass 72-73 for the wrong
+#     reason and would break a documented Compose Spec feature.
+mut "$BASE" 'services:' "x-t037-ok: &t037_ok
+  stop_grace_period: 30s
+
+services:" \
+  && mut "$BASE" "$SAFETY_BASE" "  safety-gw:
+    image: kinvara/safety-gw:dev
+    <<: *t037_ok" \
+  && run_case "74 a harmless <<: merge (must stay green — modelled, not refused)" PASS
+# 75. CLASS A3 (T-130's numbering), derived rather than enumerated: a file
+#     that means two different things to two YAML versions is refused, because
+#     no reading of it can then be trusted to be compose's. `on` is a boolean
+#     in 1.1 and the string "on" in 1.2. The repair is to quote it.
+#     (T-130: 72-78 now assert their REASON as well as their verdict.)
+mut "$BASE" '      NODE_ENV: ${NODE_ENV:-development}' '      NODE_ENV: ${NODE_ENV:-development}
+      QA_T037_FLAG: on' && run_case "75 a scalar YAML 1.1 and 1.2 read differently" FAIL "DIFFERENT under YAML 1.1 and YAML 1.2"
+# 76. CLASS A4: a Compose Spec tag no YAML reader resolves. At 1.2 defaults it
+#     was dropped to its default value with a console warning and NO gate
+#     failure — a construct the gate silently did not model.
+mut "$BASE" '      NODE_ENV: ${NODE_ENV:-development}' '      NODE_ENV: !reset ${NODE_ENV:-development}' \
+  && run_case "76 an unresolvable !reset tag (fail closed)" FAIL "could not resolve a construct"
+# 77. CLASS B1/B2: extends: and include:. T-017 §R5 ruled extends: a hard
+#     failure in gate:egress-boundary; app-images.ts never had it (T-039
+#     § contract 0 row C: exit 0 here, exit 1 there, at the same commit).
+#     Both readers get it now, from the shared reader.
+mut "$BASE" "$SAFETY_BASE" '  safety-gw:
+    image: kinvara/safety-gw:dev
+    extends:
+      service: core' && run_case "77 extends: on a base service (fail closed)" FAIL "uses 'extends'"
+mut "$BASE" 'services:' 'include:
+  - docker/compose.verify.yml
+
+services:' && run_case "78 a top-level include: (fail closed)" FAIL "top-level 'include:'"
+
+echo; echo "=== cases 79-84 (T-037): the attack round, folded into the suite so a reviewer can re-run it ==="
+# These were an ad-hoc script in T-037 cycle 0's evidence and could not be
+# re-executed by a reviewer (tech-lead had to re-derive both properties from
+# its own trees). They are cases now.
+# 79. The universal reaches a service demoted inside a FIFTH wired file.
+mk_single && printf '%s\n' "services:
+  safety-gw:
+    build:
+      context: ..
+      dockerfile: docker/rogue-single.Dockerfile" > docker/compose.extra.yml \
+  && mut scripts/svc "$CHAOS_F_LINE" "$CHAOS_F_LINE
+    [[ \"\${USE_EXTRA:-0}\" -eq 1 ]] && COMPOSE_FILES+=(-f \"\${DOCKER_DIR}/compose.extra.yml\")" \
+  && run_case "79 safety-gw demoted inside a fifth wired compose file" FAIL
+# 80. An empty APP arg does not buy the application-build exemption.
+mk_single && mut "$BASE" "$SAFETY_BASE" '  safety-gw:
+    image: kinvara/safety-gw:dev
+    build:
+      context: ..
+      dockerfile: docker/rogue-single.Dockerfile
+      args:
+        APP: ""' && run_case "80 demotion with an empty APP: build arg" FAIL
+# 81. A NEW labelled app with a demoted build reaches the universal too.
+mk_single && mkdir -p apps/qa-attack \
+  && printf '{"name":"@kinvara/qa-attack","private":true,"version":"0.0.0","type":"module"}\n' > apps/qa-attack/package.json \
+  && mut "$BASE" '  valkey:
+    image:' "  qa-attack:
+    image: kinvara/qa-attack:dev
+    profiles: [cache]
+    networks: [kinvara-int]
+    mem_limit: 64m
+    cpus: 0.25
+    labels:
+      io.kinvara.built-by: 'T-018'
+$DEMOTED_BUILD
+  valkey:
+    image:" && run_case "81 a new labelled app with a demoted build" FAIL
+# 82. THE DEEPEST RESIDUE OF OD-38: delete the label AND the app's
+#     package.json, then demote. What refuses it is a THIRD reading —
+#     compose.verify.yml still passes APP: safety-gw, and the placeholder rule
+#     requires apps/<APP>/package.json to exist. A different file from the two
+#     that were edited, which is what PROTOCOL §5.1 asks for.
+mk_single && mut "$BASE" "$LABEL_LINES" "$NO_LABEL_LINES
+$DEMOTED_BUILD" \
+  && mv apps/safety-gw/package.json apps/safety-gw/package.json.t037 \
+  && run_case "82 label AND apps/safety-gw/package.json gone, then demoted" FAIL
+cp "$BK/sgwpkg" apps/safety-gw/package.json
+# 83. A straggler with a .yaml extension and a name no compose*.yml glob matches.
+cat > docker/zz-thing.yaml <<'YML'
+services:
+  rogue: { image: alpine:3.20 }
+YML
+run_case "83 docker/zz-thing.yaml, composed by nothing" FAIL
+rm -f docker/zz-thing.yaml
+# 84. THE STATED BOUND, recorded as an expected PASS so it is visible in the
+#     gate's own output rather than only in prose: a compose file OUTSIDE
+#     docker/ that scripts/svc composes from nothing is read by neither gate.
+#     It reaches no ticket-scoped project — svc cannot pass a file its assembly
+#     does not name — and wiring it in is case 67.
+mkdir -p infra && cat > infra/compose.rogue.yml <<'YML'
+services:
+  rogue: { image: alpine:3.20, ports: ['53999:3000'] }
+YML
+run_case "84 infra/compose.rogue.yml — the stated bound (expected PASS)" PASS
+rm -f infra/compose.rogue.yml; rmdir infra 2>/dev/null
+
+
+echo; echo "=== cases 85-87 (T-037 rework, QA-N2): the three combinations of a half-declared new app ==="
+# § contract 6 step 2 used to say "gate:app-images will tell you which of those
+# you missed". QA found that missing BOTH is green; measuring all three showed
+# missing the LABEL alone is green too, so the sentence was wrong in two
+# directions rather than one. These cases put all three outcomes in the gate's
+# own output, so the published scope is re-executable rather than asserted.
+NEWAPP='{"name":"@kinvara/qa-x","private":true,"version":"0.0.0","type":"module"}'
+mk_qa_x() { mkdir -p apps/qa-x && printf '%s\n' "$NEWAPP" > apps/qa-x/package.json; }
+# 85. Neither half. GREEN, and correctly: an apps/ directory no composed file
+#     references is a package, not a service, and nothing builds it.
+mk_qa_x && run_case "85 a new apps/* declared in no compose file (green)" PASS
+# 86. The label without the overlay build. RED — row L, naming the missing build.
+mk_qa_x && mut "$BASE" '  valkey:
+    image:' "  qa-x:
+    image: kinvara/qa-x:dev
+    profiles: [cache]
+    networks: [kinvara-int]
+    mem_limit: 64m
+    cpus: 0.25
+    labels:
+      io.kinvara.built-by: 'T-018'
+  valkey:
+    image:" && run_case "86 the label without an overlay build (row L)" FAIL
+# 87. The overlay build without the label. GREEN, and correctly: nothing needs
+#     the label to reach this build — the image contract reads it through the
+#     derived Dockerfile set and the universal reads it through apps/*.
+mk_qa_x && mut "$VERIFY" 'services:' 'services:
+  qa-x:
+    image: kinvara/qa-x:dev
+    networks: [kinvara-int]
+    mem_limit: 128m
+    cpus: 0.25
+    build:
+      context: ..
+      dockerfile: docker/app.Dockerfile
+      target: runtime
+      args:
+        NODE_VERSION: ${KINVARA_NODE_VERSION:?derived from .tool-versions by scripts/svc}
+        PNPM_VERSION: ${KINVARA_PNPM_VERSION:?derived from .tool-versions by scripts/svc}
+        APP: qa-x
+    pull_policy: build' && run_case "87 an overlay build without the label (green)" PASS
+
 echo; echo "=== case 88 (T-130 a0, TL-F2): a MULTI-DOCUMENT composed file FAILS CLOSED — T-039 § contract 0 row A, as a guard ==="
 # T-039 § contract 0 row A — "a multi-document compose file fails closed" — is
 # the property OE-11 made the condition of landing T-039, and until this case
@@ -958,6 +1148,123 @@ mk_single && append_doc "$BASE" "services:
       context: ..
       dockerfile: docker/rogue-single.Dockerfile" \
   && run_case "88 OD-41: 2nd document demotes compose.yml safety-gw" FAIL "multiple documents"
+
+echo; echo "=== cases 100-115 (T-130, OD-41): a SECOND DOCUMENT in EACH composed file, carrying each thing it could hide ==="
+# Case 88 is one file and one shape. OD-41 is not a compose.yml defect: every
+# composed file goes through the same reader, and compose merges every document
+# of every one of them. So: every composed file x every rule a second document
+# could hide from — a demoted build (T-039 § contract 1), a host port (T-036
+# § contract 4), a service on the DEFAULT bridge (OD-12) and a raised budget
+# (T-036 § contract 5). Each must be refused FOR THE DOCUMENT COUNT — while a
+# second document is refused outright, no content rule ever sees it, so the
+# reason is what these cases test. Judged by the gate as at 8b4ef80 they are
+# NOT a differential (parse() threw there too); judged by T-037 cycle 1's
+# reader they are the regression.
+V_BUILD="services:
+  safety-gw:
+    build:
+      context: ..
+      dockerfile: docker/rogue-single.Dockerfile"
+V_PORTS="services:
+  safety-gw:
+    ports: ['53999:3010']"
+V_BRIDGE="services:
+  qa-rogue:
+    image: alpine:3.20
+    networks: [default]
+    mem_limit: 128m
+    cpus: 0.25"
+V_BUDGET="services:
+  core:
+    mem_limit: 4g"
+n=100   # 89-99 are deliberately unused: 99 is this suite's "tree restored" sentinel
+for f in "$BASE" "$DEV" "$VERIFY" "$CHAOS"; do
+  for v in BUILD PORTS BRIDGE BUDGET; do
+    body="V_$v"
+    mk_single && append_doc "$f" "${!body}" \
+      && run_case "$n 2nd document in ${f#docker/}: $v" FAIL "multiple documents"
+    n=$((n + 1))
+  done
+done
+
+echo; echo "=== cases 116-123 (T-130): the rest of the parse-layer class, each in the direction that was missed ==="
+prepend() {   # $1 = file, $2 = text to put before line 1; asserts it landed
+  local first="${2%%$'\n'*}"
+  { printf '%s\n' "$2"; cat "$1"; } > "$1.t130" && mv "$1.t130" "$1"
+  [[ "$(head -1 "$1")" == "$first" ]] \
+    || { echo "   HARNESS ERROR (nothing prepended to $1)"; harness=$((harness+1)); return 1; }
+}
+# 116. THE CONTROL for 88 and 100-115: the '---' TOKEN is not the property. One
+#      document that happens to START with '---' must stay green; a rule keyed
+#      on the marker rather than on the document count would red it.
+prepend "$BASE" '---' && run_case "116 ONE document with a leading --- (must stay green)" PASS
+# 117. A5, found by T-130 attacking cycle 1's "never picks a version" claim: a
+#      %YAML directive overrides the reader's version option, so BOTH readings
+#      become that version and the 1.1/1.2 comparison compares a reading with
+#      itself. Planted WITH a scalar the two versions read differently, so the
+#      case shows the comparison being bypassed, not merely a directive present.
+prepend "$BASE" '%YAML 1.1
+---' && mut "$BASE" '      NODE_ENV: ${NODE_ENV:-development}' '      NODE_ENV: ${NODE_ENV:-development}
+      QA_T130_FLAG: on' \
+  && run_case "117 %YAML 1.1 + a 1.1/1.2-divergent scalar" FAIL "%YAML directive"
+# 118. A8, T-039 QA8 isolated by T-130: a self-referential alias. This gate was
+#      GATE PASS on it while gate:egress-boundary crashed with no banner — the
+#      two gates disagreed on the same file.
+mut "$BASE" 'services:' 'services:
+  x-t130-self: &t130_self
+    image: alpine:3.20
+    networks: [kinvara-int]
+    self: *t130_self' && run_case "118 a self-referential alias" FAIL "refers to itself"
+# 119. A9: the same through a MERGE key makes toJS() itself throw. Any
+#      exception inside the read is a reported problem now, never a crash.
+mut "$BASE" 'services:' 'services:
+  x-t130-selfm: &t130_selfm
+    image: alpine:3.20
+    networks: [kinvara-int]
+    self:
+      <<: *t130_selfm' && run_case "119 a self-referential MERGE (toJS throws)" FAIL "could not read it"
+# 120-122. OD-42, the straggler scan, both directions. It caught parse()'s
+#          throw and `continue`d, so a TWO-document compose file svc composes
+#          from nothing was silent where the same services in ONE document
+#          are reported (case 68).
+cat > docker/chaos-extra.yml <<'YML'
+x-note: a straggler whose services are in its SECOND document
+---
+services:
+  rogue:
+    image: kinvara/rogue:dev
+    ports:
+      - '53999:3000'
+YML
+run_case "120 OD-42: a TWO-document straggler" FAIL "composes it from nothing"
+rm -f docker/chaos-extra.yml
+# 121. THE CONTROL: multi-document YAML under docker/ with no services:
+#      mapping in ANY document is not a compose file, and must stay green.
+cat > docker/chaos-extra.yml <<'YML'
+a: 1
+---
+b: 2
+YML
+run_case "121 a multi-document NON-compose YAML (must stay green)" PASS
+rm -f docker/chaos-extra.yml
+# 122. The decision OD-42 forced: an UNREADABLE file under docker/ is a
+#      failure, not a skip — this gate cannot tell whether it is compose.
+cat > docker/chaos-extra.yml <<'YML'
+services: [unclosed
+YML
+run_case "122 an UNREADABLE straggler (skipped before T-130)" FAIL "cannot read it"
+rm -f docker/chaos-extra.yml
+# 123. A2 — anchors and plain aliases are MODELLED, shown in the red direction:
+#      a demoted build reached through an ALIAS (not a merge key) reaches the
+#      universal. Not a differential: parse() resolved plain aliases too.
+mk_single && mut "$BASE" 'services:' "x-t130-build: &t130_build
+  context: ..
+  dockerfile: docker/rogue-single.Dockerfile
+
+services:" && mut "$BASE" "$SAFETY_BASE" "  safety-gw:
+    image: kinvara/safety-gw:dev
+    build: *t130_build" \
+  && run_case "123 a demoted build reached through a plain ALIAS" FAIL "escapes all of them at once"
 
 echo
 run_case "99 tree restored" PASS

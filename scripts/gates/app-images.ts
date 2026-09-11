@@ -61,9 +61,9 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { parse as parseYaml } from 'yaml';
 import { REPO_ROOT, finish, toolVersions } from './lib/run.ts';
 import { composedFiles } from './lib/composed-files.ts';
+import { parseCompose } from './lib/compose-parse.ts';
 
 /**
  * EVERY compose file a ticket-scoped project is composed from — DERIVED FROM
@@ -217,6 +217,8 @@ const isApplicationBuild = (
   return isRecord(args) && typeof args['APP'] === 'string' && args['APP'].trim() !== '';
 };
 
+/** Files read with both YAML versions agreeing on their meaning (OD-39). */
+const versionAgreedFiles: string[] = [];
 /** Parsed `services:` of a compose file. Memoised: each file is reported once. */
 const servicesCache = new Map<string, Record<string, Record<string, unknown>> | null>();
 const servicesOf = (rel: string): Record<string, Record<string, unknown>> | null => {
@@ -228,14 +230,20 @@ const servicesOf = (rel: string): Record<string, Record<string, unknown>> | null
       failures.push(`${rel} does not exist`);
       return null;
     }
-    let doc: unknown;
-    try {
-      doc = parseYaml(text);
-    } catch (err) {
-      failures.push(`${rel} is not parseable YAML: ${String(err)}`);
-      return null;
-    }
-    if (!isRecord(doc) || !isRecord(doc['services'])) {
+    // OD-39. This used to be `parseYaml(text)` — yaml@2.8.1's defaults, which
+    // do not resolve `<<` merge keys. Compose does resolve them (measured,
+    // `T-037` § Evidence R2 — and compose is NEITHER YAML version), so a build:
+    // merged in from an x- fragment was invisible to every rule below while
+    // compose built it: exit 0, gate:pr 9/9, and this file's own summary still
+    // printing the clean-tree `builds read 7`. `lib/compose-parse.ts` is now
+    // the ONE place any gate reads compose; it resolves `<<`, refuses a file
+    // the two YAML versions read differently, refuses a second document
+    // (OD-41), and enumerates the rest of the class in its header (T-130).
+    const { doc, problems, versionAgreed } = parseCompose(rel, text);
+    failures.push(...problems);
+    if (versionAgreed) versionAgreedFiles.push(rel);
+    if (doc === null) return null;
+    if (!isRecord(doc['services'])) {
       failures.push(`${rel}: no services: mapping — refusing to report a pass on it`);
       return null;
     }
@@ -1399,6 +1407,11 @@ console.log(`  stages resolved (§6, last-wins) ${String(stagesChecked.length)}`
 for (const line of [...stagesChecked].sort()) console.log(`    ${line}`);
 console.log(`  apps read                       ${String(appsChecked)}`);
 console.log(
+  // The parenthetical used to read "all five still T-001 placeholders" — a
+  // literal beside a set this ticket made derived. With a sixth apps/*
+  // directory present it printed `6:` and "all five" in the same run
+  // (tech-lead, T-037 review). The count now comes from the same variable the
+  // sentence describes.
   `  apps with src/                  ${String(withSource)}` +
     // QA-N1's sibling, found by tech-lead on this same tree (T-037 § TL-4):
     // this line read "all five" — a literal, printed beside a set the same
@@ -1409,6 +1422,15 @@ console.log(
     (withSource === 0
       ? `  (all ${String(appsChecked)} apps read are still T-001 placeholders — the images run the reference entrypoint)`
       : ''),
+);
+console.log(
+  `  compose reader                  lib/compose-parse.ts, shared with gate:egress-boundary` +
+    `  (merge keys resolved; a YAML 1.1/1.2 disagreement, a second document and the rest ` +
+    `of its class refused — OD-39, OD-41)`,
+);
+console.log(
+  `  files both YAML versions agree on  ${String(versionAgreedFiles.length)}: ` +
+    `${versionAgreedFiles.sort().join(' ')}`,
 );
 
 finish('gate:app-images', failures);

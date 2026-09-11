@@ -81,9 +81,9 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { parse as parseYaml } from 'yaml';
 import { REPO_ROOT, finish } from './lib/run.ts';
 import { composedFiles } from './lib/composed-files.ts';
+import { parseCompose } from './lib/compose-parse.ts';
 
 const BUILD_NETWORK = 'kinvara-build';
 const INT_NETWORK = 'kinvara-int';
@@ -159,6 +159,8 @@ function networksOf(svc: Record<string, unknown>): string[] | undefined {
 }
 
 let filesParsed = 0;
+/** Files read with both YAML versions agreeing on their meaning (OD-39). */
+const versionAgreedFiles: string[] = [];
 let servicesChecked = 0;
 /** Service names declared in compose.yml. Anything else in an overlay is an ADDITION. */
 let baseNames: Set<string> | null = null;
@@ -186,17 +188,20 @@ for (const rel of COMPOSE_FILES) {
     continue;
   }
 
-  let doc: unknown;
-  try {
-    doc = parseYaml(text);
-  } catch (err) {
-    failures.push(`${rel} is not parseable YAML: ${String(err)}`);
-    continue;
-  }
-  if (!isRecord(doc)) {
-    failures.push(`${rel} did not parse to a mapping — refusing to report a pass on it`);
-    continue;
-  }
+  // OD-39, and this gate is where the lesson was ALREADY on record. T-017 §R3
+  // measured the YAML 1.1 / 1.2 merge-key divergence on 2026-09-05 and found
+  // this gate fails closed on it — but only via an invariant derived from
+  // OUTSIDE the parse (every service declares image: or build:). OD-39 is the
+  // shape that SATISFIES that invariant while still being misread, because the
+  // merged fragment supplies build: to a service that already has image:. The
+  // divergence is now closed at the parse, in one place all three readers
+  // share, so the next one cannot sit in one gate's evidence and never reach
+  // its sibling.
+  const parsedFile = parseCompose(rel, text);
+  failures.push(...parsedFile.problems);
+  if (parsedFile.versionAgreed) versionAgreedFiles.push(rel);
+  const doc = parsedFile.doc;
+  if (doc === null) continue;
   filesParsed += 1;
 
   // -------------------------------------------------------------------------
@@ -252,14 +257,13 @@ for (const rel of COMPOSE_FILES) {
     if (isAddition) additionsChecked += 1;
     const mustDeclareNetworks = rel === BASE_FILE || isAddition;
 
-    // A compose feature this gate does not model must FAIL, never pass.
-    if ('extends' in svc) {
-      failures.push(
-        `${rel}: service '${name}' uses 'extends', which this gate cannot follow — ` +
-          `the inherited definition may carry a networks: key this gate never sees. ` +
-          `Teach the gate to resolve 'extends' before using it here.`,
-      );
-    }
+    // A compose feature this gate does not model must FAIL, never pass —
+    // T-017 §R5's ruling, which now lives in lib/compose-parse.ts so that
+    // app-images.ts and the straggler scan get it too. That relocation IS half
+    // of the OD-39 fix: this refusal existed here and in no other reader for
+    // five days, which is exactly how a known parser divergence reached a
+    // sibling gate with no equivalent net. A file carrying 'extends' now fails
+    // closed AT THE PARSE, so this loop never sees its services at all.
 
     // Anti-vacuity that does NOT share a blind spot with the parse: compose
     // requires image or build on every service, so a "service" with neither is
@@ -541,7 +545,15 @@ console.log(
       ? '  (none today — every overlay service overrides a compose.yml service)'
       : '  (each held to the full base-service rule)'),
 );
-console.log(`  parser                     yaml (a real one — see QA-F2)`);
+console.log(
+  `  parser                     lib/compose-parse.ts — merge keys RESOLVED; a file the ` +
+    `two YAML versions read differently, or carrying a second document, REFUSED ` +
+    `(OD-39, OD-41); shared with gate:app-images`,
+);
+console.log(
+  `  YAML 1.1/1.2 agreement     ${String(versionAgreedFiles.length)}/${String(COMPOSE_FILES.length)} files` +
+    `  (a file the two versions read differently is REFUSED — OD-39)`,
+);
 console.log(`  entry points checked       scripts/dev, scripts/svc`);
 console.log(`  docker socket              scripts/dev --docker only (OD-16)`);
 console.log(

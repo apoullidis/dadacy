@@ -54,8 +54,8 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { parse as parseYaml } from 'yaml';
 import { REPO_ROOT } from './run.ts';
+import { composeShape } from './compose-parse.ts';
 
 /**
  * `base` — passed unconditionally, so it is in every project. It is the file
@@ -243,21 +243,24 @@ function stragglers(composed: readonly string[]): string[] {
   for (const abs of walk(dir).sort()) {
     const rel = path.relative(REPO_ROOT, abs);
     if (composed.includes(rel)) continue;
-    let doc: unknown;
-    try {
-      doc = parseYaml(fs.readFileSync(abs, 'utf8'));
-    } catch {
-      continue; // not YAML this gate can read; it is not a compose file it can be sure of
+    // OD-42 (T-130). This used to be `try { parse(...) } catch { continue; }`:
+    // `parse()` THROWS on a second YAML document, so a two-document straggler
+    // was skipped in silence while the same services in ONE document were
+    // reported — the two directions disagreed. The shared reader answers the
+    // one question asked here ("is it compose-shaped, in ANY document, under
+    // EITHER YAML reading?") and an unreadable file is a FAILURE: its
+    // compose-ness is unknown, and an unknown is never a skip.
+    const shape = composeShape(fs.readFileSync(abs, 'utf8'));
+    if (shape.kind === 'unreadable') {
+      out.push(
+        `${rel} is a YAML file under docker/ that ${SVC}'s compose_files_for() composes ` +
+          `from nothing, and this gate cannot read it (${shape.why}) — so it cannot tell ` +
+          `whether it is a compose file. An unreadable file here is a failure, never a ` +
+          `skip (OD-42). Fix it, or move it out of docker/.`,
+      );
+      continue;
     }
-    if (
-      typeof doc === 'object' &&
-      doc !== null &&
-      !Array.isArray(doc) &&
-      'services' in (doc as Record<string, unknown>) &&
-      typeof (doc as Record<string, unknown>)['services'] === 'object' &&
-      (doc as Record<string, unknown>)['services'] !== null &&
-      !Array.isArray((doc as Record<string, unknown>)['services'])
-    ) {
+    if (shape.kind === 'compose') {
       out.push(
         `${rel} is a compose file — it has a top-level services: mapping — and ` +
           `${SVC}'s compose_files_for() composes it from nothing. Either wire it into that ` +
