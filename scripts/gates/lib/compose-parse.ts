@@ -27,17 +27,23 @@
  * no `yaml` option equals it, and naming either version "compose's" would be a
  * claim wider than that measurement.
  *
- * This reader reads every file TWICE with ONE LEXER — `yaml`'s, which is YAML
- * 1.2 SYNTAX in both readings — once under the YAML 1.2 core SCHEMA and once
- * under the YAML 1.1 SCHEMA, both with `<<` resolved, and refuses any file on
- * which those two readings disagree. `yaml`'s `version: '1.1'` option selects
- * how a scalar or tag RESOLVES; it does not select how the text is TOKENISED
- * (T-130 rework 1, TL-F1, measured against PyYAML and compose). So the
- * comparison (A3) detects a SCHEMA difference between the versions and is
+ * This reader reads every file TWICE with ONE LEXER — `yaml@2.8.1`'s, which
+ * TARGETS YAML 1.2 syntax and is measured to DEPART from it on a lone CR
+ * (OD-45, open, T-131) — once under the YAML 1.2 core SCHEMA and once under
+ * the YAML 1.1 SCHEMA, both with `<<` resolved, and refuses a file whose two
+ * readings SERIALISE differently: the comparison (A3) is `JSON.stringify` TEXT
+ * equality, so two readings that serialise identically are NOT distinguished
+ * even when their types differ — a full ISO timestamp is a `Date` under 1.1
+ * and a string under 1.2, prints the same, and passes (OD-46, open, T-131).
+ * `yaml`'s `version: '1.1'` option selects how a scalar or tag RESOLVES; it
+ * does not select how the text is TOKENISED (T-130 rework 1, TL-F1, measured
+ * against PyYAML and compose). So A3 can only see a SCHEMA difference, and is
  * structurally blind to a SYNTAX difference: a file YAML 1.1 and YAML 1.2
  * tokenise differently is read identically twice. It does NOT read the file
- * "as YAML 1.1", and it does pick a syntax: 1.2's. The one syntax difference
- * that is handled is handled by refusal, not by comparison — A10 below.
+ * "as YAML 1.1"; it tokenises as `yaml`'s lexer does. TWO 1.1/1.2 syntax
+ * differences have been measured: the Unicode line breaks, REFUSED by
+ * presence (A10 below), and the `\/` escape, NOT refused (OD-44, open, T-131;
+ * compose refuses such a file).
  *
  * THE CLASS — every member MEASURED, each MODELLED or FAIL-CLOSED. NOT
  * EXHAUSTIVE: a construct nobody has measured is not in this list, and it is
@@ -46,10 +52,16 @@
  *   A1  `<<` merge keys ................. MODELLED (both readings resolve them)
  *   A2  anchors and plain aliases ....... MODELLED (`yaml` resolves them; both
  *                                         readings agree)
- *   A3  a scalar the two SCHEMAS resolve differently (`on`, `yes`, `0777`,
- *       `12:30`, a bare `.`, …) ......... FAIL CLOSED — derived by comparing
- *                                         the two readings, not by a list of
- *                                         spellings; a divergent KEY counts too
+ *   A3  a scalar whose two SCHEMA readings SERIALISE differently (`on`,
+ *       `yes`, `0777`, `12:30`, a bare `.`, …) FAIL CLOSED — derived by
+ *                                         comparing the two readings as
+ *                                         `JSON.stringify` text, not by a list
+ *                                         of spellings; a divergent KEY counts
+ *                                         too. NOT distinguished: readings
+ *                                         that differ in TYPE but serialise
+ *                                         alike — a full ISO timestamp (1.1
+ *                                         `Date`, 1.2 string) passes (OD-46,
+ *                                         open, T-131)
  *   A4  a tag no reading resolves (`!reset`, `!override`, a remapped `!!`)
  *       .................................. FAIL CLOSED, from the reader's own
  *                                         warnings
@@ -78,12 +90,15 @@
  *                                         a file this gate never reads
  *   B2  a top-level `include:` .......... FAIL CLOSED — the same, a file up
  *   A10 U+0085, U+2028 or U+2029 anywhere in the file
- *       .................................. FAIL CLOSED (OD-43). The one YAML
- *       1.1/1.2 SYNTAX difference measured here: YAML 1.1 and compose break
- *       lines on them, YAML 1.2 — this reader's one lexer — does not, so a
- *       build:, a port or a service can sit after one on a comment line.
- *       Refused by presence, because A3's comparison cannot see it. Both entry
- *       points (`parseCompose`, `composeShape`).
+ *       .................................. FAIL CLOSED (OD-43). One of the TWO
+ *       YAML 1.1/1.2 SYNTAX differences measured (the other is the `\/`
+ *       escape, OD-44, not refused): YAML 1.1 and compose break lines on them,
+ *       YAML 1.2 — and this reader's one lexer — do not, so a build:, a port
+ *       or a service can sit after one on a comment line. Refused by presence,
+ *       because A3's comparison cannot see it. Both entry points
+ *       (`parseCompose`, `composeShape`). NOT covered: a lone CR, which YAML
+ *       1.2 itself and compose break on and `yaml@2.8.1` does not (OD-45,
+ *       open, T-131).
  *
  * THE STRAGGLER SCAN (OD-42) is a different question — "is this file a compose
  * file at all?" — so it gets its own entry point, `composeShape()`, over the
@@ -102,7 +117,22 @@
  * because both readings share one lexer; the YAML 1.2 specification names the
  * line-break change (A10) and otherwise says only "production bug fixes", so
  * no list of the rest exists to check against (T-130 § Published contract §0,
- * the lexer table). The instrument for finding the next one is `docker compose config`,
+ * the 1.1→1.2 syntax-change table, which also measures the `\/` escape). So is
+ * a departure of `yaml@2.8.1` from YAML 1.2 itself, which no walk of the spec's
+ * change list can find. OPEN AT THE TIME OF WRITING, all owned by T-131:
+ *   OD-46  A3 compares `JSON.stringify` text: a full ISO timestamp (1.1 `Date`,
+ *          1.2 string) serialises identically and passes, while compose
+ *          resolves it as a timestamp.
+ *   OD-45  a lone CR (`\r` not followed by `\n`) is a line break to YAML 1.2,
+ *          to compose and to PyYAML, and not to `yaml@2.8.1`: it hides a
+ *          safety-gw build: from BOTH gates at exit 0, identically on main;
+ *          gate:pr goes red only incidentally, via prettier, and nothing
+ *          asserts that. A UTF-16 compose-shaped straggler under docker/ is
+ *          `not-compose` here (read as UTF-8) — silent where its UTF-8 twin is
+ *          reported.
+ *   OD-44  the `\/` escape: compose refuses the file, this reader accepts it
+ *          (the safe direction — compose builds nothing from it).
+ * The instrument for finding the next one is `docker compose config`,
  * which these gates cannot run: they have no Docker socket, by design
  * (`gate:toolbox` §6). A UNIVERSAL IS ONLY AS WIDE AS THE PARSE IT IS COMPUTED
  * FROM.
@@ -110,11 +140,14 @@
 import { parseAllDocuments } from 'yaml';
 
 export interface ComposeParse {
-  /** The document, as both readings (one lexer, two schemas) agree. `null` means FAIL CLOSED. */
+  /** The document, as both readings (one lexer, two schemas) serialise it. `null` means FAIL CLOSED. */
   readonly doc: Record<string, unknown> | null;
   /** Diagnostics the caller must push onto its failure list. */
   readonly problems: readonly string[];
-  /** True when the 1.2- and 1.1-SCHEMA readings agreed and the file was read. Schema only. */
+  /**
+   * True when the 1.2- and 1.1-SCHEMA readings serialised identically (`JSON.stringify`
+   * text, not type — OD-46) and the file was read. Schema only.
+   */
   readonly schemasAgreed: boolean;
 }
 
@@ -138,7 +171,11 @@ function hasCycle(v: unknown, ancestors: Set<object> = new Set()): boolean {
   return false;
 }
 
-/** The first few paths at which two readings of the same file disagree. */
+/**
+ * The first few paths at which two readings of the same file SERIALISE differently.
+ * `JSON.stringify` text equality, not type equality: a 1.1 `Date` and a 1.2 string
+ * that print the same are NOT reported (OD-46, open, T-131).
+ */
 function divergences(a: unknown, b: unknown, at: string, out: string[]): void {
   if (out.length >= 4) return;
   if (JSON.stringify(a) === JSON.stringify(b)) return;
@@ -161,7 +198,7 @@ function divergences(a: unknown, b: unknown, at: string, out: string[]): void {
   );
 }
 
-/** Read a composed file the way both readings (one lexer, two schemas) agree it reads, or fail closed. */
+/** Read a composed file as both readings (one lexer, two schemas) serialise it, or fail closed. */
 export function parseCompose(rel: string, text: string): ComposeParse {
   try {
     return parseComposeUnguarded(rel, text);
@@ -185,11 +222,12 @@ export function parseCompose(rel: string, text: string): ComposeParse {
  * A10 (OD-43). The three characters YAML 1.1 treats as LINE BREAKS and YAML
  * 1.2 does not (YAML 1.2.2 §5.4: "YAML version 1.1 did support the above
  * non-ASCII line break characters … YAML treats them as non-break characters
- * as of version 1.2"). `yaml`'s lexer is 1.2 in both readings, so text after
- * one of them on a comment line is a COMMENT to every rule here — and, measured
- * with `docker compose config`, LIVE YAML to compose. Refused wherever they
- * appear, because compose files have no use for them and the comparison in A3
- * cannot see the difference (one lexer, two schemas).
+ * as of version 1.2"). `yaml`'s lexer, which targets 1.2 in both readings,
+ * treats them as 1.2 does, so text after one of them on a comment line is a
+ * COMMENT to every rule here — and, measured with `docker compose config`, LIVE
+ * YAML to compose. Refused wherever they appear, because compose files have no
+ * use for them and the comparison in A3 cannot see the difference (one lexer,
+ * two schemas). A lone CR is NOT in this table (OD-45, open, T-131).
  */
 const YAML11_ONLY_LINE_BREAKS: readonly (readonly [string, string])[] = [
   ['U+0085 (NEL)', '\u0085'],
@@ -221,7 +259,7 @@ function parseComposeUnguarded(rel: string, text: string): ComposeParse {
   const problems: string[] = [];
   const fail = (): ComposeParse => ({ doc: null, problems, schemasAgreed: false });
 
-  // A10 — before any parse: every later check reads what the 1.2 lexer
+  // A10 — before any parse: every later check reads what `yaml`'s lexer
   // tokenised, and on these characters that is not what compose tokenises.
   const breaks = yaml11LineBreaks(text);
   if (breaks !== null) {
@@ -265,8 +303,8 @@ function parseComposeUnguarded(rel: string, text: string): ComposeParse {
   if (d12.directives?.yaml.explicit === true || d11.directives?.yaml.explicit === true) {
     problems.push(
       `${rel} carries a %YAML directive. It overrides the schema this gate reads with, so ` +
-        `both of its readings become that one version and the check that refuses a file the ` +
-        `1.1 and 1.2 schemas resolve differently can no longer fire (T-130, A5). Compose ` +
+        `both of its readings become that one version and the check that compares its 1.1- ` +
+        `and 1.2-schema readings can no longer fire (T-130, A5). Compose ` +
         `files need no %YAML directive; remove it.`,
     );
     return fail();
@@ -318,11 +356,15 @@ function parseComposeUnguarded(rel: string, text: string): ComposeParse {
     return fail();
   }
 
-  // A3. The property is about the FILE, not about the reader: a composed file
-  // must not resolve to two different values under the 1.1 and 1.2 SCHEMAS,
-  // because no reading of it can then be trusted to be compose's. The repair is
-  // to quote the scalar, which changes nothing for compose. SCHEMA only: both
-  // readings share one lexer, so this cannot see a SYNTAX difference (A10).
+  // A3. The property aimed at is about the FILE, not about the reader: a
+  // composed file must not resolve to two different values under the 1.1 and
+  // 1.2 SCHEMAS, because no reading of it can then be trusted to be compose's.
+  // What this CHECKS is narrower: the two readings' `JSON.stringify` text. A
+  // difference of TYPE that serialises identically — a full ISO timestamp, a
+  // `Date` under 1.1 and a string under 1.2 — is NOT seen (OD-46, open, T-131).
+  // The repair is to quote the scalar, which changes nothing for compose. SCHEMA
+  // only: both readings share one lexer, so this cannot see a SYNTAX difference
+  // (A10).
   const diffs: string[] = [];
   divergences(parsed, parsed11, '', diffs);
   if (diffs.length > 0) {
@@ -387,8 +429,10 @@ export type ComposeShape =
  * line break (A10), whose services: YAML 1.2 would read as a comment.
  */
 export function composeShape(text: string): ComposeShape {
-  // A10 (OD-43): a file the 1.2 lexer and compose tokenise differently has no
-  // shape this reader can vouch for — to YAML 1.2 its services: may be a comment.
+  // A10 (OD-43): a file `yaml`'s lexer and compose tokenise differently has no
+  // shape this reader can vouch for — to that lexer its services: may be a
+  // comment. Read as UTF-8 by the caller: a UTF-16 file is `not-compose` here
+  // (OD-45, open, T-131).
   const breaks = yaml11LineBreaks(text);
   if (breaks !== null) return { kind: 'unreadable', why: breaks };
   try {

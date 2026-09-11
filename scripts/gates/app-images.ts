@@ -218,9 +218,12 @@ const isApplicationBuild = (
 };
 
 /**
- * Files whose two readings — one lexer (YAML 1.2 syntax), the 1.2 and the 1.1
- * SCHEMA — resolve alike (OD-39). Schema agreement only: it says nothing about
- * a 1.1/1.2 SYNTAX difference, which both readings tokenise identically (A10).
+ * Files whose two readings — one lexer (`yaml`'s, which targets YAML 1.2 syntax
+ * and departs from it on a lone CR, OD-45), the 1.2 and the 1.1 SCHEMA —
+ * serialise alike under `JSON.stringify` (OD-39). Text equality, not type
+ * equality: a full ISO timestamp (1.1 `Date`, 1.2 string) counts as alike
+ * (OD-46). It says nothing about a 1.1/1.2 SYNTAX difference, which both
+ * readings tokenise identically (A10).
  */
 const schemasAgreedFiles: string[] = [];
 /** Parsed `services:` of a compose file. Memoised: each file is reported once. */
@@ -241,10 +244,12 @@ const servicesOf = (rel: string): Record<string, Record<string, unknown>> | null
     // compose built it: exit 0, gate:pr 9/9, and this file's own summary still
     // printing the clean-tree `builds read 7`. `lib/compose-parse.ts` is now
     // the ONE place any gate reads compose; it resolves `<<`, refuses a file
-    // whose values the 1.1 and 1.2 SCHEMAS resolve differently (one lexer —
-    // it cannot see a SYNTAX difference, T-130 rework 1), refuses a second
-    // document (OD-41) and the three YAML 1.1 line breaks (OD-43), and lists
-    // every other member MEASURED in its header — not an exhaustive list.
+    // whose 1.1- and 1.2-SCHEMA readings serialise differently under
+    // `JSON.stringify` (so a type difference that prints the same — a full ISO
+    // timestamp — is NOT seen, OD-46; one lexer — it cannot see a SYNTAX
+    // difference, T-130 rework 1), refuses a second document (OD-41) and the
+    // three YAML 1.1 line breaks (OD-43), and lists every other member
+    // MEASURED in its header, with OD-44/45/46 open — not an exhaustive list.
     const { doc, problems, schemasAgreed } = parseCompose(rel, text);
     failures.push(...problems);
     if (schemasAgreed) schemasAgreedFiles.push(rel);
@@ -1431,13 +1436,13 @@ console.log(
 );
 console.log(
   `  compose reader                  lib/compose-parse.ts, shared with gate:egress-boundary` +
-    `  (merge keys resolved; refused: a 1.1-vs-1.2 SCHEMA disagreement under one lexer, a ` +
-    `second document, a U+0085/U+2028/U+2029 character, and the other members MEASURED in ` +
-    `its header — not exhaustive; OD-39, OD-41, OD-43)`,
+    `  (merge keys resolved; refused: 1.1- and 1.2-SCHEMA readings that serialise differently as JSON.stringify text, under one lexer — readings that serialise alike are NOT distinguished, ` +
+    `e.g. a full ISO timestamp, 1.1 Date vs 1.2 string (OD-46); a second document; a U+0085/U+2028/U+2029 character; and the other members MEASURED in ` +
+    `its header — not exhaustive; OD-39, OD-41, OD-43; OD-44/45/46 open, T-131)`,
 );
 console.log(
-  `  files the 1.1 and 1.2 SCHEMAS resolve alike  ${String(schemasAgreedFiles.length)}: ` +
-    `${schemasAgreedFiles.sort().join(' ')}  (value resolution only — one lexer)`,
+  `  files whose 1.1 and 1.2 SCHEMA readings serialise alike  ${String(schemasAgreedFiles.length)}: ` +
+    `${schemasAgreedFiles.sort().join(' ')}  (JSON.stringify text, not type — one lexer)`,
 );
 
 finish('gate:app-images', failures);

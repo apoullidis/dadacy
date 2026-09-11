@@ -951,11 +951,14 @@ echo; echo "=== cases 72-77 (T-037 rework, OD-39): the gate's PARSER differed fr
 # build:). OD-39 is the shape that SATISFIES that invariant while being
 # misread, and app-images.ts had no equivalent net. So the fix is one shared
 # reader (lib/compose-parse.ts) that enumerates the divergence class: merge
-# keys MODELLED, a 1.1-vs-1.2 SCHEMA disagreement and each unmodelled compose
-# feature MEASURED so far FAIL CLOSED. (T-130 rework 1: this read "every other
-# YAML 1.1/1.2 disagreement", which was false — both readings share one YAML
-# 1.2 lexer, so a SYNTAX difference is read identically twice; OD-43 was one.
-# The list is not exhaustive; the reader's header says which members exist.)
+# keys MODELLED, a 1.1-vs-1.2 SCHEMA disagreement that serialises differently
+# (JSON.stringify text; one that prints the same, e.g. a full ISO timestamp, is
+# NOT seen — OD-46, T-131) and each unmodelled compose feature MEASURED so far
+# FAIL CLOSED. (T-130 rework 1: this read "every other YAML 1.1/1.2
+# disagreement", which was false — both readings share one lexer, `yaml`'s,
+# which targets YAML 1.2 and departs from it on a lone CR (OD-45), so a SYNTAX
+# difference is read identically twice; OD-43 was one. The list is not
+# exhaustive; the reader's header says which members exist and which are open.)
 MERGE_BUILD_FRAGMENT="x-t037-frag: &t037_frag
   build:
     context: ..
@@ -992,11 +995,13 @@ services:" \
     <<: *t037_ok" \
   && run_case "74 a harmless <<: merge (must stay green — modelled, not refused)" PASS
 # 75. CLASS A3 (T-130's numbering), derived rather than enumerated: a file
-#     that means two different things under the 1.1 and 1.2 SCHEMAS is refused
-#     (value resolution only — both readings share one YAML 1.2 lexer; the
-#     SYNTAX difference OD-43 found is cases 124-127, T-130 rework 1), because
-#     no reading of it can then be trusted to be compose's. `on` is a boolean
-#     in 1.1 and the string "on" in 1.2. The repair is to quote it.
+#     whose 1.1- and 1.2-SCHEMA readings serialise differently is refused
+#     (JSON.stringify text, not type — a full ISO timestamp, 1.1 Date vs 1.2
+#     string, prints the same and passes, OD-46, T-131; value resolution only —
+#     both readings share one lexer; the SYNTAX difference OD-43 found is cases
+#     124-127, T-130 rework 1), because no reading of it can then be trusted to
+#     be compose's. `on` is a boolean in 1.1 and the string "on" in 1.2, which
+#     serialise differently. The repair is to quote it.
 #     (T-130: 72-78 now assert their REASON as well as their verdict.)
 mut "$BASE" '      NODE_ENV: ${NODE_ENV:-development}' '      NODE_ENV: ${NODE_ENV:-development}
       QA_T037_FLAG: on' && run_case "75 a scalar YAML 1.1 and 1.2 read differently" FAIL "DIFFERENT under YAML 1.1 and YAML 1.2"
@@ -1274,7 +1279,8 @@ services:" && mut "$BASE" "$SAFETY_BASE" "  safety-gw:
 echo; echo "=== cases 124-127 (T-130 rework 1, OD-43): a 1.1/1.2 SYNTAX difference — the three YAML 1.1 line breaks ==="
 # decisions.md OD-43 (qa-verification) and TL-F1 (tech-lead): U+2028, U+2029
 # and U+0085 are LINE BREAKS to YAML 1.1 and to Docker Compose, and ordinary
-# characters to YAML 1.2 — the lexer BOTH of this gate's readings use. So text
+# characters to YAML 1.2 and to `yaml`'s lexer, which BOTH of this gate's
+# readings use (it targets 1.2; a lone CR, OD-45, is not cased here). So text
 # after one on a comment line is a comment to every rule here and live YAML to
 # compose. Measured: this exact edit gives safety-gw a single-stage
 # non-application build at gate:pr 9/9 on 8236725 AND on main 8b4ef80, while

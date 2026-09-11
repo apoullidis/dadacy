@@ -160,9 +160,12 @@ function networksOf(svc: Record<string, unknown>): string[] | undefined {
 
 let filesParsed = 0;
 /**
- * Files whose two readings — one lexer (YAML 1.2 syntax), the 1.2 and the 1.1
- * SCHEMA — resolve alike (OD-39). Schema agreement only: it says nothing about
- * a 1.1/1.2 SYNTAX difference, which both readings tokenise identically (A10).
+ * Files whose two readings — one lexer (`yaml`'s, which targets YAML 1.2 syntax
+ * and departs from it on a lone CR, OD-45), the 1.2 and the 1.1 SCHEMA —
+ * serialise alike under `JSON.stringify` (OD-39). Text equality, not type
+ * equality: a full ISO timestamp (1.1 `Date`, 1.2 string) counts as alike
+ * (OD-46). It says nothing about a 1.1/1.2 SYNTAX difference, which both
+ * readings tokenise identically (A10).
  */
 const schemasAgreedFiles: string[] = [];
 let servicesChecked = 0;
@@ -551,14 +554,14 @@ console.log(
 );
 console.log(
   `  parser                     lib/compose-parse.ts — merge keys RESOLVED; one lexer ` +
-    `(yaml's YAML 1.2 syntax) read under two SCHEMAS (1.2 core, 1.1): a file whose values ` +
-    `the two schemas resolve differently, a second document, or a U+0085/U+2028/U+2029 ` +
-    `character is REFUSED (OD-39, OD-41, OD-43). A 1.1/1.2 SYNTAX difference is not ` +
-    `detected by the comparison. Not exhaustive — see its header; shared with gate:app-images`,
+    `(yaml@2.8.1's, which targets YAML 1.2 syntax and departs from it on a lone CR, OD-45) read under two SCHEMAS (1.2 core, 1.1) and compared as JSON.stringify text: a file ` +
+    `whose two readings serialise differently, a second document, or a U+0085/U+2028/U+2029 character is REFUSED (OD-39, OD-41, OD-43). ` +
+    `Readings that serialise alike are NOT distinguished — a full ISO timestamp (1.1 Date, 1.2 string) passes (OD-46). A 1.1/1.2 SYNTAX difference is not ` +
+    `detected by the comparison. Not exhaustive — OD-44/45/46 open (T-131), see its header; shared with gate:app-images`,
 );
 console.log(
   `  1.1/1.2 SCHEMA agreement   ${String(schemasAgreedFiles.length)}/${String(COMPOSE_FILES.length)} files` +
-    `  (value resolution only — both readings share one lexer)`,
+    `  (JSON.stringify text equality, not type — both readings share one lexer)`,
 );
 console.log(`  entry points checked       scripts/dev, scripts/svc`);
 console.log(`  docker socket              scripts/dev --docker only (OD-16)`);

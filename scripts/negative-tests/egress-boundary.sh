@@ -449,8 +449,9 @@ mut "$BASE" '  safety-gw:
 
 echo; echo "=== cases 58-61 (T-130 rework 1, OD-43): a 1.1/1.2 SYNTAX difference — the three YAML 1.1 line breaks ==="
 # decisions.md OD-43 and TL-F1: U+2028, U+2029 and U+0085 are LINE BREAKS to
-# YAML 1.1 and to Docker Compose, and ordinary characters to YAML 1.2 — the
-# lexer BOTH of this gate's readings use. So a whole service can sit after one
+# YAML 1.1 and to Docker Compose, and ordinary characters to YAML 1.2 and to
+# `yaml`'s lexer, which BOTH of this gate's readings use (it targets 1.2; a lone
+# CR, OD-45, is not cased here). So a whole service can sit after one
 # on a comment line: a comment to every rule here, a service to compose. This
 # gate's shape is its own rule's: `qa-rogue` on the DEFAULT bridge (OD-12, full
 # egress). Measured with `docker compose config` on scratch files: qa-rogue
