@@ -1,5 +1,6 @@
 /**
- * T-020 Evidence §7, ported — the shape `app_safety_rw`'s grants must take.
+ * T-020 Evidence §7 — the shape `app_safety_rw`'s grants must take. Which of
+ * §7's refusals this file carries is the port map in T-115 § Published contract §12.
  *
  * SD §DB-11 gives `safety-gw` `SELECT` on one table it does not own and
  * `INSERT` on its own four, "and no other grant exists for role

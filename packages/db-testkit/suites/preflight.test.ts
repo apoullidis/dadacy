@@ -1,5 +1,7 @@
 /**
- * T-020 Evidence §6, ported — `0001` refuses a wrongly-provisioned database.
+ * T-020 Evidence §6 — `0001` refuses a wrongly-provisioned database. Which of
+ * §6's refusals this file and `preflight-p3.test.ts` carry, and which they do
+ * not, is the port map in T-115 § Published contract §12.
  *
  * The §Section 0 preflight is an ASSERTION, not a fix, because
  * `datlocprovider`, `datlocale` and `encoding` cannot be altered after

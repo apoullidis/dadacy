@@ -1,5 +1,6 @@
 /**
- * T-020 Evidence §4, ported — THE negative test.
+ * T-020 Evidence §4 — THE negative test. Which of §4's refusals this file
+ * carries is the port map in T-115 § Published contract §12.
  *
  * SD §INT-10 states the test itself: "An integration test asserts the denial by
  * connecting as `answering_service` and attempting `SELECT 1 FROM account` — a

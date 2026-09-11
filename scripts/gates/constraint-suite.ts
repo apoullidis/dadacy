@@ -34,7 +34,11 @@
  *      TREE, not the raw text: a call in a comment or a string is not a call.
  *      The rules that FORBID something (a mocking utility — Vitest's `vi.*`
  *      included) read the raw text, which errs towards a false FAIL, never a
- *      false PASS.
+ *      false PASS. And from the syntax tree (T-115 rework 1, TL-F2): imports
+ *      from 'vitest' are an allowlist; every property of test/it/describe — the
+ *      runner's modifiers, `.fails` among them — is refused, as is using one as
+ *      a value; and test/it/describe take (name, fn) or (name, fn, <number>),
+ *      never an options object.
  *
  *   4. THE SUITES RUN. Skipped with `--static`, which is what `gate:pr` uses:
  *      the run needs the Docker socket, which only `scripts/dev --docker`
@@ -310,6 +314,12 @@ const FORBIDDEN: readonly { readonly re: RegExp; readonly what: string }[] = [
   { re: /\b(sinon|jest|proxyquire|testdouble)\b/i, what: 'a mocking library' },
   { re: /\bpg-mem\b|\bbetter-sqlite3\b|\bsqlite\b|:memory:/i, what: 'an in-memory database' },
   { re: /\bstub\w*\s*\(/i, what: 'a stub() call' },
+  // The belt to §3's syntax-tree modifier rule, for the one modifier that
+  // INVERTS a verdict: `.fails`, `['fails']`, `{ fails: … }`, `'fails'`.
+  {
+    re: /\.\s*fails\b|['"`]fails['"`]|\bfails\s*:/,
+    what: "Vitest's fails (modifier or option): a body that throws for ANY reason is reported as passed",
+  },
 ];
 
 /**
@@ -326,29 +336,88 @@ const HARNESS_MODULES = new Set(['../src/index.ts', '../src/cluster.ts', '@kinva
 const ACQUIRERS = new Set(['acquireCluster', 'acquireMigratedCluster']);
 const RUNNER_MODULE = 'vitest';
 
+/**
+ * What a constraint suite may import from 'vitest'. An ALLOWLIST, so a name
+ * Vitest adds later is refused until someone decides about it (T-115 rework 1,
+ * TL-F2). Of Vitest 5.0.0's runtime exports this refuses, among others: `suite`
+ * (describe's alias), `aroundEach`/`aroundAll` (hooks that wrap a test body),
+ * `beforeEach`/`afterEach`, `onTestFailed`/`onTestFinished`, `vi`/`vitest`,
+ * `inject` and `TestRunner`. Type-only imports are erased and not checked.
+ */
+const VITEST_IMPORTS_ALLOWED = new Set([
+  'test',
+  'it',
+  'describe',
+  'beforeAll',
+  'afterAll',
+  'expect',
+]);
+/**
+ * The runner APIs on which EVERY property access is refused. Vitest 5.0.0 hangs
+ * its modifiers there (`fails`, `skip`, `only`, `todo`, `concurrent`, `each`,
+ * `for`, `skipIf`, `runIf`, `extend`, `override`, `scoped`, `shuffle`, the
+ * hooks, `describe`/`suite`, `fn` — enumerated in T-115 § Published contract
+ * §4a). None is needed by a constraint suite, and `fails` INVERTS a verdict: a
+ * body that throws for any reason is reported as passed (TL-F2, measured).
+ */
+const RUNNER_APIS = new Set(['test', 'it', 'describe']);
+
 interface SuiteShape {
   /** Call SITES of an imported acquirer, not calls at run time: a site in a loop counts once. */
   readonly acquireSites: number;
   readonly stops: boolean;
   /** Call SITES of test()/it(). `test.skip(…)` is not a call of `test` and is not counted. */
   readonly tests: number;
+  /** Vitest usage this gate refuses, one line each, with the source line. */
+  readonly refused: readonly string[];
+}
+
+/** True when `n` is the NAME slot of its parent (a declaration, a property), not a reference. */
+function isNameSlot(n: ts.Node): boolean {
+  const p = n.parent as ts.Node & { name?: ts.Node; propertyName?: ts.Node };
+  return p.name === n || p.propertyName === n;
 }
 
 function suiteShape(file: string, text: string): SuiteShape {
   const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const line = (n: ts.Node): string =>
+    `line ${String(sf.getLineAndCharacterOfPosition(n.getStart(sf)).line + 1)}`;
   const acquirers = new Set<string>();
   const testFns = new Set<string>();
+  /** local binding -> the runner API it is (test / it / describe) */
+  const runnerApis = new Map<string, string>();
+  const refused: string[] = [];
   for (const stmt of sf.statements) {
     if (!ts.isImportDeclaration(stmt) || !ts.isStringLiteral(stmt.moduleSpecifier)) continue;
-    const bindings = stmt.importClause?.namedBindings;
-    if (bindings === undefined || !ts.isNamedImports(bindings)) continue;
     const from = stmt.moduleSpecifier.text;
+    const clause = stmt.importClause;
+    if (clause === undefined || clause.isTypeOnly) continue;
+    const bindings = clause.namedBindings;
+    if (from === RUNNER_MODULE) {
+      if (clause.name !== undefined) {
+        refused.push(`${line(stmt)}: a default import from 'vitest' (${clause.name.text})`);
+      }
+      if (bindings !== undefined && ts.isNamespaceImport(bindings)) {
+        refused.push(
+          `${line(stmt)}: a namespace import of 'vitest' (* as ${bindings.name.text}) — its ` +
+            `members are not bindings this rule can follow; import test/it/describe by name`,
+        );
+      }
+    }
+    if (bindings === undefined || !ts.isNamedImports(bindings)) continue;
     for (const el of bindings.elements) {
       const imported = (el.propertyName ?? el.name).text;
       if (HARNESS_MODULES.has(from) && ACQUIRERS.has(imported)) acquirers.add(el.name.text);
-      if (from === RUNNER_MODULE && (imported === 'test' || imported === 'it')) {
-        testFns.add(el.name.text);
+      if (from !== RUNNER_MODULE || el.isTypeOnly) continue;
+      if (!VITEST_IMPORTS_ALLOWED.has(imported)) {
+        refused.push(
+          `${line(el)}: imports '${imported}' from 'vitest' — a constraint suite may import ` +
+            `only ${[...VITEST_IMPORTS_ALLOWED].join(', ')}`,
+        );
+        continue;
       }
+      if (RUNNER_APIS.has(imported)) runnerApis.set(el.name.text, imported);
+      if (imported === 'test' || imported === 'it') testFns.add(el.name.text);
     }
   }
   let acquireSites = 0;
@@ -360,6 +429,27 @@ function suiteShape(file: string, text: string): SuiteShape {
       if (ts.isIdentifier(callee)) {
         if (acquirers.has(callee.text)) acquireSites += 1;
         if (testFns.has(callee.text)) tests += 1;
+        if (runnerApis.has(callee.text)) {
+          // (name, fn) or (name, fn, <number literal>) and nothing else. The
+          // other signatures take an options object — Vitest's TestOptions
+          // carries fails, skip, only, todo, concurrent, retry and repeats — or
+          // no body at all, which registers a todo.
+          const [title, body, timeout, ...rest] = node.arguments;
+          const isBody =
+            body !== undefined && (ts.isArrowFunction(body) || ts.isFunctionExpression(body));
+          if (
+            title === undefined ||
+            !isBody ||
+            (timeout !== undefined && !ts.isNumericLiteral(timeout)) ||
+            rest.length > 0
+          ) {
+            refused.push(
+              `${line(node)}: ${callee.text}(…) is not called as (name, fn) or (name, fn, ` +
+                `<number literal>) — an options object carries Vitest's fails/skip/only/todo/` +
+                `concurrent/retry/repeats, and a call with no body registers a todo`,
+            );
+          }
+        }
       } else if (
         ts.isPropertyAccessExpression(callee) &&
         callee.name.text === 'stop' &&
@@ -368,10 +458,29 @@ function suiteShape(file: string, text: string): SuiteShape {
         stops = true;
       }
     }
+    if (ts.isIdentifier(node) && runnerApis.has(node.text) && !isNameSlot(node)) {
+      const p = node.parent;
+      if (ts.isPropertyAccessExpression(p) && p.expression === node) {
+        refused.push(
+          `${line(node)}: ${node.text}.${p.name.text} — a Vitest modifier; every property of ` +
+            `test/it/describe is refused (.fails reports a body that THROWS as passed)`,
+        );
+      } else if (ts.isElementAccessExpression(p) && p.expression === node) {
+        refused.push(
+          `${line(node)}: ${node.text}[${p.argumentExpression.getText(sf)}] — a Vitest ` +
+            `modifier by computed name; every property of test/it/describe is refused`,
+        );
+      } else if (!(ts.isCallExpression(p) && p.expression === node)) {
+        refused.push(
+          `${line(node)}: ${node.text} is used as a value, not called — an alias would carry ` +
+            `its modifiers past this rule`,
+        );
+      }
+    }
     ts.forEachChild(node, visit);
   };
   visit(sf);
-  return { acquireSites, stops, tests };
+  return { acquireSites, stops, tests, refused };
 }
 
 const failuresBefore = failures.length;
@@ -433,6 +542,9 @@ for (const file of suiteFiles) {
     if (f.re.test(text)) {
       fail(`${file} contains ${f.what}. A DB test that mocks the database is an automatic FAIL.`);
     }
+  }
+  for (const r of shape.refused) {
+    fail(`${file} ${r}. Refused from the syntax tree (T-115 § Published contract §4a).`);
   }
 }
 
@@ -573,6 +685,21 @@ if (report === undefined) {
     }
     if (failedFiles !== 0 || n('numFailedTestSuites') !== 0 || report['success'] !== true) {
       fail(`a suite file failed — to collect, in a hook, or at all (${summary})`);
+    }
+    // A second reading of the same run, from a different reporter. Vitest
+    // 5.0.0's JSON report records an expected-fail test (`.fails`) as status
+    // 'passed' with nothing that marks it — no field, no count (measured, T-115
+    // rework 1, RW-TFJ). Its text reporter does mark it: "56 passed | 1
+    // expected fail (57)". So that line must read exactly "N passed (N)"; any
+    // other clause, or no line at all, is a FAIL. This catches `.fails` however
+    // it is spelled, including spellings §3's syntax-tree rule cannot see.
+    const tally = /^\s*Tests\s+(\S.*)$/m.exec(run.stdout)?.[1]?.trim();
+    const wantTally = `${String(n('numTotalTests'))} passed (${String(n('numTotalTests'))})`;
+    if (tally !== wantTally) {
+      fail(
+        `the runner's own summary line reads 'Tests ${tally ?? '(absent)'}', not '${wantTally}'. ` +
+          `The JSON report cannot tell an expected-fail from a pass; this line can.`,
+      );
     }
     if (recountTests !== n('numTotalTests') || recountPassed !== n('numPassedTests')) {
       fail(

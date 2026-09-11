@@ -1,5 +1,8 @@
 /**
- * T-020 Evidence §9, ported — the object classes, and the RULE behind them.
+ * T-020 Evidence §9 — the object classes, and the RULE behind them. Which of
+ * §9's refusals this file carries, and which it does not (QA-F12, QA-F13 and the
+ * down/up re-verification among them), is the port map in T-115 § Published
+ * contract §12. QA-F11 was missing until T-115 rework 1 (tech-lead TL-F1).
  *
  * This is the half of `T-020` that caught real defects. The first version of
  * the guard was written by *imagining* how a read path might appear; it covered
@@ -31,7 +34,12 @@ import {
   installInt10Fixtures,
   type Cluster,
 } from '../src/index.ts';
-import { assertPermitted, assertRefused, INT10_RAISE } from '../src/expect.ts';
+import {
+  assertPermitted,
+  assertRefused,
+  INT10_RAISE,
+  SQLSTATE_INSUFFICIENT_PRIVILEGE,
+} from '../src/expect.ts';
 
 const SUITE = 'int10-object-classes';
 const LOID = 424242;
@@ -77,6 +85,65 @@ describe('check 11 — LARGE OBJECTS (QA-F9: the tenth read path)', () => {
       'the vendor reading the large object',
       await db.psql(asVendor(`SELECT convert_from(lo_get(${String(LOID)}),'UTF8')`)),
       { message: `permission denied for large object ${String(LOID)}` },
+    );
+  });
+});
+
+describe('QA-F11 — the functions behind the revoked pg_stat_statements view', () => {
+  // T-020 Evidence §9, QA-F11: revoking the VIEW (write-only NEGATIVE 8) left the
+  // set-returning function it wraps, and its _info() sibling, executable by
+  // PUBLIC, and PUBLIC includes answering_service. 0001 fixes it with one
+  // REVOKE EXECUTE … FROM PUBLIC. Nothing else holds that line: the guard's
+  // check (8) reads SECURITY DEFINER only, so with the REVOKE deleted 0001 still
+  // applies clean (OD-52, tech-lead). Ported in T-115 rework 1 (TL-F1).
+  test('CONTROL — the function works and has rows to read, so a refusal below is about privilege', async () => {
+    const rows = Number(await db.value('SELECT count(*) FROM public.pg_stat_statements(true)'));
+    assert.ok(
+      rows > 0,
+      `pg_stat_statements(true) must return rows to the superuser, or the vendor's refusal proves nothing (got ${String(rows)})`,
+    );
+  });
+
+  test('the vendor calling pg_stat_statements(true) is REFUSED', async () => {
+    assertRefused(
+      'QA-F11 — the SRF',
+      await db.psql({
+        ...asVendor('SELECT count(*) FROM public.pg_stat_statements(true)'),
+        verbose: true,
+      }),
+      {
+        message: 'permission denied for function pg_stat_statements\n',
+        sqlstate: SQLSTATE_INSUFFICIENT_PRIVILEGE,
+      },
+    );
+  });
+
+  test('the vendor calling pg_stat_statements_info() is REFUSED', async () => {
+    assertRefused(
+      'QA-F11 — the _info() sibling',
+      await db.psql({
+        ...asVendor('SELECT * FROM public.pg_stat_statements_info()'),
+        verbose: true,
+      }),
+      {
+        message: 'permission denied for function pg_stat_statements_info',
+        sqlstate: SQLSTATE_INSUFFICIENT_PRIVILEGE,
+      },
+    );
+  });
+
+  test('the catalogue agrees: answering_service may EXECUTE none of the three pg_stat_statements functions', async () => {
+    // A second reading, from the ACLs rather than the wire: T-020's own
+    // BEFORE/AFTER table is this query. has_function_privilege sees EXECUTE
+    // reaching the role through PUBLIC, which is exactly the route QA-F11 was.
+    assert.equal(
+      await db.value(
+        `SELECT string_agg(has_function_privilege('answering_service', f, 'EXECUTE')::text, ',' ORDER BY f)
+           FROM unnest(ARRAY['public.pg_stat_statements(boolean)',
+                             'public.pg_stat_statements_info()',
+                             'public.pg_stat_statements_reset(oid,oid,bigint,boolean)']) AS f`,
+      ),
+      'false,false,false',
     );
   });
 });

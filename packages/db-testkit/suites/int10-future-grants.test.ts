@@ -1,5 +1,7 @@
 /**
- * T-020 Evidence §5, ported — the guard refuses FUTURE grants, not just today's.
+ * T-020 Evidence §5 — the guard refuses FUTURE grants, not just today's. Which of
+ * §5's refusals this file carries, and which it does not (G6 among them), is the
+ * port map in T-115 § Published contract §12.
  *
  * A grant is a fact about today. Fifteen tickets code against this schema and
  * none of their authors will have read SA §INT-10, so `0001` installs
@@ -76,10 +78,16 @@ const ATTEMPTS: readonly Attempt[] = [
     sql: 'GRANT SELECT ON public.account TO PUBLIC',
     detail: 'answering_service holds SELECT on public.account',
   },
+  // G6 — `GRANT EXECUTE ON FUNCTION public.peek() TO answering_service` — is NOT
+  // carried. T-020 ran it while a definer function still existed; once G7 below
+  // refuses the CREATE there is nothing to grant on, so reaching G6 would need
+  // the guard disarmed first. Recorded in T-115's port map (rework 1); until
+  // then this test's title said "G6/G7" and ran G7 alone.
   {
-    id: 'G6/G7',
-    why: 'a SECURITY DEFINER function is a read channel — and since the fix it is refused at CREATE, with no GRANT written anywhere',
-    sql: 'GRANT EXECUTE ON FUNCTION public.peek() TO answering_service',
+    id: 'G7',
+    why: 'a SECURITY DEFINER function is a read channel, refused at CREATE with no GRANT written anywhere',
+    sql: `CREATE FUNCTION public.peek() RETURNS SETOF public.account
+            LANGUAGE sql SECURITY DEFINER AS 'SELECT * FROM public.account'`,
     detail: 'a definer function is a read channel',
   },
 ];
@@ -87,25 +95,6 @@ const ATTEMPTS: readonly Attempt[] = [
 describe('SA §INT-10 — the guard refuses future grants', () => {
   for (const a of ATTEMPTS) {
     test(`${a.id} — ${a.why}`, async () => {
-      if (a.id === 'G6/G7') {
-        // G6 needs a definer function to grant on, and creating one is itself
-        // refused (that is G7). The two are therefore one test, run in the
-        // order the defect was found: the CREATE must be refused first.
-        const created = await db.psql({
-          commands: [
-            `CREATE FUNCTION public.peek() RETURNS SETOF public.account
-               LANGUAGE sql SECURITY DEFINER AS 'SELECT * FROM public.account'`,
-          ],
-        });
-        assertRefused('G7 — CREATE FUNCTION … SECURITY DEFINER, with no GRANT anywhere', created, {
-          message: INT10_RAISE,
-        });
-        assert.ok(
-          created.output.includes('a definer function is a read channel'),
-          `G7: the refusal must name the definer function as the read channel.\n${created.output}`,
-        );
-        return;
-      }
       const r = await db.psql({ commands: [a.sql] });
       assertRefused(a.id, r, { message: INT10_RAISE });
       assert.ok(
