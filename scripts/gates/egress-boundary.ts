@@ -160,12 +160,12 @@ function networksOf(svc: Record<string, unknown>): string[] | undefined {
 
 let filesParsed = 0;
 /**
- * Files whose two readings — one lexer (`yaml`'s, which targets YAML 1.2 syntax
- * and departs from it on a lone CR, OD-45), the 1.2 and the 1.1 SCHEMA —
- * serialise alike under `JSON.stringify` (OD-39). Text equality, not type
- * equality: a full ISO timestamp (1.1 `Date`, 1.2 string) counts as alike
- * (OD-46). It says nothing about a 1.1/1.2 SYNTAX difference, which both
- * readings tokenise identically (A10).
+ * Files whose two readings — one lexer (`yaml`'s, which targets YAML 1.2 syntax;
+ * a lone CR, where it departs from it, is refused, A11), the 1.2 and the 1.1
+ * SCHEMA — A3 found equal (OD-39): value by value and by kind, so a 1.1 `Date`
+ * never equals a 1.2 string (OD-46, case 62); key order is not compared
+ * (OD-48). It says nothing about a 1.1/1.2 SYNTAX difference, which both
+ * readings tokenise identically (A10, A13).
  */
 const schemasAgreedFiles: string[] = [];
 let servicesChecked = 0;
@@ -554,14 +554,14 @@ console.log(
 );
 console.log(
   `  parser                     lib/compose-parse.ts — merge keys RESOLVED; one lexer ` +
-    `(yaml@2.8.1's, which targets YAML 1.2 syntax and departs from it on a lone CR, OD-45) read under two SCHEMAS (1.2 core, 1.1) and compared as JSON.stringify text: a file ` +
-    `whose two readings serialise differently, a second document, or a U+0085/U+2028/U+2029 character is REFUSED (OD-39, OD-41, OD-43). ` +
-    `Readings that serialise alike are NOT distinguished — a full ISO timestamp (1.1 Date, 1.2 string) passes (OD-46). A 1.1/1.2 SYNTAX difference is not ` +
-    `detected by the comparison. Not exhaustive — OD-44/45/46 open (T-131), see its header; shared with gate:app-images`,
+    `(yaml@2.8.1's, which targets YAML 1.2 syntax) read under two SCHEMAS (1.2 core, 1.1), compared value by value and by kind, key order NOT compared. ` +
+    `Refused, each by a named case: a scalar the schemas read differently (30), a 1.1 Date (62), a second document (33), a U+0085/U+2028/U+2029 character (58-61), ` +
+    `a lone carriage return (64, 66), U+0000/U+FFFD e.g. UTF-16 (67), the \\/ escape (69), two keys naming one property (71-73). A 1.1/1.2 SYNTAX difference is not ` +
+    `detected by the comparison. Not exhaustive — the members MEASURED are in its header; shared with gate:app-images`,
 );
 console.log(
   `  1.1/1.2 SCHEMA agreement   ${String(schemasAgreedFiles.length)}/${String(COMPOSE_FILES.length)} files` +
-    `  (JSON.stringify text equality, not type — both readings share one lexer)`,
+    `  (A3: by kind and value, key order not compared — both readings share one lexer)`,
 );
 console.log(`  entry points checked       scripts/dev, scripts/svc`);
 console.log(`  docker socket              scripts/dev --docker only (OD-16)`);

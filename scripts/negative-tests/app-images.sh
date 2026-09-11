@@ -951,12 +951,13 @@ echo; echo "=== cases 72-77 (T-037 rework, OD-39): the gate's PARSER differed fr
 # build:). OD-39 is the shape that SATISFIES that invariant while being
 # misread, and app-images.ts had no equivalent net. So the fix is one shared
 # reader (lib/compose-parse.ts) that enumerates the divergence class: merge
-# keys MODELLED, a 1.1-vs-1.2 SCHEMA disagreement that serialises differently
-# (JSON.stringify text; one that prints the same, e.g. a full ISO timestamp, is
-# NOT seen — OD-46, T-131) and each unmodelled compose feature MEASURED so far
+# keys MODELLED, a 1.1-vs-1.2 SCHEMA disagreement A3 finds (value by value and
+# by kind since T-131, so a 1.1 Date counts — OD-46, case 128; key order is not
+# compared, OD-48) and each unmodelled compose feature MEASURED so far
 # FAIL CLOSED. (T-130 rework 1: this read "every other YAML 1.1/1.2
 # disagreement", which was false — both readings share one lexer, `yaml`'s,
-# which targets YAML 1.2 and departs from it on a lone CR (OD-45), so a SYNTAX
+# which targets YAML 1.2 and departs from it on a lone CR (OD-45, refused since
+# T-131, cases 130 and 132), so a SYNTAX
 # difference is read identically twice; OD-43 was one. The list is not
 # exhaustive; the reader's header says which members exist and which are open.)
 MERGE_BUILD_FRAGMENT="x-t037-frag: &t037_frag
@@ -995,13 +996,13 @@ services:" \
     <<: *t037_ok" \
   && run_case "74 a harmless <<: merge (must stay green — modelled, not refused)" PASS
 # 75. CLASS A3 (T-130's numbering), derived rather than enumerated: a file
-#     whose 1.1- and 1.2-SCHEMA readings serialise differently is refused
-#     (JSON.stringify text, not type — a full ISO timestamp, 1.1 Date vs 1.2
-#     string, prints the same and passes, OD-46, T-131; value resolution only —
+#     whose 1.1- and 1.2-SCHEMA readings A3 finds different is refused (value
+#     by value and by kind since T-131, so a 1.1 Date against a 1.2 string
+#     counts — OD-46, case 128; value resolution only —
 #     both readings share one lexer; the SYNTAX difference OD-43 found is cases
 #     124-127, T-130 rework 1), because no reading of it can then be trusted to
 #     be compose's. `on` is a boolean in 1.1 and the string "on" in 1.2, which
-#     serialise differently. The repair is to quote it.
+#     differ in kind. The repair is to quote it.
 #     (T-130: 72-78 now assert their REASON as well as their verdict.)
 mut "$BASE" '      NODE_ENV: ${NODE_ENV:-development}' '      NODE_ENV: ${NODE_ENV:-development}
       QA_T037_FLAG: on' && run_case "75 a scalar YAML 1.1 and 1.2 read differently" FAIL "DIFFERENT under YAML 1.1 and YAML 1.2"
@@ -1280,7 +1281,7 @@ echo; echo "=== cases 124-127 (T-130 rework 1, OD-43): a 1.1/1.2 SYNTAX differen
 # decisions.md OD-43 (qa-verification) and TL-F1 (tech-lead): U+2028, U+2029
 # and U+0085 are LINE BREAKS to YAML 1.1 and to Docker Compose, and ordinary
 # characters to YAML 1.2 and to `yaml`'s lexer, which BOTH of this gate's
-# readings use (it targets 1.2; a lone CR, OD-45, is not cased here). So text
+# readings use (it targets 1.2; a lone CR, OD-45, is cases 130-132). So text
 # after one on a comment line is a comment to every rule here and live YAML to
 # compose. Measured: this exact edit gives safety-gw a single-stage
 # non-application build at gate:pr 9/9 on 8236725 AND on main 8b4ef80, while
@@ -1312,6 +1313,113 @@ printf '# T-130 OD-43 straggler%sservices:%s  rogue:%s    image: kinvara/rogue:d
 sep_landed docker/chaos-extra.yml $'\xe2\x80\xa8' \
   && run_case "127 OD-43: a straggler's services: behind U+2028" FAIL "treats as a LINE BREAK"
 rm -f docker/chaos-extra.yml
+
+echo; echo "=== cases 128-140 (T-131): the parse RESIDUE — OD-46, OD-45, OD-44, OD-48 ==="
+# decisions.md OD-44, OD-45, OD-46, OD-48, owned by T-131. Every FAIL case below
+# was exit 0 GATE PASS against the gate as at main 7dff12c on the identical
+# file (T-131 § Evidence), and asserts the reason its refusal prints. Every
+# control must stay green. The anchor for what compose does with each file is
+# `docker compose config` on scratch copies (T-131 § Evidence 1), never this
+# gate. Values are planted beside the first `NODE_ENV:` line, an environment:
+# mapping in compose.yml, as case 117 does.
+ENV_LINE='      NODE_ENV: ${NODE_ENV:-development}'
+CR=$'\r'
+# landed CMD... — asserts a mutation this suite made WITHOUT mut (so mut's own
+# anchor check does not cover it) actually landed; a no-op is a HARNESS ERROR.
+landed() { "$@" || { echo "   HARNESS ERROR (mutation did not land: $*)"; harness=$((harness+1)); return 1; }; }
+first_bytes() { head -c "$2" "$1" | od -An -tx1 | tr -d ' \n'; }
+# 128. OD-46. A timestamp in exactly Date.toJSON() form: YAML 1.1 reads a Date,
+#      1.2 a string, and the two printed alike as JSON text, which is all A3
+#      compared at main; compose reads a TIME (2026-09-11 00:00:00 +0000 UTC).
+#      The other spellings (…00Z, …00.5Z, +00:00, date-only) were refused at
+#      main already (OD-47), so this is the spelling that is red there.
+mut "$BASE" "$ENV_LINE" "$ENV_LINE
+      QA_T131_STAMP: 2026-09-11T00:00:00.000Z" \
+  && run_case "128 OD-46: an unquoted toISOString() timestamp" FAIL "YAML 1.1 reads a Date"
+# 129. THE CONTROL: the same timestamp quoted is a string to both readings and
+#      to compose.
+mut "$BASE" "$ENV_LINE" "$ENV_LINE
+      QA_T131_STAMP: '2026-09-11T00:00:00.000Z'" \
+  && run_case "129 the same timestamp QUOTED (must stay green)" PASS
+# 130. OD-45 (1). Case 124 with every separator a LONE CR: a line break to YAML
+#      1.2 itself, to compose and to PyYAML, and not to yaml@2.8.1. Measured at
+#      main: exit 0 GATE PASS while compose resolves the build.
+mk_single && mut "$BASE" "$SAFETY_BASE" "$SAFETY_BASE
+    # T-131 OD-45 probe${CR}    build:${CR}      context: ..${CR}      dockerfile: docker/rogue-single.Dockerfile" \
+  && sep_landed "$BASE" "$CR" \
+  && run_case "130 OD-45: a lone CR hides a build: behind a comment" FAIL "a LONE CR"
+# 131. THE CONTROL: CRLF line endings on every line of compose.yml. A CR that a
+#      LF follows is not a lone CR, and compose reads the file (T-131 § Evidence 1).
+landed sed -i 's/$/\r/' "$BASE" \
+  && landed test "$(grep -c "${CR}\$" "$BASE")" -eq "$(wc -l < "$BASE")" \
+  && run_case "131 compose.yml with CRLF line endings (must stay green)" PASS
+# 132. OD-45 (1) at the OTHER entry point, composeShape: a straggler whose
+#      services: sits behind lone CRs. To yaml@2.8.1 the whole file was one
+#      comment, so the scan called it "not compose".
+printf '# T-131 OD-45 straggler\rservices:\r  rogue:\r    image: kinvara/rogue:dev\r    ports:\r      - "53999:3000"\n' > docker/chaos-extra.yml
+sep_landed docker/chaos-extra.yml "$CR" \
+  && run_case "132 OD-45: a straggler's services: behind lone CRs" FAIL "a LONE CR"
+rm -f docker/chaos-extra.yml
+# 133. OD-45 (2). Case 68's straggler saved as UTF-16LE with a BOM. Compose
+#      reads UTF-16 (measured); this scan decoded it as UTF-8 and called it
+#      "not compose", where its UTF-8 twin (case 68) is reported.
+node -e 'require("fs").writeFileSync(process.argv[1], Buffer.from("\ufeff" + process.argv[2], "utf16le"))' \
+  docker/chaos-extra.yml "services:
+  rogue:
+    image: kinvara/rogue:dev
+    ports:
+      - '53999:3000'
+"
+landed test "$(first_bytes docker/chaos-extra.yml 2)" = fffe \
+  && run_case "133 OD-45: a UTF-16 straggler" FAIL "not UTF-8 text"
+rm -f docker/chaos-extra.yml
+# 134. THE CONTROL for A12: a UTF-8 BOM in front of compose.yml. U+FEFF is
+#      neither U+0000 nor U+FFFD, and compose reads the file (T-131 § Evidence 1).
+{ printf '\xef\xbb\xbf'; cat "$BASE"; } > "$BASE.t131" && mv "$BASE.t131" "$BASE"
+landed test "$(first_bytes "$BASE" 3)" = efbbbf \
+  && run_case "134 a UTF-8 BOM on compose.yml (must stay green)" PASS
+# 135. OD-44. The \/ escape, which compose REFUSES ("found unknown escape
+#      character", measured). The reader read it as '/', so safety-gw's image
+#      was unchanged and the gate was green at main. The safe direction —
+#      compose loads nothing — refused so that the gate and compose agree.
+mut "$BASE" "$SAFETY_BASE" '  safety-gw:
+    image: "kinvara\/safety-gw:dev"' \
+  && run_case "135 OD-44: the \\/ escape in safety-gw's image" FAIL "escape inside a double-quoted scalar"
+# 136. THE CONTROL: an escaped backslash then a slash ("a\\/b") is not the \/
+#      escape. The refusal reads escapes in order, it does not grep for \/.
+mut "$BASE" "$ENV_LINE" "$ENV_LINE
+      QA_T131_PATH: \"a\\\\/b\"" \
+  && run_case "136 \"a\\\\/b\", an escaped backslash (must stay green)" PASS
+# 137-139. OD-48. Two keys that name the SAME property. yaml's own duplicate
+#      check compared key values with ===, and toJS() names each property
+#      String(key), so the pair became one property with no diagnostic, and
+#      both readings could agree while dropping a value. Compose refuses all
+#      three files (measured).
+# 137. (1) The key-ORDER shape: 1.2 reads -017 as -17, 1.1 as -15. No value
+#      differed between the readings, only the order.
+mut "$BASE" "$ENV_LINE" "$ENV_LINE
+      -017: a
+      \"-17\": b
+      \"-15\": c" \
+  && run_case "137 OD-48: -017 / \"-17\" / \"-15\" (key order only)" FAIL "name the SAME property"
+# 138. (2) The COLLAPSING shape: 017 alone is refused by A3; beside "15" and "17"
+#      its value was dropped by both readings, which then agreed.
+mut "$BASE" "$ENV_LINE" "$ENV_LINE
+      017: a
+      \"15\": b
+      \"17\": c" \
+  && run_case "138 OD-48: 017 / \"15\" / \"17\" (a key masked)" FAIL "name the SAME property"
+# 139. The sibling compose itself names a duplicate ('mapping key "1" already
+#      defined'): 1: and "1": — no 1.1/1.2 difference involved at all.
+mut "$BASE" "$ENV_LINE" "$ENV_LINE
+      1: a
+      \"1\": b" \
+  && run_case "139 OD-48: 1: and \"1\": in one mapping" FAIL "name the SAME property"
+# 140. THE CONTROL: "15" and "17" alone are two distinct keys.
+mut "$BASE" "$ENV_LINE" "$ENV_LINE
+      \"15\": b
+      \"17\": c" \
+  && run_case "140 \"15\" and \"17\" alone (must stay green)" PASS
 
 echo
 run_case "99 tree restored" PASS

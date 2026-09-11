@@ -451,7 +451,7 @@ echo; echo "=== cases 58-61 (T-130 rework 1, OD-43): a 1.1/1.2 SYNTAX difference
 # decisions.md OD-43 and TL-F1: U+2028, U+2029 and U+0085 are LINE BREAKS to
 # YAML 1.1 and to Docker Compose, and ordinary characters to YAML 1.2 and to
 # `yaml`'s lexer, which BOTH of this gate's readings use (it targets 1.2; a lone
-# CR, OD-45, is not cased here). So a whole service can sit after one
+# CR, OD-45, is cases 64 and 66). So a whole service can sit after one
 # on a comment line: a comment to every rule here, a service to compose. This
 # gate's shape is its own rule's: `qa-rogue` on the DEFAULT bridge (OD-12, full
 # egress). Measured with `docker compose config` on scratch files: qa-rogue
@@ -478,6 +478,83 @@ printf '# T-130 OD-43 straggler%sservices:%s  rogue:%s    image: kinvara/rogue:d
 sep_landed docker/chaos-extra.yml $'\xe2\x80\xa8' \
   && run_case "61 OD-43: a straggler's services: behind U+2028" FAIL "treats as a LINE BREAK"
 rm -f docker/chaos-extra.yml
+
+echo; echo "=== cases 62-74 (T-131): the parse RESIDUE — OD-46, OD-45, OD-44, OD-48 ==="
+# decisions.md OD-44, OD-45, OD-46, OD-48, owned by T-131. The reader is shared
+# with gate:app-images, and these are that suite's cases 128-140 in this gate's
+# shapes. Every FAIL case was exit 0 GATE PASS against the gate as at main
+# 7dff12c on the identical file (T-131 § Evidence); every control stays green.
+ENV_LINE='      NODE_ENV: ${NODE_ENV:-development}'
+CR=$'\r'
+landed() { "$@" || { echo "   HARNESS ERROR (mutation did not land: $*)"; harness=$((harness+1)); return 1; }; }
+first_bytes() { head -c "$2" "$1" | od -An -tx1 | tr -d ' \n'; }
+# 62. OD-46: an unquoted timestamp in exactly Date.toJSON() form (see app-images
+#     case 128). 63: THE CONTROL, quoted.
+mut "$BASE" "$ENV_LINE" "$ENV_LINE
+      QA_T131_STAMP: 2026-09-11T00:00:00.000Z" \
+  && run_case "62 OD-46: an unquoted toISOString() timestamp" FAIL "YAML 1.1 reads a Date"
+mut "$BASE" "$ENV_LINE" "$ENV_LINE
+      QA_T131_STAMP: '2026-09-11T00:00:00.000Z'" \
+  && run_case "63 the same timestamp QUOTED (must stay green)" PASS
+# 64. OD-45 (1): case 58 with every separator a LONE CR — a qa-rogue service on
+#     the DEFAULT bridge (OD-12, full egress). Measured at main: exit 0 on this
+#     gate while compose attaches qa-rogue to 'default'.
+mut "$BASE" 'services:' "services:
+  # T-131 OD-45 probe${CR}  qa-rogue:${CR}    image: alpine:3.20${CR}    networks: [default]" \
+  && sep_landed "$BASE" "$CR" \
+  && run_case "64 OD-45: a lone CR hides a default-bridge service" FAIL "a LONE CR"
+# 65. THE CONTROL: CRLF line endings on every line of compose.yml.
+landed sed -i 's/$/\r/' "$BASE" \
+  && landed test "$(grep -c "${CR}\$" "$BASE")" -eq "$(wc -l < "$BASE")" \
+  && run_case "65 compose.yml with CRLF line endings (must stay green)" PASS
+# 66. OD-45 (1) at composeShape: a straggler's services: behind lone CRs.
+printf '# T-131 OD-45 straggler\rservices:\r  rogue:\r    image: kinvara/rogue:dev\r    networks: [default]\n' > docker/chaos-extra.yml
+sep_landed docker/chaos-extra.yml "$CR" \
+  && run_case "66 OD-45: a straggler's services: behind lone CRs" FAIL "a LONE CR"
+rm -f docker/chaos-extra.yml
+# 67. OD-45 (2): case 27's straggler shape saved as UTF-16LE with a BOM.
+node -e 'require("fs").writeFileSync(process.argv[1], Buffer.from("\ufeff" + process.argv[2], "utf16le"))' \
+  docker/chaos-extra.yml "services:
+  rogue:
+    image: kinvara/rogue:dev
+    networks: [default]
+"
+landed test "$(first_bytes docker/chaos-extra.yml 2)" = fffe \
+  && run_case "67 OD-45: a UTF-16 straggler" FAIL "not UTF-8 text"
+rm -f docker/chaos-extra.yml
+# 68. THE CONTROL for A12: a UTF-8 BOM in front of compose.yml.
+{ printf '\xef\xbb\xbf'; cat "$BASE"; } > "$BASE.t131" && mv "$BASE.t131" "$BASE"
+landed test "$(first_bytes "$BASE" 3)" = efbbbf \
+  && run_case "68 a UTF-8 BOM on compose.yml (must stay green)" PASS
+# 69. OD-44: the \/ escape in safety-gw's image (compose refuses the file).
+#     70: THE CONTROL, an escaped backslash then a slash.
+mut "$BASE" '  safety-gw:
+    image: kinvara/safety-gw:dev' '  safety-gw:
+    image: "kinvara\/safety-gw:dev"' \
+  && run_case "69 OD-44: the \\/ escape in safety-gw's image" FAIL "escape inside a double-quoted scalar"
+mut "$BASE" "$ENV_LINE" "$ENV_LINE
+      QA_T131_PATH: \"a\\\\/b\"" \
+  && run_case "70 \"a\\\\/b\", an escaped backslash (must stay green)" PASS
+# 71-73. OD-48: two keys that name the SAME property (see app-images 137-139).
+#        74: THE CONTROL.
+mut "$BASE" "$ENV_LINE" "$ENV_LINE
+      -017: a
+      \"-17\": b
+      \"-15\": c" \
+  && run_case "71 OD-48: -017 / \"-17\" / \"-15\" (key order only)" FAIL "name the SAME property"
+mut "$BASE" "$ENV_LINE" "$ENV_LINE
+      017: a
+      \"15\": b
+      \"17\": c" \
+  && run_case "72 OD-48: 017 / \"15\" / \"17\" (a key masked)" FAIL "name the SAME property"
+mut "$BASE" "$ENV_LINE" "$ENV_LINE
+      1: a
+      \"1\": b" \
+  && run_case "73 OD-48: 1: and \"1\": in one mapping" FAIL "name the SAME property"
+mut "$BASE" "$ENV_LINE" "$ENV_LINE
+      \"15\": b
+      \"17\": c" \
+  && run_case "74 \"15\" and \"17\" alone (must stay green)" PASS
 
 echo
 run_case "99 tree restored" PASS
