@@ -159,8 +159,12 @@ function networksOf(svc: Record<string, unknown>): string[] | undefined {
 }
 
 let filesParsed = 0;
-/** Files read with both YAML versions agreeing on their meaning (OD-39). */
-const versionAgreedFiles: string[] = [];
+/**
+ * Files whose two readings — one lexer (YAML 1.2 syntax), the 1.2 and the 1.1
+ * SCHEMA — resolve alike (OD-39). Schema agreement only: it says nothing about
+ * a 1.1/1.2 SYNTAX difference, which both readings tokenise identically (A10).
+ */
+const schemasAgreedFiles: string[] = [];
 let servicesChecked = 0;
 /** Service names declared in compose.yml. Anything else in an overlay is an ADDITION. */
 let baseNames: Set<string> | null = null;
@@ -199,7 +203,7 @@ for (const rel of COMPOSE_FILES) {
   // its sibling.
   const parsedFile = parseCompose(rel, text);
   failures.push(...parsedFile.problems);
-  if (parsedFile.versionAgreed) versionAgreedFiles.push(rel);
+  if (parsedFile.schemasAgreed) schemasAgreedFiles.push(rel);
   const doc = parsedFile.doc;
   if (doc === null) continue;
   filesParsed += 1;
@@ -546,13 +550,15 @@ console.log(
       : '  (each held to the full base-service rule)'),
 );
 console.log(
-  `  parser                     lib/compose-parse.ts — merge keys RESOLVED; a file the ` +
-    `two YAML versions read differently, or carrying a second document, REFUSED ` +
-    `(OD-39, OD-41); shared with gate:app-images`,
+  `  parser                     lib/compose-parse.ts — merge keys RESOLVED; one lexer ` +
+    `(yaml's YAML 1.2 syntax) read under two SCHEMAS (1.2 core, 1.1): a file whose values ` +
+    `the two schemas resolve differently, a second document, or a U+0085/U+2028/U+2029 ` +
+    `character is REFUSED (OD-39, OD-41, OD-43). A 1.1/1.2 SYNTAX difference is not ` +
+    `detected by the comparison. Not exhaustive — see its header; shared with gate:app-images`,
 );
 console.log(
-  `  YAML 1.1/1.2 agreement     ${String(versionAgreedFiles.length)}/${String(COMPOSE_FILES.length)} files` +
-    `  (a file the two versions read differently is REFUSED — OD-39)`,
+  `  1.1/1.2 SCHEMA agreement   ${String(schemasAgreedFiles.length)}/${String(COMPOSE_FILES.length)} files` +
+    `  (value resolution only — both readings share one lexer)`,
 );
 console.log(`  entry points checked       scripts/dev, scripts/svc`);
 console.log(`  docker socket              scripts/dev --docker only (OD-16)`);

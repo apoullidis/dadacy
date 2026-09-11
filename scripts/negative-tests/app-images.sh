@@ -951,8 +951,11 @@ echo; echo "=== cases 72-77 (T-037 rework, OD-39): the gate's PARSER differed fr
 # build:). OD-39 is the shape that SATISFIES that invariant while being
 # misread, and app-images.ts had no equivalent net. So the fix is one shared
 # reader (lib/compose-parse.ts) that enumerates the divergence class: merge
-# keys MODELLED, every other YAML 1.1/1.2 disagreement and every unmodelled
-# compose feature FAIL CLOSED.
+# keys MODELLED, a 1.1-vs-1.2 SCHEMA disagreement and each unmodelled compose
+# feature MEASURED so far FAIL CLOSED. (T-130 rework 1: this read "every other
+# YAML 1.1/1.2 disagreement", which was false — both readings share one YAML
+# 1.2 lexer, so a SYNTAX difference is read identically twice; OD-43 was one.
+# The list is not exhaustive; the reader's header says which members exist.)
 MERGE_BUILD_FRAGMENT="x-t037-frag: &t037_frag
   build:
     context: ..
@@ -989,7 +992,9 @@ services:" \
     <<: *t037_ok" \
   && run_case "74 a harmless <<: merge (must stay green — modelled, not refused)" PASS
 # 75. CLASS A3 (T-130's numbering), derived rather than enumerated: a file
-#     that means two different things to two YAML versions is refused, because
+#     that means two different things under the 1.1 and 1.2 SCHEMAS is refused
+#     (value resolution only — both readings share one YAML 1.2 lexer; the
+#     SYNTAX difference OD-43 found is cases 124-127, T-130 rework 1), because
 #     no reading of it can then be trusted to be compose's. `on` is a boolean
 #     in 1.1 and the string "on" in 1.2. The repair is to quote it.
 #     (T-130: 72-78 now assert their REASON as well as their verdict.)
@@ -1265,6 +1270,42 @@ services:" && mut "$BASE" "$SAFETY_BASE" "  safety-gw:
     image: kinvara/safety-gw:dev
     build: *t130_build" \
   && run_case "123 a demoted build reached through a plain ALIAS" FAIL "escapes all of them at once"
+
+echo; echo "=== cases 124-127 (T-130 rework 1, OD-43): a 1.1/1.2 SYNTAX difference — the three YAML 1.1 line breaks ==="
+# decisions.md OD-43 (qa-verification) and TL-F1 (tech-lead): U+2028, U+2029
+# and U+0085 are LINE BREAKS to YAML 1.1 and to Docker Compose, and ordinary
+# characters to YAML 1.2 — the lexer BOTH of this gate's readings use. So text
+# after one on a comment line is a comment to every rule here and live YAML to
+# compose. Measured: this exact edit gives safety-gw a single-stage
+# non-application build at gate:pr 9/9 on 8236725 AND on main 8b4ef80, while
+# `docker compose config` resolves the build. (-f compose.verify.yml masks it,
+# as it masked OD-33/36/39/41 — so the base file is where it bites.)
+# sep_landed asserts the character is IN the file after the mutation — `mut`
+# proves the anchor was found; this proves the thing under test was planted.
+sep_landed() {   # $1 = file, $2 = the separator character
+  grep -q -- "$2" "$1" \
+    || { echo "   HARNESS ERROR (no separator landed in $1)"; harness=$((harness+1)); return 1; }
+}
+od43_build() {   # $1 = case number, $2 = label, $3 = the separator character
+  local c="$3"
+  mk_single && mut "$BASE" '  safety-gw:
+    image: kinvara/safety-gw:dev' "  safety-gw:
+    image: kinvara/safety-gw:dev
+    # T-130 OD-43 probe${c}    build:${c}      context: ..${c}      dockerfile: docker/rogue-single.Dockerfile" \
+    && sep_landed "$BASE" "$c" \
+    && run_case "$1 OD-43: $2 hides a build: behind a comment" FAIL "treats as a LINE BREAK"
+}
+od43_build 124 U+2028 $'\xe2\x80\xa8'
+od43_build 125 U+2029 $'\xe2\x80\xa9'
+od43_build 126 U+0085 $'\xc2\x85'
+# 127. The OTHER entry point (composeShape, the straggler scan): a file whose
+#      services: mapping exists only on the far side of a U+2028. To YAML 1.2
+#      the whole file is one comment, so it was "not compose" and skipped.
+printf '# T-130 OD-43 straggler%sservices:%s  rogue:%s    image: kinvara/rogue:dev%s    ports:%s      - "53999:3000"\n' \
+  $'\xe2\x80\xa8' $'\xe2\x80\xa8' $'\xe2\x80\xa8' $'\xe2\x80\xa8' $'\xe2\x80\xa8' > docker/chaos-extra.yml
+sep_landed docker/chaos-extra.yml $'\xe2\x80\xa8' \
+  && run_case "127 OD-43: a straggler's services: behind U+2028" FAIL "treats as a LINE BREAK"
+rm -f docker/chaos-extra.yml
 
 echo
 run_case "99 tree restored" PASS

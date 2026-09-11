@@ -447,6 +447,37 @@ mut "$BASE" '  safety-gw:
     extends:
       service: core' && run_case "57 extends: on a base service" FAIL "uses 'extends'"
 
+echo; echo "=== cases 58-61 (T-130 rework 1, OD-43): a 1.1/1.2 SYNTAX difference — the three YAML 1.1 line breaks ==="
+# decisions.md OD-43 and TL-F1: U+2028, U+2029 and U+0085 are LINE BREAKS to
+# YAML 1.1 and to Docker Compose, and ordinary characters to YAML 1.2 — the
+# lexer BOTH of this gate's readings use. So a whole service can sit after one
+# on a comment line: a comment to every rule here, a service to compose. This
+# gate's shape is its own rule's: `qa-rogue` on the DEFAULT bridge (OD-12, full
+# egress). Measured with `docker compose config` on scratch files: qa-rogue
+# resolves on `default` for all three characters (T-130 § Rework 1 evidence).
+sep_landed() {   # $1 = file, $2 = the separator character
+  grep -q -- "$2" "$1" \
+    || { echo "   HARNESS ERROR (no separator landed in $1)"; harness=$((harness+1)); return 1; }
+}
+od43_bridge() {   # $1 = case number, $2 = label, $3 = the separator character
+  local c="$3"
+  mut "$BASE" 'services:' "services:
+  # T-130 OD-43 probe${c}  qa-rogue:${c}    image: alpine:3.20${c}    networks: [default]" \
+    && sep_landed "$BASE" "$c" \
+    && run_case "$1 OD-43: $2 hides a default-bridge service" FAIL "treats as a LINE BREAK"
+}
+od43_bridge 58 U+2028 $'\xe2\x80\xa8'
+od43_bridge 59 U+2029 $'\xe2\x80\xa9'
+od43_bridge 60 U+0085 $'\xc2\x85'
+# 61. The OTHER entry point (composeShape, the straggler scan): a file whose
+#     services: mapping exists only on the far side of a U+2028. To YAML 1.2 the
+#     whole file is one comment, so it was "not compose" and skipped.
+printf '# T-130 OD-43 straggler%sservices:%s  rogue:%s    image: kinvara/rogue:dev%s    networks: [default]\n' \
+  $'\xe2\x80\xa8' $'\xe2\x80\xa8' $'\xe2\x80\xa8' $'\xe2\x80\xa8' > docker/chaos-extra.yml
+sep_landed docker/chaos-extra.yml $'\xe2\x80\xa8' \
+  && run_case "61 OD-43: a straggler's services: behind U+2028" FAIL "treats as a LINE BREAK"
+rm -f docker/chaos-extra.yml
+
 echo
 run_case "99 tree restored" PASS
 echo

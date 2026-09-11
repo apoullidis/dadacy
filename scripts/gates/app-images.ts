@@ -217,8 +217,12 @@ const isApplicationBuild = (
   return isRecord(args) && typeof args['APP'] === 'string' && args['APP'].trim() !== '';
 };
 
-/** Files read with both YAML versions agreeing on their meaning (OD-39). */
-const versionAgreedFiles: string[] = [];
+/**
+ * Files whose two readings — one lexer (YAML 1.2 syntax), the 1.2 and the 1.1
+ * SCHEMA — resolve alike (OD-39). Schema agreement only: it says nothing about
+ * a 1.1/1.2 SYNTAX difference, which both readings tokenise identically (A10).
+ */
+const schemasAgreedFiles: string[] = [];
 /** Parsed `services:` of a compose file. Memoised: each file is reported once. */
 const servicesCache = new Map<string, Record<string, Record<string, unknown>> | null>();
 const servicesOf = (rel: string): Record<string, Record<string, unknown>> | null => {
@@ -237,11 +241,13 @@ const servicesOf = (rel: string): Record<string, Record<string, unknown>> | null
     // compose built it: exit 0, gate:pr 9/9, and this file's own summary still
     // printing the clean-tree `builds read 7`. `lib/compose-parse.ts` is now
     // the ONE place any gate reads compose; it resolves `<<`, refuses a file
-    // the two YAML versions read differently, refuses a second document
-    // (OD-41), and enumerates the rest of the class in its header (T-130).
-    const { doc, problems, versionAgreed } = parseCompose(rel, text);
+    // whose values the 1.1 and 1.2 SCHEMAS resolve differently (one lexer —
+    // it cannot see a SYNTAX difference, T-130 rework 1), refuses a second
+    // document (OD-41) and the three YAML 1.1 line breaks (OD-43), and lists
+    // every other member MEASURED in its header — not an exhaustive list.
+    const { doc, problems, schemasAgreed } = parseCompose(rel, text);
     failures.push(...problems);
-    if (versionAgreed) versionAgreedFiles.push(rel);
+    if (schemasAgreed) schemasAgreedFiles.push(rel);
     if (doc === null) return null;
     if (!isRecord(doc['services'])) {
       failures.push(`${rel}: no services: mapping — refusing to report a pass on it`);
@@ -1425,12 +1431,13 @@ console.log(
 );
 console.log(
   `  compose reader                  lib/compose-parse.ts, shared with gate:egress-boundary` +
-    `  (merge keys resolved; a YAML 1.1/1.2 disagreement, a second document and the rest ` +
-    `of its class refused — OD-39, OD-41)`,
+    `  (merge keys resolved; refused: a 1.1-vs-1.2 SCHEMA disagreement under one lexer, a ` +
+    `second document, a U+0085/U+2028/U+2029 character, and the other members MEASURED in ` +
+    `its header — not exhaustive; OD-39, OD-41, OD-43)`,
 );
 console.log(
-  `  files both YAML versions agree on  ${String(versionAgreedFiles.length)}: ` +
-    `${versionAgreedFiles.sort().join(' ')}`,
+  `  files the 1.1 and 1.2 SCHEMAS resolve alike  ${String(schemasAgreedFiles.length)}: ` +
+    `${schemasAgreedFiles.sort().join(' ')}  (value resolution only — one lexer)`,
 );
 
 finish('gate:app-images', failures);
