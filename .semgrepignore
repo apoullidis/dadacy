@@ -1,0 +1,31 @@
+# Kinvara semgrepignore (T-133).
+#
+# THIS FILE IS LOAD-BEARING AND IT IS NOT A COPY OF .gitignore.
+#
+# Measured on semgrep 1.176.1: with NO .semgrepignore, semgrep applies its own
+# built-in defaults, which exclude `test/` and `tests/` directories. A planted
+# marker in packages/policy/test/p.test.ts and packages/policy/tests/p.ts was
+# NOT scanned, while packages/policy/src/p.ts, src/p.spec.ts and __tests__/p.ts
+# were — i.e. a rule that must hold across packages/policy silently did not
+# apply to two ordinary directory names, at exit 0.
+#
+# So this file exists to REPLACE those defaults with an explicit list. Test
+# code is scanned deliberately: `any` in a policy test is the same defect as
+# `any` in policy source, and SD §DH-2 scopes the rule to packages/policy with
+# no test exemption.
+#
+# Anything added here removes coverage. Add a path only with a reason.
+
+# Dependencies and build output — nothing here is our source.
+node_modules/
+dist/
+build/
+out/
+.next/
+.turbo/
+coverage/
+
+# Caches and stores, never source.
+.pnpm-store/
+.cache/
+.git/

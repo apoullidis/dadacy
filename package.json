@@ -26,6 +26,7 @@
     "gate:toolbox": "node scripts/gates/toolbox.ts",
     "gate:egress-boundary": "node scripts/gates/egress-boundary.ts",
     "gate:app-images": "node scripts/gates/app-images.ts",
+    "gate:semgrep": "node scripts/gates/semgrep.ts",
     "gate:constraint-suite": "node scripts/gates/constraint-suite.ts",
     "gate:constraint-suite:static": "node scripts/gates/constraint-suite.ts --static",
     "gate:pr": "node scripts/gates/pr.ts",

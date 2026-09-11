@@ -1,0 +1,53 @@
+# Kinvara Semgrep project rules — the committed, LOCAL rule set (T-133).
+#
+# SD §QD-4's PR row names "Semgrep project rules" as a blocking gate but
+# enumerates none; the enumeration is SD §QD-1. This file ships exactly ONE of
+# them — the `no-any` rule SD §DH-2 states and T-024's gate requires. The other
+# twelve rules in SD §QD-1 belong to the agents who own the code they police
+# (e.g. T-088, pricing) and are NOT invented here.
+#
+# HOW THIS FILE IS RUN: `pnpm gate:semgrep` passes --config with THIS path and
+# nothing else. No registry rule (`p/...`, `r/...`), no `--config auto`, no
+# URL. The gate refuses any of those, and it runs green with networking
+# disabled — see state/EP-1/T-133.md § Published contract.
+#
+# ADDING A RULE: gate:semgrep requires a self-test entry for every rule id in
+# this file (scripts/gates/semgrep.ts, SELF_TESTS). A rule with no self-test
+# fails the gate. That is deliberate: a rule whose pattern matches nothing is
+# invisible at exit 0, which is the defect class PROTOCOL §5.1 names.
+
+rules:
+  - id: no-any
+    languages: [typescript]
+    severity: ERROR
+    message: >-
+      `any` in packages/policy. SD §DH-2: "`any` is a lint error everywhere; in
+      packages/policy it is a Semgrep failure." Use a branded type from
+      @kinvara/domain-types, `unknown` with a narrowing check, or a precise
+      type. Do not widen the policy surface to silence a type error.
+    paths:
+      # SD §DH-2 scopes the Semgrep half of the rule to packages/policy. Test
+      # code is INCLUDED on purpose (see .semgrepignore).
+      include:
+        - 'packages/policy/**'
+    patterns:
+      # The type `any` in any position: annotation, return type, cast, type
+      # alias, union member, generic argument, array element, default type
+      # parameter. An AST pattern set cannot reach all of those — measured, it
+      # covers 2-7 of 15 shapes — so the match is textual and the FALSE
+      # POSITIVES are then removed structurally below.
+      #
+      # The lookarounds exclude: a member access (`c3.any`), an identifier with
+      # `any` as a substring (`anyway`), and a property KEY (`{ any: 1 }`,
+      # `{ any?: string }`) or a call (`z.any()`), neither of which is the type.
+      - pattern-regex: '(?<![\w$.])any(?![\w$(]|\s*\??:)'
+      # String literals are AST nodes, so this removes `'any'` and "double any"
+      # exactly, rather than by a second regex that would also eat real code.
+      - pattern-not-inside: '"..."'
+      - pattern-not-inside: '`...`'
+      # Comments are not AST nodes, so they need regexes. `//` must be preceded
+      # by start-of-line, whitespace or a delimiter, so that the `//` inside
+      # 'http://example.test' does not swallow a real `as any` later on the
+      # same line — measured, that case is still caught.
+      - pattern-not-regex: '(?m)(?:^|[\s;{}(),])//[^\n]*'
+      - pattern-not-regex: '/\*[\s\S]*?\*/'
