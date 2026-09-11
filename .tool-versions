@@ -37,6 +37,16 @@ trivy 0.74.0
 # benefit, since Playwright runs E2E through the app and not through psql.
 postgresql 18
 
+# --- added by T-133 --------------------------------------------------------
+# Semgrep, for gate:semgrep (SD §QD-4 PR row "Semgrep project rules"; SD §DH-2
+# "in packages/policy it is a Semgrep failure"). A Python package, so it is
+# installed into a venv at /opt/semgrep in the DEFAULT toolbox target only,
+# with pip --require-hashes against docker/semgrep-requirements.txt — every
+# wheel of the resolved set, by the sha256 PyPI publishes. That file must
+# name `semgrep==<this pin>`; the Dockerfile refuses to build if it does not,
+# so bumping this line without regenerating the hash set fails loudly.
+semgrep 1.176.1
+
 # ===========================================================================
 # HOW A PIN REACHES THE IMAGE  (T-016 / OD-1 — this used to be wrong)
 # ===========================================================================

@@ -133,6 +133,17 @@ const PROBES: readonly Probe[] = [
       why: 'the Playwright variant is built on Ubuntu noble and carries no libpq; it exercises the app, not the database (T-016)',
     },
   },
+  {
+    // T-133. `semgrep --version` prints the bare version, e.g. `1.176.1`.
+    tool: 'semgrep',
+    pinKey: 'semgrep',
+    argv: ['semgrep', '--version'],
+    extract: (o) => first(o).trim(),
+    absentFrom: {
+      variant: 'toolbox-playwright',
+      why: "the Semgrep venv is bound to bookworm's python3.11 and gate:semgrep is a PR-stage gate, not a heavy one (T-133)",
+    },
+  },
 ];
 
 // ---------------------------------------------------------------------------

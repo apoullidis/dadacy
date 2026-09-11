@@ -34,6 +34,9 @@ ARG TRIVY_VERSION=0.74.0
 # Added by T-016: psql / pg_dump. Default target only — see below.
 ARG POSTGRESQL_VERSION=18
 
+# Added by T-133: Semgrep, for gate:semgrep. Default target only — see below.
+ARG SEMGREP_VERSION=1.176.1
+
 # --- T-016 / OD-1: how these ARGs are supplied -----------------------------
 # scripts/lib/toolbox.sh passes ONE --build-arg PER LINE of app/.tool-versions,
 # named <KEY>_VERSION (upper-cased, non-alphanumerics folded to '_', with the
@@ -140,6 +143,7 @@ ARG PLAYWRIGHT_VERSION
 ARG GITLEAKS_VERSION
 ARG TRIVY_VERSION
 ARG POSTGRESQL_VERSION
+ARG SEMGREP_VERSION
 
 LABEL org.opencontainers.image.title="kinvara-toolbox" \
       org.opencontainers.image.description="Kinvara pinned toolchain (DOCKER.md §4.2)" \
@@ -149,7 +153,8 @@ LABEL org.opencontainers.image.title="kinvara-toolbox" \
       io.kinvara.playwright="${PLAYWRIGHT_VERSION}" \
       io.kinvara.gitleaks="${GITLEAKS_VERSION}" \
       io.kinvara.trivy="${TRIVY_VERSION}" \
-      io.kinvara.postgresql="${POSTGRESQL_VERSION}"
+      io.kinvara.postgresql="${POSTGRESQL_VERSION}" \
+      io.kinvara.semgrep="${SEMGREP_VERSION}"
 
 # git: pnpm resolves git-hosted deps and the gates shell out to it.
 # ca-certificates: the toolbox is the one container with egress (DOCKER.md §7).
@@ -175,6 +180,37 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends "postgresql-client-${POSTGRESQL_VERSION}"; \
     rm -rf /var/lib/apt/lists/*; \
     psql --version
+
+# T-133: Semgrep, for gate:semgrep (SD §QD-4 "Semgrep project rules"; SD §DH-2
+# "in packages/policy it is a Semgrep failure"). It is a Python package with an
+# OCaml core shipped inside its wheel, so — unlike gitleaks/Trivy — there is no
+# single static binary with a SHA256SUMS to check. The equivalent verification
+# is pip's hash-checking mode over the WHOLE resolved set:
+#   --require-hashes    every wheel must match a committed sha256 (the digest
+#                       PyPI publishes; see the header of the requirements file)
+#   --no-deps           nothing not listed can be resolved in
+#   --only-binary=:all: nothing is built from source (there is no compiler here)
+# The ARG is USED, twice, so that a .tool-versions bump without a regenerated
+# hash set cannot pass quietly: the file must pin semgrep==${SEMGREP_VERSION},
+# and the installed binary must report exactly that version.
+# Default target only: the venv is bound to bookworm's /usr/bin/python3.11 and
+# the --playwright variant is Ubuntu noble (psql's precedent, T-016).
+COPY semgrep-requirements.txt /tmp/semgrep-requirements.txt
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends python3 python3-venv; \
+    rm -rf /var/lib/apt/lists/*; \
+    grep -qE "^semgrep==${SEMGREP_VERSION}[[:space:]]" /tmp/semgrep-requirements.txt \
+      || { echo "semgrep-requirements.txt does not pin semgrep==${SEMGREP_VERSION} (.tool-versions)" >&2; exit 1; }; \
+    python3 -m venv /opt/semgrep; \
+    /opt/semgrep/bin/pip install --no-cache-dir --disable-pip-version-check \
+        --require-hashes --no-deps --only-binary=:all: \
+        -r /tmp/semgrep-requirements.txt; \
+    rm -f /tmp/semgrep-requirements.txt; \
+    ln -s /opt/semgrep/bin/semgrep /usr/local/bin/semgrep; \
+    got="$(SEMGREP_ENABLE_VERSION_CHECK=0 semgrep --version)"; \
+    [ "${got}" = "${SEMGREP_VERSION}" ] \
+      || { echo "semgrep --version printed '${got}', pinned ${SEMGREP_VERSION}" >&2; exit 1; }
 
 COPY --from=terraform-fetch /out/terraform /usr/local/bin/terraform
 
@@ -258,6 +294,10 @@ ARG TRIVY_VERSION
 # on Ubuntu noble and dragging libpq across from bookworm is drift for no
 # benefit — Playwright exercises the app, not the database.
 ARG POSTGRESQL_VERSION
+# T-133: declared but deliberately unused, for the same reason — the Semgrep
+# venv is bound to bookworm's python3.11 and gate:semgrep is a PR-stage gate,
+# not a heavy one. gate:toolbox reports it absent-by-design in this variant.
+ARG SEMGREP_VERSION
 
 LABEL org.opencontainers.image.title="kinvara-toolbox-playwright" \
       io.kinvara.node="${NODE_VERSION}" \
