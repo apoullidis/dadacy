@@ -136,14 +136,20 @@ describe('QA-F11 — the functions behind the revoked pg_stat_statements view', 
     // A second reading, from the ACLs rather than the wire: T-020's own
     // BEFORE/AFTER table is this query. has_function_privilege sees EXECUTE
     // reaching the role through PUBLIC, which is exactly the route QA-F11 was.
+    // Labelled and in ARRAY order: `ORDER BY` the name would sort under the
+    // database's ICU `und` collation, which puts '_' before '(' — so an
+    // unlabelled failure would print the three values in an order nobody wrote.
     assert.equal(
       await db.value(
-        `SELECT string_agg(has_function_privilege('answering_service', f, 'EXECUTE')::text, ',' ORDER BY f)
+        `SELECT string_agg(f || '=' || has_function_privilege('answering_service', f, 'EXECUTE')::text,
+                           ', ' ORDER BY n)
            FROM unnest(ARRAY['public.pg_stat_statements(boolean)',
                              'public.pg_stat_statements_info()',
-                             'public.pg_stat_statements_reset(oid,oid,bigint,boolean)']) AS f`,
+                             'public.pg_stat_statements_reset(oid,oid,bigint,boolean)'])
+                WITH ORDINALITY AS t(f, n)`,
       ),
-      'false,false,false',
+      'public.pg_stat_statements(boolean)=false, public.pg_stat_statements_info()=false, ' +
+        'public.pg_stat_statements_reset(oid,oid,bigint,boolean)=false',
     );
   });
 });

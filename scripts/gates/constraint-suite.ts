@@ -305,7 +305,13 @@ console.log('\n== 3. no constraint suite mocks the database');
  * module is the most natural way to fake a cluster under this runner, and it
  * leaves every REQUIRE rule below satisfied — so any use of `vi` is refused.
  */
-const FORBIDDEN: readonly { readonly re: RegExp; readonly what: string }[] = [
+const MOCK_CONSEQUENCE = 'A DB test that mocks the database is an automatic FAIL.';
+const FORBIDDEN: readonly {
+  readonly re: RegExp;
+  readonly what: string;
+  /** What the FAIL line says after `what`; the mock sentence unless the entry is not about mocks. */
+  readonly consequence?: string;
+}[] = [
   { re: /\bmock\w*\s*\(/i, what: 'a mock() call' },
   { re: /\bmock\.\w+\s*\(/i, what: "a call on node:test's mock namespace" },
   { re: /\bimport\s*\{[^}]*\bmock\b[^}]*\}/, what: "an import of node:test's mock" },
@@ -319,6 +325,8 @@ const FORBIDDEN: readonly { readonly re: RegExp; readonly what: string }[] = [
   {
     re: /\.\s*fails\b|['"`]fails['"`]|\bfails\s*:/,
     what: "Vitest's fails (modifier or option): a body that throws for ANY reason is reported as passed",
+    consequence:
+      'A harness must never infer a verdict from a signal a crash also produces (PROTOCOL §5.1).',
   },
 ];
 
@@ -463,7 +471,8 @@ function suiteShape(file: string, text: string): SuiteShape {
       if (ts.isPropertyAccessExpression(p) && p.expression === node) {
         refused.push(
           `${line(node)}: ${node.text}.${p.name.text} — a Vitest modifier; every property of ` +
-            `test/it/describe is refused (.fails reports a body that THROWS as passed)`,
+            `test/it/describe is refused` +
+            (p.name.text === 'fails' ? ' (.fails reports a body that THROWS as passed)' : ''),
         );
       } else if (ts.isElementAccessExpression(p) && p.expression === node) {
         refused.push(
@@ -540,7 +549,7 @@ for (const file of suiteFiles) {
   }
   for (const f of FORBIDDEN) {
     if (f.re.test(text)) {
-      fail(`${file} contains ${f.what}. A DB test that mocks the database is an automatic FAIL.`);
+      fail(`${file} contains ${f.what}. ${f.consequence ?? MOCK_CONSEQUENCE}`);
     }
   }
   for (const r of shape.refused) {
@@ -560,7 +569,11 @@ if (srcFiles.length === 0) fail('the harness has no source files');
 for (const file of srcFiles) {
   const text = fs.readFileSync(path.join(SRC_DIR, file), 'utf8');
   for (const f of FORBIDDEN) {
-    if (f.re.test(text)) fail(`packages/db-testkit/src/${file} contains ${f.what}`);
+    if (f.re.test(text)) {
+      fail(
+        `packages/db-testkit/src/${file} contains ${f.what}. ${f.consequence ?? MOCK_CONSEQUENCE}`,
+      );
+    }
   }
 }
 if (failures.length === failuresBefore) {
