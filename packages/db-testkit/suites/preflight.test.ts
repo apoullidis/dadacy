@@ -9,9 +9,12 @@
  * `ON_ERROR_STOP=1` psql exits 3 on a script error, and two runs that both
  * fail identically are byte-identical (PROTOCOL §5.1).
  *
- * P3 needs its own cluster. `shared_preload_libraries` is a CLUSTER-level
- * parameter, which is the third reason this harness gives every suite a cluster
- * rather than a database (see `src/cluster.ts`).
+ * P3 — the cluster-level parameter — is in `preflight-p3.test.ts`. It needs a
+ * cluster started with a different server command, and a suite FILE holds at
+ * most one cluster: `--test-concurrency=1` serialises files, not the clusters
+ * inside one, and this file used to hold two at once — measured by T-115 as a
+ * 1 GB peak against the `db` profile's 512 MB budget. `gate:constraint-suite`
+ * now refuses a second acquire call site in one file.
  */
 import { after, before, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -106,59 +109,6 @@ describe('0001 §Section 0 — the preflight refuses a database it cannot be rep
       await db.value(`SELECT count(*) FROM pg_extension WHERE extname <> 'plpgsql'`),
       '7',
       'SD §DH-1 first-ticket #3 names seven extensions',
-    );
-  });
-});
-
-describe('0001 §Section 0 — P3, the cluster-level parameter', () => {
-  let bare: Cluster;
-
-  before(
-    async () => {
-      // A cluster started with the parameter genuinely empty. T-020 produced this
-      // by resetting the parameter and restarting the container by hand; here it
-      // is one line, which is the whole difference between a one-off run and a
-      // suite.
-      bare = await acquireCluster('preflight-no-preload', {
-        // `pg_partman_bgw` and NOT the empty string. An EMPTY value is not a
-        // shorter version of this test — measured on this image, PostgreSQL 18
-        // treats `shared_preload_libraries = ''` as a one-element list whose
-        // element is the empty filename and refuses to start:
-        // `FATAL: could not access file "": No such file or directory`. A P3
-        // cluster that cannot boot would have failed as a harness bug, not as a
-        // preflight refusal. A non-empty list that is MISSING one entry is also
-        // the realistic mistake: OD-9 is a whole finding about getting the names
-        // in this list right.
-        command: ['postgres', '-c', 'shared_preload_libraries=pg_partman_bgw'],
-      });
-    },
-    { timeout: 300_000 },
-  );
-
-  after(async () => {
-    if (bare !== undefined) await bare.stop();
-  });
-
-  test('P3 — shared_preload_libraries without pg_stat_statements (OD-7)', async () => {
-    const preload = await bare.value(`SHOW shared_preload_libraries`);
-    assert.equal(
-      preload,
-      'pg_partman_bgw',
-      'the probe cluster must really be missing pg_stat_statements, or P3 tests nothing',
-    );
-    assert.ok(!preload.includes('pg_stat_statements'));
-    const r = await applyBaseline(bare);
-    assert.equal(r.code, PSQL_SCRIPT_ERROR, `P3: expected psql exit 3.\n${r.output}`);
-    assert.ok(
-      r.output.includes('shared_preload_libraries does not contain pg_stat_statements'),
-      `P3: the refusal must name the parameter.\n${r.output}`,
-    );
-    // Why it matters, restated as an assertion: CREATE EXTENSION would have
-    // SUCCEEDED here, and every read of the view would then raise — SD §DB-12's
-    // weekly review of statements over 50 ms silently dead, nothing red.
-    assert.equal(
-      await bare.value(`SELECT count(*) FROM pg_extension WHERE extname <> 'plpgsql'`),
-      '0',
     );
   });
 });

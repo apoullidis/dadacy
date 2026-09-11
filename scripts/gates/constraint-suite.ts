@@ -14,6 +14,9 @@
  *      through this gate — refuses a drifted tag too.)
  *
  *   2. THE BUDGET — one cluster at a time, at the `db` profile's own mem_limit.
+ *      `--test-concurrency=1` serialises suite FILES; §3 adds that a file has at
+ *      most one acquire call site, because a second one inside a file is a
+ *      second concurrent cluster (measured in `preflight.test.ts`, T-115).
  *
  *   3. NO SUITE MOCKS THE DATABASE. `qa-verification.md`: "A DB test that mocks
  *      the database" is an automatic FAIL, and `PROTOCOL.md` §5.2 says the
@@ -203,7 +206,8 @@ const HARNESS_MODULES = new Set(['../src/index.ts', '../src/cluster.ts', '@kinva
 const ACQUIRERS = new Set(['acquireCluster', 'acquireMigratedCluster']);
 
 interface SuiteShape {
-  readonly acquires: boolean;
+  /** Call SITES of an imported acquirer, not calls at run time: a site in a loop counts once. */
+  readonly acquireSites: number;
   readonly stops: boolean;
   readonly tests: number;
 }
@@ -225,14 +229,14 @@ function suiteShape(file: string, text: string): SuiteShape {
       }
     }
   }
-  let acquires = false;
+  let acquireSites = 0;
   let stops = false;
   let tests = 0;
   const visit = (node: ts.Node): void => {
     if (ts.isCallExpression(node)) {
       const callee = node.expression;
       if (ts.isIdentifier(callee)) {
-        if (acquirers.has(callee.text)) acquires = true;
+        if (acquirers.has(callee.text)) acquireSites += 1;
         if (testFns.has(callee.text)) tests += 1;
       } else if (
         ts.isPropertyAccessExpression(callee) &&
@@ -245,7 +249,7 @@ function suiteShape(file: string, text: string): SuiteShape {
     ts.forEachChild(node, visit);
   };
   visit(sf);
-  return { acquires, stops, tests };
+  return { acquireSites, stops, tests };
 }
 
 const failuresBefore = failures.length;
@@ -272,7 +276,15 @@ if (suiteFiles.length === 0) {
 for (const file of suiteFiles) {
   const text = fs.readFileSync(path.join(SUITE_DIR, file), 'utf8');
   const shape = suiteShape(file, text);
-  if (!shape.acquires) {
+  if (shape.acquireSites > 1) {
+    fail(
+      `${file} acquires a cluster at ${String(shape.acquireSites)} call sites. A suite FILE holds at ` +
+        `most one cluster: --test-concurrency=1 serialises FILES, not the clusters inside one, so a ` +
+        `second acquire doubles the peak past the db profile's 512 MB (DOCKER.md §3, §9). Measured: ` +
+        `preflight.test.ts did exactly this until T-115 moved P3 into its own file.`,
+    );
+  }
+  if (shape.acquireSites === 0) {
     fail(
       `${file} never calls acquireCluster()/acquireMigratedCluster() imported from the harness. ` +
         `A constraint suite that does not acquire a real cluster is not testing a database ` +
