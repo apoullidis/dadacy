@@ -6,7 +6,7 @@
  * and that the register actually covers every `safety_critical` key in every
  * enabled locale rather than being a decorative stub.
  */
-import { test } from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { contentHash, loadReviewRegister, catalogueSource } from './review.ts';
 import type { ReviewRecord } from './review.ts';

@@ -5,7 +5,7 @@
  * is that reaching for one raises rather than silently rendering English. The
  * absence itself is enforced a layer up, by `compiled/index.ts` typechecking.
  */
-import { test } from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { getCatalogue, resolveMessage, MissingMessageError } from './catalogue.ts';
 import { assertLocale } from './registry.ts';

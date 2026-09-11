@@ -19,7 +19,7 @@
  *      come back as a problem. A predicate that has only ever seen a green
  *      corpus has not been shown to be wired to anything.
  */
-import { test } from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {

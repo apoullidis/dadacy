@@ -11,7 +11,7 @@
  * result is — which is the case EV-2's `gate:plural-completeness` (`T-045`)
  * exists for.
  */
-import { test } from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';

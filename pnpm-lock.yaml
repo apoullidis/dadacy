@@ -90,6 +90,12 @@ importers:
       prettier:
         specifier: 3.9.6
         version: 3.9.6
+      vite:
+        specifier: 8.2.2
+        version: 8.2.2(@types/node@26.4.1)(yaml@2.8.1)
+      vitest:
+        specifier: 5.0.0
+        version: 5.0.0(@types/node@26.4.1)(vite@8.2.2(@types/node@26.4.1)(yaml@2.8.1))
 
   packages/integration-kit: {}
 

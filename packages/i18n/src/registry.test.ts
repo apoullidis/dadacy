@@ -5,7 +5,7 @@
  * from `locale-registry.json`, it is validated at runtime, and there is no
  * function here that will hand you a locale you did not supply.
  */
-import { test } from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -21,6 +21,24 @@ import {
   pluralCategories,
   defaultLocale,
 } from './registry.ts';
+
+/**
+ * The top-level declaration that line `at` sits in: the nearest line at or
+ * above it that starts in column 0 and is not blank, a comment or a closer.
+ * This relies on prettier's layout — every top-level statement in column 0,
+ * everything nested indented — which `gate:lint` enforces on this package. A
+ * call site whose declaration is not a named `function` reports as
+ * `<top level: …>`, which no pin below expects.
+ */
+function enclosingTopLevel(lines: readonly string[], at: number): { name: string; start: number } {
+  for (let i = at; i >= 0; i--) {
+    const line = lines[i] ?? '';
+    if (line === '' || /^[\s})\]/*]/.test(line)) continue;
+    const fn = /^(?:export\s+)?(?:async\s+)?function\*?\s*([\w$]+)/.exec(line);
+    return { name: fn?.[1] !== undefined ? `${fn[1]}()` : `<top level: ${line.trim()}>`, start: i };
+  }
+  return { name: '<file scope>', start: 0 };
+}
 
 test('the three MVP locales are registered, each named in its own language', () => {
   assert.deepEqual(
@@ -103,18 +121,32 @@ test('QA-F1 — defaultLocale() is called from exactly one place in src/, on the
   // line is the `operational`/`marketing` fallback branch that SA §TS-12.1
   // permits. A second call site is not necessarily wrong — but it must be a
   // deliberate edit to this test, not an accident.
+  //
+  // Pinned by ENCLOSING FUNCTION, not by line number (T-132; the CONTRACTS.md
+  // obligation T-040's QA round 2 left for whoever next edits this package). A
+  // line pin went red on any insertion above the call, and the cheapest green
+  // was then editing this guard. A call site is now named by the top-level
+  // declaration it sits in, and whether the strict-tier throw precedes it inside
+  // that declaration — which is what "on the non-strict path" means here.
   const dir = dirname(fileURLToPath(import.meta.url));
   const callSites: string[] = [];
   for (const file of readdirSync(dir).sort()) {
     if (!file.endsWith('.ts') || file.endsWith('.test.ts') || file === 'registry.ts') continue;
     const lines = readFileSync(join(dir, file), 'utf8').split('\n');
     lines.forEach((line, i) => {
-      if (/\bdefaultLocale\s*\(/.test(line)) callSites.push(`${file}:${String(i + 1)}`);
+      if (!/\bdefaultLocale\s*\(/.test(line)) return;
+      const { name, start } = enclosingTopLevel(lines, i);
+      const afterStrictThrow = lines
+        .slice(start, i)
+        .some((l) => /\bisStrictTier\s*\(/.test(l) && /\bthrow\b/.test(l));
+      callSites.push(
+        `${file} › ${name}${afterStrictThrow ? ' › after the strict-tier throw' : ''}`,
+      );
     });
   }
   assert.deepEqual(
     callSites,
-    ['catalogue.ts:82'],
+    ['catalogue.ts › resolveMessage() › after the strict-tier throw'],
     `defaultLocale() call sites changed: ${JSON.stringify(callSites)}. ` +
       'If this is deliberate, confirm the new site is on a non-strict fallback path and update this assertion.',
   );

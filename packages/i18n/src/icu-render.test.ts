@@ -20,7 +20,7 @@
  * English passes whatever we write here; that is exactly why it is the third
  * table and not the first.
  */
-import { test } from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { messages as en } from '../compiled/en/index.ts';
 import { messages as el } from '../compiled/el/index.ts';

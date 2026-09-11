@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Locale registry, ICU catalogues (en/el/ru), tier taxonomy, review provenance, and the compile-to-functions pipeline \u2014 SD \u00a7FE-10, SA \u00a7TS-12",
+  "description": "Locale registry, ICU catalogues (en/el/ru), tier taxonomy, review provenance, and the compile-to-functions pipeline — SD §FE-10, SA §TS-12",
   "exports": {
     ".": "./src/index.ts",
     "./review": "./src/review.ts",
@@ -12,13 +12,15 @@
   "scripts": {
     "build": "node tools/compile.ts",
     "build:check": "node tools/compile.ts --check",
-    "test": "node --test --test-reporter=spec 'src/*.test.ts' 'tools/*.test.ts'"
+    "test": "node tools/run-tests.ts"
   },
   "dependencies": {
     "intl-messageformat": "11.2.14"
   },
   "devDependencies": {
     "@formatjs/icu-messageformat-parser": "3.5.17",
-    "prettier": "3.9.6"
+    "prettier": "3.9.6",
+    "vite": "8.2.2",
+    "vitest": "5.0.0"
   }
 }
