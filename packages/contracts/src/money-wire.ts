@@ -20,7 +20,18 @@
  * round trip through a JSON number, and it does survive as a string.
  *
  * THE TESTS THAT FAIL IF A FLOAT OR A BARE `number` EVER REACHES THE WIRE —
- * three, at three layers, because one of them is not enough:
+ * FOUR, at four layers. The first is the guard inside `encodeMinorUnits`, and
+ * it is the one that CLOSES the route (T-022 rework 1, `qa-verification`
+ * QA-F1). The other three all read the ENCODED STRING, so none of them can
+ * see that the string came from a double — which is why three were not enough:
+ *   - THE ENCODER'S RUNTIME GUARD: `money-wire.test.ts` ›
+ *     *the encoder REFUSES a bare number at run time: QA-F1 three
+ *     reproductions, each asserting the refusal and not merely a throw*,
+ *     *the encoder refuses every non-bigint shape, and still encodes a real
+ *     bigint: the guard is narrow, not a blanket refusal*, and
+ *     *the encoder refusal never echoes the rejected value, in message or
+ *     stack*. A non-`bigint` throws `TypeError(ENCODE_REFUSED)`. See the
+ *     guard's own comment below for what it does NOT do.
  *   - RUNTIME, the schema: `money-wire.test.ts` ›
  *     *the wire schema refuses a number, a float, and a decimal string: only a
  *     decimal-integer STRING is money on the wire*. It plants `5042` (a bare
@@ -90,11 +101,56 @@ export const Money = z.strictObject({
 });
 
 /**
+ * The refusal `encodeMinorUnits` throws. A FIXED string: it names the rule and
+ * the parameter, and it never carries the rejected value (PROTOCOL §9.2 — no
+ * error payload echoes an input). Exported so a caller or a test can assert
+ * the exact refusal rather than "something threw".
+ */
+export const ENCODE_REFUSED =
+  'encodeMinorUnits: amount must be a bigint of minor units (PROTOCOL §9.6); the rejected value is not shown';
+
+/**
  * `MinorUnits` -> wire. The ONLY supported way to put money in a payload.
  * `bigint.toString()` is exact at every magnitude; `Number(amount)` is not,
  * and `JSON.stringify` of the raw value throws.
+ *
+ * THE RUNTIME GUARD (T-022 rework 1, `qa-verification` QA-F1). The parameter
+ * type is a branded `bigint`, but a TYPE IS NOT A CHECK: an `any` — which is
+ * what `JSON.parse` yields — flows into every brand with no compile error
+ * (T-023 § Published contract §3, OD-60), and so does a cast. Before this
+ * guard the body was a bare `amount.toString()`, so a JS `number` that reached
+ * here became a decimal-integer STRING that the wire schema, the document and
+ * the decoder ALL accept — silently corrupted above 2^53. QA measured
+ * `9007199254740993` arriving as a number encoding to `"9007199254740992"`:
+ * off by one minor unit, accepted by both readings. PROTOCOL §9.6 ("money is
+ * `bigint` minor units, never a float") is a non-negotiable, so the route is
+ * closed here rather than the claim being narrowed.
+ *
+ * A `TypeError`, not an `InvalidInputError`, and the distinction is not
+ * cosmetic: reaching this function with a non-`bigint` is a PROGRAMMING error
+ * on the emitting side, not bad client input. `InvalidInputError` is a 400
+ * `invalid_input` (T-023 § Published contract §6), which would blame the
+ * caller for the server's bug. A plain `TypeError` is not a `DomainError`, so
+ * `toProblem` maps it to the fixed 500 `internal_error` body, carrying nothing
+ * from the thrown value.
+ *
+ * WHAT THIS GUARD DOES NOT DO. It is a RUNTIME check, and:
+ *   - **It does not close the TYPE-level route.** `any` is still not a lint
+ *     error (OD-60, owed by `T-005`), so
+ *     `encodeMinorUnits(JSON.parse(s).amountMinor)` still COMPILES. It now
+ *     throws at run time instead of emitting a corrupted amount, which is a
+ *     different guarantee from refusing it at compile time.
+ *   - **It checks the TYPE, not the RANGE.** A `bigint` outside int64 reached
+ *     by a cast still encodes, and `decodeMinorUnits` remains the only thing
+ *     that refuses it. Pinned by *LIMITATION: the encoder guard is a type
+ *     check, not a range check*.
+ *   - **OD-57: no gate runs this file.** Every refusal above applies only when
+ *     someone runs `pnpm --filter @kinvara/contracts test` by hand.
  */
 export function encodeMinorUnits(amount: MinorUnits): string {
+  if (typeof amount !== 'bigint') {
+    throw new TypeError(ENCODE_REFUSED);
+  }
   return amount.toString();
 }
 

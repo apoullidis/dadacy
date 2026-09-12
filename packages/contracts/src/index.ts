@@ -23,6 +23,7 @@
 export { ERROR_CODES, ERROR_CODE_SHAPE, isErrorCode, type ErrorCode } from './error-codes.ts';
 
 export {
+  ENCODE_REFUSED,
   MINOR_UNITS_PATTERN,
   MinorUnitsWire,
   Money,

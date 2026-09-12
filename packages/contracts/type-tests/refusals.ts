@@ -48,4 +48,20 @@ encodeMinorUnits('5042');
 encodeMinorUnits(amount);
 const decoded: MinorUnits = decodeMinorUnits(rawString, 'amountMinor');
 
+// CONTROL, and it is the BOUND on the runtime guard rather than a refusal.
+// T-022 rework 1 added a run-time `typeof amount !== 'bigint'` check to
+// `encodeMinorUnits` (QA-F1). That check closes the route at RUN TIME and
+// closes nothing at COMPILE time: an `any` — which is what `JSON.parse`
+// yields — still flows into `MinorUnits` with no compile error, so the line
+// below COMPILES, and the value is refused only once it runs. This line is
+// the falsifier for that sentence in T-022 § Published contract §3: if it
+// ever stops compiling, the claim "the type-level route is still open" has
+// become false and §3 must be narrowed.
+//
+// That gap is OD-60, owed by T-005 (the type-aware `no-unsafe-*` rules); it
+// is the same route T-023 § Published contract §3 records with its own
+// `takesMoney(JSON.parse(...).amountMinor)` CONTROL. When OD-60 lands this
+// line turns `gate:lint` red, which is the intended signal.
+encodeMinorUnits(JSON.parse(rawString).amountMinor);
+
 export { decoded };
