@@ -1,0 +1,136 @@
+{
+  "openapi": "3.1.1",
+  "info": {
+    "title": "Kinvara API",
+    "version": "0.1.0",
+    "description": "Generated from the Zod schemas in packages/contracts/src/endpoints.ts. Do not edit by hand: pnpm gate:contract-drift refuses a hand edit."
+  },
+  "paths": {
+    "/v1/meta/platform-fee": {
+      "get": {
+        "operationId": "getPlatformFee",
+        "summary": "The platform fee, in EUR minor units, as a decimal-integer string.",
+        "responses": {
+          "200": {
+            "description": "The current platform fee.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlatformFee"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited. `retryable` is true.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error. Carries nothing from the request.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Problem": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "pattern": "^https:\\/\\/errors\\.kinvara\\.cy\\/.*"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "status": {
+            "type": "integer",
+            "minimum": 400,
+            "maximum": 599
+          },
+          "code": {
+            "type": "string",
+            "enum": [
+              "invalid_input",
+              "unauthenticated",
+              "policy_denied",
+              "not_found",
+              "state_transition_invalid",
+              "idempotency_key_reuse",
+              "slot_taken",
+              "precondition_failed",
+              "rate_below_floor",
+              "outside_staffed_hours",
+              "sitter_review_hold",
+              "rate_limited",
+              "upstream_unavailable",
+              "internal_error"
+            ]
+          },
+          "field": {
+            "type": "string",
+            "pattern": "^[A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z][A-Za-z0-9_]*)*$"
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "type",
+          "title",
+          "status",
+          "code",
+          "retryable"
+        ],
+        "additionalProperties": {},
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "detail"
+              ]
+            },
+            {
+              "required": [
+                "instance"
+              ]
+            }
+          ]
+        }
+      },
+      "PlatformFee": {
+        "type": "object",
+        "properties": {
+          "currency": {
+            "type": "string",
+            "const": "EUR"
+          },
+          "amountMinor": {
+            "type": "string",
+            "pattern": "^(?:0|-?[1-9][0-9]*)$"
+          }
+        },
+        "required": [
+          "currency",
+          "amountMinor"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+}

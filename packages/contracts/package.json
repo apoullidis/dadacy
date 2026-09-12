@@ -3,6 +3,21 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Zod schemas -> OpenAPI 3.1 -> typed client (single source of truth)",
-  "//": "PLACEHOLDER (T-001). Topology only, per SD §DH-1 — no source, no dependencies, no scripts. The owning agent (tech-lead T-022) adds src/, dependencies and the typecheck/lint/test/build scripts turbo.json already declares."
+  "description": "Zod schemas -> OpenAPI 3.1 -> typed client (single source of truth) — T-022. SD §DH-1, SA §TS-5, SD §BE-2.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "node tools/run-tests.ts",
+    "generate": "node tools/generate.ts"
+  },
+  "dependencies": {
+    "@kinvara/domain-types": "workspace:*",
+    "zod": "4.5.4"
+  },
+  "devDependencies": {
+    "typescript": "6.0.3",
+    "vite": "8.2.2",
+    "vitest": "5.0.0"
+  }
 }
