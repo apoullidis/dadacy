@@ -40,6 +40,8 @@ const CTX: PolicyContext = { now: NOW };
 const SELF = accountId('01ARZ3NDEKTSV4RRFFQ69G5FAV', 'actorId');
 const OTHER = accountId('01BX5ZZKBKACTAV9WEVGEMMVRZ', 'otherId');
 const FAMILY = accountId('01HZZZZZZZZZZZZZZZZZZZZZZZ', 'parentId');
+/** A SECOND family. The fixture no window test had before TL-F1 (OE-19). */
+const FAM_B = accountId('01CY0000000000000000000000', 'otherParentId');
 
 const at = (deltaMs: number): Date => new Date(NOW.getTime() + deltaMs);
 const MINUTE = 60 * 1000;
@@ -48,16 +50,26 @@ const HOUR = 60 * MINUTE;
 /** A step-up that happened inside SD §BE-10's ten-minute window. */
 const FRESH_STEP_UP = at(5 * MINUTE);
 
-const BASIS_OF: Record<Exclude<GrantKind, 'deny'>, AllowBasis> = {
+/**
+ * The basis each grant kind produces WHEN IT ALLOWS.
+ *
+ * `capability` is absent, and its absence is the point (TL-F2, OE-19): that
+ * grant fails closed, so no cell can produce `capability_token` at this commit.
+ * The sweeps consult `NEVER_ALLOWS`; the assertion that turns red if the route
+ * reopens is at the end of the TL-F2 test.
+ */
+const BASIS_OF: Record<Exclude<GrantKind, 'deny' | 'capability'>, AllowBasis> = {
   allow: 'role_grant',
   own: 'own_record',
   window: 'confirmed_booking_window',
   break_glass: 'break_glass',
-  capability: 'capability_token',
   four_eyes: 'role_grant',
   art10: 'role_grant',
   locale: 'role_grant',
 };
+
+/** Grant kinds that cannot produce an allow here: `deny`, and `capability`. */
+const NEVER_ALLOWS: ReadonlySet<GrantKind> = new Set<GrantKind>(['deny', 'capability']);
 
 const REASON_OF: Record<Exclude<GrantKind, 'allow'>, DenyReason> = {
   deny: 'role_missing',
@@ -100,6 +112,10 @@ function satisfying(grant: Grant, role: Role, type: Resource): Probe {
   if (grant.stepUp === true) actor.stepUpUntil = FRESH_STEP_UP;
   if (grant.kind === 'own') resource.ownerAccountId = SELF;
   if (grant.kind === 'window') {
+    // BOTH ends of the relationship, agreeing: the booking's family is the
+    // record's owner (TL-F1). Before OE-19 this fixture named no owner at all,
+    // which is precisely why no sweep could see C2.
+    resource.ownerAccountId = FAMILY;
     resource.booking = {
       state: 'confirmed',
       sitterAccountId: SELF,
@@ -162,11 +178,11 @@ test('every cell that grants something allows it, with the basis SD §BE-10 assi
   for (const [key, row] of MATRIX) {
     for (const role of ROLES) {
       const grant = (row as Row)[role];
-      if (grant.kind === 'deny') continue;
+      if (NEVER_ALLOWS.has(grant.kind)) continue;
       const { actor, resource } = satisfying(grant, role, resourceOf(key));
       expectAllow(
         can(actor, actionOf(key), resource, CTX),
-        BASIS_OF[grant.kind],
+        BASIS_OF[grant.kind as Exclude<GrantKind, 'deny' | 'capability'>],
         `${key} / ${role}`,
       );
       checked++;
@@ -270,6 +286,33 @@ test('an explicitly unblocked pairing is treated exactly as an absent one', () =
   );
 });
 
+/**
+ * TL-A1 (OE-19). The one member of the unvalidated-input family that failed
+ * OPEN, on the rule whose whole purpose is to override a permission the actor
+ * otherwise holds. `pairingBlocked` is typed `boolean | undefined`, but its
+ * runtime value arrives with the caller's resource and nothing refuses a
+ * non-boolean there (OD-60), so `=== true` let every other truthy spelling
+ * through. It is now "not absent and not explicitly false".
+ */
+test('TL-A1: a pairing block that is not exactly false still suppresses the decision', () => {
+  const owned: ResourceRef = { type: 'message.content', ownerAccountId: SELF };
+  const parent: Actor = { accountId: SELF, roles: ['parent'] };
+  for (const value of ['true', 'yes', 1, 0, '', {}]) {
+    expectDeny(
+      can(parent, 'read', { ...owned, pairingBlocked: value as unknown as boolean }, CTX),
+      'pairing_blocked',
+      `pairingBlocked=${JSON.stringify(value)}`,
+    );
+  }
+  // The control: the two spellings that are NOT a block still allow.
+  expectAllow(can(parent, 'read', owned, CTX), 'own_record', 'absent is not a block');
+  expectAllow(
+    can(parent, 'read', { ...owned, pairingBlocked: false }, CTX),
+    'own_record',
+    'false is not a block',
+  );
+});
+
 test('an actor holding no role at all is denied with role_missing', () => {
   expectDeny(
     can({ accountId: SELF, roles: [] }, 'read', { type: 'session', ownerAccountId: SELF }, CTX),
@@ -304,6 +347,7 @@ test('SA §TS-7 worked example: a sitter reads child health inside the confirmed
   const actor: Actor = { accountId: SELF, roles: ['sitter'] };
   const resource: ResourceRef = {
     type: 'child.health',
+    ownerAccountId: FAMILY,
     booking: { state: 'confirmed', sitterAccountId: SELF, parentAccountId: FAMILY },
   };
   expectAllow(can(actor, 'read', resource, CTX), 'confirmed_booking_window', 'confirmed');
@@ -313,6 +357,7 @@ test('the window is open while a session is in progress', () => {
   const actor: Actor = { accountId: SELF, roles: ['sitter'] };
   const resource: ResourceRef = {
     type: 'child.health',
+    ownerAccountId: FAMILY,
     booking: { state: 'in_progress', sitterAccountId: SELF, parentAccountId: FAMILY },
   };
   expectAllow(can(actor, 'read', resource, CTX), 'confirmed_booking_window', 'in_progress');
@@ -323,6 +368,7 @@ test('a booking that is not yet confirmed is booking_not_confirmed, in every pre
   for (const state of ['requested', 'cancelled', 'declined'] as const) {
     const resource: ResourceRef = {
       type: 'child.health',
+      ownerAccountId: FAMILY,
       booking: { state, sitterAccountId: SELF, parentAccountId: FAMILY },
     };
     expectDeny(can(actor, 'read', resource, CTX), 'booking_not_confirmed', state);
@@ -331,7 +377,12 @@ test('a booking that is not yet confirmed is booking_not_confirmed, in every pre
 
 test('a sitter with no booking at all is booking_not_confirmed, not role_missing', () => {
   expectDeny(
-    can({ accountId: SELF, roles: ['sitter'] }, 'read', { type: 'child.health' }, CTX),
+    can(
+      { accountId: SELF, roles: ['sitter'] },
+      'read',
+      { type: 'child.health', ownerAccountId: FAMILY },
+      CTX,
+    ),
     'booking_not_confirmed',
     'no booking',
   );
@@ -340,6 +391,7 @@ test('a sitter with no booking at all is booking_not_confirmed, not role_missing
 test('another sitter’s booking gives this sitter nothing', () => {
   const resource: ResourceRef = {
     type: 'child.health',
+    ownerAccountId: FAMILY,
     booking: { state: 'confirmed', sitterAccountId: OTHER, parentAccountId: FAMILY },
   };
   expectDeny(
@@ -354,6 +406,7 @@ test('a completed booking keeps the window open for thirty days and shuts it aft
   const completedAt = at(-WINDOW_TAIL_MS + MINUTE);
   const inside: ResourceRef = {
     type: 'child.health',
+    ownerAccountId: FAMILY,
     booking: {
       state: 'completed',
       sitterAccountId: SELF,
@@ -364,6 +417,7 @@ test('a completed booking keeps the window open for thirty days and shuts it aft
   expectAllow(can(actor, 'read', inside, CTX), 'confirmed_booking_window', 'one minute inside');
   const outside: ResourceRef = {
     type: 'child.health',
+    ownerAccountId: FAMILY,
     booking: {
       state: 'completed',
       sitterAccountId: SELF,
@@ -378,6 +432,7 @@ test('the thirtieth day is the last one inside the window, to the millisecond', 
   const actor: Actor = { accountId: SELF, roles: ['sitter'] };
   const boundary = (offset: number): ResourceRef => ({
     type: 'child.health',
+    ownerAccountId: FAMILY,
     booking: {
       state: 'completed',
       sitterAccountId: SELF,
@@ -392,12 +447,96 @@ test('the thirtieth day is the last one inside the window, to the millisecond', 
 test('a completed booking with no completion timestamp cannot open the window', () => {
   const resource: ResourceRef = {
     type: 'child.health',
+    ownerAccountId: FAMILY,
     booking: { state: 'completed', sitterAccountId: SELF, parentAccountId: FAMILY },
   };
   expectDeny(
     can({ accountId: SELF, roles: ['sitter'] }, 'read', resource, CTX),
     'booking_not_confirmed',
     'completed with no completedAt',
+  );
+});
+
+/**
+ * TL-F1 (OE-19). `tech-lead`'s C1-C5, committed as the reviewer wrote them.
+ *
+ * SD §BE-10's legend (line 1244) calls `window` a "relationship-and-time
+ * scope", and SA §TS-7 names both ends of the relationship: "a *confirmed*
+ * booking WITH THIS FAMILY". The evaluator checked the sitter end and never the
+ * family end, so a sitter holding a confirmed booking with one family could
+ * read another family's child health record — an allow §BE-10 does not grant,
+ * with `basis: 'confirmed_booking_window'` going to the audit log (line 1309)
+ * for a relationship nothing had checked.
+ *
+ * No committed test could see it: every window fixture named a booking and no
+ * owner, so the booking's family and the record's owner could never disagree.
+ * C2 is that fixture.
+ */
+test('TL-F1: the window grant checks the family end of the relationship, not only the sitter end', () => {
+  const sitter: Actor = { accountId: SELF, roles: ['sitter'] };
+  const confirmed = {
+    state: 'confirmed',
+    sitterAccountId: SELF,
+    parentAccountId: FAMILY,
+  } as const;
+
+  // C1 — the booking's family IS the record's owner. The worked example allows.
+  expectAllow(
+    can(sitter, 'read', { type: 'child.health', ownerAccountId: FAMILY, booking: confirmed }, CTX),
+    'confirmed_booking_window',
+    'C1 booking with FAM_A, record owned by FAM_A',
+  );
+
+  // C2 — THE FALSIFICATION. Booking with FAM_A, record owned by FAM_B.
+  expectDeny(
+    can(sitter, 'read', { type: 'child.health', ownerAccountId: FAM_B, booking: confirmed }, CTX),
+    'role_missing',
+    'C2 booking with FAM_A, record owned by FAM_B',
+  );
+
+  // C3 — no owner named at all, which the `own` grant already refuses.
+  expectDeny(
+    can(sitter, 'read', { type: 'child.health', booking: confirmed }, CTX),
+    'role_missing',
+    'C3 no owner on the record',
+  );
+
+  // C4 — the sitter end still refuses. This is not a blanket denial.
+  expectDeny(
+    can(
+      sitter,
+      'read',
+      {
+        type: 'child.health',
+        ownerAccountId: FAMILY,
+        booking: { state: 'confirmed', sitterAccountId: OTHER, parentAccountId: FAMILY },
+      },
+      CTX,
+    ),
+    'role_missing',
+    'C4 another sitter’s booking',
+  );
+
+  // C5 — and it holds through the 30-day completed tail, where the sitter has
+  // least reason to hold the record at all.
+  expectDeny(
+    can(
+      sitter,
+      'read',
+      {
+        type: 'child.health',
+        ownerAccountId: FAM_B,
+        booking: {
+          state: 'completed',
+          sitterAccountId: SELF,
+          parentAccountId: FAMILY,
+          completedAt: at(-29 * 24 * HOUR),
+        },
+      },
+      CTX,
+    ),
+    'role_missing',
+    'C5 completed 29 days ago, record owned by FAM_B',
   );
 });
 
@@ -440,20 +579,80 @@ test('break-glass must be live and must carry a declared purpose (SEC-9)', () =>
   expectDeny(can(base, 'read', resource, CTX), 'role_missing', 'absent');
 });
 
-test('a capability token works until it expires and not after (SD §BE-3)', () => {
-  const resource: ResourceRef = { type: 'session' };
+/**
+ * TL-F2 (OE-19). `tech-lead`'s D1/D2, committed as the reviewer wrote them.
+ *
+ * The grant was `expiresAt > now` and nothing else, so ONE live token admitted
+ * a trusted contact to ANY session — including one owned by somebody else (D1)
+ * and one naming no owner (D2) — where SD §BE-10 line 1238 and SD §TM-4 scope
+ * the token to a single session ("single purpose", "session end + 3 h").
+ *
+ * It now fails CLOSED, because the scope's SHAPE is not statable from the
+ * specification: §BE-10's own signature (line 1291) gives `can()` a `ctx` of
+ * `{ now: Date }`, and `ResourceRef` carries no record identity, so there is no
+ * argument by which "this session" could be named. Inventing one is refused
+ * under PROTOCOL §2 and reported instead.
+ *
+ * The consequence is disclosed and is a real one: a trusted contact is refused
+ * a session view the product intends them to have. That is the safe direction,
+ * and the last assertion here is what makes closing it visible.
+ */
+test('TL-F2: the capability grant fails closed until Capability carries a scope SD §BE-10 does not state', () => {
   const base = { accountId: SELF, roles: ['trusted_contact'] as Role[] };
-  expectAllow(
-    can({ ...base, capability: { expiresAt: at(HOUR) } }, 'read', resource, CTX),
-    'capability_token',
-    'live',
-  );
+  const live = { ...base, capability: { expiresAt: at(HOUR) } };
+
+  // D1 — a live token against a session the holder owns: refused.
   expectDeny(
-    can({ ...base, capability: { expiresAt: at(-MINUTE) } }, 'read', resource, CTX),
+    can(live, 'read', { type: 'session', ownerAccountId: SELF }, CTX),
     'role_missing',
-    'expired',
+    'D1 live token, session owned by SELF',
   );
-  expectDeny(can(base, 'read', resource, CTX), 'role_missing', 'absent');
+
+  // D2 — a live token against a session naming no owner: refused.
+  expectDeny(
+    can(live, 'read', { type: 'session' }, CTX),
+    'role_missing',
+    'D2 live token, no owner',
+  );
+
+  // D3 — the other CAP cell answers the same way.
+  expectDeny(
+    can(live, 'raise_concern', { type: 'sos', ownerAccountId: SELF }, CTX),
+    'role_missing',
+    'D3 live token, sos#raise_concern',
+  );
+
+  // D4 — an expired token was refused before and still is.
+  expectDeny(
+    can({ ...base, capability: { expiresAt: at(-MINUTE) } }, 'read', { type: 'session' }, CTX),
+    'role_missing',
+    'D4 expired token',
+  );
+
+  // THE PIN. No cell in the matrix can produce `capability_token` at this
+  // commit. This turns RED the day a successor gives `Capability` a scope and
+  // the grant allows again — which is the signal to update the contract, not a
+  // failure. It asserts the cells exist first, so it cannot pass vacuously.
+  let capCells = 0;
+  for (const [key, row] of MATRIX) {
+    for (const role of ROLES) {
+      if ((row as Row)[role].kind !== 'capability') continue;
+      const holder: Actor = {
+        accountId: SELF,
+        roles: [role],
+        capability: { expiresAt: at(HOUR) },
+      };
+      const decision = can(
+        holder,
+        actionOf(key),
+        { type: resourceOf(key), ownerAccountId: SELF },
+        CTX,
+      );
+      assert.equal(decision.allow, false, `${key} / ${role} must not allow`);
+      capCells++;
+    }
+  }
+  assert.equal(capCells, 2, 'the two CAP cells are session#read and sos#raise_concern');
 });
 
 test('SA §SA-4 I-5: the countersigner must be a different actor from the one acting', () => {
@@ -750,6 +949,7 @@ test('LIMITATION (QR-4): ctx is not validated, so a malformed one allows, denies
         'read',
         {
           type: 'child.health',
+          ownerAccountId: FAMILY,
           booking: {
             state: 'completed',
             sitterAccountId: SELF,

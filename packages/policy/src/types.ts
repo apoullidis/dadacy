@@ -178,6 +178,11 @@ export type BookingState =
 export interface BookingWindow {
   readonly state: BookingState;
   readonly sitterAccountId: AccountId;
+  /**
+   * The family end of the relationship. `can()` compares this to the
+   * resource's `ownerAccountId` and refuses if they differ or if either is
+   * absent (TL-F1, OE-19). Until then it was declared here and read nowhere.
+   */
   readonly parentAccountId: AccountId;
   /** Set once the booking reaches `completed`; starts the 30-day tail. */
   readonly completedAt?: Date | undefined;
@@ -189,7 +194,18 @@ export interface BreakGlass {
   readonly expiresAt: Date;
 }
 
-/** SD §BE-3's capability tokens (trusted contact; referee is not modelled). */
+/**
+ * SD §BE-3's capability tokens (trusted contact; referee is not modelled).
+ *
+ * **Not consulted by `can()` today (TL-F2, OE-19).** The `capability` grant
+ * fails closed, so this field reaches no decision. It carries only `expiresAt`,
+ * and an expiry is not a scope: SD §BE-10 line 1238 and SD §TM-4 both scope the
+ * trusted contact's token to ONE session ("single purpose", "session end + 3
+ * h"), but no line states the shape that scope takes as an input to `can()`,
+ * and `ResourceRef` carries no record identity to compare it against. Inventing
+ * one is refused under PROTOCOL §2 and reported instead. A successor that
+ * settles the shape adds it here and checks it in `can.ts`.
+ */
 export interface Capability {
   readonly expiresAt: Date;
 }
@@ -207,7 +223,13 @@ export interface Actor {
 
 export interface ResourceRef {
   readonly type: Resource;
-  /** The account owning the record, where ownership is meaningful. */
+  /**
+   * The account owning the record, where ownership is meaningful.
+   *
+   * Required by the `own` grant AND, since TL-F1, by the `window` grant, which
+   * compares it to `booking.parentAccountId`. A `window` cell called with no
+   * owner named is REFUSED, exactly as an `own` cell is.
+   */
   readonly ownerAccountId?: AccountId | undefined;
   readonly booking?: BookingWindow | undefined;
   /** D14: the market's Article 10 model (SD §BE-17). */
@@ -216,7 +238,13 @@ export interface ResourceRef {
   readonly locale?: string | undefined;
   /** SA §SA-4 I-5: the second, different actor who has countersigned. */
   readonly countersignedBy?: AccountId | undefined;
-  /** A block between the two parties suppresses every decision on the pair. */
+  /**
+   * A block between the two parties suppresses every decision on the pair.
+   *
+   * Read as "not absent and not explicitly `false`" (TL-A1), so a truthy
+   * non-boolean that reaches this field through a JSON boundary suppresses too
+   * rather than failing open. `false` behaves exactly as absent.
+   */
   readonly pairingBlocked?: boolean | undefined;
 }
 

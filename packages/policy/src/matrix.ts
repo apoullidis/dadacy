@@ -25,7 +25,16 @@
  *   "only if operator_language
  *    covers L" / "same"        -> LOC     reason `operator_does_not_cover_locale`
  *   "whitelisted subset" /
- *   "raise concern only"       -> CAP     basis `capability_token`
+ *   "raise concern only"       -> CAP     DENIES today (TL-F2)
+ *
+ * The CAP cells are transcribed from the grid correctly and are NOT changed by
+ * TL-F2: SD §BE-10 line 1262 really does give `trusted_contact` a "whitelisted
+ * subset" of `session#read`, and line 1264 "raise concern only" on SOS. What
+ * changed is the EVALUATOR behind the symbol, in `can.ts`: the capability grant
+ * now fails closed, because the token's scope is not statable from SD §BE-10
+ * (see the `capability` case there). So a CAP cell denies today, and the day a
+ * successor gives `Capability` a scope, these two cells start allowing again
+ * with no edit to this table.
  *
  * Three spellings in the matrix are NOT authorisation decisions and are
  * recorded here rather than modelled, because modelling them would make this

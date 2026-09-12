@@ -81,11 +81,10 @@ function breakGlassActive(actor: Actor, ctx: PolicyContext): boolean {
   return bg.expiresAt.getTime() > ctx.now.getTime();
 }
 
-function capabilityValid(actor: Actor, ctx: PolicyContext): boolean {
-  const cap = actor.capability;
-  if (cap === undefined) return false;
-  return cap.expiresAt.getTime() > ctx.now.getTime();
-}
+/*
+ * There is deliberately no `capabilityValid()` any more. See the `capability`
+ * case in `evaluate()`: the grant fails closed, so there is nothing to validate.
+ */
 
 /** SA §SA-4 I-5: the second actor must differ from the first. */
 function countersigned(actor: Actor, resource: ResourceRef): boolean {
@@ -105,11 +104,41 @@ function coversLocale(actor: Actor, resource: ResourceRef): boolean {
 /**
  * The `window` grant: SA §TS-7's worked example, and the only cell in the
  * matrix whose decision depends on `ctx.now`.
+ *
+ * SD §BE-10's legend (line 1244) defines `window` as "only within a
+ * relationship-and-time scope", and SA §TS-7 states the relationship in full:
+ * "A sitter may read this child's allergy data because she holds a *confirmed*
+ * booking WITH THIS FAMILY, and only from acceptance until completion + 30
+ * days". A relationship has TWO ends, and until TL-F1 (OE-19) this function
+ * checked only the sitter's: a sitter holding a confirmed booking with one
+ * family could read another family's child.health record, with
+ * `basis: 'confirmed_booking_window'` written to the audit log (§BE-10 line
+ * 1309) for a relationship nothing had checked.
+ *
+ * So the family end is now compared too: `booking.parentAccountId` must equal
+ * `resource.ownerAccountId`, and BOTH must be present. An absent owner is
+ * refused rather than waved through, which is what the `own` grant already does
+ * ('ownership needs a named owner: a resource with none is refused') — two
+ * relationship grants in one file must not treat a missing owner oppositely.
+ *
+ * The refusal is `role_missing` on all three relationship failures. That is a
+ * reading of SD §BE-10's CLOSED `DenyReason` set (lines 1295-1298), not a
+ * choice: no member of it names a relationship mismatch, and `role_missing` is
+ * already what the sitter-end refusal (C4) and the `own` grant's absent or
+ * mismatched owner both return. `booking_not_confirmed` is kept for the two
+ * cases that are genuinely about the booking's STATE rather than its parties.
+ *
+ * Held by can.test.ts 'TL-F1: the window grant checks the family end of the
+ * relationship, not only the sitter end' (C1-C5).
  */
 function windowDecision(actor: Actor, resource: ResourceRef, ctx: PolicyContext): Decision {
   const booking = resource.booking;
   if (booking === undefined) return deny('booking_not_confirmed');
   if (booking.sitterAccountId !== actor.accountId) return deny('role_missing');
+  // The family end (TL-F1). Absent on either side is a refusal, not a pass.
+  const owner = resource.ownerAccountId;
+  if (owner === undefined) return deny('role_missing');
+  if (booking.parentAccountId !== owner) return deny('role_missing');
   if (booking.state === 'confirmed' || booking.state === 'in_progress') {
     return allow('confirmed_booking_window');
   }
@@ -134,7 +163,40 @@ function evaluate(grant: Grant, actor: Actor, resource: ResourceRef, ctx: Policy
     case 'break_glass':
       return breakGlassActive(actor, ctx) ? allow('break_glass') : deny('role_missing');
     case 'capability':
-      return capabilityValid(actor, ctx) ? allow('capability_token') : deny('role_missing');
+      /*
+       * TL-F2 (OE-19): FAIL CLOSED, and REPORTED rather than invented.
+       *
+       * This grant used to be `actor.capability.expiresAt > ctx.now` and
+       * nothing else, so ONE live trusted-contact token admitted its holder to
+       * ANY session — including a session belonging to someone else, and one
+       * naming no owner at all. The specification scopes the token far more
+       * narrowly: SD §BE-10 line 1238 gives the trusted contact a "Capability
+       * token in URL + `share_view` cookie" lasting "Session end + 3 h", and
+       * SD §TM-4 calls it "128-bit capability, SINGLE PURPOSE, expires at
+       * session end + 3 h ... whitelisted field set".
+       *
+       * But no line anywhere states the SHAPE that scope takes as an input to
+       * `can()`, which is what checking it would require. SD §BE-10's own
+       * signature (line 1291) is `can(actor, action, resource, ctx: { now:
+       * Date })` — `ctx` carries the clock and nothing else — and `ResourceRef`
+       * carries no record identity, so there is no argument by which "this
+       * session" can be named. (SA §TS-7 sketches a fourth argument that DOES
+       * carry identity, `{ childId, bookingId, now }`, but SD governs mechanism
+       * and signature over SA, PROTOCOL §2.) Adding a scope field would be
+       * inventing the rule, which PROTOCOL §2 forbids: it is reported instead —
+       * T-024 evidence, § Rework 3 › the TL-F2 spec question.
+       *
+       * So the grant denies until `Capability` carries a scope and this case
+       * checks it. It fails CLOSED: a trusted contact is refused a session they
+       * should be able to read, rather than allowed one they should not.
+       * `role_missing` is the same closed-set reason the grant already gave for
+       * an absent or expired token (§BE-10 lines 1295-1298).
+       *
+       * Held by can.test.ts 'TL-F2: the capability grant fails closed until
+       * Capability carries a scope SD §BE-10 does not state' (D1, D2), whose
+       * last assertion turns RED the day any cell produces `capability_token`.
+       */
+      return deny('role_missing');
     case 'four_eyes':
       return countersigned(actor, resource) ? allow('role_grant') : deny('four_eyes_required');
     case 'art10':
@@ -190,7 +252,18 @@ export function can(
 
   // A blocked pairing suppresses every decision about the pair, including the
   // ones an actor would otherwise hold over their own records.
-  if (resource.pairingBlocked === true) return deny('pairing_blocked');
+  //
+  // TL-A1 (OE-19): the test is "not absent and not explicitly false", not
+  // `=== true`. `pairingBlocked` is TYPED `boolean | undefined`, but its
+  // runtime value arrives with the rest of the caller's resource (OD-60: an
+  // `any` flows unchallenged at a JSON boundary), and `=== true` made every
+  // other truthy spelling — `'true'`, `1`, `{}`, `'yes'` — fail OPEN on the one
+  // rule whose whole purpose is to override a permission the actor otherwise
+  // holds. `false` still behaves exactly as absent, which is published and
+  // tested. Held by 'TL-A1: a pairing block that is not exactly false still
+  // suppresses the decision'.
+  const blocked = resource.pairingBlocked;
+  if (blocked !== undefined && blocked !== false) return deny('pairing_blocked');
 
   const refusals: DenyReason[] = [];
   // `actor.roles` is typed, but its runtime value is JWT-supplied strings, so
