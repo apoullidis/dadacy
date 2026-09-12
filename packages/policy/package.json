@@ -3,6 +3,20 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Pure authz functions; 100% branch coverage gate",
-  "//": "PLACEHOLDER (T-001). Topology only, per SD §DH-1 — no source, no dependencies, no scripts. The owning agent (tech-lead T-024, two-approval path) adds src/, dependencies and the typecheck/lint/test/build scripts turbo.json already declares."
+  "description": "Layer 1 of SA §TS-7's two-layer authorisation model: pure, I/O-free `can(actor, action, resource, ctx)` over the SD §BE-10 role/permission matrix, at 100% branch coverage (SD §QD-1) — T-024",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "node tools/run-tests.ts"
+  },
+  "dependencies": {
+    "@kinvara/domain-types": "workspace:*"
+  },
+  "devDependencies": {
+    "@vitest/coverage-v8": "5.0.0",
+    "typescript": "6.0.3",
+    "vite": "8.2.2",
+    "vitest": "5.0.0"
+  }
 }
