@@ -625,7 +625,43 @@ test('QR-1: an unrecognised role contributes nothing, and the two orders give th
   );
   expectAllow(deputyFirst, 'own_record', 'deputy_dsl first');
   expectAllow(parentFirst, 'own_record', 'parent first');
-  assert.deepEqual(deputyFirst, parentFirst, 'the decision must not depend on the order');
+  assert.deepEqual(
+    deputyFirst,
+    parentFirst,
+    'an unrecognised role cannot change the decision, whichever end of the array it sits at',
+  );
+});
+
+/**
+ * RR-1 (OE-18). Two RECOGNISED roles that both allow, which is a different case
+ * from the one above and is NOT covered by it: `can()` returns on the FIRST
+ * role that allows, so the verdict is the same either way round while the
+ * `basis` is that of whichever allowing role sat earlier in the array.
+ *
+ * This is a LIMITATION case, not a refusal. `basis` is audit-log content
+ * (SD §BE-10), so for a multi-role actor the recorded justification follows
+ * array order. Which `basis` is authoritative when two roles allow is a
+ * question SD §BE-10 does not answer: it is deferred to the stakeholder with
+ * OE-17 / OD-63, and no agent may invent a precedence rule. The day anyone
+ * makes `basis` deterministic this case turns red, which is why it is pinned.
+ */
+test('LIMITATION (RR-1): two allowing roles agree on the verdict, and the basis follows array order', () => {
+  const owned: ResourceRef = { type: 'session', ownerAccountId: SELF };
+  const parentFirst = can({ accountId: SELF, roles: ['parent', 'support'] }, 'read', owned, CTX);
+  const supportFirst = can({ accountId: SELF, roles: ['support', 'parent'] }, 'read', owned, CTX);
+
+  // The VERDICT does not depend on the order: both orders allow.
+  assert.equal(parentFirst.allow, true, 'parent first allows');
+  assert.equal(supportFirst.allow, true, 'support first allows');
+
+  // The BASIS does: it is the first allowing role's, and the two differ.
+  expectAllow(parentFirst, 'own_record', 'parent first reports own_record');
+  expectAllow(supportFirst, 'role_grant', 'support first reports role_grant');
+  assert.notDeepEqual(
+    parentFirst,
+    supportFirst,
+    'the basis follows array order today; making it deterministic must turn this red',
+  );
 });
 
 test('QR-1: an actor whose every role has no column in the matrix is denied, never thrown at', () => {

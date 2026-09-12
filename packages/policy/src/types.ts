@@ -14,6 +14,13 @@
  * NEVER returned in the 403 body (SD §BE-10; SD §BE-2 — "never leak the policy
  * reason to an attacker, log it"). `PolicyDeniedError` in @kinvara/domain-types
  * carries the basis for exactly that reason.
+ *
+ * OPEN (RR-1, OE-18): when an actor holds two roles that BOTH allow, `can()`
+ * returns the first allowing role's decision, so the `basis` written to the
+ * audit log follows the order of `actor.roles`. The allow/deny verdict does
+ * not. Which basis is authoritative is a question SD §BE-10 does not answer and
+ * is deferred to the stakeholder with OE-17 / OD-63 — it is not this package's
+ * to decide. Pinned by can.test.ts 'LIMITATION (RR-1): …'.
  */
 import type { AccountId } from '@kinvara/domain-types';
 

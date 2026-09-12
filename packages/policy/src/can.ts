@@ -163,6 +163,19 @@ function evaluate(grant: Grant, actor: Actor, resource: ResourceRef, ctx: Policy
  * is evaluated. So an unrecognised role is skipped, the roles that do have a
  * column decide, and the outcome cannot depend on where in the array the
  * unrecognised string sat.
+ *
+ * Two RECOGNISED roles that both allow are a different case, stated here at the
+ * width the mechanism holds (RR-1, OE-18): this function returns on the FIRST
+ * role that allows, so the allow/deny VERDICT does not depend on the order of
+ * `actor.roles`, while the reported `basis` is that of the first allowing role
+ * in array order. `basis` is audit-log content (SD §BE-10), so for a multi-role
+ * actor the recorded justification follows array order.
+ *
+ * Which `basis` is authoritative when two roles allow is a question SD §BE-10
+ * does not answer. It is deferred to the stakeholder with OE-17 / OD-63, so no
+ * precedence rule may be invented here. Pinned by can.test.ts
+ * 'LIMITATION (RR-1): two allowing roles agree on the verdict, and the basis
+ * follows array order'.
  */
 export function can(
   actor: Actor,
@@ -188,6 +201,7 @@ export function can(
   for (const declared of actor.roles as readonly unknown[]) {
     if (!isRole(declared)) continue;
     const decision = evaluate(row[declared], actor, resource, ctx);
+    // The first allowing role wins, its `basis` included (RR-1 — see above).
     if (decision.allow) return decision;
     refusals.push(decision.reason);
   }
