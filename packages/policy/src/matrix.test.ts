@@ -89,6 +89,56 @@ const SPEC_GRID: readonly (readonly [Cell, string])[] = [
   ['production_data#read', '- - - - - - - - - bg'],
 ];
 
+/**
+ * SD §BE-10's PRINTED rows, transcribed in the specification's own row order
+ * and labels (lines 1248-1285), each against the (resource, action) rows
+ * `matrix.ts` turns it into. This is the second reading that makes the "38
+ * printed rows decompose into 46" sentence falsifiable: before this table the
+ * sentence was prose, and it was wrong in two places without any test moving
+ * (QR-2 — it named `Refunds / credits / compensation` as a split row, which it
+ * is not, and omitted `SOS`, which is one).
+ */
+const PRINTED_ROWS: readonly (readonly [string, readonly Cell[]])[] = [
+  ['Own account read/update', ['account#read', 'account#update']],
+  ['Sitter public profile read', ['sitter.public_profile#read']],
+  ['Sitter surname / address / phone', ['sitter.contact_details#read']],
+  ['Child health read', ['child.health#read']],
+  ['Child health write', ['child.health#write']],
+  ['Certificate outcome metadata (Art 10)', ['certificate_outcome_metadata#read']],
+  ['Record a certificate outcome', ['certificate_outcome#record']],
+  ['IDV result', ['idv_result#read']],
+  ['Search sitters', ['sitter_search#search']],
+  ['Create booking request', ['booking#create']],
+  ['Accept/decline booking', ['booking#accept', 'booking#decline']],
+  ['Cancel booking', ['booking#cancel']],
+  ['Message read (content)', ['message.content#read', 'message.metadata#read']],
+  ['Message send', ['message#send']],
+  ['Session read', ['session#read']],
+  ['Check-in / arrival / end', ['session#check_in', 'session#arrival', 'session#end']],
+  ['SOS', ['sos#raise', 'sos#raise_concern']],
+  ['Sit summary write', ['sit_summary#write']],
+  ['Review submit', ['review#submit']],
+  ['Review remove', ['review#remove']],
+  ['Verification decision', ['verification_decision#record']],
+  ['Non-clear criminal-record outcome', ['non_clear_outcome#review']],
+  ['Four-eyes countersign', ['four_eyes#countersign']],
+  ['Suspend (temporary)', ['account_suspension#apply']],
+  ['Permanent removal', ['account#remove_permanently']],
+  ['Pairing block', ['pairing_block#apply']],
+  ['Cyprus safeguarding referral', ['safeguarding_referral#make']],
+  ['Publish a staffed-hours version', ['staffed_hours_version#publish']],
+  ['Publish a rota shift', ['rota_shift#publish']],
+  ['Moderate content in locale L', ['content_moderation#moderate']],
+  ['Refunds / credits / compensation', ['refund#issue']],
+  ['Payout / ledger read', ['payout_ledger#read', 'payout_ledger.metadata#read']],
+  ['Audit log read', ['audit_log#read']],
+  ['Retention run approve', ['retention_run#approve']],
+  ['DSAR / erasure execute', ['dsar#request', 'dsar#execute']],
+  ['Feature flags (non-compliance)', ['feature_flag#toggle']],
+  ['Feature flags (compliance: true)', ['feature_flag.compliance#toggle']],
+  ['Production data', ['production_data#read']],
+];
+
 function parseCell(spelling: string): Grant {
   const stepUp = spelling.endsWith('!');
   const bare = stepUp ? spelling.slice(0, -1) : spelling;
@@ -226,6 +276,33 @@ test('every back-office action that mutates requires step-up, and no read or sea
     }
   }
   assert.equal(checked > 0, true);
+});
+
+test('the 38 printed rows of SD §BE-10 decompose into exactly the 46 rows matrix.ts names', () => {
+  assert.equal(PRINTED_ROWS.length, 38);
+  const produced: Cell[] = [];
+  for (const [label, cells] of PRINTED_ROWS) {
+    assert.equal(cells.length > 0, true, `${label} produces no row`);
+    produced.push(...cells);
+  }
+  assert.equal(produced.length, 46);
+  assert.equal(new Set(produced).size, 46, 'a printed row may not produce a row twice');
+  assert.deepEqual([...produced].sort(), [...MATRIX.keys()].sort());
+});
+
+test('exactly seven printed rows become more than one row, and refunds is not one of them', () => {
+  const split = PRINTED_ROWS.filter(([, cells]) => cells.length > 1).map(([label]) => label);
+  assert.deepEqual(split, [
+    'Own account read/update',
+    'Accept/decline booking',
+    'Message read (content)',
+    'Check-in / arrival / end',
+    'SOS',
+    'Payout / ledger read',
+    'DSAR / erasure execute',
+  ]);
+  const refunds = PRINTED_ROWS.find(([label]) => label === 'Refunds / credits / compensation');
+  assert.deepEqual(refunds?.[1], ['refund#issue']);
 });
 
 test('every grant kind in the vocabulary is actually used by at least one cell', () => {

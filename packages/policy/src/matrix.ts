@@ -102,10 +102,25 @@ export const cell = (resource: Resource, action: Action): Cell => `${resource}#$
 
 /**
  * Every (resource, action) pair SD §BE-10 names. The matrix's 38 printed rows
- * decompose into these 46, because five of them name more than one action
- * ("read/update", "accept/decline", "check-in / arrival / end",
- * "DSAR / erasure", "refunds / credits / compensation") and two name a
- * metadata sub-view that is its own resource.
+ * decompose into these 46 by three routes, and SEVEN rows take one of them:
+ *
+ *   - three rows name more than one action in the row header itself:
+ *     "Own account read/update" (2), "Accept/decline booking" (2),
+ *     "Check-in / arrival / end" (3);
+ *   - two rows name a NARROWER action in a single column, which becomes a row
+ *     of its own: "SOS" ("raise concern only", trusted_contact) and
+ *     "DSAR / erasure execute" ("request own", parent and sitter);
+ *   - two rows name a metadata sub-view modelled as its own resource:
+ *     "Message read (content)" -> `message.metadata`, and
+ *     "Payout / ledger read" -> `payout_ledger.metadata`.
+ *
+ * 38 + 4 + 2 + 2 = 46. "Refunds / credits / compensation" is NOT one of the
+ * seven: the three words are one action here, `refund#issue`.
+ *
+ * Held by matrix.test.ts › *the 38 printed rows of SD §BE-10 decompose into
+ * exactly the 46 rows matrix.ts names* and › *exactly seven printed rows
+ * become more than one row, and refunds / credits / compensation is not one of
+ * them*, which drive a second transcription of the printed row list.
  */
 export const MATRIX: ReadonlyMap<Cell, Row> = new Map<Cell, Row>([
   //                                    parent sitter t_c  supp ts_op ts_sen dsl  fin  comp eng
