@@ -8,3 +8,15 @@ coverage/
 .pnpm-store/
 .cache/
 pnpm-lock.yaml
+
+# T-022. GENERATED artefacts of packages/contracts, byte-compared by
+# `pnpm gate:contract-drift` against a fresh run of tools/generate.ts.
+# They are exempt from prettier because the two checks would otherwise fight:
+# `prettier --write` would reformat them, and the very next drift run would
+# report the committed files as out of date against the generator's output.
+# The generator owns their formatting. Consequence, stated rather than left
+# implicit: these two files are NOT prettier-checked, so `gate:lint` says
+# nothing about them — `gate:contract-drift` is what holds them, and eslint
+# still reads the client.
+packages/contracts/openapi.json
+packages/contracts/src/generated/
