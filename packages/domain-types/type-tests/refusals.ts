@@ -28,6 +28,7 @@ import { minorUnits, parseMinorUnits } from '../src/money.ts';
 import { e164 } from '../src/phone.ts';
 import { ianaZone, resolveLocal } from '../src/time.ts';
 import { NotFoundError, PolicyDeniedError } from '../src/errors.ts';
+import type { ErrorCode } from '../src/error-codes.ts';
 
 declare function takesSession(id: SessionId): void;
 declare function takesBooking(id: BookingId): void;
@@ -38,6 +39,8 @@ declare function takesE164(phone: E164): void;
 declare function takesZone(zone: IanaZone): void;
 declare function takesString(s: string): void;
 declare function takesBigint(n: bigint): void;
+declare function takesErrorCode(code: ErrorCode): void;
+declare const rawCode: string;
 
 declare const booking: BookingId;
 declare const session: SessionId;
@@ -141,5 +144,22 @@ takesSession(eitherId);
 takesBooking(eitherId);
 takesSession(bothIds);
 takesBooking(bothIds);
+
+// T-022, the closed error-code enum. The compile-time half of the check that
+// closes T-023 § contract §6 OPEN (a): an arbitrary `string` is not an
+// ErrorCode, so a code that did not come from the closed set cannot be handed
+// to a DomainError subclass without a cast. The runtime half (a cast, or a
+// JSON boundary) is error-codes.test.ts › *T-022 closes T-023 OPEN (a) …*.
+// The directive names 'string' and NOT 'ErrorCode', and that is a limit of
+// the check rather than a choice: `ErrorCode` is `(typeof ERROR_CODES)[number]`,
+// an indexed-access type, which TypeScript EXPANDS into the 14-member union in
+// the message ("... 4 more ..."), so the alias name never appears in it.
+// Measured. Naming a member would not work either — they print as '"x"' inside
+// the quoted type, not as 'x'. So this directive pins the code and the source
+// type; the target type is pinned by the CONTROL line beneath it.
+// @ts-expect-error TS2345 'string'
+takesErrorCode(rawCode);
+// CONTROL: a member compiles.
+takesErrorCode('slot_taken');
 
 export { sum, asNumber };

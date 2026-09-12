@@ -1,5 +1,12 @@
 export type { Brand } from './brand.ts';
 export {
+  ERROR_CODES,
+  ERROR_CODE_SHAPE,
+  CODE_REFUSED,
+  isErrorCode,
+  type ErrorCode,
+} from './error-codes.ts';
+export {
   isUlid,
   ulid,
   accountId,

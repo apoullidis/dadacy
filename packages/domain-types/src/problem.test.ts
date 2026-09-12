@@ -6,9 +6,27 @@
  * reach (the input, the field argument, the cause, the policy basis, an
  * extension's `value`) and search the SERIALISED body for it, so they do not
  * depend on knowing which key it might have landed under.
+ *
+ * T-022 CHANGED THE CODE CHECK, and several tests here with it. A `code` is
+ * now refused unless it is a MEMBER of the closed `ERROR_CODES` set, where it
+ * used to be refused only if it failed a snake_case PATTERN. Two consequences
+ * run through this file:
+ *   - Every test-only subclass below now carries a REAL code. It has to: a
+ *     made-up one no longer compiles (`ErrorIdentity.code` is typed
+ *     `ErrorCode`) and no longer constructs.
+ *   - The three QR-R1 construction cases would otherwise have become
+ *     WORTHLESS, and that is T-023 R2-A3, fixed here. Their old helper
+ *     accepted ANY `TypeError`. Once the enum refuses a test-only code, the
+ *     enum's own refusal would satisfy that helper — so the three tests would
+ *     stay green even with T-023's non-writable-`code` mechanism deleted,
+ *     which is precisely the mechanism they exist to hold. They now (a) use a
+ *     code that IS a member, so the enum cannot fire, and (b) assert the
+ *     refusal is the read-only/redefine `TypeError` and explicitly NOT
+ *     `CODE_REFUSED`. Delete the mechanism and they go red again.
  */
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
+import { CODE_REFUSED, type ErrorCode } from './error-codes.ts';
 import {
   ConflictError,
   DomainRuleViolationError,
@@ -36,6 +54,13 @@ const CANARY = 'T023-CANARY-cert-CY-0042-99199123456';
 /** QA's canary from T-023 § Review, QA6 P6. */
 const QA_CANARY = 'QA-T023-CANARY-9912';
 
+/**
+ * A real member of the closed set, used wherever a test subclass needs a code
+ * that CONSTRUCTS. It must be a member so that the only thing able to refuse
+ * these constructions is the mechanism each test is about (T-023 R2-A3).
+ */
+const MEMBER: ErrorCode = 'slot_taken';
+
 const INTERNAL_ERROR_BODY = {
   type: `${BASE}internal_error`,
   title: 'Internal error',
@@ -44,14 +69,22 @@ const INTERNAL_ERROR_BODY = {
   retryable: false,
 };
 
-/** QA-F1's reproduction, verbatim (T-023 § Review, QA6 P6): an input passed as the code. */
+/**
+ * QA-F1's reproduction, verbatim (T-023 § Review, QA6 P6): an input passed as
+ * the code. The cast is what a real caller's `JSON.parse` result would do
+ * (OD-60); without it this no longer compiles, which is T-022's compile-time
+ * half.
+ */
 class CodeLeak extends ConflictError {
   constructor(input: string) {
-    super(input, 'Conflict', {});
+    super(input as ErrorCode, 'Conflict', {});
   }
 }
 
-/** A code-shaped input: it matches ERROR_CODE, so the shape check alone does not refuse it (QR-R1). */
+/**
+ * A code-shaped input that is NOT a member: it passes the old snake_case
+ * pattern and is refused by the closed set. T-023 pinned it as the residue.
+ */
 const SHAPED = 'papadopoulou';
 
 /**
@@ -62,7 +95,7 @@ const SHAPED = 'papadopoulou';
 class LateCodeLeak extends ConflictError {
   override code: string;
   constructor(i: string) {
-    super('late_code_leak', 'Conflict', {});
+    super(MEMBER, 'Conflict', {});
     this.code = i;
   }
 }
@@ -70,7 +103,7 @@ class LateCodeLeak extends ConflictError {
 /** The same late assignment with no redeclaration: a plain assignment to the instance after super(). */
 class LateAssignLeak extends ConflictError {
   constructor(i: string) {
-    super('late_assign_leak', 'Conflict', {});
+    super(MEMBER, 'Conflict', {});
     (this as { code: string }).code = i;
   }
 }
@@ -79,7 +112,7 @@ class LateAssignLeak extends ConflictError {
 class FieldCodeLeak extends ConflictError {
   override readonly code: string = SHAPED;
   constructor() {
-    super('field_code_leak', 'Conflict', {});
+    super(MEMBER, 'Conflict', {});
   }
 }
 
@@ -91,14 +124,14 @@ class FieldCodeLeak extends ConflictError {
 class GetterCodeLeak extends ConflictError {
   readonly qaInput: string;
   constructor(i: string) {
-    super('getter_code_leak', 'Conflict', {});
+    super(MEMBER, 'Conflict', {});
     this.qaInput = i;
   }
 }
 class GetterOnlyCodeLeak extends ConflictError {
   readonly qaInput: string;
   constructor(i: string) {
-    super('getter_only_code_leak', 'Conflict', {});
+    super(MEMBER, 'Conflict', {});
     this.qaInput = i;
   }
 }
@@ -121,7 +154,23 @@ function channels(e: DomainError): string {
   return `body=${JSON.stringify(toProblem(e, BASE).body)} message=${e.message} stack-has-input=${String(e.stack).includes(SHAPED)}`;
 }
 
-/** Construct, expecting a TypeError. If it constructs, fail with what the late code reached. */
+/**
+ * The refusal a late `code` write produces: the engine's, from the
+ * non-writable non-configurable own property T-023 installs.
+ */
+const READ_ONLY_REFUSAL =
+  /Cannot redefine property: code|Cannot assign to read only property 'code'/;
+
+/**
+ * Construct, expecting the READ-ONLY refusal. If it constructs, fail with what
+ * the late code reached.
+ *
+ * T-023 R2-A3: this used to accept any `TypeError`, which after T-022's closed
+ * enum would have been satisfied by the ENUM's refusal — leaving these three
+ * tests green with the mechanism they guard deleted. It now pins the refusal
+ * to the read-only shape and explicitly rejects `CODE_REFUSED`, so neither the
+ * enum nor any other `TypeError` can stand in for the mechanism.
+ */
 function refusedAtConstruction(make: () => DomainError): void {
   let built: DomainError | undefined;
   let refusal: unknown;
@@ -132,6 +181,13 @@ function refusedAtConstruction(make: () => DomainError): void {
   }
   if (built !== undefined) assert.fail(`constructed: ${channels(built)}`);
   assert.ok(refusal instanceof TypeError, 'the refusal is a TypeError');
+  // R2-A3, both halves: it is the read-only mechanism, and it is NOT the enum.
+  assert.notEqual(
+    refusal.message,
+    CODE_REFUSED,
+    'the enum refused this construction, so it says nothing about the read-only mechanism',
+  );
+  assert.match(refusal.message, READ_ONLY_REFUSAL);
   assert.equal(refusal.message.includes(SHAPED), false, refusal.message);
   assert.equal(String(refusal.stack).includes(SHAPED), false);
   assert.deepEqual(toProblem(refusal, BASE).body, INTERNAL_ERROR_BODY);
@@ -140,13 +196,13 @@ function refusedAtConstruction(make: () => DomainError): void {
 /** An input passed as the title. */
 class TitleLeak extends ConflictError {
   constructor(input: string) {
-    super('title_leak', input, {});
+    super(MEMBER, input, {});
   }
 }
 
 class OutsideWindowError extends DomainRuleViolationError {
   constructor(options: DomainErrorOptions = {}) {
-    super('outside_window', 'Outside window', options);
+    super('outside_staffed_hours', 'Outside window', options);
   }
   override problemExtensions(): ProblemExtensions {
     return {
@@ -187,7 +243,7 @@ test('every concrete class maps to its SD §BE-2 status and retryable flag', () 
     [new StateTransitionInvalidError(), 409, 'state_transition_invalid', false],
     [new IdempotencyKeyReuseError(), 409, 'idempotency_key_reuse', false],
     [new PreconditionFailedError(), 412, 'precondition_failed', false],
-    [new OutsideWindowError(), 422, 'outside_window', false],
+    [new OutsideWindowError(), 422, 'outside_staffed_hours', false],
     [new RateLimitedError(), 429, 'rate_limited', true],
     [new UpstreamUnavailableError(), 503, 'upstream_unavailable', true],
   ];
@@ -246,10 +302,10 @@ test('extensions are emitted, with every value key stripped at any depth and no 
     tailMinutes: 60,
     requested: { startsAt: '2026-11-12T20:30:00Z' },
     windows: [{ weekday: 3 }],
-    type: `${BASE}outside_window`,
+    type: `${BASE}outside_staffed_hours`,
     title: 'Outside window',
     status: 422,
-    code: 'outside_window',
+    code: 'outside_staffed_hours',
     field: 'startsAt',
     retryable: false,
   });
@@ -268,7 +324,7 @@ test('anything that is not a DomainError is a 500 internal_error carrying nothin
   }
 });
 
-// ── QA-F1: a subclass's code is refused unless it is lower-case snake_case ──
+// ── QA-F1, as T-022 closed it: a subclass's code must be a MEMBER ──────────
 test('QA-F1: an input passed as a subclass code is refused at construction, and the refusal does not echo it', () => {
   let built: DomainError | undefined;
   let refusal: unknown;
@@ -287,7 +343,10 @@ test('QA-F1: an input passed as a subclass code is refused at construction, and 
   assert.equal(String(refusal.stack).includes(QA_CANARY), false);
 });
 
-test('a code that is not lower-case ASCII snake_case is refused, and one that is is accepted', () => {
+test('T-022: a code outside the closed enum is refused at construction, and a member is accepted', () => {
+  // Every one of these is a non-member. The first group also failed the old
+  // snake_case pattern; `papadopoulou` and `slot_stolen` did NOT, and they are
+  // the residue T-022 closes — the pattern accepted them, the set does not.
   for (const code of [
     'Slot_taken',
     'SLOT',
@@ -300,11 +359,17 @@ test('a code that is not lower-case ASCII snake_case is refused, and one that is
     'slot_taken\n',
     'σλοτ',
     'slot_tаken',
+    SHAPED,
+    'slot_stolen',
+    'a',
+    'x9_',
     undefined as unknown as string,
   ]) {
     assert.throws(() => new CodeLeak(code), TypeError, JSON.stringify(code));
   }
-  for (const code of ['slot_taken', 'a', 'x9_']) assert.equal(new CodeLeak(code).code, code);
+  for (const code of ['slot_taken', 'rate_below_floor', 'sitter_review_hold']) {
+    assert.equal(new CodeLeak(code).code, code);
+  }
 });
 
 test('QA-F1 backstop: an object that passes instanceof DomainError without running its constructor, with a non-snake_case code, gets the 500', () => {
@@ -387,41 +452,56 @@ test('QR-R1: a code accessor on a subclass prototype, with a setter or without, 
   }
 });
 
-test('LIMITATION: an object that never ran the constructor, carrying a code-shaped code, is emitted with that code', () => {
+test('T-022: an object that never ran the constructor, carrying a code-shaped NON-MEMBER, now gets the 500', () => {
+  // This REPLACES T-023's *LIMITATION: an object that never ran the
+  // constructor, carrying a code-shaped code, is emitted with that code*,
+  // which went red the moment `toProblem` re-checked membership instead of
+  // shape. That redness is the signal the route closed (T-023 § contract §6
+  // OPEN (b), code half).
   const forged: unknown = Object.create(NotFoundError.prototype, {
     code: { value: SHAPED },
     title: { value: 'Not found' },
     status: { value: 404 },
     retryable: { value: false },
   });
-  assert.deepEqual(toProblem(forged, BASE).body, {
-    type: `${BASE}${SHAPED}`,
-    title: 'Not found',
-    status: 404,
-    code: SHAPED,
-    retryable: false,
-  });
+  assert.ok(forged instanceof NotFoundError, 'premise: the forged object passes instanceof');
+  const p = toProblem(forged, BASE);
+  assert.equal(JSON.stringify(p).includes(SHAPED), false, JSON.stringify(p.body));
+  assert.deepEqual(p.body, INTERNAL_ERROR_BODY);
 });
 
-test('LIMITATION until T-022 closes the code enum: a code-shaped input is accepted and reaches code, type, message and stack', () => {
-  const surname = 'papadopoulou';
-  const e = new CodeLeak(surname);
-  const p = toProblem(e, BASE);
-  assert.deepEqual([p.body.code, p.body.type, e.message], [surname, `${BASE}${surname}`, surname]);
-  assert.equal(String(e.stack).includes(surname), true);
+test('LIMITATION: the rest of OPEN (b) stands — a forged object with a MEMBER code is emitted, title and status unvalidated', () => {
+  // Only the CODE half of T-023 § contract §6 OPEN (b) is closed. An object
+  // that never ran the constructor still supplies its own `title` and
+  // `status`, and neither is checked. There is no input in `code` any more,
+  // because a member is one of fourteen fixed strings — but `title` is free.
+  const forged: unknown = Object.create(NotFoundError.prototype, {
+    code: { value: 'not_found' },
+    title: { value: QA_CANARY },
+    status: { value: 499 },
+    retryable: { value: false },
+  });
+  const p = toProblem(forged, BASE);
+  assert.deepEqual(p.body, {
+    type: `${BASE}not_found`,
+    title: QA_CANARY,
+    status: 499,
+    code: 'not_found',
+    retryable: false,
+  });
 });
 
 test('LIMITATION: an input passed as a subclass title is emitted as the body title, and is not in message or stack', () => {
   const e = new TitleLeak(QA_CANARY);
   assert.equal(toProblem(e, BASE).body.title, QA_CANARY);
-  assert.equal(e.message, 'title_leak');
+  assert.equal(e.message, MEMBER);
   assert.equal(String(e.stack).includes(QA_CANARY), false);
 });
 
 // ── QA-F6 / QA-F7: the strip and the field check go by shape, not meaning ──
 class ExtensionShapes extends DomainRuleViolationError {
   constructor() {
-    super('extension_shapes', 'Extension shapes', {});
+    super('rate_below_floor', 'Extension shapes', {});
   }
   override problemExtensions(): ProblemExtensions {
     return {
@@ -448,10 +528,10 @@ test('LIMITATION: the strip goes by exact key name, so these shapes are emitted 
     deep: { rawValue: CANARY },
     valuе: CANARY,
     [CANARY]: true,
-    type: `${BASE}extension_shapes`,
+    type: `${BASE}rate_below_floor`,
     title: 'Extension shapes',
     status: 422,
-    code: 'extension_shapes',
+    code: 'rate_below_floor',
     retryable: false,
   });
 });

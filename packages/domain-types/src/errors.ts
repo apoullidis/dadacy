@@ -13,11 +13,14 @@
  *      A subclass of an abstract category (`ConflictError`, …) supplies its own
  *      `code` and `title`. The `code` reaches the body's `code` and `type`,
  *      `Error.message` and so every logged stack. It is therefore REFUSED at
- *      construction unless it matches `ERROR_CODE` (T-023 QA-F1, PROTOCOL §9.2),
- *      with a TypeError whose message never carries the rejected code. RESIDUE,
- *      open until T-022 publishes the closed error-code enum: an input that
- *      happens to match the pattern (a lower-case surname, `papadopoulou`) is
- *      accepted and reaches all four. Once accepted, the code is FIXED: the
+ *      construction unless it is a MEMBER of `ERROR_CODES` (error-codes.ts;
+ *      T-022, PROTOCOL §9.2), with a TypeError whose message never carries the
+ *      rejected code. T-023's pattern check has been REPLACED by that
+ *      membership check, which is strictly narrower — the pattern is now the
+ *      guard on the set itself, not on the argument. This CLOSES T-023
+ *      § contract §6 OPEN (a): an input that merely LOOKS like a code (a
+ *      lower-cased surname, `papadopoulou`) used to be accepted and to reach
+ *      all four channels, and is now refused. Once accepted, the code is FIXED: the
  *      constructor redefines `code` as a non-writable, non-configurable own
  *      property (T-023 QR-R1, OE-16). A later `e.code = …` throws in strict code
  *      and is ignored in sloppy code; `Object.defineProperty` and `delete` on it
@@ -39,10 +42,14 @@
  * reason to an attacker, log it)".
  *
  * Codes: SD §BE-2 says `code` comes from "a single enum in `packages/contracts`".
- * That package does not exist yet (T-022). The codes below are the ones SD §BE-2
- * names (`state_transition_invalid`, `idempotency_key_reuse`) plus generic ones
- * for the status families it lists; T-022 owes the reconciliation.
+ * That enum is `ERROR_CODES`, declared in error-codes.ts and re-exported by
+ * `@kinvara/contracts` as the published surface (T-022; the file says why the
+ * declaration sits here and not there, and how a module adds a code). Both
+ * halves bite: `ErrorIdentity.code` is typed `ErrorCode`, so a non-member
+ * literal does not compile, and the constructor refuses one that arrives
+ * through a cast.
  */
+import { CODE_REFUSED, isErrorCode, type ErrorCode } from './error-codes.ts';
 
 /** A JSON value an error may add to its problem body (SD §BE-15's extension members). */
 export type JsonValue =
@@ -58,7 +65,7 @@ export interface DomainErrorOptions {
 }
 
 interface ErrorIdentity {
-  readonly code: string;
+  readonly code: ErrorCode;
   readonly status: number;
   readonly title: string;
   readonly retryable: boolean;
@@ -66,18 +73,6 @@ interface ErrorIdentity {
 
 /** A property path: identifier segments joined by dots. See point 2 above. */
 const FIELD_NAME = /^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)*$/;
-
-/** The shape every error `code` must have: lower-case snake_case, ASCII. See point 1 above. */
-export const ERROR_CODE = /^[a-z][a-z0-9_]*$/;
-
-/** True if `code` is a string of `ERROR_CODE`'s shape. `toProblem` re-checks with this. */
-export function isErrorCode(code: unknown): code is string {
-  return typeof code === 'string' && ERROR_CODE.test(code);
-}
-
-/** Deliberately constant: the refusal must not echo the code it refuses. */
-const CODE_REFUSED =
-  'DomainError: code must match /^[a-z][a-z0-9_]*$/ (the rejected code is not shown)';
 
 export abstract class DomainError extends Error {
   readonly code: string;
@@ -162,7 +157,7 @@ export class NotFoundError extends DomainError {
  * literals for `code` and `title`, never an input: see point 1 above.
  */
 export abstract class ConflictError extends DomainError {
-  protected constructor(code: string, title: string, options: DomainErrorOptions) {
+  protected constructor(code: ErrorCode, title: string, options: DomainErrorOptions) {
     super({ code, status: 409, title, retryable: false }, options);
   }
 }
@@ -194,14 +189,14 @@ export class PreconditionFailedError extends DomainError {
 // ── 422 / 423 ──────────────────────────────────────────────────────────────
 /** A 422 domain-rule violation. Modules subclass it (`rate_below_floor`, `outside_staffed_hours`). */
 export abstract class DomainRuleViolationError extends DomainError {
-  protected constructor(code: string, title: string, options: DomainErrorOptions) {
+  protected constructor(code: ErrorCode, title: string, options: DomainErrorOptions) {
     super({ code, status: 422, title, retryable: false }, options);
   }
 }
 
 /** A 423. Modules subclass it (`sitter_review_hold`). */
 export abstract class LockedError extends DomainError {
-  protected constructor(code: string, title: string, options: DomainErrorOptions) {
+  protected constructor(code: ErrorCode, title: string, options: DomainErrorOptions) {
     super({ code, status: 423, title, retryable: false }, options);
   }
 }

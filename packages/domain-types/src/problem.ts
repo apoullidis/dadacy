@@ -18,20 +18,29 @@
  *
  * Anything that is not a DomainError becomes a 500 `internal_error` carrying
  * nothing from the thrown value. So does an object that passes
- * `instanceof DomainError` but whose `code` does not have `ERROR_CODE`'s shape.
- * The constructor refuses a bad code, which keeps it out of `message` and the
+ * `instanceof DomainError` but whose `code` is not a MEMBER of `ERROR_CODES`.
+ * The constructor refuses a non-member, which keeps it out of `message` and the
  * stack, and then fixes `code` so that it cannot be reassigned or redefined
  * (errors.ts; T-023 QA-F1, QR-R1). A constructed error therefore reaches this
  * re-check with the code it was built with. The re-check is for an object that
- * never ran the constructor (`Object.create(SomeError.prototype)`), and it
- * checks the SHAPE only: such an object whose code matches the pattern is
- * emitted with that code, in the body's `code` and `type`.
+ * never ran the constructor (`Object.create(SomeError.prototype)`).
+ *
+ * T-022 CHANGED WHAT THIS RE-CHECK IS. It was a SHAPE check against a pattern,
+ * and T-023 § contract §6 OPEN (b) recorded the consequence: such an object
+ * carrying any code-SHAPED code was emitted with it. It is now a MEMBERSHIP
+ * check against the closed set, so the code half of OPEN (b) is CLOSED — a
+ * forged object's code is emitted only if it is one of the fourteen real
+ * codes, which carries no input. Held by `problem.test.ts` › *T-022: an object
+ * that never ran the constructor, carrying a code-shaped NON-MEMBER, now gets
+ * the 500*. The rest of OPEN (b) stands: such an object's `title`, `status`
+ * and `field` are still emitted unvalidated.
  *
  * `typeBase` is a required argument, not a constant. OE-15 (stakeholder,
  * 2026-09-11) rules the host `https://errors.kinvara.cy/`. T-022, which owns
  * the HTTP surface, passes it.
  */
-import { DomainError, isErrorCode, type JsonValue } from './errors.ts';
+import { isErrorCode } from './error-codes.ts';
+import { DomainError, type JsonValue } from './errors.ts';
 
 export interface ProblemBody {
   readonly type: string;
