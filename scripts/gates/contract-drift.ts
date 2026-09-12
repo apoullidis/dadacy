@@ -60,7 +60,15 @@ try {
     cwd: REPO_ROOT,
     encoding: 'utf8',
   });
-  if (run.stdout !== '') process.stdout.write(run.stdout);
+  // The generator's own stdout is forwarded ONLY when it fails. On success it
+  // says "wrote <path>" twice, and those paths are inside the mkdtemp
+  // directory, so they differ on every run — which made this gate's output
+  // non-deterministic while its verdict was perfectly stable. Measured: two
+  // consecutive passing runs exited 0 and differed in bytes. PROTOCOL §5.1
+  // requires a comparison check to assert the exit status AND the bytes, so a
+  // gate whose own output cannot be compared is a gate that cannot be used in
+  // one. On failure the generator's output is the diagnostic and is forwarded.
+  if (run.status !== 0 && run.stdout !== '') process.stdout.write(run.stdout);
   if (run.stderr !== '') process.stderr.write(run.stderr);
 
   if (run.error !== undefined) {
