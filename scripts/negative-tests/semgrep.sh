@@ -33,7 +33,9 @@ restore() {
   cp "$BK/ignore" "$IGNORE"
   cp "$BK/pins" "$PINS"
   rm -f "$PLANTED"
-  rmdir packages/policy/src 2>/dev/null
+  # packages/policy/src holds real source since T-024 and is NEVER removed.
+  # Only the planted file is. (Before T-024 the directory did not exist and
+  # this function rmdir'd it.)
   return 0
 }
 trap 'restore; rm -rf "$BK"' EXIT
@@ -42,9 +44,17 @@ trap 'restore; rm -rf "$BK"' EXIT
 # to judge the IDENTICAL mutated tree with the gate as at another commit, which
 # is the only way to show a case attacks a direction the old gate accepted:
 #
+# THE `env` FORM IS MANDATORY (OD-62, ruled 2026-09-12; corrected here by
+# T-024 as the next editor of this file, per the CONTRACTS.md obligation).
+# `scripts/dev` forwards only HOME, CI, TZ and LANG, so a variable written in
+# front of the invocation stays on the HOST and never enters the container:
+# the suite then silently judges with the CURRENT gate and prints
+# "ALL n CASES BEHAVED AS EXPECTED" — the harness-no-op shape. The previous
+# wording of these three lines had exactly that defect.
+#
 #   git show 2a99dad:scripts/gates/semgrep.ts > scripts/gates/.old-semgrep.ts
-#   KINVARA_GATE_IMPL=scripts/gates/.old-semgrep.ts \
-#     ./scripts/dev bash scripts/negative-tests/semgrep.sh
+#   ./scripts/dev env KINVARA_GATE_IMPL=scripts/gates/.old-semgrep.ts \
+#     bash scripts/negative-tests/semgrep.sh
 GATE_IMPL="${KINVARA_GATE_IMPL:-scripts/gates/semgrep.ts}"
 
 bad=0
@@ -192,25 +202,54 @@ landed "packages/policy/ ignored" grep -q 'packages/policy/' "$IGNORE" \
   && run_case "18 .semgrepignore exempts packages/policy/" FAIL "exempts source paths"
 
 echo
-echo "=== LIMITATION cases (QA-F3) — these PASS, and that is the open defect."
-echo "===   The guard tests entry TEXT for packages/apps, which is derived from"
-echo "===   the same reading as the thing it checks (PROTOCOL §5.1). An entry"
-echo "===   naming the same tree another way hides it at exit 0. The closing"
-echo "===   check is anti-vacuity and belongs to T-024, which lands the first"
-echo "===   packages/policy source; today it would be red on a clean tree."
-echo "===   THESE CASES GO RED WHEN T-024 CLOSES IT — that is their purpose. ==="
+echo "=== QA-F3, CLOSED BY T-024 — the anti-vacuity check. The .semgrepignore"
+echo "===   guard tests entry TEXT for packages/apps, which is derived from the"
+echo "===   same reading as the thing it checks (PROTOCOL §5.1), so an entry"
+echo "===   naming the same tree ANOTHER way still passes it. What refuses"
+echo "===   these is a different reading: the count of files semgrep reports it"
+echo "===   ACTUALLY scanned under packages/ or apps/, which T-024 could add"
+echo "===   because it landed the first source that count can be non-zero for."
+echo "===   Cases 19 and 20 were committed by T-133 as LIMITATION cases"
+echo "===   expecting PASS; they expect FAIL here, which is the signal that the"
+echo "===   route is closed rather than merely described. Each also asserts the"
+echo "===   PLANT landed, not only the ignore entry (QR-2). ==="
 
 mkdir -p packages/policy/src
 printf 'export const planted: any = 1;\n' > "$PLANTED"
 printf 'policy/\n' >> "$IGNORE"
-landed "policy/ ignored with an any planted" grep -q '^policy/$' "$IGNORE" \
-  && run_case "19 LIMITATION: 'policy/' hides a planted any" PASS
+landed "any planted under packages/policy" test -s "$PLANTED" \
+  && landed "policy/ ignored" grep -q '^policy/$' "$IGNORE" \
+  && run_case "19 'policy/' hides a planted any — now refused" FAIL "VACUOUS"
 
 mkdir -p packages/policy/src
 printf 'export const planted: any = 1;\n' > "$PLANTED"
 printf '*.ts\n' >> "$IGNORE"
-landed "*.ts ignored with an any planted" grep -q '^\*\.ts$' "$IGNORE" \
-  && run_case "20 LIMITATION: '*.ts' hides a planted any" PASS
+landed "any planted under packages/policy" test -s "$PLANTED" \
+  && landed "*.ts ignored" grep -q '^\*\.ts$' "$IGNORE" \
+  && run_case "20 '*.ts' hides a planted any — now refused" FAIL "VACUOUS"
+
+# The case that states the property directly. 19 and 20 hide a planted
+# violation, so a reader could think the gate is merely failing to find a
+# KNOWN bad file. This one hides the tree with NOTHING planted: the tree is
+# genuinely clean, semgrep genuinely reports no findings, and the gate must
+# still refuse — because a clean result over zero files is indistinguishable
+# from a clean result over the whole tree. That is the whole of QA-F3.
+printf 'policy/\n' >> "$IGNORE"
+landed "policy/ ignored, nothing planted" grep -q '^policy/$' "$IGNORE" \
+  && run_case "21 T-024: 'policy/' hides the tree with NOTHING planted" FAIL "VACUOUS"
+
+# The control for 21, and the reason the count is not itself vacuous: on the
+# unmodified tree the same gate scans a non-zero number of files under
+# packages/ and passes. Case 00 asserts the pass; this asserts the COUNT,
+# which is the thing case 21 makes load-bearing.
+if node "$GATE_IMPL" 2>&1 | grep -qE '^  of those, under packages/ or apps/: [1-9]'; then
+  printf '   %-56s %s\n' "22 control: the clean tree scans >0 files under packages/" "ok"
+  ran=$((ran + 1))
+else
+  printf '!! %-56s %s\n' "22 control: the clean tree scans >0 files under packages/" "MISBEHAVED"
+  bad=$((bad + 1)); ran=$((ran + 1))
+fi
+restore
 
 echo
 run_case "99 tree restored" PASS

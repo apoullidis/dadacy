@@ -17,8 +17,13 @@
  *      fire on a known-bad fixture and stay silent on known-good controls,
  *      every run, before the real scan is believed.
  *   3. A scan that scans NO FILES exits 0 with no results. Measured: a
- *      gitignored path yields `scanned: []` at exit 0. This gate prints the
- *      scanned count and says so loudly when the rule's scope is empty.
+ *      gitignored path yields `scanned: []` at exit 0. Since T-024 this is a
+ *      FAILURE, not a note: the gate counts the files it actually scanned
+ *      under packages/ and apps/ and refuses a run where that count is zero
+ *      (tag VACUOUS). Before T-024 it could only say so on stdout, because
+ *      packages/policy held no source and the check would have been red on a
+ *      clean tree — that is why the obligation was carried to the ticket that
+ *      landed the first scannable source (CONTRACTS.md, QA-F3).
  *
  * FOUR outcomes are kept distinguishable, not three (rework 1, QA-F1): the tree
  * is clean, the tree is dirty, the RULE SET cannot be believed, or THIS GATE
@@ -261,7 +266,18 @@ const SELF_TESTS: ReadonlyMap<string, SelfTest> = new Map([
 
 const ruleIds: string[] = [];
 let scannedCount = -1;
+/**
+ * How many of the scanned files were OUR source. This is the anti-vacuity
+ * reading (T-024, QA-F3): it is taken from the list of files semgrep says it
+ * actually scanned, NOT from the text of .semgrepignore, so an entry that
+ * hides the tree under some other spelling (`policy/`, `*.ts`) is caught by
+ * the count going to zero rather than having to be anticipated as a string.
+ */
+let sourceScannedCount = -1;
 let findingCount = 0;
+
+/** The trees that hold this repository's own source (SD §DH-1). */
+const SOURCE_TREE = /^(?:\.\/)?(?:packages|apps)\//;
 
 // ---------------------------------------------------------------------------
 // 1. The tool itself.
@@ -444,15 +460,18 @@ function readRuleList(text: string): void {
  * WHAT THIS CHECK ACTUALLY TESTS, stated at its true width (QA-F3, rework 1):
  * the literal TEXT of each live entry, for the substrings `packages` or `apps`.
  * That is derived from the same reading as the thing it checks (PROTOCOL §5.1),
- * so an entry that names the same tree ANOTHER way is NOT caught: `policy/` and
- * `*.ts` both give GATE PASS at exit 0 with `0 file(s) scanned` — measured by
- * qa-verification. The check that would close it is an anti-vacuity assertion
- * (the count of files actually scanned under packages/ must be non-zero), and
- * it CANNOT be added here: packages/policy holds no source yet, so it would be
- * red on a clean tree. It is carried to T-024 in CONTRACTS.md — the ticket that
- * lands that source — and until then a green gate:semgrep is not evidence that
- * any rule ran over any code. Comment lines are stripped before the test so a
- * commented-out entry cannot satisfy it (T-036 / OD-26's shape).
+ * so an entry that names the same tree ANOTHER way is NOT caught by THIS check:
+ * `policy/` and `*.ts` both pass it. qa-verification measured both giving
+ * GATE PASS at exit 0 with `0 file(s) scanned` (T-133, QA-F3).
+ *
+ * T-024 closes that route, and closes it elsewhere on purpose: the check that
+ * catches an unanticipated spelling cannot be another reading of the ignore
+ * file, because it would share the defect. It is the anti-vacuity count in
+ * sectionScan() below, taken from the list of files semgrep reports it
+ * ACTUALLY scanned. This text check is kept because it names the offending
+ * entry, which a count cannot; the count is what makes the coverage claim
+ * true. Comment lines are stripped before the text test so a commented-out
+ * entry cannot satisfy it (T-036 / OD-26's shape).
  */
 function checkIgnoreFile(): void {
   if (!fs.existsSync(IGNORE_FILE)) {
@@ -579,15 +598,28 @@ function sectionScan(): void {
   const scanned = read.paths?.scanned ?? [];
   scannedCount = scanned.length;
   findingCount = read.results.length;
+  sourceScannedCount = scanned.filter((p) => SOURCE_TREE.test(p)).length;
   console.log(`  files in scope and scanned: ${String(scannedCount)}`);
-  if (scannedCount === 0) {
-    // Not a failure: the rule is scoped to packages/policy, whose source is
-    // T-024's and does not exist yet. Say so on stdout rather than passing
-    // silently (T-001 § contract, rule 2). Section 4 is what keeps the rule
-    // honest while its scope is empty.
-    console.log(
-      "  NOTE: no file matched the rules' paths. The gate is VACUOUS on this tree — the rule\n" +
-        '        set is proven by the self-test above, not by this scan.',
+  console.log(`  of those, under packages/ or apps/: ${String(sourceScannedCount)}`);
+
+  // ANTI-VACUITY (T-024, closing T-133's QA-F3). A scan of nothing exits 0
+  // with no results, which is byte-for-byte what a clean tree looks like. The
+  // three outcomes "the rules ran and found nothing", "the rules ran over
+  // nothing" and "the rules could not run" must stay distinguishable
+  // (PROTOCOL §5.1: if the check did nothing at all, would it say so?).
+  //
+  // This is deliberately NOT a second reading of .semgrepignore. It reads what
+  // semgrep reports it actually scanned, so it catches any way of emptying the
+  // scope — an ignore entry under any spelling, a rule whose paths.include
+  // stopped matching, a tree that moved — including ones nobody anticipated.
+  if (sourceScannedCount === 0) {
+    failures.push(
+      'VACUOUS: the scan examined 0 file(s) under packages/ or apps/, so it proved nothing ' +
+        'about this repository. A clean result over no files is indistinguishable from a ' +
+        'clean result over the whole tree, and must never be reported as a pass. Likely ' +
+        'causes: a .semgrepignore entry that hides the tree under a spelling the text check ' +
+        'above does not name (`policy/`, `*.ts`); a rule whose `paths.include` no longer ' +
+        'matches any file; or the gate being run from the wrong directory.',
     );
   }
   for (const r of read.results) {
@@ -598,23 +630,35 @@ function sectionScan(): void {
 // ---------------------------------------------------------------------------
 // Run, and make sure EVERY exit path prints the banner (QA-F1).
 // ---------------------------------------------------------------------------
-function report(): never {
+/**
+ * One line naming which of the SEVEN outcomes this run had. They are kept
+ * distinguishable on purpose: refused, crashed, unproven, unusable and
+ * "ran over nothing" are five different things and only one of them is a
+ * verdict about the tree.
+ */
+function outcomeLine(): string {
   const kind = (tag: string): boolean => failures.some((f) => f.startsWith(tag));
-  const outcome =
-    failures.length === 0
-      ? `CLEAN — ${String(scannedCount)} file(s) scanned, 0 findings`
-      : kind('HARNESS:')
-        ? 'GATE HARNESS ERROR — gate:semgrep itself threw; this is NOT a verdict about the tree'
-        : kind('FINDING:')
-          ? `VIOLATIONS — ${String(findingCount)} finding(s)`
-          : kind('SELFTEST:')
-            ? 'RULE SET NOT PROVEN — a rule failed its own self-test'
-            : kind('RULES:')
-              ? 'RULE SET UNUSABLE — missing, empty or invalid'
-              : kind('SEMGREP:')
-                ? 'SEMGREP ERROR — the run crashed or contradicted itself'
-                : 'CONFIG ERROR — the tool or its environment is wrong';
-  console.log(`\nOUTCOME: ${outcome}`);
+  if (failures.length === 0) {
+    return (
+      `CLEAN — ${String(scannedCount)} file(s) scanned, ` +
+      `${String(sourceScannedCount)} under packages/ or apps/, 0 findings`
+    );
+  }
+  if (kind('HARNESS:')) {
+    return 'GATE HARNESS ERROR — gate:semgrep itself threw; this is NOT a verdict about the tree';
+  }
+  if (kind('FINDING:')) return `VIOLATIONS — ${String(findingCount)} finding(s)`;
+  if (kind('VACUOUS:')) {
+    return 'SCAN VACUOUS — the rules ran over no source file, so "no findings" is not a verdict';
+  }
+  if (kind('SELFTEST:')) return 'RULE SET NOT PROVEN — a rule failed its own self-test';
+  if (kind('RULES:')) return 'RULE SET UNUSABLE — missing, empty or invalid';
+  if (kind('SEMGREP:')) return 'SEMGREP ERROR — the run crashed or contradicted itself';
+  return 'CONFIG ERROR — the tool or its environment is wrong';
+}
+
+function report(): never {
+  console.log(`\nOUTCOME: ${outcomeLine()}`);
   finish('gate:semgrep', failures);
 }
 
