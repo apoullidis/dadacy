@@ -33,6 +33,17 @@ test('the barrel exports isRole, so a caller can test a JWT role string before d
   assert.equal(policy.isRole('referee'), false);
 });
 
+test('the barrel exports knownId, so a caller can test an identity before deciding', () => {
+  assert.equal(typeof policy.knownId, 'function');
+  assert.equal(policy.knownId('01ARZ3NDEKTSV4RRFFQ69G5FAV'), true);
+  // Every spelling of absence the withdrawn comparisons let through.
+  assert.equal(policy.knownId(null), false);
+  assert.equal(policy.knownId(undefined), false);
+  assert.equal(policy.knownId(''), false);
+  assert.equal(policy.knownId(0), false);
+  assert.equal(policy.knownId({}), false);
+});
+
 test('the barrel exports the two spec constants at their SD and SA values', () => {
   assert.equal(policy.WINDOW_TAIL_MS, 30 * 24 * 60 * 60 * 1000);
   assert.equal(policy.STEP_UP_MAX_AGE_MS, 10 * 60 * 1000);

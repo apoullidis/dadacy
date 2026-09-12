@@ -7,6 +7,14 @@
 export { can, WINDOW_TAIL_MS, STEP_UP_MAX_AGE_MS } from './can.ts';
 export { MATRIX, cell } from './matrix.ts';
 export { ROLES, isRole } from './types.ts';
+/**
+ * The input contract (`T-134`). Exported for the same reason `isRole` is: a
+ * caller can ask at its own boundary whether the identity it is about to pass
+ * is well-formed, which the `Decision` cannot tell it (SD §BE-10's
+ * `DenyReason` set is closed, so a junk id denies with `role_missing` exactly
+ * as a real id holding no permission does).
+ */
+export { knownId } from './identity.ts';
 export type {
   Action,
   Actor,

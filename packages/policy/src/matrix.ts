@@ -14,7 +14,7 @@
  *
  *   allow    -> A   (or AS where step-up applies)   basis `role_grant`
  *   own      -> O   (or OS)                         basis `own_record`
- *   window   -> W                                   DENIES today (OE-20)
+ *   window   -> W                                   basis `confirmed_booking_window`
  *   bg       -> BG                                  basis `break_glass`
  *   —        -> D                                   reason `role_missing`
  *
@@ -36,22 +36,22 @@
  * successor gives `Capability` a scope, these two cells start allowing again
  * with no edit to this table.
  *
- * THE SAME IS NOW TRUE OF W (OE-20), and for the same reason: the stakeholder
- * ruled that BOTH conditional grants fail closed and that their evaluators go
- * to `T-134`. The single `W` cell — `sitter` on `child.health#read`, line 1251
- * of SD §BE-10 — is likewise transcribed correctly and is NOT edited here. The
- * grid says `window`; `can.ts`'s `window` case denies. So the two withdrawn
- * capabilities are exactly:
+ * THE `W` CELL WAS IN THE SAME POSITION UNDER OE-20 AND IS NOT ANY MORE.
+ * `T-134` restored the `window` evaluator with a real input contract, so the
+ * single `W` cell — `sitter` on `child.health#read`, line 1251 of SD §BE-10 —
+ * allows again. It needed NO EDIT HERE, which is the property this file was
+ * kept honest for: the grid said `window` throughout, and the evaluator caught
+ * back up with it.
  *
- *   - a `sitter` gets no `window`-based read (this table's one W cell);
- *   - `trusted_contact` gets no `session#read` and no `sos#raise_concern`
- *     (this table's two CAP cells, and its only two non-deny cells — OD-64).
+ * So exactly one withdrawal remains, and it is the CAP one: `trusted_contact`
+ * gets no `session#read` and no `sos#raise_concern` (this table's two CAP
+ * cells, and its only two non-deny cells), because OD-64 — the shape the
+ * token's scope takes as an input to `can()` — is still unruled. It returns
+ * with no edit to this table too, once it is.
  *
- * Both return WITH NO EDIT TO THIS TABLE once `T-134` lands a validated
- * evaluator and OD-64's scope question is ruled. Nothing in this file records
- * a withdrawal: a table that edited itself whenever an evaluator was withdrawn
- * would stop being a transcription of the specification, which is the one
- * property it exists to have.
+ * Nothing in this file records a withdrawal: a table that edited itself
+ * whenever an evaluator was withdrawn would stop being a transcription of the
+ * specification, which is the one property it exists to have.
  *
  * Three spellings in the matrix are NOT authorisation decisions and are
  * recorded here rather than modelled, because modelling them would make this
@@ -127,6 +127,15 @@ function row(
 export const cell = (resource: Resource, action: Action): Cell => `${resource}#${action}`;
 
 /**
+ * **`MATRIX` transcribes SD §BE-10. It is NOT a statement of what `can()`
+ * enforces** (TL2-A2). The two agree on every cell except the two `CAP` ones,
+ * which the table shows as grants and which `can()` refuses while OD-64 is
+ * unruled. Only `can()` answers what is enforced: a UI or a nav gate derived
+ * from this table would show what the API refuses, which is the direction
+ * SD §FE-3 line 465 forbids. **If `can()` refuses a case this table appears to
+ * grant, the answer is the owning ticket, never a bypass and never a table
+ * edit.**
+ *
  * Every (resource, action) pair SD §BE-10 names. The matrix's 38 printed rows
  * decompose into these 46 by three routes, and SEVEN rows take one of them:
  *

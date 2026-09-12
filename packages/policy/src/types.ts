@@ -175,11 +175,11 @@ export type BookingState =
  * booking between this sitter and this family, from confirmation until
  * completion + 30 days.
  *
- * **Read by `can()` nowhere at this commit (OE-20).** The `window` grant fails
- * closed, so no field on this interface reaches a decision — the same position
- * `Capability` is in below. It is kept rather than deleted because it is
- * published surface and `T-134` needs it: that ticket owns the evaluator, and
- * the shape it must validate is this one.
+ * **Read by `windowDecision()` again since `T-134` restored the grant** (under
+ * OE-20 no field on this interface reached a decision). Every field here is
+ * caller-supplied and none of them is trusted: the two ids are compared only
+ * through `sameId` (identity.ts), `state` is matched against literals, and
+ * `completedAt` must be an actual `Date`.
  */
 export interface BookingWindow {
   readonly state: BookingState;
@@ -192,8 +192,9 @@ export interface BookingWindow {
    * CALLER-SUPPLIED fields, with absence recognised only as `undefined`. So
    * `null` — what a Postgres driver yields for a NULL column — `''`, `0` and
    * one shared object each made the two ends "agree", and twelve allows on
-   * child health followed. The grant now denies instead (OE-20), and `T-134`
-   * owns giving this field a real input contract before it is compared again.
+   * child health followed. `T-134` compares it through `sameId`, which
+   * requires BOTH ends to be well-formed ids before it will call them equal,
+   * so absence in any spelling now refuses instead of agreeing.
    */
   readonly parentAccountId: AccountId;
   /** Set once the booking reaches `completed`; starts the 30-day tail. */
@@ -218,9 +219,12 @@ export interface BreakGlass {
  * one is refused under PROTOCOL §2 and reported instead — the question is
  * `decisions.md` **OD-64**, parked with the stakeholder.
  *
- * **`T-134` owns it.** That ticket adds the field and checks it once OD-64 is
- * ruled; until then `trusted_contact` has no `session#read` and no
- * `sos#raise_concern`. Do not add the field without the ruling (PROTOCOL §2).
+ * **`T-134` checked OD-64 and it is STILL UNRULED**, so this grant stays
+ * closed and `trusted_contact` still has no `session#read` and no
+ * `sos#raise_concern`. `T-134` restored the `window` grant beside it and
+ * deliberately did not touch this one: what is missing here is a
+ * specification answer, not an evaluator. Do not add the field without the
+ * ruling (PROTOCOL §2).
  */
 export interface Capability {
   readonly expiresAt: Date;
@@ -242,16 +246,20 @@ export interface ResourceRef {
   /**
    * The account owning the record, where ownership is meaningful.
    *
-   * Read by the `own` grant ONLY. TL-F1 also had the `window` grant compare it
-   * to `booking.parentAccountId`; that comparison is withdrawn (OE-20), so the
-   * single remaining reader is `owns()`, which compares this to the **actor's**
-   * own id — a comparison junk cannot satisfy, which is why `owns()` refuses
-   * every spelling of absence that the withdrawn one allowed (QA3-F1, § F).
+   * Read by the `own` grant and, since `T-134`, by the `window` grant's family
+   * end again. Both comparisons go through `sameId`.
+   *
+   * The claim this comment used to carry — that `owns()` "compares this to the
+   * **actor's** own id, a comparison junk cannot satisfy" — was FALSE, and
+   * `T-134` measured it falsifying: `actor.accountId` is caller-supplied too,
+   * so when both sides held the same junk the `own` grant ALLOWED, over all 37
+   * `own` cells (§ Evidence A3).
    */
   readonly ownerAccountId?: AccountId | undefined;
   /**
-   * **Read by `can()` nowhere at this commit (OE-20)**, the `window` grant
-   * having failed closed. Kept as published surface for `T-134`.
+   * Read by the `window` grant again since `T-134`. It is validated as an
+   * object before any field on it is touched, so a `null` here denies rather
+   * than throwing.
    */
   readonly booking?: BookingWindow | undefined;
   /** D14: the market's Article 10 model (SD §BE-17). */

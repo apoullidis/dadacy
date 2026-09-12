@@ -53,30 +53,32 @@ const FRESH_STEP_UP = at(5 * MINUTE);
 /**
  * The basis each grant kind produces WHEN IT ALLOWS.
  *
- * BOTH conditional grants are absent, and their absence is the point (OE-20):
- * `capability` fails closed (TL-F2) and `window` now does too, so no cell can
- * produce `capability_token` or `confirmed_booking_window` at this commit. The
- * sweeps consult `NEVER_ALLOWS`; the two assertions that turn red if either
- * route reopens are at the end of the TL-F2 test and in the C1-C5 test.
+ * `window` is BACK (T-134) and carries `confirmed_booking_window` again, so
+ * the sweeps exercise it like every other conditional grant rather than
+ * skipping it. `capability` is still absent and its absence is still the
+ * point: OD-64 is unruled, so that grant fails closed (TL-F2) and no cell can
+ * produce `capability_token`. The assertion that turns red the day that route
+ * reopens is at the end of the TL-F2 test.
  */
-const BASIS_OF: Record<Exclude<GrantKind, 'deny' | 'capability' | 'window'>, AllowBasis> = {
+const BASIS_OF: Record<Exclude<GrantKind, 'deny' | 'capability'>, AllowBasis> = {
   allow: 'role_grant',
   own: 'own_record',
+  window: 'confirmed_booking_window',
   break_glass: 'break_glass',
   four_eyes: 'role_grant',
   art10: 'role_grant',
   locale: 'role_grant',
 };
 
-/** Grant kinds that cannot produce an allow here: `deny`, `capability`, `window`. */
-const NEVER_ALLOWS: ReadonlySet<GrantKind> = new Set<GrantKind>(['deny', 'capability', 'window']);
+/** Grant kinds that cannot produce an allow here: `deny` and `capability`. */
+const NEVER_ALLOWS: ReadonlySet<GrantKind> = new Set<GrantKind>(['deny', 'capability']);
 
 const REASON_OF: Record<Exclude<GrantKind, 'allow'>, DenyReason> = {
   deny: 'role_missing',
   own: 'role_missing',
-  // Was `booking_not_confirmed`. The withdrawn grant (OE-20) refuses with the
-  // same closed-set reason it already gave for a sitter-end mismatch.
-  window: 'role_missing',
+  // `failing()` hands the window grant no booking at all, which is the grant's
+  // own reason rather than a role problem (T-134 restored it).
+  window: 'booking_not_confirmed',
   break_glass: 'role_missing',
   capability: 'role_missing',
   four_eyes: 'four_eyes_required',
@@ -118,10 +120,9 @@ function satisfying(grant: Grant, role: Role, type: Resource): Probe {
     // record's owner (TL-F1). Before OE-19 this fixture named no owner at all,
     // which is precisely why no sweep could see C2.
     //
-    // It is kept at full strength although the grant now denies (OE-20): this
-    // is the MOST favourable fixture the grant could be handed, so the sweeps
-    // that consult NEVER_ALLOWS are asserting that even a perfectly formed
-    // relationship is refused — not that a weak fixture happened to fail.
+    // Since T-134 restored the grant this fixture ALLOWS again, so the
+    // whole-table sweep exercises the window evaluator's success path on every
+    // cell carrying it, with the basis BASIS_OF assigns.
     resource.ownerAccountId = FAMILY;
     resource.booking = {
       state: 'confirmed',
@@ -189,7 +190,7 @@ test('every cell that grants something allows it, with the basis SD §BE-10 assi
       const { actor, resource } = satisfying(grant, role, resourceOf(key));
       expectAllow(
         can(actor, actionOf(key), resource, CTX),
-        BASIS_OF[grant.kind as Exclude<GrantKind, 'deny' | 'capability' | 'window'>],
+        BASIS_OF[grant.kind as Exclude<GrantKind, 'deny' | 'capability'>],
         `${key} / ${role}`,
       );
       checked++;
@@ -351,52 +352,60 @@ test('when every role refuses, the most specific refusal is the one reported', (
 });
 
 /*
- * THE WITHDRAWAL (OE-20) — the `window` grant, re-asserted as the refusal it
- * now is. Nine tests carry it, from here to the C1-C5 and QA3-F1 cases below.
+ * THE RESTORATION (T-134) — the `window` grant is a real grant again, and
+ * these are the same nine cases `T-024` left behind as WITHDRAWN.
  *
- * The stakeholder ruled that this ticket lands its verified matrix and fails
- * BOTH conditional grants closed, giving the evaluators to `T-134`. The
- * evaluator had failed three consecutive reviews: it checked one end of a
- * two-ended relationship (TL-F1), and the end that was then added compared two
- * caller-supplied fields with `===`, so `null`/`null` allowed (QA3-F1).
+ * `T-024` renamed nine cases to `WITHDRAWN (OE-20): …` when the stakeholder
+ * ruled that both conditional grants fail closed. It kept every fixture, so
+ * that restoring the grant would turn all nine red — which is exactly what it
+ * did, and which is why this ticket could not restore anything quietly. WHAT
+ * BECAME OF EACH IS RECORDED RATHER THAN LEFT TO A DIFF:
  *
- * EVERY FIXTURE BELOW IS KEPT. Not one is deleted and not one of the facts
- * they encode is lost — the booking states, the thirty-day tail, the
- * millisecond boundary, the disagreeing family, the absent owner. What changed
- * is the expected answer, because `can()` no longer reads a booking at all.
- * That is what makes the withdrawal visible rather than silent: the day
- * `T-134` restores the grant, every one of these turns RED, and the contract
- * sentence each of them holds must be rewritten in the same change.
+ *   EIGHT are restored to the answers they asserted before OE-20, and their
+ *   titles go back with them — the worked example, the in-progress session,
+ *   the pre-confirmation states, the absent booking, the thirty-day tail, the
+ *   millisecond boundary, the missing completion timestamp, and C1-C5 (whose
+ *   C1 allows again while C2-C5 still deny).
  *
- * Four were ALLOW cases before this commit — the worked example, the
- * in-progress session, the two inside-the-tail boundaries — and C1 was a
- * fifth. Their titles are RENAMED rather than their assertions quietly
- * flipped, so nobody reading the report can mistake a withdrawal for a pass.
- * Every rename is listed in § Final (OE-20) — evidence.
+ *   ONE DOES NOT FLIP, and it is the important one: QA3-F1's spelling cross
+ *   below still asserts a DENY on every junk pairing. It loses only the
+ *   `WITHDRAWN` prefix. Under OE-20 it passed because the grant refused
+ *   everything; it passes now because `sameId` refuses each spelling on its
+ *   merits. That is the difference between a grant that is off and a grant
+ *   that is checked, and it is the case that fails if this ticket's root fix
+ *   ever regresses.
+ *
+ * EVERY FIXTURE IS STILL KEPT. Nothing is deleted: the booking states, the
+ * tail, the boundary, the disagreeing family, the absent owner, and now the
+ * malformed booking and the malformed timestamp as well.
  */
-test('WITHDRAWN (OE-20): the SA §TS-7 worked example is refused — a sitter gets no window-based read', () => {
+test('SA §TS-7 worked example: a sitter reads child health inside the confirmed booking window', () => {
   const actor: Actor = { accountId: SELF, roles: ['sitter'] };
   const resource: ResourceRef = {
     type: 'child.health',
     ownerAccountId: FAMILY,
     booking: { state: 'confirmed', sitterAccountId: SELF, parentAccountId: FAMILY },
   };
-  // SA §TS-7's own example, with BOTH ends of the relationship agreeing: the
-  // strongest case the grant could be handed. It is refused.
-  expectDeny(can(actor, 'read', resource, CTX), 'role_missing', 'confirmed, both ends agreeing');
+  // SA §TS-7's own example, with BOTH ends of the relationship agreeing and
+  // both being well-formed ids: the case the product intends to work.
+  expectAllow(
+    can(actor, 'read', resource, CTX),
+    'confirmed_booking_window',
+    'confirmed, both ends agreeing',
+  );
 });
 
-test('WITHDRAWN (OE-20): an in-progress session opens no window either', () => {
+test('the window is open while a session is in progress', () => {
   const actor: Actor = { accountId: SELF, roles: ['sitter'] };
   const resource: ResourceRef = {
     type: 'child.health',
     ownerAccountId: FAMILY,
     booking: { state: 'in_progress', sitterAccountId: SELF, parentAccountId: FAMILY },
   };
-  expectDeny(can(actor, 'read', resource, CTX), 'role_missing', 'in_progress');
+  expectAllow(can(actor, 'read', resource, CTX), 'confirmed_booking_window', 'in_progress');
 });
 
-test('WITHDRAWN (OE-20): every pre-confirmation booking state denies with role_missing, not booking_not_confirmed', () => {
+test('a booking that is not yet confirmed is booking_not_confirmed, in every pre-confirmation state', () => {
   const actor: Actor = { accountId: SELF, roles: ['sitter'] };
   for (const state of ['requested', 'cancelled', 'declined'] as const) {
     const resource: ResourceRef = {
@@ -404,14 +413,13 @@ test('WITHDRAWN (OE-20): every pre-confirmation booking state denies with role_m
       ownerAccountId: FAMILY,
       booking: { state, sitterAccountId: SELF, parentAccountId: FAMILY },
     };
-    // The reason moves because the grant no longer reaches the booking's
-    // state. `booking_not_confirmed` is still a member of SD §BE-10's closed
-    // set and no cell can now produce it — see REASON_PRECEDENCE in can.ts.
-    expectDeny(can(actor, 'read', resource, CTX), 'role_missing', state);
+    // The relationship holds, so the refusal is about the booking's STATE and
+    // carries the grant's own reason rather than a role problem.
+    expectDeny(can(actor, 'read', resource, CTX), 'booking_not_confirmed', state);
   }
 });
 
-test('WITHDRAWN (OE-20): a sitter with no booking at all denies with role_missing', () => {
+test('a sitter with no booking at all is booking_not_confirmed, not role_missing', () => {
   expectDeny(
     can(
       { accountId: SELF, roles: ['sitter'] },
@@ -419,7 +427,7 @@ test('WITHDRAWN (OE-20): a sitter with no booking at all denies with role_missin
       { type: 'child.health', ownerAccountId: FAMILY },
       CTX,
     ),
-    'role_missing',
+    'booking_not_confirmed',
     'no booking',
   );
 });
@@ -437,7 +445,7 @@ test('another sitter’s booking gives this sitter nothing', () => {
   );
 });
 
-test('WITHDRAWN (OE-20): the thirty-day completed tail opens no window, inside it or outside it', () => {
+test('a completed booking keeps the window open for thirty days and shuts it after', () => {
   const actor: Actor = { accountId: SELF, roles: ['sitter'] };
   const completed = (completedAt: Date): ResourceRef => ({
     type: 'child.health',
@@ -449,22 +457,19 @@ test('WITHDRAWN (OE-20): the thirty-day completed tail opens no window, inside i
       completedAt,
     },
   });
-  // Inside the tail by a minute: an ALLOW before this commit.
-  expectDeny(
+  expectAllow(
     can(actor, 'read', completed(at(-WINDOW_TAIL_MS + MINUTE)), CTX),
-    'role_missing',
+    'confirmed_booking_window',
     'one minute inside',
   );
-  // Outside it by a minute: refused before as `window_expired`, refused now as
-  // `role_missing` — there is no clock left for the tail to expire against.
   expectDeny(
     can(actor, 'read', completed(at(-WINDOW_TAIL_MS - MINUTE)), CTX),
-    'role_missing',
+    'window_expired',
     'one minute outside',
   );
 });
 
-test('WITHDRAWN (OE-20): the thirtieth-day boundary decides nothing, to the millisecond', () => {
+test('the thirtieth day is the last one inside the window, to the millisecond', () => {
   const actor: Actor = { accountId: SELF, roles: ['sitter'] };
   const boundary = (offset: number): ResourceRef => ({
     type: 'child.health',
@@ -476,13 +481,13 @@ test('WITHDRAWN (OE-20): the thirtieth-day boundary decides nothing, to the mill
       completedAt: at(-WINDOW_TAIL_MS + offset),
     },
   });
-  // Both sides of the boundary now answer the same way, which is the sharpest
-  // statement of the withdrawal: the tail is not merely shut, it is not read.
-  expectDeny(can(actor, 'read', boundary(0), CTX), 'role_missing', 'exactly 30d');
-  expectDeny(can(actor, 'read', boundary(-1), CTX), 'role_missing', 'one ms past 30d');
+  // The boundary is inclusive: exactly WINDOW_TAIL_MS still reads, one
+  // millisecond past it does not.
+  expectAllow(can(actor, 'read', boundary(0), CTX), 'confirmed_booking_window', 'exactly 30d');
+  expectDeny(can(actor, 'read', boundary(-1), CTX), 'window_expired', 'one ms past 30d');
 });
 
-test('WITHDRAWN (OE-20): a completed booking with no completion timestamp denies with role_missing', () => {
+test('a completed booking with no completion timestamp cannot open the window', () => {
   const resource: ResourceRef = {
     type: 'child.health',
     ownerAccountId: FAMILY,
@@ -490,7 +495,7 @@ test('WITHDRAWN (OE-20): a completed booking with no completion timestamp denies
   };
   expectDeny(
     can({ accountId: SELF, roles: ['sitter'] }, 'read', resource, CTX),
-    'role_missing',
+    'booking_not_confirmed',
     'completed with no completedAt',
   );
 });
@@ -514,11 +519,16 @@ test('WITHDRAWN (OE-20): a completed booking with no completion timestamp denies
  * The family end was then added and QA3-F1 measured WHAT was added: `===`
  * between `booking.parentAccountId` and `resource.ownerAccountId`, two
  * caller-supplied fields, with absence recognised only as `undefined`. So
- * C2 and C3 denied while `null`/`null` allowed. The stakeholder withdrew the
- * grant rather than attempt the evaluator a fourth time, so ALL FIVE now deny
- * and the last assertion here is what makes restoring it visible.
+ * C2 and C3 denied while `null`/`null` allowed, and the stakeholder withdrew
+ * the grant rather than attempt the evaluator a fourth time (OE-20).
+ *
+ * `T-134` restores it with both ends compared through `sameId`, so C1 allows
+ * again while C2-C5 still deny — each for its own reason, not because the
+ * grant is off. The pin at the end inverts with it: it asserted that no cell
+ * could produce `confirmed_booking_window`, and it now asserts that the one
+ * `W` cell does.
  */
-test('WITHDRAWN (OE-20): the C1-C5 fixtures all deny, C1 included — no identity comparison is reachable', () => {
+test('TL-F1: the window grant checks the family end of the relationship, not only the sitter end', () => {
   const sitter: Actor = { accountId: SELF, roles: ['sitter'] };
   const confirmed = {
     state: 'confirmed',
@@ -526,11 +536,11 @@ test('WITHDRAWN (OE-20): the C1-C5 fixtures all deny, C1 included — no identit
     parentAccountId: FAMILY,
   } as const;
 
-  // C1 — the booking's family IS the record's owner. It allowed at `100b2c8`
-  // and is refused now: this is the case the withdrawal costs (SA §TS-7).
-  expectDeny(
+  // C1 — the booking's family IS the record's owner: the relationship holds
+  // at both ends and both ends are well-formed. Allowed.
+  expectAllow(
     can(sitter, 'read', { type: 'child.health', ownerAccountId: FAMILY, booking: confirmed }, CTX),
-    'role_missing',
+    'confirmed_booking_window',
     'C1 booking with FAM_A, record owned by FAM_A',
   );
 
@@ -586,11 +596,13 @@ test('WITHDRAWN (OE-20): the C1-C5 fixtures all deny, C1 included — no identit
     'C5 completed 29 days ago, record owned by FAM_B',
   );
 
-  // THE PIN, the same instrument the TL-F2 test uses. No cell in the matrix
-  // can produce `confirmed_booking_window` at this commit. It turns RED the
-  // day `T-134` restores the grant — the signal to rewrite § 4's `window` row,
-  // not a failure. It asserts the W cell EXISTS first, so it cannot pass
-  // vacuously, and that the cell is the one SD §BE-10 line 1251 names.
+  // THE PIN, INVERTED (T-134). Under OE-20 this asserted that no cell could
+  // produce `confirmed_booking_window`. The grant is restored, so it now
+  // asserts that the one `W` cell DOES, against a well-formed relationship —
+  // which is the statement that `MATRIX` and `can()` agree on this cell again.
+  // It still asserts the cell EXISTS and is the one SD §BE-10 line 1251 names,
+  // so it cannot pass vacuously, and it turns red if the grant is ever
+  // withdrawn again without this contract being rewritten.
   let wCells = 0;
   for (const [key, row] of MATRIX) {
     for (const role of ROLES) {
@@ -606,7 +618,7 @@ test('WITHDRAWN (OE-20): the C1-C5 fixtures all deny, C1 included — no identit
         },
         CTX,
       );
-      assert.equal(decision.allow, false, `${key} / ${role} must not allow`);
+      expectAllow(decision, 'confirmed_booking_window', `${key} / ${role} must allow`);
       wCells++;
     }
   }
@@ -623,32 +635,40 @@ test('WITHDRAWN (OE-20): the C1-C5 fixtures all deny, C1 included — no identit
  * a Postgres driver yields for a NULL column and one missed join produces it
  * on both sides at once — a Tuesday, not a construction (PROTOCOL §5.1).
  *
- * All of them deny now, including QA3-F2's both-absent case, which was the one
- * the absent-owner guard uniquely prevented and which no committed case held.
- * `T-134` must keep every one of these denying when it restores the grant:
- * that is the point of committing them here rather than in a review section.
+ * THIS CASE DID NOT FLIP WHEN `T-134` RESTORED THE GRANT, and that is the
+ * whole point of it. Under OE-20 it passed because the grant refused
+ * everything; it passes now because `sameId` refuses each spelling on its
+ * merits — both ends must be well-formed ids before they are compared, so no
+ * pair of junk values can agree. It is the case that fails if this ticket's
+ * root fix ever regresses, and the last row is its control: two ends naming
+ * the same REAL family must still ALLOW, so it cannot pass by the grant
+ * simply being off again.
  */
-test('WITHDRAWN (OE-20): QA3-F1’s null, empty-string, zero and shared-object spellings all deny, and so does both-absent', () => {
+test('QA3-F1: the null, empty-string, zero and shared-object spellings all deny, and so does both-absent', () => {
   const sitter: Actor = { accountId: SELF, roles: ['sitter'] };
   const shared = { id: 'one object, equal only to itself' };
-  const spellings: readonly (readonly [string, unknown, unknown])[] = [
-    ['both null — what a driver yields for a NULL column', null, null],
-    ['both the empty string', '', ''],
-    ['both zero', 0, 0],
-    ['both the SAME object', shared, shared],
-    ['both absent (QA3-F2)', undefined, undefined],
-    ['owner absent, family named', undefined, FAMILY],
-    ['owner named, family absent', FAMILY, undefined],
-    ['both naming the same REAL family', FAMILY, FAMILY],
+  const spellings: readonly (readonly [string, unknown, unknown, boolean])[] = [
+    ['both null — what a driver yields for a NULL column', null, null, false],
+    ['both the empty string', '', '', false],
+    ['both zero', 0, 0, false],
+    ['both the SAME object', shared, shared, false],
+    ['both absent (QA3-F2)', undefined, undefined, false],
+    ['owner absent, family named', undefined, FAMILY, false],
+    ['owner named, family absent', FAMILY, undefined, false],
+    // THE CONTROL. Two well-formed ids naming the same family must ALLOW, or
+    // this case would pass merely because the grant was off again.
+    ['both naming the same REAL family', FAMILY, FAMILY, true],
   ];
-  for (const [label, owner, family] of spellings) {
+  for (const [label, owner, family, allowed] of spellings) {
     for (const state of ['confirmed', 'in_progress'] as const) {
       const resource = {
         type: 'child.health',
         ownerAccountId: owner,
         booking: { state, sitterAccountId: SELF, parentAccountId: family },
       } as unknown as ResourceRef;
-      expectDeny(can(sitter, 'read', resource, CTX), 'role_missing', `${label} / ${state}`);
+      const d = can(sitter, 'read', resource, CTX);
+      if (allowed) expectAllow(d, 'confirmed_booking_window', `${label} / ${state}`);
+      else expectDeny(d, 'role_missing', `${label} / ${state}`);
     }
     const inTail = {
       type: 'child.health',
@@ -660,7 +680,170 @@ test('WITHDRAWN (OE-20): QA3-F1’s null, empty-string, zero and shared-object s
         completedAt: at(-29 * 24 * HOUR),
       },
     } as unknown as ResourceRef;
-    expectDeny(can(sitter, 'read', inTail, CTX), 'role_missing', `${label} / inside the tail`);
+    const t = can(sitter, 'read', inTail, CTX);
+    if (allowed) expectAllow(t, 'confirmed_booking_window', `${label} / inside the tail`);
+    else expectDeny(t, 'role_missing', `${label} / inside the tail`);
+  }
+});
+
+/*
+ * T-134's own findings. Each of the three below was an ALLOW on `main` at
+ * `d6a8905`, measured before the fix (§ Evidence, the baseline probe), and
+ * each is the same root as QA3-F1: two caller-supplied fields compared to each
+ * other with absence tested as `=== undefined`. None of them is the `window`
+ * grant — they were live on grants nobody had withdrawn.
+ */
+test('T-134: the own grant refuses two identity fields that are both absent, however absence is spelled', () => {
+  const owned = (actor: unknown, owner: unknown): Decision =>
+    can(
+      { accountId: actor, roles: ['parent'] } as unknown as Actor,
+      'read',
+      { type: 'account', ownerAccountId: owner } as unknown as ResourceRef,
+      CTX,
+    );
+  // BOTH sides the same junk. Every one of these ALLOWED before T-134,
+  // because `null === null`. The actor's id is caller-supplied too.
+  for (const junk of [null, '', 0, Number.NaN, { id: 'x' }, undefined]) {
+    expectDeny(
+      owned(junk, junk),
+      'role_missing',
+      `both sides ${JSON.stringify(junk) ?? 'undefined'}`,
+    );
+  }
+  // A well-formed actor against a junk owner stays refused, as it always was.
+  expectDeny(owned(SELF, null), 'role_missing', 'real actor, null owner');
+  // The controls: real ids still decide, in both directions.
+  expectAllow(owned(SELF, SELF), 'own_record', 'real actor owns the record');
+  expectDeny(owned(SELF, OTHER), 'role_missing', 'real actor, someone else’s record');
+});
+
+test('T-134: a countersigner that is not a well-formed id cannot satisfy four-eyes', () => {
+  const senior = (acct: unknown, by: unknown): Decision =>
+    can(
+      { accountId: acct, roles: ['ts_senior'], stepUpUntil: FRESH_STEP_UP } as unknown as Actor,
+      'remove_permanently',
+      { type: 'account', countersignedBy: by } as unknown as ResourceRef,
+      CTX,
+    );
+  // This one needed only ONE junk field, not two: `null !== <a real id>` is
+  // true, so a NULL `countersigned_by` — what an un-countersigned row holds —
+  // SATISFIED four-eyes on all nine F4 cells before T-134.
+  for (const junk of [null, '', 0, Number.NaN, { id: 'x' }, undefined]) {
+    expectDeny(
+      senior(SELF, junk),
+      'four_eyes_required',
+      `real actor, countersigner ${JSON.stringify(junk) ?? 'undefined'}`,
+    );
+  }
+  // And a junk actor cannot be "different from" a real countersigner either.
+  expectDeny(senior(null, OTHER), 'four_eyes_required', 'junk actor, real countersigner');
+  // The controls, both directions: a real second actor allows, the same actor does not.
+  expectAllow(senior(SELF, OTHER), 'role_grant', 'a genuine second actor');
+  expectDeny(senior(SELF, SELF), 'four_eyes_required', 'the same actor cannot supply both');
+});
+
+test('T-134: an operator language list and a locale that are both junk do not cover each other', () => {
+  const moderate = (languages: unknown, locale: unknown): Decision =>
+    can(
+      {
+        accountId: SELF,
+        roles: ['ts_operator'],
+        stepUpUntil: FRESH_STEP_UP,
+        operatorLocales: languages,
+      } as unknown as Actor,
+      'moderate',
+      { type: 'content_moderation', locale } as unknown as ResourceRef,
+      CTX,
+    );
+  for (const junk of [null, 0, Number.NaN, { id: 'x' }]) {
+    expectDeny(
+      moderate([junk], junk),
+      'operator_does_not_cover_locale',
+      `both sides ${JSON.stringify(junk) ?? 'undefined'}`,
+    );
+  }
+  // An empty-string locale is not a locale, even against a list containing one.
+  expectDeny(moderate([''], ''), 'operator_does_not_cover_locale', 'both the empty string');
+  // A language list that is not a list at all refuses rather than throwing.
+  expectDeny(moderate('el', 'el'), 'operator_does_not_cover_locale', 'languages is a string');
+  // The controls: a real list still covers a real locale, and still does not cover another.
+  expectAllow(moderate(['el', 'en'], 'el'), 'role_grant', 'covered');
+  expectDeny(moderate(['en'], 'el'), 'operator_does_not_cover_locale', 'not covered');
+});
+
+test('T-134: a booking that is not an object denies rather than throwing', () => {
+  const sitter: Actor = { accountId: SELF, roles: ['sitter'] };
+  // `null` in particular: a bare `=== undefined` check would have passed it
+  // through to a TypeError on the next line.
+  for (const junk of [null, 'confirmed', 0, Number.NaN]) {
+    expectDeny(
+      can(
+        sitter,
+        'read',
+        { type: 'child.health', ownerAccountId: FAMILY, booking: junk } as unknown as ResourceRef,
+        CTX,
+      ),
+      'booking_not_confirmed',
+      `booking = ${JSON.stringify(junk) ?? 'undefined'}`,
+    );
+  }
+});
+
+test('T-134: a completion timestamp that is not a Date cannot open the thirty-day tail', () => {
+  const sitter: Actor = { accountId: SELF, roles: ['sitter'] };
+  const completed = (completedAt: unknown): Decision =>
+    can(
+      sitter,
+      'read',
+      {
+        type: 'child.health',
+        ownerAccountId: FAMILY,
+        booking: {
+          state: 'completed',
+          sitterAccountId: SELF,
+          parentAccountId: FAMILY,
+          completedAt,
+        },
+      } as unknown as ResourceRef,
+      CTX,
+    );
+  // A string, a number or a null would reach `.getTime()` and throw.
+  for (const junk of [null, '2026-09-12T12:00:00.000Z', 0]) {
+    expectDeny(
+      completed(junk),
+      'booking_not_confirmed',
+      `completedAt = ${JSON.stringify(junk) ?? 'undefined'}`,
+    );
+  }
+  // An INVALID Date passes `instanceof` and yields NaN, which fails the tail
+  // comparison — so it expires the window rather than opening it.
+  expectDeny(completed(new Date('not a date')), 'window_expired', 'an Invalid Date');
+  // The control: a real Date inside the tail still opens it.
+  expectAllow(
+    completed(at(-29 * 24 * HOUR)),
+    'confirmed_booking_window',
+    'a real Date inside the tail',
+  );
+});
+
+test('T-134: the window sitter end refuses two identity fields that are both absent', () => {
+  // The other end of the relationship, given the same treatment. A sitter
+  // whose own id is junk cannot match a booking whose sitter is the same junk.
+  for (const junk of [null, '', 0, { id: 'x' }, undefined]) {
+    expectDeny(
+      can(
+        { accountId: junk, roles: ['sitter'] } as unknown as Actor,
+        'read',
+        {
+          type: 'child.health',
+          ownerAccountId: FAMILY,
+          booking: { state: 'confirmed', sitterAccountId: junk, parentAccountId: FAMILY },
+        } as unknown as ResourceRef,
+        CTX,
+      ),
+      'role_missing',
+      `sitter end, both ${JSON.stringify(junk) ?? 'undefined'}`,
+    );
   }
 });
 
@@ -1065,11 +1248,30 @@ test('LIMITATION (QR-4): ctx is not validated, so a malformed one allows, denies
     'step_up_required',
     'step-up cell',
   );
-  // (c) WITHDRAWN (OE-20): the window cell used to THROW here, being the other
-  // cell that read the clock. It no longer reads one, so a malformed `ctx`
-  // reaches no `getTime()` and the cell simply denies. One of the two throwing
-  // cells is therefore gone — the remaining one is break-glass, below — and
-  // the three outcomes this case pins are still all present.
+  // (c) the window cell THROWS again (T-134 restored its clock read). Note
+  // the precondition: it throws only once BOTH ends of the relationship hold,
+  // because windowDecision() establishes the relationship before it reads the
+  // clock. A caller who cannot show the relationship gets a Decision.
+  assert.throws(
+    () =>
+      can(
+        { accountId: SELF, roles: ['sitter'] },
+        'read',
+        {
+          type: 'child.health',
+          ownerAccountId: FAMILY,
+          booking: {
+            state: 'completed',
+            sitterAccountId: SELF,
+            parentAccountId: FAMILY,
+            completedAt: NOW,
+          },
+        },
+        noCtx,
+      ),
+    TypeError,
+    'window cell with no now, relationship holding',
+  );
   expectDeny(
     can(
       { accountId: SELF, roles: ['sitter'] },
@@ -1079,7 +1281,7 @@ test('LIMITATION (QR-4): ctx is not validated, so a malformed one allows, denies
         ownerAccountId: FAMILY,
         booking: {
           state: 'completed',
-          sitterAccountId: SELF,
+          sitterAccountId: OTHER,
           parentAccountId: FAMILY,
           completedAt: NOW,
         },
@@ -1087,7 +1289,7 @@ test('LIMITATION (QR-4): ctx is not validated, so a malformed one allows, denies
       noCtx,
     ),
     'role_missing',
-    'window cell with no now: denies rather than throwing',
+    'window cell with no now, relationship failing: decides without the clock',
   );
   // (d) a time-dependent cell that survives the withdrawal still throws.
   assert.throws(
