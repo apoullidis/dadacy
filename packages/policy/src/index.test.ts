@@ -26,6 +26,13 @@ test('the barrel exports the surface SA §TS-7 and SD §BE-10 name', () => {
   assert.equal(policy.ROLES.length, 10);
 });
 
+test('the barrel exports isRole, so a caller can test a JWT role string before deciding', () => {
+  assert.equal(typeof policy.isRole, 'function');
+  assert.equal(policy.isRole('dsl'), true);
+  assert.equal(policy.isRole('deputy_dsl'), false);
+  assert.equal(policy.isRole('referee'), false);
+});
+
 test('the barrel exports the two spec constants at their SD and SA values', () => {
   assert.equal(policy.WINDOW_TAIL_MS, 30 * 24 * 60 * 60 * 1000);
   assert.equal(policy.STEP_UP_MAX_AGE_MS, 10 * 60 * 1000);

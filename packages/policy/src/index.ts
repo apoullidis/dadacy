@@ -6,7 +6,7 @@
  */
 export { can, WINDOW_TAIL_MS, STEP_UP_MAX_AGE_MS } from './can.ts';
 export { MATRIX, cell } from './matrix.ts';
-export { ROLES } from './types.ts';
+export { ROLES, isRole } from './types.ts';
 export type {
   Action,
   Actor,

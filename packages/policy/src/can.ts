@@ -22,6 +22,7 @@ import type {
   Role,
 } from './types.ts';
 import { MATRIX, cell } from './matrix.ts';
+import { isRole } from './types.ts';
 
 /** SA §TS-7: "from acceptance until completion + 30 days". */
 export const WINDOW_TAIL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -153,6 +154,15 @@ function evaluate(grant: Grant, actor: Actor, resource: ResourceRef, ctx: Policy
  * An actor holding several roles is allowed if ANY of them allows — a role is
  * a grant, not a restriction — and is refused with the most specific refusal
  * any of them produced otherwise.
+ *
+ * A role string with no column in the matrix contributes NOTHING and does not
+ * stop the decision. SD §BE-10 line 1305 states its own D14 policy rule as
+ * `actor.roles.some(r => r === 'ts_operator' || r === 'ts_senior')` — a
+ * positive membership test that ignores every other string in the array — and
+ * that is the specification's only worked statement of how a multi-role actor
+ * is evaluated. So an unrecognised role is skipped, the roles that do have a
+ * column decide, and the outcome cannot depend on where in the array the
+ * unrecognised string sat.
  */
 export function can(
   actor: Actor,
@@ -170,8 +180,14 @@ export function can(
   if (resource.pairingBlocked === true) return deny('pairing_blocked');
 
   const refusals: DenyReason[] = [];
-  for (const role of actor.roles) {
-    const decision = evaluate(row[role], actor, resource, ctx);
+  // `actor.roles` is typed, but its runtime value is JWT-supplied strings, so
+  // it is read as `unknown` and each entry must EARN its column (types.ts
+  // isRole). A positive membership test is what makes `row[declared]` a Grant
+  // rather than `undefined` — or, for a prototype-shaped name, something
+  // truthy with no `kind`.
+  for (const declared of actor.roles as readonly unknown[]) {
+    if (!isRole(declared)) continue;
+    const decision = evaluate(row[declared], actor, resource, ctx);
     if (decision.allow) return decision;
     refusals.push(decision.reason);
   }

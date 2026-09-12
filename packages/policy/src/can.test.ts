@@ -19,7 +19,7 @@ import assert from 'node:assert/strict';
 import { accountId } from '@kinvara/domain-types';
 import { can, STEP_UP_MAX_AGE_MS, WINDOW_TAIL_MS } from './can.ts';
 import { MATRIX } from './matrix.ts';
-import { ROLES } from './types.ts';
+import { ROLES, isRole } from './types.ts';
 import type {
   Action,
   Actor,
@@ -577,6 +577,170 @@ test('reading own account needs no step-up but updating it does (SD §BE-10)', (
   const actor: Actor = { accountId: SELF, roles: ['parent'] };
   expectAllow(can(actor, 'read', resource, CTX), 'own_record', 'read');
   expectDeny(can(actor, 'update', resource, CTX), 'step_up_required', 'update');
+});
+
+/**
+ * Role strings with no column in SD §BE-10. `Actor.roles` is typed, but the
+ * runtime value is JWT-supplied (SD §BE-10's token model), so the cast is what
+ * the call site actually looks like — not a construction.
+ */
+const unrecognised = (...names: readonly string[]): readonly Role[] =>
+  names as unknown as readonly Role[];
+
+test('isRole is the positive membership test, and a caller uses it at the token boundary', () => {
+  for (const role of ROLES) assert.equal(isRole(role), true, role);
+  for (const name of [
+    'deputy_dsl',
+    'referee',
+    'constructor',
+    '__proto__',
+    'toString',
+    'valueOf',
+    'hasOwnProperty',
+    '',
+    'Parent',
+    'dsl ',
+  ]) {
+    assert.equal(isRole(name), false, name);
+  }
+  assert.equal(isRole(undefined), false);
+  assert.equal(isRole(null), false);
+  assert.equal(isRole(5), false);
+  assert.equal(isRole({}), false);
+});
+
+test('QR-1: an unrecognised role contributes nothing, and the two orders give the same Decision', () => {
+  const owned: ResourceRef = { type: 'account', ownerAccountId: SELF };
+  const deputyFirst = can(
+    { accountId: SELF, roles: unrecognised('deputy_dsl', 'parent') },
+    'read',
+    owned,
+    CTX,
+  );
+  const parentFirst = can(
+    { accountId: SELF, roles: unrecognised('parent', 'deputy_dsl') },
+    'read',
+    owned,
+    CTX,
+  );
+  expectAllow(deputyFirst, 'own_record', 'deputy_dsl first');
+  expectAllow(parentFirst, 'own_record', 'parent first');
+  assert.deepEqual(deputyFirst, parentFirst, 'the decision must not depend on the order');
+});
+
+test('QR-1: an actor whose every role has no column in the matrix is denied, never thrown at', () => {
+  expectDeny(
+    can(
+      { accountId: SELF, roles: unrecognised('deputy_dsl') },
+      'read',
+      { type: 'child.health' },
+      CTX,
+    ),
+    'role_missing',
+    'deputy_dsl alone',
+  );
+  expectDeny(
+    can({ accountId: SELF, roles: unrecognised('referee') }, 'read', { type: 'session' }, CTX),
+    'role_missing',
+    'referee alone',
+  );
+});
+
+test('QR-3: a prototype-shaped role name is not a role, and reaches no decision either way round', () => {
+  const owned: ResourceRef = { type: 'account', ownerAccountId: SELF };
+  for (const name of ['constructor', '__proto__', 'toString', 'valueOf', 'hasOwnProperty']) {
+    expectDeny(
+      can({ accountId: SELF, roles: unrecognised(name) }, 'read', { type: 'session' }, CTX),
+      'role_missing',
+      name,
+    );
+    expectAllow(
+      can({ accountId: SELF, roles: unrecognised(name, 'parent') }, 'read', owned, CTX),
+      'own_record',
+      `${name} before parent`,
+    );
+    expectAllow(
+      can({ accountId: SELF, roles: unrecognised('parent', name) }, 'read', owned, CTX),
+      'own_record',
+      `${name} after parent`,
+    );
+  }
+});
+
+test('QR-1: when every role refuses, the reported refusal does not depend on the order either', () => {
+  const resource: ResourceRef = { type: 'account' };
+  const forward: Actor = {
+    accountId: SELF,
+    roles: unrecognised('ts_operator', 'deputy_dsl', 'ts_senior'),
+    stepUpUntil: FRESH_STEP_UP,
+  };
+  const reverse: Actor = {
+    accountId: SELF,
+    roles: unrecognised('ts_senior', 'deputy_dsl', 'ts_operator'),
+    stepUpUntil: FRESH_STEP_UP,
+  };
+  expectDeny(can(forward, 'remove_permanently', resource, CTX), 'four_eyes_required', 'forward');
+  assert.deepEqual(
+    can(reverse, 'remove_permanently', resource, CTX),
+    can(forward, 'remove_permanently', resource, CTX),
+  );
+});
+
+test('LIMITATION (QR-4): ctx is not validated, so a malformed one allows, denies or throws by cell', () => {
+  const noCtx = {} as unknown as PolicyContext;
+  const support: Actor = { accountId: SELF, roles: ['support'] };
+  // (a) a plain grant never reads the clock, so a caller who forgot `now` is ALLOWED.
+  expectAllow(
+    can(support, 'read', { type: 'sitter.public_profile' }, CTX),
+    'role_grant',
+    'control: a well-formed ctx',
+  );
+  expectAllow(
+    can(support, 'read', { type: 'sitter.public_profile' }, noCtx),
+    'role_grant',
+    'plain grant with no now: ALLOWED',
+  );
+  // (b) a step-up cell refuses before the clock is reached.
+  expectDeny(
+    can(support, 'cancel', { type: 'booking' }, noCtx),
+    'step_up_required',
+    'step-up cell',
+  );
+  // (c) a time-dependent cell throws.
+  assert.throws(
+    () =>
+      can(
+        { accountId: SELF, roles: ['sitter'] },
+        'read',
+        {
+          type: 'child.health',
+          booking: {
+            state: 'completed',
+            sitterAccountId: SELF,
+            parentAccountId: FAMILY,
+            completedAt: NOW,
+          },
+        },
+        noCtx,
+      ),
+    TypeError,
+    'window cell with no now',
+  );
+  assert.throws(
+    () =>
+      can(
+        {
+          accountId: SELF,
+          roles: ['engineer'],
+          breakGlass: { purpose: 'incident 9', expiresAt: NOW },
+        },
+        'read',
+        { type: 'production_data' },
+        noCtx,
+      ),
+    TypeError,
+    'break-glass cell with no now',
+  );
 });
 
 test('no decision ever carries both an allow basis and a deny reason', () => {

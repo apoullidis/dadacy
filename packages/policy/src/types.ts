@@ -53,6 +53,33 @@ export const ROLES: readonly Role[] = [
   'engineer',
 ];
 
+const ROLE_SET: ReadonlySet<unknown> = new Set<unknown>(ROLES);
+
+/**
+ * Does this string name a column of SD §BE-10's matrix?
+ *
+ * `Actor.roles` is TYPED `readonly Role[]`, but the value at run time is
+ * `actor_roles[]` out of the service JWT (SD §BE-10's token model), which is an
+ * array of arbitrary strings that nothing on the way in refuses (OD-60: an
+ * `any` flows into every branded type at a JSON boundary). The two role names
+ * the specification itself uses and the matrix does not give a column —
+ * `deputy_dsl` (SA §TS-7) and `referee` (SD §BE-3), decisions.md OE-17 — are
+ * therefore exactly the strings that reach here.
+ *
+ * `can()` uses this to decide whether a string names a column, and it is
+ * exported so a caller can ask the same question at the token boundary, where
+ * an unrecognised role can still be distinguished. It cannot be distinguished
+ * from the `Decision`: SD §BE-10's `DenyReason` set is closed and has no member
+ * for it, and this package does not extend that set.
+ *
+ * It is a positive Set-membership test, not an `undefined` check on the matrix
+ * row, because a `Row` is an object literal on which every `Object.prototype`
+ * key (`constructor`, `__proto__`, `toString`) resolves to something truthy.
+ */
+export function isRole(value: unknown): value is Role {
+  return ROLE_SET.has(value);
+}
+
 /** Every action naming a row of SD §BE-10's matrix. */
 export type Action =
   | 'read'
