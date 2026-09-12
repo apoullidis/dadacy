@@ -174,14 +174,26 @@ export type BookingState =
  * The relationship the `window` grant is scoped by (SA §TS-7): a confirmed
  * booking between this sitter and this family, from confirmation until
  * completion + 30 days.
+ *
+ * **Read by `can()` nowhere at this commit (OE-20).** The `window` grant fails
+ * closed, so no field on this interface reaches a decision — the same position
+ * `Capability` is in below. It is kept rather than deleted because it is
+ * published surface and `T-134` needs it: that ticket owns the evaluator, and
+ * the shape it must validate is this one.
  */
 export interface BookingWindow {
   readonly state: BookingState;
   readonly sitterAccountId: AccountId;
   /**
-   * The family end of the relationship. `can()` compares this to the
-   * resource's `ownerAccountId` and refuses if they differ or if either is
-   * absent (TL-F1, OE-19). Until then it was declared here and read nowhere.
+   * The family end of the relationship.
+   *
+   * TL-F1 added a comparison of this to the resource's `ownerAccountId`, and
+   * QA3-F1 measured what that comparison was: `===` between TWO
+   * CALLER-SUPPLIED fields, with absence recognised only as `undefined`. So
+   * `null` — what a Postgres driver yields for a NULL column — `''`, `0` and
+   * one shared object each made the two ends "agree", and twelve allows on
+   * child health followed. The grant now denies instead (OE-20), and `T-134`
+   * owns giving this field a real input contract before it is compared again.
    */
   readonly parentAccountId: AccountId;
   /** Set once the booking reaches `completed`; starts the 30-day tail. */
@@ -203,8 +215,12 @@ export interface BreakGlass {
  * trusted contact's token to ONE session ("single purpose", "session end + 3
  * h"), but no line states the shape that scope takes as an input to `can()`,
  * and `ResourceRef` carries no record identity to compare it against. Inventing
- * one is refused under PROTOCOL §2 and reported instead. A successor that
- * settles the shape adds it here and checks it in `can.ts`.
+ * one is refused under PROTOCOL §2 and reported instead — the question is
+ * `decisions.md` **OD-64**, parked with the stakeholder.
+ *
+ * **`T-134` owns it.** That ticket adds the field and checks it once OD-64 is
+ * ruled; until then `trusted_contact` has no `session#read` and no
+ * `sos#raise_concern`. Do not add the field without the ruling (PROTOCOL §2).
  */
 export interface Capability {
   readonly expiresAt: Date;
@@ -226,11 +242,17 @@ export interface ResourceRef {
   /**
    * The account owning the record, where ownership is meaningful.
    *
-   * Required by the `own` grant AND, since TL-F1, by the `window` grant, which
-   * compares it to `booking.parentAccountId`. A `window` cell called with no
-   * owner named is REFUSED, exactly as an `own` cell is.
+   * Read by the `own` grant ONLY. TL-F1 also had the `window` grant compare it
+   * to `booking.parentAccountId`; that comparison is withdrawn (OE-20), so the
+   * single remaining reader is `owns()`, which compares this to the **actor's**
+   * own id — a comparison junk cannot satisfy, which is why `owns()` refuses
+   * every spelling of absence that the withdrawn one allowed (QA3-F1, § F).
    */
   readonly ownerAccountId?: AccountId | undefined;
+  /**
+   * **Read by `can()` nowhere at this commit (OE-20)**, the `window` grant
+   * having failed closed. Kept as published surface for `T-134`.
+   */
   readonly booking?: BookingWindow | undefined;
   /** D14: the market's Article 10 model (SD §BE-17). */
   readonly art10Model?: Art10Model | undefined;

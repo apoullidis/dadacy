@@ -14,7 +14,7 @@
  *
  *   allow    -> A   (or AS where step-up applies)   basis `role_grant`
  *   own      -> O   (or OS)                         basis `own_record`
- *   window   -> W                                   basis `confirmed_booking_window`
+ *   window   -> W                                   DENIES today (OE-20)
  *   bg       -> BG                                  basis `break_glass`
  *   —        -> D                                   reason `role_missing`
  *
@@ -35,6 +35,23 @@
  * (see the `capability` case there). So a CAP cell denies today, and the day a
  * successor gives `Capability` a scope, these two cells start allowing again
  * with no edit to this table.
+ *
+ * THE SAME IS NOW TRUE OF W (OE-20), and for the same reason: the stakeholder
+ * ruled that BOTH conditional grants fail closed and that their evaluators go
+ * to `T-134`. The single `W` cell — `sitter` on `child.health#read`, line 1251
+ * of SD §BE-10 — is likewise transcribed correctly and is NOT edited here. The
+ * grid says `window`; `can.ts`'s `window` case denies. So the two withdrawn
+ * capabilities are exactly:
+ *
+ *   - a `sitter` gets no `window`-based read (this table's one W cell);
+ *   - `trusted_contact` gets no `session#read` and no `sos#raise_concern`
+ *     (this table's two CAP cells, and its only two non-deny cells — OD-64).
+ *
+ * Both return WITH NO EDIT TO THIS TABLE once `T-134` lands a validated
+ * evaluator and OD-64's scope question is ruled. Nothing in this file records
+ * a withdrawal: a table that edited itself whenever an evaluator was withdrawn
+ * would stop being a transcription of the specification, which is the one
+ * property it exists to have.
  *
  * Three spellings in the matrix are NOT authorisation decisions and are
  * recorded here rather than modelled, because modelling them would make this

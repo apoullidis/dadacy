@@ -24,7 +24,15 @@ import type {
 import { MATRIX, cell } from './matrix.ts';
 import { isRole } from './types.ts';
 
-/** SA §TS-7: "from acceptance until completion + 30 days". */
+/**
+ * SA §TS-7: "from acceptance until completion + 30 days".
+ *
+ * READ BY NO DECISION AT THIS COMMIT (OE-20): the `window` grant fails closed,
+ * so nothing consults the tail. The constant stays exported because it is
+ * published surface at its SD/SA value and `T-134` needs it unchanged when it
+ * restores the grant. Held by index.test.ts 'the barrel exports the two spec
+ * constants at their SD and SA values'.
+ */
 export const WINDOW_TAIL_MS = 30 * 24 * 60 * 60 * 1000;
 
 /** SD §BE-10: "Step-up (`step_up_until` within 10 minutes)". */
@@ -42,6 +50,14 @@ const deny = (reason: DenyReason): Decision => ({ allow: false, reason });
  * This never widens a permission — it is only consulted once EVERY role has
  * refused — and the string is logged, never returned in the 403 body
  * (SD §BE-2, SD §BE-10).
+ *
+ * `booking_not_confirmed` and `window_expired` are still listed here and are
+ * still members of SD §BE-10's closed set, but NO cell can produce either at
+ * this commit: the `window` grant, their only source, fails closed (OE-20).
+ * They are kept because the set is the specification's and not ours to prune,
+ * and because `T-134` restores their source. Held by 'WITHDRAWN (OE-20): every
+ * pre-confirmation booking state denies with role_missing, not
+ * booking_not_confirmed'.
  */
 const REASON_PRECEDENCE: readonly DenyReason[] = [
   'pairing_blocked',
@@ -101,53 +117,12 @@ function coversLocale(actor: Actor, resource: ResourceRef): boolean {
   return languages.includes(locale);
 }
 
-/**
- * The `window` grant: SA §TS-7's worked example, and the only cell in the
- * matrix whose decision depends on `ctx.now`.
- *
- * SD §BE-10's legend (line 1244) defines `window` as "only within a
- * relationship-and-time scope", and SA §TS-7 states the relationship in full:
- * "A sitter may read this child's allergy data because she holds a *confirmed*
- * booking WITH THIS FAMILY, and only from acceptance until completion + 30
- * days". A relationship has TWO ends, and until TL-F1 (OE-19) this function
- * checked only the sitter's: a sitter holding a confirmed booking with one
- * family could read another family's child.health record, with
- * `basis: 'confirmed_booking_window'` written to the audit log (§BE-10 line
- * 1309) for a relationship nothing had checked.
- *
- * So the family end is now compared too: `booking.parentAccountId` must equal
- * `resource.ownerAccountId`, and BOTH must be present. An absent owner is
- * refused rather than waved through, which is what the `own` grant already does
- * ('ownership needs a named owner: a resource with none is refused') — two
- * relationship grants in one file must not treat a missing owner oppositely.
- *
- * The refusal is `role_missing` on all three relationship failures. That is a
- * reading of SD §BE-10's CLOSED `DenyReason` set (lines 1295-1298), not a
- * choice: no member of it names a relationship mismatch, and `role_missing` is
- * already what the sitter-end refusal (C4) and the `own` grant's absent or
- * mismatched owner both return. `booking_not_confirmed` is kept for the two
- * cases that are genuinely about the booking's STATE rather than its parties.
- *
- * Held by can.test.ts 'TL-F1: the window grant checks the family end of the
- * relationship, not only the sitter end' (C1-C5).
+/*
+ * There is deliberately no `windowDecision()` any more either (OE-20). See the
+ * `window` case in `evaluate()`: that grant fails closed too, so there is no
+ * booking to read, no clock to consult and no identity to compare. `T-134`
+ * restores it.
  */
-function windowDecision(actor: Actor, resource: ResourceRef, ctx: PolicyContext): Decision {
-  const booking = resource.booking;
-  if (booking === undefined) return deny('booking_not_confirmed');
-  if (booking.sitterAccountId !== actor.accountId) return deny('role_missing');
-  // The family end (TL-F1). Absent on either side is a refusal, not a pass.
-  const owner = resource.ownerAccountId;
-  if (owner === undefined) return deny('role_missing');
-  if (booking.parentAccountId !== owner) return deny('role_missing');
-  if (booking.state === 'confirmed' || booking.state === 'in_progress') {
-    return allow('confirmed_booking_window');
-  }
-  if (booking.state !== 'completed') return deny('booking_not_confirmed');
-  const completedAt = booking.completedAt;
-  if (completedAt === undefined) return deny('booking_not_confirmed');
-  if (ctx.now.getTime() > completedAt.getTime() + WINDOW_TAIL_MS) return deny('window_expired');
-  return allow('confirmed_booking_window');
-}
 
 function evaluate(grant: Grant, actor: Actor, resource: ResourceRef, ctx: PolicyContext): Decision {
   if (grant.stepUp === true && !steppedUp(actor, ctx)) return deny('step_up_required');
@@ -159,7 +134,49 @@ function evaluate(grant: Grant, actor: Actor, resource: ResourceRef, ctx: Policy
     case 'own':
       return owns(actor, resource) ? allow('own_record') : deny('role_missing');
     case 'window':
-      return windowDecision(actor, resource, ctx);
+      /*
+       * OE-20: FAIL CLOSED, exactly as `capability` below already does.
+       *
+       * This grant had two ends of a relationship to check and checked one, so
+       * a sitter holding a confirmed booking with FAMILY A read FAMILY B's
+       * child health record (TL-F1). The family end was then added — and the
+       * comparison it added was `===` between `booking.parentAccountId` and
+       * `resource.ownerAccountId`, TWO CALLER-SUPPLIED FIELDS, with absence
+       * recognised only as `undefined`. So `null` (what a Postgres driver
+       * yields for a NULL column), `''`, `0` and one shared object each made
+       * the two ends "agree" and allowed: twelve measured allows on child
+       * health, with `basis: 'confirmed_booking_window'` going to the audit
+       * log (SD §BE-10 line 1309) for a relationship nothing had established
+       * (QA3-F1). `owns()` below cannot have that defect, because it compares
+       * the owner to the ACTOR's own id, which junk cannot match.
+       *
+       * The stakeholder ruled (decisions.md OE-20) that this ticket lands its
+       * verified matrix and withdraws both conditional grants rather than
+       * attempt the evaluator a fourth time. So the grant denies, and NO
+       * caller-supplied identity comparison remains reachable in this file:
+       * `resource.booking` is now read nowhere.
+       *
+       * THE WITHDRAWAL, at true width: a `sitter` gets NO `window`-based read.
+       * `child.health#read` is the only `W` cell in SD §BE-10, so that is the
+       * whole of it — a sitter can no longer read the child health record of a
+       * family they hold a confirmed booking with, which the product intends
+       * them to have (SA §TS-7's worked example). It fails CLOSED: a refusal
+       * the caller sees, never an unauthorised read.
+       *
+       * THE MATRIX CELL IS UNTOUCHED. `matrix.ts` still carries `W` for
+       * `sitter` on `child.health#read`, transcribed from the grid, so the day
+       * `T-134` lands a validated evaluator the cell starts allowing again
+       * with NO edit to the table.
+       *
+       * `role_missing` is the same closed-set reason (SD §BE-10 lines
+       * 1295-1298) the grant already gave for a sitter-end mismatch.
+       *
+       * Held by can.test.ts 'WITHDRAWN (OE-20): the C1-C5 fixtures all deny,
+       * C1 included — no identity comparison is reachable' and the eight other
+       * WITHDRAWN cases, every one of which turns RED when `T-134` restores
+       * the grant.
+       */
+      return deny('role_missing');
     case 'break_glass':
       return breakGlassActive(actor, ctx) ? allow('break_glass') : deny('role_missing');
     case 'capability':
