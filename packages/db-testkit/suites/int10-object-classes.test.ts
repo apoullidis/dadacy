@@ -175,7 +175,7 @@ describe('check 14 — UNTRUSTED LANGUAGES, and the false positive that only run
     // regardless. Filtering on `lanispl` as well as `lanpltrusted` fixed it.
     assertPermitted(
       'the assertion on a clean database',
-      await db.psql({ commands: ['SELECT public.assert_answering_service_write_only()'] }),
+      await db.psql({ commands: ['SELECT kinvara_guard.assert_answering_service_write_only()'] }),
     );
   });
 
@@ -218,7 +218,9 @@ describe('checks 12, 13, 16 and role membership — DETECTIVE ONLY, and measured
   });
 
   test('but the assertion detects every one of them', async () => {
-    const r = await db.psql({ commands: ['SELECT public.assert_answering_service_write_only()'] });
+    const r = await db.psql({
+      commands: ['SELECT kinvara_guard.assert_answering_service_write_only()'],
+    });
     assertRefused('the assertion', r, { message: INT10_RAISE });
     for (const detail of [
       'holds ALTER SYSTEM on parameter log_statement',
@@ -242,7 +244,7 @@ describe('checks 12, 13, 16 and role membership — DETECTIVE ONLY, and measured
           `REVOKE TEMPORARY ON DATABASE ${APP_DATABASE} FROM answering_service`,
           `REVOKE CREATE ON TABLESPACE pg_default FROM answering_service`,
           `REVOKE app_rw FROM answering_service`,
-          `SELECT public.assert_answering_service_write_only()`,
+          `SELECT kinvara_guard.assert_answering_service_write_only()`,
         ],
       }),
     );
@@ -304,7 +306,7 @@ describe('THE RULE, not the list — preventable iff the ACL catalogue is per-da
     assert.equal(
       await db.value(
         `SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-          WHERE n.nspname = 'public' AND p.proname = 'assert_answering_service_write_only'`,
+          WHERE n.nspname = 'kinvara_guard' AND p.proname = 'assert_answering_service_write_only'`,
       ),
       '1',
       'the function T-033 must call on a schedule must exist for the compensating control to be buildable',

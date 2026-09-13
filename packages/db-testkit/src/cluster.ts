@@ -115,6 +115,13 @@ export interface Cluster {
   sql(options: PsqlOptions): Promise<PsqlResult>;
   /** One value, trimmed — `-A -t` with a single row and column. */
   value(sql: string, options?: PsqlOptions): Promise<string>;
+  /**
+   * `node scripts/db-migrate.ts <args>` (`T-136` § Published contract) against
+   * this cluster's `kinvara` database, as the bootstrap superuser, with the same
+   * from-nothing libpq environment `psql` gets. **Never throws on a non-zero
+   * exit**; judge the result with `judgeMigrateRun` (`src/migrate.ts`).
+   */
+  migrate(args: readonly string[]): Promise<PsqlResult>;
   logs(): Promise<string>;
   stop(): Promise<void>;
 }
@@ -158,9 +165,18 @@ function psqlEnv(c: {
 }
 
 function runPsql(env: Record<string, string>, args: readonly string[]): Promise<PsqlResult> {
+  return runCommand('psql', env, args);
+}
+
+/** Never throws on a non-zero exit; a spawn failure is exit 127. */
+function runCommand(
+  command: string,
+  env: Record<string, string>,
+  args: readonly string[],
+): Promise<PsqlResult> {
   return new Promise((resolve) => {
     execFile(
-      'psql',
+      command,
       [...args],
       { env, cwd: REPO_ROOT, maxBuffer: 32 * 1024 * 1024, encoding: 'utf8' },
       (err, stdout, stderr) => {
@@ -363,6 +379,19 @@ function makeCluster(c: {
       }
       return r.stdout.trim();
     },
+    migrate(args: readonly string[]): Promise<PsqlResult> {
+      // `process.execPath` is the toolbox's pinned Node; the runner needs no npm
+      // package (T-136 § contract §1). Same from-nothing environment as psql, so
+      // the runner cannot fall back to svc run's compose PGHOST either.
+      const env = psqlEnv({
+        host: c.host,
+        port: c.port,
+        user: SUPERUSER,
+        password: c.password,
+        database: APP_DATABASE,
+      });
+      return runCommand(process.execPath, env, [path.join(REPO_ROOT, MIGRATE_RUNNER), ...args]);
+    },
     logs: () => containerLogs(c.containerId),
     async stop(): Promise<void> {
       await removeContainer(c.containerId).catch(() => undefined);
@@ -506,6 +535,9 @@ export async function assertDisposable(cluster: Cluster, check: DisposableCheck)
     );
   }
 }
+
+/** `T-136`'s migration runner, resolved from the repository rather than copied into this package. */
+export const MIGRATE_RUNNER = 'scripts/db-migrate.ts';
 
 /** The `0001` baseline, resolved from the repo rather than copied into this package. */
 export const BASELINE_UP = 'db/migrations/0001_extensions_and_roles.up.sql';

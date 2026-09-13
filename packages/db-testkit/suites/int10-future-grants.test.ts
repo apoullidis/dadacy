@@ -5,7 +5,8 @@
  *
  * A grant is a fact about today. Fifteen tickets code against this schema and
  * none of their authors will have read SA §INT-10, so `0001` installs
- * `public.assert_answering_service_write_only()` on an event trigger. G1–G7 are
+ * `assert_answering_service_write_only()` on an event trigger — in schema
+ * `kinvara_guard` since `0003` (T-143), which the harness applies (T-137). G1–G7 are
  * the seven ways someone reopens the hole; **G7 was a real hole found by
  * testing G6** — `PUBLIC` holds `EXECUTE` on every new function by default, so
  * a `SECURITY DEFINER` function is a read path created by a `CREATE` statement
@@ -146,7 +147,7 @@ describe('SA §INT-10 — the guard refuses future grants', () => {
     );
     assertPermitted(
       'the explicit assertion',
-      await db.psql({ commands: ['SELECT public.assert_answering_service_write_only()'] }),
+      await db.psql({ commands: ['SELECT kinvara_guard.assert_answering_service_write_only()'] }),
     );
   });
 
@@ -170,7 +171,7 @@ describe('SA §INT-10 — the guard refuses future grants', () => {
 
     assertRefused(
       '3. the assertion catches it, which is why it is also a reconciler query (T-033)',
-      await db.psql({ commands: ['SELECT public.assert_answering_service_write_only()'] }),
+      await db.psql({ commands: ['SELECT kinvara_guard.assert_answering_service_write_only()'] }),
       { message: 'answering_service is a member of role app_rw' },
     );
 
@@ -180,7 +181,7 @@ describe('SA §INT-10 — the guard refuses future grants', () => {
     );
     assertPermitted(
       '4. the boundary is restored',
-      await db.psql({ commands: ['SELECT public.assert_answering_service_write_only()'] }),
+      await db.psql({ commands: ['SELECT kinvara_guard.assert_answering_service_write_only()'] }),
     );
 
     assertRefused(
@@ -193,10 +194,11 @@ describe('SA §INT-10 — the guard refuses future grants', () => {
   test('PREMISES ONLY — app_ddl is NOSUPERUSER and trg_int10_answering_service is enabled (disarming is not attempted here)', async () => {
     // Asserts two premises and nothing more: app_ddl's rolsuper is false, and the
     // event trigger is enabled ('O'). It does NOT show that app_ddl cannot disarm
-    // the guard, and that claim is false on 0001 (the harness applies 0001 alone):
-    // as owner of schema public, an app_ddl login can drop the guard's functions
-    // (OD-73/OD-75 routes A4, A5). Migration 0003 moves them to kinvara_guard
-    // (T-143); porting those refusals here is T-122/T-137's.
+    // the guard. On 0001 alone that claim was false (OD-73/OD-75 routes A4, A5).
+    // The harness now applies every committed migration (T-137), so 0003 is
+    // present and the guard's functions live in kinvara_guard (T-143); the
+    // refusals of A4/A5 on that state (T-143 R1-3..R1-5) are not ported here —
+    // carried to T-122.
     assert.equal(
       await db.value(`SELECT rolsuper::text FROM pg_roles WHERE rolname = 'app_ddl'`),
       'false',

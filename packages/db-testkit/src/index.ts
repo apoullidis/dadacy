@@ -1,7 +1,9 @@
 /**
  * `@kinvara/db-testkit` — how a constraint suite acquires a database.
  *
- * Published contract: `tasks/state/EP-QA/T-115.md` § Published contract.
+ * Published contract: `tasks/state/EP-QA/T-115.md` § Published contract, as
+ * amended by `tasks/state/EP-QA/T-137.md` § Published contract (every committed
+ * migration, not `0001` alone).
  *
  * ```ts
  * import { afterAll, beforeAll, test } from 'vitest';
@@ -17,6 +19,8 @@
  * cluster-global and a shared cluster makes a negative test lie (see
  * `src/cluster.ts`).
  */
+import path from 'node:path';
+
 export {
   acquireCluster,
   applyBaseline,
@@ -54,26 +58,57 @@ export {
   ACCOUNT_ID,
   ACCOUNT_EMAIL,
 } from './fixtures.ts';
+export {
+  applyMigrations,
+  assertCarriesEveryCommittedMigration,
+  highestMigrationIn,
+  judgeMigrateRun,
+  MigrationsNotApplied,
+  MIGRATE_RUNNER,
+  MIGRATIONS_DIR,
+} from './migrate.ts';
+export type { MigrateVerdict, NotAppliedKind } from './migrate.ts';
 
-import { acquireCluster, applyBaseline, type Cluster } from './cluster.ts';
+import { acquireCluster, REPO_ROOT, type Cluster } from './cluster.ts';
+import {
+  applyMigrations,
+  assertCarriesEveryCommittedMigration,
+  MIGRATIONS_DIR,
+} from './migrate.ts';
+
+export interface MigratedClusterOptions {
+  /**
+   * A migrations directory other than `db/migrations`. It must carry every
+   * committed migration byte for byte (refused before a cluster starts
+   * otherwise), so it can only ADD migrations — the scratch-migration case.
+   */
+  readonly dir?: string;
+}
 
 /**
- * The common case: a fresh cluster with `0001` applied and asserted green.
+ * The common case: a fresh cluster with EVERY committed migration applied, in
+ * order, by `T-136`'s runner (`db:migrate up`), the run judged by exit status and
+ * banner together, and the database's record read back.
+ *
+ * On anything else it stops the cluster and throws `MigrationsNotApplied`, whose
+ * `kind` separates a migration that failed (`FAIL`: the file and psql's exit are
+ * named) from a runner that crashed (`CRASH`), a refused directory or record
+ * (`REFUSED`), an unreachable database (`ERROR`), a run that recorded less than
+ * it claimed (`NOT_RECORDED`), and a `dir` missing a committed migration
+ * (`INCOMPLETE_DIR`, before any cluster starts).
  *
  * The three suites that exist to watch `0001` REFUSE use `acquireCluster` +
  * `applyBaseline` directly, because for them a non-zero exit is the pass.
  */
-export async function acquireMigratedCluster(suite: string): Promise<Cluster> {
+export async function acquireMigratedCluster(
+  suite: string,
+  options: MigratedClusterOptions = {},
+): Promise<Cluster> {
+  const dir = path.resolve(options.dir ?? path.join(REPO_ROOT, MIGRATIONS_DIR));
+  assertCarriesEveryCommittedMigration(suite, dir);
   const cluster = await acquireCluster(suite);
   try {
-    const applied = await applyBaseline(cluster);
-    if (applied.code !== 0) {
-      throw new Error(
-        `0001 did not apply to this suite's cluster (psql exit ${String(applied.code)}).\n` +
-          `If this is the SA §INT-10 guard raising KV010, the guard has found a real read path.\n` +
-          applied.output,
-      );
-    }
+    await applyMigrations(cluster, dir);
     return cluster;
   } catch (err) {
     await cluster.stop();

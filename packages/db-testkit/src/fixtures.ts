@@ -58,7 +58,8 @@ export async function installInt10Fixtures(cluster: Cluster): Promise<void> {
       `GRANT INSERT ON public.out_of_hours_report TO answering_service`,
       `GRANT SELECT, INSERT, UPDATE, DELETE ON public.account, public.out_of_hours_report TO app_rw`,
       `CREATE ROLE ${AS_PROBE} LOGIN PASSWORD '${PROBE_PASSWORD}' IN ROLE answering_service`,
-      `SELECT public.assert_answering_service_write_only()`,
+      // The guard lives in kinvara_guard since 0003 (T-143 § contract (rework 1) §1).
+      `SELECT kinvara_guard.assert_answering_service_write_only()`,
     ],
   });
 }
