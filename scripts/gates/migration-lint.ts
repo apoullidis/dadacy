@@ -485,7 +485,10 @@ function bareName(s: string): string {
 
 function grantsIn(fragment: string): Grant[] {
   const out: Grant[] = [];
-  for (const piece of fragment.split(/(?=\bGRANT\b|\bREVOKE\b)/)) {
+  // Split before each GRANT or REVOKE keyword, but never inside `WITH GRANT OPTION` or
+  // `REVOKE GRANT OPTION FOR`: splitting there cut the grantee to `ANSWERING_SERVICE WITH`,
+  // which is how `… TO answering_service WITH GRANT OPTION` passed (rework 1, C69).
+  for (const piece of fragment.split(/(?=\bGRANT\b(?! OPTION\b)|\bREVOKE\b)/)) {
     const clause = piece.trim();
     if (!clause.startsWith('GRANT ')) continue;
     const onForm = /^GRANT (.+?) ON (.+?) TO (.+?)( WITH GRANT OPTION.*| GRANTED BY .*)?$/.exec(

@@ -321,6 +321,8 @@ check C6F "answering_service second in a granted role list" R-ANSWERING-SERVICE
 pair expand "CREATE TABLE public.out_of_hours_report (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, body text);
 GRANT INSERT ON TABLE public.out_of_hours_report TO answering_service;"
 check C6G "CONTROL: the permitted grant spelled ON TABLE public.out_of_hours_report" PASS
+pair expand "REVOKE GRANT OPTION FOR INSERT ON out_of_hours_report FROM answering_service;"
+check C6I "CONTROL: REVOKE GRANT OPTION FOR … FROM answering_service is not read as a grant" PASS
 
 echo "== R-TABLE-GRANT (T-020 contract §4/§6)"
 pair expand "CREATE TABLE public.t021_thing (id int);"
