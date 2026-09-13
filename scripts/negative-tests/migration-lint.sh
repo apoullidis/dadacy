@@ -42,6 +42,8 @@ restore() {
   rm -f "$M"/9001_t021_plant.* "$M"/9002_t021_plant.* "$M"/0001_t021_plant.* \
     "$M"/0000_t021_plant.* "$M"/t021_badname.sql "$APP"
   git checkout -q -- "$M"
+  # T-138 (OD-80 cases) plants db/schema.ts; restore it when it is tracked at HEAD.
+  if git cat-file -e HEAD:db/schema.ts 2>/dev/null; then git checkout -q -- db/schema.ts; fi
   if [ -n "$(git status --porcelain)" ]; then
     echo "ABORT: the tree did not restore cleanly"
     git status --porcelain
@@ -230,6 +232,59 @@ check C32 "a contract migration alongside a comment-only edit to a merged migrat
 plant "$UP" "-- @phase: contract
 ALTER TABLE public.booking DROP COLUMN legacy_note;"
 check C33 "CONTROL: a contract migration alone, with no down file" PASS
+
+echo "== R-CONTRACT-ALONE and the regenerated db/schema.ts (OD-80, T-138)"
+git cat-file -e HEAD:db/schema.ts 2>/dev/null || {
+  echo "ABORT: db/schema.ts is not committed at HEAD; the OD-80 cases need it"
+  exit 2
+}
+# regen_schema: rewrite db/schema.ts as the generator would after a schema change (a changed
+# body under a recomputed header); assert it differs from HEAD and its header verifies.
+regen_schema() {
+  node --input-type=module -e '
+    import fs from "node:fs";
+    import { renderSchemaFile, verifySchemaFile } from "./scripts/gates/lib/schema-digest.ts";
+    const lines = fs.readFileSync("db/schema.ts", "utf8").split("\n");
+    const version = /drizzle-kit (\S+) sha256/.exec(lines[2] ?? "")?.[1] ?? "unknown";
+    const body = lines.slice(3).join("\n") + "export const t138Regenerated = 1;\n";
+    fs.writeFileSync("db/schema.ts", renderSchemaFile(body, version));
+    if (!verifySchemaFile(fs.readFileSync("db/schema.ts", "utf8")).ok) process.exit(3);
+  ' || {
+    echo "ABORT: regen_schema did not produce a verifying db/schema.ts"
+    exit 2
+  }
+  if git diff --quiet -- db/schema.ts; then
+    echo "ABORT: regen_schema did not change db/schema.ts"
+    exit 2
+  fi
+}
+# hand_edit_schema: append a line without touching the header; assert it landed.
+hand_edit_schema() {
+  printf '%s\n' 'export const handWritten = 1;' >>db/schema.ts
+  if git diff --quiet -- db/schema.ts; then
+    echo "ABORT: the hand edit did not change db/schema.ts"
+    exit 2
+  fi
+}
+pair contract "ALTER TABLE public.booking DROP COLUMN legacy_note;"
+regen_schema
+check C3H "CONTROL (OD-80): a contract migration with db/schema.ts regenerated beside it" PASS
+pair contract "ALTER TABLE public.booking DROP COLUMN legacy_note;"
+hand_edit_schema
+check C3I "(OD-80) a contract migration with db/schema.ts edited by hand" R-CONTRACT-ALONE
+pair contract "ALTER TABLE public.booking DROP COLUMN legacy_note;"
+regen_schema
+plant "$APP" "application code that stopped reading legacy_note"
+check C3J "(OD-80) a contract migration, a regenerated db/schema.ts AND application code" R-CONTRACT-ALONE
+pair contract "ALTER TABLE public.booking DROP COLUMN legacy_note;"
+rm -f db/schema.ts
+if [ -e db/schema.ts ]; then
+  echo "ABORT: db/schema.ts still exists"
+  exit 2
+fi
+check C3K "(OD-80) a contract migration with db/schema.ts deleted" R-CONTRACT-ALONE
+hand_edit_schema
+check C3L "CONTROL (bound): db/schema.ts edited by hand, no contract migration; this lint does not read it" PASS
 pair expand "ALTER TABLE public.booking DROP COLUMN legacy_note;"
 check C34 "DROP COLUMN declared expand" R-PHASE
 pair data "ALTER TABLE public.booking DROP legacy_note;"

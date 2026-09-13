@@ -38,7 +38,10 @@
  *                        contract. This rule is stricter than "its own expand": naming the
  *                        expand would need a parse of object names, and a reading that misses
  *                        a quoted or schema-qualified name would pass the case this rule
- *                        exists for.
+ *                        exists for. One exception (OD-80, T-138): `db/schema.ts`, which SD
+ *                        §DB-1 requires regenerated beside any schema change, is accepted when
+ *                        it is not deleted and its generated header verifies
+ *                        (lib/schema-digest.ts). A hand-edited or deleted one is still refused.
  *   [R-CONTRACT-PURE]    an up file declared `contract` contains no expand statement: no
  *                        `CREATE …` (other than `CREATE` as a privilege name), no
  *                        `ALTER … ADD …`, no `GRANT … TO`. Such a file also loses the
@@ -109,6 +112,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { REPO_ROOT, capture, finish } from './lib/run.ts';
+import { SCHEMA_REL, verifySchemaFile } from './lib/schema-digest.ts';
 
 const GATE = 'gate:migration-lint';
 const MIGRATIONS_REL = 'db/migrations';
@@ -1007,6 +1011,24 @@ if (addedContracts.length > 0) {
     allowed.add(m.rel);
     allowed.add(`${MIGRATIONS_REL}/${m.num}_${m.slug}.down.sql`);
   }
+  // OD-80 (T-138). SD §DB-1 requires `db/schema.ts` to be regenerated in the change set of any
+  // migration that changes the introspected schema, a contract included. It is accepted here
+  // ONLY when it is not deleted and the working-tree file verifies as the generator's untouched
+  // output (scripts/gates/lib/schema-digest.ts). A hand-edited or deleted `db/schema.ts` is still
+  // refused. This reads the file's own digest, so it cannot tell a regeneration from an edit
+  // whose author recomputed the digest; parity with the database is `db:introspect:check`'s.
+  let schemaNote = '';
+  const schemaChange = changed.get(SCHEMA_REL);
+  if (schemaChange !== undefined) {
+    if (schemaChange.status === 'D') {
+      schemaNote = `; ${SCHEMA_REL} is deleted, which is not a regeneration`;
+    } else {
+      const verdict = verifySchemaFile(fs.readFileSync(path.join(REPO_ROOT, SCHEMA_REL), 'utf8'));
+      if (verdict.ok) allowed.add(SCHEMA_REL);
+      else
+        schemaNote = `; ${SCHEMA_REL} is not the generator's untouched output: ${verdict.reason}`;
+    }
+  }
   const others = changes.filter((c) => !allowed.has(c.path)).map((c) => c.path);
   if (others.length > 0) {
     const shown =
@@ -1015,7 +1037,7 @@ if (addedContracts.length > 0) {
     problem(
       'R-CONTRACT-ALONE',
       addedContracts.map((m) => m.rel).join(', '),
-      `a contract migration must land alone, a release after its expand and the code that stopped using what it removes (SD §DB-13 rules 1–2); this change set also carries: ${shown}`,
+      `a contract migration must land alone, a release after its expand and the code that stopped using what it removes (SD §DB-13 rules 1–2); this change set also carries: ${shown}${schemaNote}`,
     );
   }
 }
