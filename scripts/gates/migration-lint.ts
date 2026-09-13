@@ -64,7 +64,9 @@
  *                        (SA §SEC-8). Column-level grants count. The grantee does not matter.
  *                        Also refused: `ALTER TABLE <one of them> OWNER TO`, because an owner
  *                        holds every privilege; granting the role `app_ddl` to anyone,
- *                        because `app_ddl` owns every table; and `REASSIGN OWNED` in any
+ *                        because `app_ddl` owns every table, and likewise `CREATE ROLE|USER|GROUP`
+ *                        naming `app_ddl` or `ALTER ROLE|USER|GROUP app_ddl` (membership without
+ *                        a GRANT, measured in rework 1 M11/M12); and `REASSIGN OWNED` in any
  *                        form, because this gate cannot see what the named role owns (QA-F3).
  *                        `ALTER VIEW|MATERIALIZED VIEW|FOREIGN TABLE|SEQUENCE <table> OWNER TO`
  *                        is not matched: PostgreSQL refuses each on a table (rework 1, M2).
@@ -831,6 +833,16 @@ for (const m of migrations) {
         'R-APPEND-ONLY',
         m.rel,
         `REASSIGN OWNED transfers every object a role owns without naming one, and app_ddl owns the append-only tables; this gate cannot see what a role owns, so every form is refused (SA §SEC-8, QA-F3): ${snippet(f)}`,
+      );
+    }
+    if (
+      /\bCREATE (?:ROLE|USER|GROUP)\b.*\bAPP_DDL\b/.test(f) ||
+      /\bALTER (?:ROLE|USER|GROUP) APP_DDL\b/.test(f)
+    ) {
+      problem(
+        'R-APPEND-ONLY',
+        m.rel,
+        `confers membership in app_ddl without a GRANT (CREATE ROLE … IN ROLE, ALTER GROUP … ADD USER), or alters app_ddl; app_ddl owns the append-only tables, so its members can UPDATE and DELETE them (SA §SEC-8): ${snippet(f)}`,
       );
     }
   }
