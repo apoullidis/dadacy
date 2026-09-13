@@ -548,14 +548,21 @@ function headerEndLine(segments: readonly Segment[]): number {
 /**
  * Every code, string and dollar segment at any depth, comments skipped: a dollar body is lexed
  * again as SQL (as `fragments()` does) and visited raw only if that lex fails. `next` is the next
- * segment at the same depth that is not a comment.
+ * segment at the same depth that is neither a comment nor whitespace-only code: the lexer leaves
+ * the whitespace after a comment as a segment of its own, so `set_config(/* c *\/ 'role', …)` would
+ * otherwise hide its string from the call (T-031 self-attack A11, case CR0M).
  */
 function walk(
   segments: readonly Segment[],
   visit: (s: Segment, next: Segment | undefined) => void,
   depth = 0,
 ): void {
-  const live = segments.filter((s) => s.kind !== 'line-comment' && s.kind !== 'block-comment');
+  const live = segments.filter(
+    (s) =>
+      s.kind !== 'line-comment' &&
+      s.kind !== 'block-comment' &&
+      !(s.kind === 'code' && s.text.trim() === ''),
+  );
   live.forEach((s, k) => {
     if (s.kind === 'dollar' && depth < 8) {
       const inner = lex(s.body);
@@ -949,7 +956,8 @@ for (const m of migrations) {
           'a -- @run-as marker in a down file; a down file runs as its up file does, and the runner refuses a marker here (T-136 § contract §6)',
         );
       } else {
-        const form = RUN_AS_FORM.exec(line);
+        // `.` does not match `\r`, so a CRLF line is matched without it (self-attack A15, CMC4).
+        const form = RUN_AS_FORM.exec(line.replace(/\r$/, ''));
         if (form === null) {
           problem(
             'R-RUN-AS',
