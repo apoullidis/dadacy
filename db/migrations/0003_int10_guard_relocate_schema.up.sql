@@ -26,10 +26,12 @@
 -- whole was not, because it hangs off two functions app_ddl could drop.
 --
 -- THE FIX (OE-23, stakeholder chose A). Move both functions into a NEW schema kinvara_guard,
--- owned by the bootstrap superuser, on which app_ddl holds NO privilege at all — not USAGE,
--- not CREATE, and it does not own it. app_ddl can then neither drop, replace, shadow (the
--- calls are schema-qualified) nor recreate them, nor drop the schema. Ownership of schema
--- public is UNCHANGED (stakeholder rejected option B).
+-- owned by the bootstrap superuser. app_ddl does not own it and holds NO CREATE on it; it
+-- holds USAGE only, so that its own DDL can fire the guard (see HOW LEGITIMATE DDL STILL
+-- FIRES THE GUARD). app_ddl then cannot drop or replace either function, divert the
+-- schema-qualified calls with a same-named function in public, or drop the schema (each
+-- measured as an app_ddl-only login, T-143 evidence). Ownership of schema public is
+-- UNCHANGED (stakeholder rejected option B).
 --
 -- WHY NOT RE-CREATE THE EVENT TRIGGER. The trigger function is RELOCATED with ALTER FUNCTION
 -- ... SET SCHEMA, which keeps its OID, so trg_int10_answering_service keeps pointing at it
@@ -62,13 +64,13 @@
 -- reconciler, which codes against the kinvara_guard.* names published here.
 
 -- ===========================================================================
--- 1. The guard's own schema — owned by the bootstrap superuser, closed to app_ddl
+-- 1. The guard's own schema — owned by the bootstrap superuser; app_ddl gets USAGE, never CREATE
 -- ===========================================================================
 CREATE SCHEMA kinvara_guard;
 COMMENT ON SCHEMA kinvara_guard IS
-  'Holds the SA §INT-10 guard functions. Owned by the bootstrap superuser; app_ddl holds no '
-  'USAGE and no CREATE here, which is what puts the guard out of a break-glass DDL session''s '
-  'reach (OE-23, OD-73). Ticket T-143.';
+  'Holds the SA §INT-10 guard functions. Owned by the bootstrap superuser. app_ddl does not '
+  'own it and holds USAGE (to fire the guard) but no CREATE here, which is what puts the '
+  'guard functions out of a break-glass DDL session''s reach (OE-23, OD-73). Ticket T-143.';
 -- A fresh schema grants PUBLIC nothing; this REVOKE is belt-and-braces and documents intent.
 REVOKE ALL ON SCHEMA kinvara_guard FROM PUBLIC;
 
@@ -371,7 +373,8 @@ COMMENT ON FUNCTION kinvara_guard.assert_answering_service_write_only() IS
   'per-database catalogues. DETECTIVE ONLY for the four grantable shared catalogues — '
   'pg_database, pg_parameter_acl, pg_tablespace and pg_auth_members (role membership) — '
   'which fire nothing. A scheduled reconciler (T-033) is what closes those four. '
-  'Lives in schema kinvara_guard, owned by the bootstrap superuser and closed to app_ddl, so '
+  'Lives in schema kinvara_guard, owned by the bootstrap superuser, where app_ddl holds USAGE '
+  'but no CREATE and owns nothing, so '
   'a break-glass app_ddl session can no longer drop, replace or shadow it (OE-23, OD-73; was '
   'public.assert_answering_service_write_only until T-143). Call it DIRECTLY and assert the '
   'raise; a value selected past it never executes it (OD-76). '
@@ -439,8 +442,9 @@ COMMENT ON EVENT TRIGGER trg_int10_answering_service IS
 -- superuser (T-021 42501; T-136 § contract §6). A COMMENT ships into pg_shdescription, so it
 -- is corrected here, not by editing merged 0001 (PROTOCOL §3).
 COMMENT ON ROLE app_ddl IS
-  'Migration role. Owner of schema public and of every object in it, but NOT of schema '
-  'kinvara_guard, on which it holds no privilege (T-143). Runs migrations from 0002 onward '
+  'Migration role. Owner of schema public and of the objects migrations running as it create '
+  'there (extension objects in public stay the bootstrap superuser''s), but NOT of schema '
+  'kinvara_guard, on which it holds USAGE and no CREATE (T-143). Runs migrations from 0002 onward '
   'EXCEPT one that must replace a superuser-owned object or needs a superuser-only statement, '
   'which runs as the bootstrap superuser — 0002 and 0003 do (T-021, T-143). Break-glass '
   'credential checkout only (SD DB-13 rule 6). Tickets T-020, T-143.';
