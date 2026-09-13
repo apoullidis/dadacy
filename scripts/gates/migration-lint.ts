@@ -86,10 +86,34 @@
  *   [R-TABLE-GRANT]      every CREATE TABLE in an up file is followed in the same file by a
  *                        GRANT on that table. There are no default privileges, so a table with
  *                        no grant is a table nobody can use (`T-020` contract §4/§6).
+ *   [R-ROLE-SWITCH]      (T-031) no statement moves the migration off the role the runner set:
+ *                        `SET [SESSION|LOCAL] ROLE`, `RESET ROLE`, `[RE]SET [SESSION|LOCAL]
+ *                        SESSION AUTHORIZATION`, `session_authorization`, `DISCARD ALL`,
+ *                        `set_config('role'|'session_authorization', …)`, read in `DO` and
+ *                        function bodies and `EXECUTE` strings too; and no psql meta-command
+ *                        (`\connect`, `\i`, `\gexec`, …), since the runner applies a file with
+ *                        psql. `UPDATE … SET role =` assigns a column and is not read as one.
+ *                        T-136 § contract §6: a file that leaves `SET ROLE app_ddl` continues as
+ *                        the session user, the bootstrap superuser.
+ *   [R-RUN-AS]           (T-031) every line the runner reads as `-- @run-as` (T-136 § contract
+ *                        §7 reads LINES, not SQL) is a `--` comment in the header of an up file,
+ *                        before the first statement, of the form `-- @run-as: bootstrap-superuser
+ *                        — <reference>` citing a ticket or decision on that line; at most one per
+ *                        file. A comment beginning `@run-as` that the runner does not read is
+ *                        refused as well.
+ *   [R-TRAILER]          (T-031, PROTOCOL §3) every commit in `merge-base..HEAD` that changes a
+ *                        path under `db/migrations/` relative to its first parent (a merge commit
+ *                        included) carries exactly one `Ticket: T-NNN` trailer, read with git's
+ *                        trailer parser, `git log -1 --format='%(trailers:key=Ticket,valueonly)'`,
+ *                        never by line position. Uncommitted files and commits already on the
+ *                        base are not commits in that range and are not read.
  *   [R-MERGED]           a migration that exists at the base is never deleted and changes
  *                        ONLY IN ITS COMMENTS (PROTOCOL §3, OD-13). The comparison lexes the
  *                        SQL, so a `--` inside a dollar-quoted function body is part of the
  *                        body, not a comment. That body is stored in `pg_proc.prosrc` (OD-72).
+ *                        (T-031, OD-86) A comment line the runner reads (`-- @run-as`,
+ *                        `-- @no-transaction`, `-- @phase`) is not a null comment: the lines
+ *                        matching the runner's pattern must be identical at the base and now.
  *   [R-BASELINE]         the executable content of `0001` hashes to the value pinned in
  *                        BASELINE. This anchor does not come from git. It catches a change
  *                        to `0001` that was committed onto the base itself, which R-MERGED
@@ -197,6 +221,41 @@ const EXPAND_STATEMENTS: readonly (readonly [RegExp, string])[] = [
 
 const APPEND_ONLY = /^(?:AUDIT_LOG|CASE_NOTE|DECISION_RECORD)(?:_[A-Z0-9_$]+)?$/;
 const REFERENCE = /\b(?:T-\d{3}|OE-\d+|OD-\d+|EV-\d+|SQ-\d+)\b/;
+
+/**
+ * The marker lines `scripts/db-migrate.ts` acts on (T-136 § contract §7): whole lines matching
+ * this pattern, read line by line and NOT through a SQL lexer, so such a line inside a string, a
+ * dollar-quoted body or a block comment is read as a marker too (QA-A1).
+ */
+const RUNNER_MARKER_LINE = /^[ \t]*--[ \t]*@(?:run-as|no-transaction|phase)\b/;
+const RUN_AS_LINE = /^[ \t]*--[ \t]*@run-as\b/;
+const RUN_AS_FORM = /^[ \t]*--[ \t]*@run-as:[ \t]*bootstrap-superuser(?![A-Za-z0-9_-])(.*)$/;
+
+/**
+ * Statements that move a migration off the role the runner set (R-ROLE-SWITCH, T-031). The
+ * runner applies a file under `SET ROLE app_ddl`; a file that leaves it continues as the session
+ * user, the bootstrap superuser (T-136 § contract §6, C6-BOUND). Matched against normalised
+ * fragments, so `DO` bodies, function bodies and `EXECUTE` strings are read too.
+ */
+const ROLE_SWITCHES: readonly (readonly [RegExp, string])[] = [
+  [/\bRESET (?:ROLE|SESSION AUTHORIZATION)\b/, 'RESET ROLE / RESET SESSION AUTHORIZATION'],
+  [
+    /\bSET (?:SESSION |LOCAL )?(?:ROLE|SESSION AUTHORIZATION)\b/,
+    'SET ROLE / SET SESSION AUTHORIZATION',
+  ],
+  [/\bSESSION_AUTHORIZATION\b/, 'the session_authorization parameter'],
+  [/\bDISCARD ALL\b/, 'DISCARD ALL, which runs SET SESSION AUTHORIZATION DEFAULT'],
+];
+
+/**
+ * `SET role =` that assigns a COLUMN named role, which is not a role switch: `UPDATE t [*] [[AS] a]
+ * SET role`, and `UPDATE SET role` in `ON CONFLICT … DO UPDATE` and `MERGE`. A fragment is one
+ * statement, so this cannot exempt a `SET ROLE` in the next statement (CR0I).
+ */
+const UPDATE_SET_ROLE =
+  /\bUPDATE (?:(?:ONLY )?[A-Z0-9_$.]+(?: ?\*)?(?: (?:AS )?[A-Z0-9_$]+)? )?SET ROLE\b/g;
+
+const TICKET_ID = /^T-\d{3}$/;
 
 // ---------------------------------------------------------------------------
 // 1. The lexer
@@ -468,6 +527,87 @@ function commentText(segments: readonly Segment[]): string[] {
   return out;
 }
 
+/**
+ * The line of the first thing in the file that is neither a `--` comment nor whitespace: a
+ * statement, a string, a dollar quote, a quoted identifier or a block comment. Every line before
+ * it is the header. Infinity when the file is only `--` comments.
+ */
+function headerEndLine(segments: readonly Segment[]): number {
+  for (const s of segments) {
+    if (s.kind === 'line-comment') continue;
+    if (s.kind === 'code') {
+      const lead = /^\s*/.exec(s.text)?.[0] ?? '';
+      if (lead.length === s.text.length) continue;
+      return s.line + newlines(lead);
+    }
+    return s.line;
+  }
+  return Number.POSITIVE_INFINITY;
+}
+
+/**
+ * Every code, string and dollar segment at any depth, comments skipped: a dollar body is lexed
+ * again as SQL (as `fragments()` does) and visited raw only if that lex fails. `next` is the next
+ * segment at the same depth that is not a comment.
+ */
+function walk(
+  segments: readonly Segment[],
+  visit: (s: Segment, next: Segment | undefined) => void,
+  depth = 0,
+): void {
+  const live = segments.filter((s) => s.kind !== 'line-comment' && s.kind !== 'block-comment');
+  live.forEach((s, k) => {
+    if (s.kind === 'dollar' && depth < 8) {
+      const inner = lex(s.body);
+      if (inner.error === null) {
+        walk(inner.segments, visit, depth + 1);
+        return;
+      }
+    }
+    visit(s, live[k + 1]);
+  });
+}
+
+/** `set_config('role' | 'session_authorization', …)`, as a call or inside a string (R-ROLE-SWITCH). */
+function setConfigOfRole(segments: readonly Segment[]): string[] {
+  const hits: string[] = [];
+  walk(segments, (s, next) => {
+    if (
+      s.kind === 'code' &&
+      /\bset_config\s*\(\s*$/i.test(s.text) &&
+      next?.kind === 'string' &&
+      /^\s*(?:role|session_authorization)\s*$/i.test(next.body)
+    ) {
+      hits.push(`set_config(${next.text}, …)`);
+    }
+    if (
+      (s.kind === 'string' || s.kind === 'dollar') &&
+      /\bset_config\s*\(\s*'+\s*(?:role|session_authorization)\s*'+/i.test(s.body)
+    ) {
+      hits.push(`set_config inside ${snippet(s.body.trim())}`);
+    }
+  });
+  return hits;
+}
+
+/**
+ * psql meta-commands: a backslash in top-level code, which PostgreSQL's own grammar never contains
+ * outside a literal (R-ROLE-SWITCH). The runner applies a file with psql (T-136 § contract §1).
+ */
+function psqlMetaCommands(segments: readonly Segment[]): string[] {
+  const hits: string[] = [];
+  for (const s of segments) {
+    if (s.kind !== 'code') continue;
+    const at = s.text.indexOf('\\');
+    if (at === -1) continue;
+    const lineText = s.text.slice(at).split('\n')[0] ?? '';
+    hits.push(
+      `line ${String(s.line + newlines(s.text.slice(0, at)))}: ${snippet(lineText.trim())}`,
+    );
+  }
+  return hits;
+}
+
 // ---------------------------------------------------------------------------
 // 2. GRANT clauses
 // ---------------------------------------------------------------------------
@@ -581,6 +721,8 @@ interface Migration {
   readonly num: string;
   readonly slug: string;
   readonly dir: 'up' | 'down';
+  /** The file as read, for the rules that read lines the way the runner does. */
+  readonly text: string;
   readonly lexed: Lexed;
 }
 
@@ -592,7 +734,8 @@ for (const name of fs.readdirSync(MIGRATIONS_DIR).sort()) {
     problem('R-STRUCT', rel, 'not named NNNN_slug.up.sql or NNNN_slug.down.sql');
     continue;
   }
-  const lexed = lex(fs.readFileSync(path.join(MIGRATIONS_DIR, name), 'utf8'));
+  const text = fs.readFileSync(path.join(MIGRATIONS_DIR, name), 'utf8');
+  const lexed = lex(text);
   if (lexed.error !== null)
     problem('R-LEX', rel, `${lexed.error}; nothing in this file was checked`);
   migrations.push({
@@ -601,6 +744,7 @@ for (const name of fs.readdirSync(MIGRATIONS_DIR).sort()) {
     num: m[1] ?? '',
     slug: m[2] ?? '',
     dir: m[3] === 'up' ? 'up' : 'down',
+    text,
     lexed,
   });
 }
@@ -651,6 +795,84 @@ let mergedNames: ReadonlySet<string> = new Set();
 }
 const changed = new Map(changes.map((c) => [c.path, c]));
 
+// ---- R-TRAILER (T-031) ----------------------------------------------------
+
+let commitsRead = 0;
+let migrationCommits = 0;
+if (mergeBase !== '') {
+  const revs = git(['rev-list', '--reverse', `${mergeBase}..HEAD`]);
+  if (!revs.ok) {
+    problem(
+      'R-BASE',
+      baseRef,
+      `git rev-list ${mergeBase.slice(0, 12)}..HEAD failed (${revs.err || 'no output'}); the commits are unknown`,
+    );
+  } else {
+    for (const sha of revs.out.split('\n').filter((l) => l !== '')) {
+      commitsRead += 1;
+      const where = `commit ${sha.slice(0, 12)}`;
+      const parents = git(['log', '-1', '--format=%P', sha]);
+      const first = parents.out.trim().split(' ')[0] ?? '';
+      const touched = !parents.ok
+        ? parents
+        : first === ''
+          ? git([
+              'diff-tree',
+              '--root',
+              '--no-commit-id',
+              '--name-only',
+              '-r',
+              sha,
+              '--',
+              MIGRATIONS_REL,
+            ])
+          : git(['diff', '--name-only', '--no-renames', first, sha, '--', MIGRATIONS_REL]);
+      if (!touched.ok) {
+        problem(
+          'R-BASE',
+          where,
+          `cannot list the paths it changes (${touched.err || 'no output'})`,
+        );
+        continue;
+      }
+      const paths = touched.out.split('\n').filter((l) => l !== '');
+      if (paths.length === 0) continue;
+      migrationCommits += 1;
+      const shown =
+        paths.slice(0, 3).join(', ') +
+        (paths.length > 3 ? `, and ${String(paths.length - 3)} more` : '');
+      const trailers = git(['log', '-1', '--format=%(trailers:key=Ticket,valueonly)', sha]);
+      if (!trailers.ok) {
+        problem('R-TRAILER', where, `git could not read its trailers (${trailers.err})`);
+        continue;
+      }
+      const values = trailers.out
+        .split('\n')
+        .map((v) => v.trim())
+        .filter((v) => v !== '');
+      if (values.length === 0) {
+        problem(
+          'R-TRAILER',
+          where,
+          `changes ${shown} and git's trailer parser finds no Ticket trailer (git log -1 --format='%(trailers:key=Ticket,valueonly)'); a Ticket line counts only inside the message's final trailer block (PROTOCOL §3)`,
+        );
+      } else if (values.length > 1) {
+        problem(
+          'R-TRAILER',
+          where,
+          `changes ${shown} and carries ${String(values.length)} Ticket trailers (${values.join(', ')}); a migration commit names exactly one ticket`,
+        );
+      } else if (!TICKET_ID.test(values[0] ?? '')) {
+        problem(
+          'R-TRAILER',
+          where,
+          `changes ${shown} and its Ticket trailer ${snippet(values[0] ?? '')} is not a ticket id T-NNN`,
+        );
+      }
+    }
+  }
+}
+
 // ---- R-STRUCT -------------------------------------------------------------
 
 {
@@ -694,11 +916,76 @@ let grantsRead = 0;
 let tablesRead = 0;
 let protectedMentions = 0;
 let baselinePinned = 0;
+let runAsLinesRead = 0;
+let roleSwitchFilesRead = 0;
 
 for (const m of migrations) {
   if (m.lexed.error !== null) continue;
   const segs = m.lexed.segments;
   const comments = commentText(segs);
+
+  // R-RUN-AS (T-031). Every file, the baseline included: the runner reads LINES (T-136 § contract §7).
+  {
+    const lines = m.text.split('\n');
+    const headerEnd = headerEndLine(segs);
+    const commentLines = new Set(segs.filter((s) => s.kind === 'line-comment').map((s) => s.line));
+    let read = 0;
+    lines.forEach((line, k) => {
+      if (!RUN_AS_LINE.test(line)) return;
+      const at = k + 1;
+      read += 1;
+      runAsLinesRead += 1;
+      const where = `${m.rel}:${String(at)}`;
+      if (at >= headerEnd || !commentLines.has(at)) {
+        problem(
+          'R-RUN-AS',
+          where,
+          `the runner reads this line as a -- @run-as marker and would apply the whole file as the bootstrap superuser, but it is not a -- comment in the file header (before the first statement, outside every string, dollar-quoted body and block comment): ${snippet(line.trim())}`,
+        );
+      } else if (m.dir === 'down') {
+        problem(
+          'R-RUN-AS',
+          where,
+          'a -- @run-as marker in a down file; a down file runs as its up file does, and the runner refuses a marker here (T-136 § contract §6)',
+        );
+      } else {
+        const form = RUN_AS_FORM.exec(line);
+        if (form === null) {
+          problem(
+            'R-RUN-AS',
+            where,
+            `not of the form \`-- @run-as: bootstrap-superuser — <reference>\`: ${snippet(line.trim())}`,
+          );
+        } else if (!REFERENCE.test(form[1] ?? '')) {
+          problem(
+            'R-RUN-AS',
+            where,
+            'the -- @run-as marker cites no ticket or decision (T-NNN, OE-n, OD-n, EV-n, SQ-n) on its own line',
+          );
+        }
+      }
+    });
+    if (read > 1) {
+      problem(
+        'R-RUN-AS',
+        m.rel,
+        `${String(read)} lines the runner reads as -- @run-as markers; a migration carries at most one`,
+      );
+    }
+    for (const s of segs) {
+      if (s.kind !== 'line-comment' && s.kind !== 'block-comment') continue;
+      s.body.split('\n').forEach((b, k) => {
+        if (!/^\s*@run-as\b/.test(b)) return;
+        const at = s.line + k;
+        if (s.kind === 'line-comment' && RUN_AS_LINE.test(lines[at - 1] ?? '')) return; // read above
+        problem(
+          'R-RUN-AS',
+          `${m.rel}:${String(at)}`,
+          `a comment beginning @run-as that the runner does not read (it reads only a whole -- line), so the file would run as app_ddl: ${snippet(b.trim())}`,
+        );
+      });
+    }
+  }
 
   // R-STRUCT pairs, and R-PHASE.
   const phases = new Set<string>();
@@ -740,6 +1027,34 @@ for (const m of migrations) {
   }
 
   const frags = fragments(segs);
+
+  // R-ROLE-SWITCH (T-031).
+  roleSwitchFilesRead += 1;
+  for (const f of frags) {
+    const read = f.replace(UPDATE_SET_ROLE, (x) => x.replace(/SET ROLE$/, 'SET <COLUMN>'));
+    const hit = ROLE_SWITCHES.find(([re]) => re.test(read));
+    if (hit !== undefined) {
+      problem(
+        'R-ROLE-SWITCH',
+        m.rel,
+        `${hit[1]}: the runner applies a migration under SET ROLE app_ddl, and a file that switches role continues as the session user, the bootstrap superuser (T-136 § contract §6); a superuser migration says so with -- @run-as in its header instead: ${snippet(f)}`,
+      );
+    }
+  }
+  for (const hit of setConfigOfRole(segs)) {
+    problem(
+      'R-ROLE-SWITCH',
+      m.rel,
+      `${hit} sets the role or session user the way SET ROLE does (T-136 § contract §6)`,
+    );
+  }
+  for (const hit of psqlMetaCommands(segs)) {
+    problem(
+      'R-ROLE-SWITCH',
+      m.rel,
+      `a psql meta-command (${hit}). The runner applies a migration with psql, so \\connect changes the session user, and \\i, \\ir and \\gexec run SQL this gate never reads; a migration holds SQL only`,
+    );
+  }
 
   // R-PHASE: contract statements outside a contract migration.
   if (m.dir === 'up' && phaseOf.has(m.name) && phaseOf.get(m.name) !== 'contract') {
@@ -1063,6 +1378,22 @@ for (const c of changes) {
     problem('R-MERGED', c.path, `cannot read both versions (${baseText.err || 'file missing'})`);
     continue;
   }
+  // T-031, OD-86: the runner acts on these comment lines, so changing one is not a null edit.
+  const markerLines = (text: string): string =>
+    text
+      .split('\n')
+      .filter((l) => RUNNER_MARKER_LINE.test(l))
+      .map((l) => l.replace(/\s+$/, ''))
+      .join('\n');
+  const markersWere = markerLines(baseText.out);
+  const markersNow = markerLines(head.text);
+  if (markersWere !== markersNow) {
+    problem(
+      'R-MERGED',
+      c.path,
+      `a line the migration runner reads (-- @run-as, -- @no-transaction, -- @phase; T-136 § contract §6–§7) was added, removed or changed. It is a comment to PostgreSQL and an instruction to the runner, so the edit is not null (OD-86): was ${snippet(markersWere || '(none)')}, now ${snippet(markersNow || '(none)')}`,
+    );
+  }
   const before = lex(baseText.out);
   if (before.error !== null || head.lexed.error !== null) continue; // R-LEX has reported it
   mergedCompared += 1;
@@ -1101,5 +1432,11 @@ console.log(
 );
 console.log(
   `  merged migrations changed and compared outside comments: ${String(mergedCompared)}; contract migrations added: ${String(addedContracts.length)}; contract up files read for expand statements: ${String(contractsReadForExpand)}`,
+);
+console.log(
+  `  files searched for role switches: ${String(roleSwitchFilesRead)}; lines the runner reads as -- @run-as: ${String(runAsLinesRead)}`,
+);
+console.log(
+  `  commits in merge-base..HEAD: ${String(commitsRead)}; of them changing ${MIGRATIONS_REL}/, Ticket trailer read with git's parser: ${String(migrationCommits)}`,
 );
 finish(GATE, failures);
