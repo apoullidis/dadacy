@@ -158,6 +158,10 @@ pair expand "REASSIGN OWNED BY app_ddl TO app_rw;"
 check C1I "QA X7 (QA-F3): REASSIGN OWNED BY app_ddl TO app_rw, which transfers audit_log unnamed" R-APPEND-ONLY
 pair expand "REASSIGN OWNED BY app_admin_rw TO app_rw;"
 check C1J "REASSIGN OWNED in any form (the gate cannot see what a role owns)" R-APPEND-ONLY
+pair expand "CREATE ROLE t021_login_principal NOLOGIN IN ROLE app_ddl;"
+check C1K "CREATE ROLE … IN ROLE app_ddl (membership in the owner of every table, without a GRANT)" R-APPEND-ONLY
+pair expand "ALTER GROUP app_ddl ADD USER app_rw;"
+check C1L "ALTER GROUP app_ddl ADD USER (membership in the owner of every table, without a GRANT)" R-APPEND-ONLY
 
 echo "== R-DEFAULT-PRIVILEGES (T-020 contract §4)"
 pair expand "ALTER DEFAULT PRIVILEGES FOR ROLE app_ddl IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app_rw;"
