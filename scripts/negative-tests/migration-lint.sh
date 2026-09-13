@@ -162,6 +162,19 @@ pair expand "CREATE ROLE t021_login_principal NOLOGIN IN ROLE app_ddl;"
 check C1K "CREATE ROLE … IN ROLE app_ddl (membership in the owner of every table, without a GRANT)" R-APPEND-ONLY
 pair expand "ALTER GROUP app_ddl ADD USER app_rw;"
 check C1L "ALTER GROUP app_ddl ADD USER (membership in the owner of every table, without a GRANT)" R-APPEND-ONLY
+# T-021 rework 2 (OE-24, QR-F1/OD-77): QA's three spellings, verbatim from RR3 Z1-Z3. Each made
+# app_rw the owner of audit_log with UPDATE and DELETE at the database (QA RR4 D2-D4, superuser).
+pair expand "ALTER TABLE public.audit_log ADD COLUMN note text, OWNER TO app_rw;"
+check C1M "QA Z1 (QR-F1): OWNER TO as the second action of a multi-action ALTER TABLE" R-APPEND-ONLY
+pair expand "ALTER TABLE public.audit_log ENABLE ROW LEVEL SECURITY, OWNER TO app_rw;"
+check C1N "QA Z2 (QR-F1): OWNER TO second, after a non-expand action" R-APPEND-ONLY
+pair expand "ALTER TABLE public.audit_log * OWNER TO app_rw;"
+check C1O "QA Z3 (QR-F1): OWNER TO with the inheritance marker *" R-APPEND-ONLY
+pair expand "ALTER TABLE public.t021_thing ADD COLUMN note text, OWNER TO app_ddl;"
+check C1P "CONTROL: a multi-action OWNER TO on a table that is not append-only" PASS
+pair expand "ALTER TABLE public.audit_log ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.t021_thing OWNER TO app_ddl;"
+check C1Q "CONTROL: OWNER TO in the NEXT statement, on a table that is not append-only (per statement, not per file)" PASS
 
 echo "== R-DEFAULT-PRIVILEGES (T-020 contract §4)"
 pair expand "ALTER DEFAULT PRIVILEGES FOR ROLE app_ddl IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app_rw;"
