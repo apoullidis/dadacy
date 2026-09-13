@@ -175,6 +175,42 @@ check C1P "CONTROL: a multi-action OWNER TO on a table that is not append-only" 
 pair expand "ALTER TABLE public.audit_log ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.t021_thing OWNER TO app_ddl;"
 check C1Q "CONTROL: OWNER TO in the NEXT statement, on a table that is not append-only (per statement, not per file)" PASS
+# T-021 rework 2: the rule attacked with spellings for the same effect (evidence § Rework 2 — ATTACK,
+# A1-AC). Those marked (db) were measured transferring ownership at the database (§ Rework 2 — DB).
+pair expand "alter table audit_log
+  add column note text,
+  owner to app_rw;"
+check C1R "A1: lower case, one action per line, OWNER TO last" R-APPEND-ONLY
+pair expand 'ALTER TABLE "public"."audit_log" ADD COLUMN note text, OWNER TO app_rw;'
+check C1S "A2: quoted, schema-qualified name, multi-action" R-APPEND-ONLY
+pair expand "ALTER TABLE public.audit_log* OWNER TO app_rw;"
+check C1T "A3 (db): the * marker with no space" R-APPEND-ONLY
+pair expand "ALTER TABLE IF EXISTS ONLY public.audit_log ENABLE ROW LEVEL SECURITY, OWNER TO app_rw;"
+check C1U "A4 (db): IF EXISTS ONLY, OWNER TO second" R-APPEND-ONLY
+pair expand "ALTER TABLE ONLY (public.audit_log) OWNER TO app_rw;"
+check C1V "A5 (db): ONLY ( name )" R-APPEND-ONLY
+pair expand "ALTER TABLE audit_log_p20260901 * OWNER TO app_rw;"
+check C1W "A6 (db, as a named partition): a partition, with *" R-APPEND-ONLY
+pair expand "ALTER TABLE case_note ADD COLUMN note text, /* hand over */ OWNER TO app_rw;"
+check C1X "A7: case_note, a block comment between the actions" R-APPEND-ONLY
+pair expand "DO \$\$ BEGIN EXECUTE 'ALTER TABLE decision_record ADD COLUMN note text, OWNER TO app_rw'; END \$\$;"
+check C1Y "A8: decision_record, multi-action inside an EXECUTE string" R-APPEND-ONLY
+pair expand "ALTER TABLE public.audit_log ADD COLUMN note text, OWNER TO CURRENT_USER;"
+check C1Z "A9 (db; succeeds for a login in app_ddl only): OWNER TO CURRENT_USER, second" R-APPEND-ONLY
+pair expand "ALTER TABLE public.audit_log OWNER TO app_rw, ADD COLUMN note text;"
+check C1ZA "AA (db): OWNER TO first, another action after it" R-APPEND-ONLY
+pair expand "ALTER TABLE public.audit_log -- hand over
+  OWNER TO app_rw;"
+check C1ZB "AB: a line comment between the name and OWNER TO" R-APPEND-ONLY
+pair expand "SELECT 1;"
+plant "$DOWN" "ALTER TABLE public.audit_log ADD COLUMN note text, OWNER TO app_rw;"
+check C1ZC "AC: in a DOWN file, multi-action" R-APPEND-ONLY
+pair expand "ALTER TABLE public.audit_log ADD COLUMN note text DEFAULT 'OWNER TO app_rw';"
+check C1ZD "CONTROL (O1): OWNER TO inside a string DEFAULT on audit_log" PASS
+pair expand "ALTER TABLE public.audit_log ADD COLUMN owner_to text;"
+check C1ZE "CONTROL (O3): a column named owner_to on audit_log" PASS
+pair expand "ALTER TABLE public.t021_thing ADD COLUMN log_id bigint REFERENCES public.audit_log (id), OWNER TO app_ddl;"
+check C1ZF "CONTROL (O5): a table referencing audit_log changes owner (audit_log is not in the name position)" PASS
 
 echo "== R-DEFAULT-PRIVILEGES (T-020 contract §4)"
 pair expand "ALTER DEFAULT PRIVILEGES FOR ROLE app_ddl IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app_rw;"
