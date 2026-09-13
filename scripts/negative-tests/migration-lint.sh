@@ -567,6 +567,8 @@ check CR0K "psql \\i, which runs SQL from a file this gate does not read" R-ROLE
 pair expand "-- @no-transaction
 DISCARD ALL;"
 check CR0L "DISCARD ALL, which includes SET SESSION AUTHORIZATION DEFAULT" R-ROLE-SWITCH
+pair expand "SELECT set_config(/* which */ 'role', 'app', false);"
+check CR0M "set_config with a block comment before the parameter name (T-031 self-attack A11)" R-ROLE-SWITCH
 pair expand "-- SET ROLE app;
 /* RESET ROLE; SET SESSION AUTHORIZATION app; */
 SELECT 1;"
@@ -638,6 +640,12 @@ check CMC2 "CONTROL: the minimal legitimate header marker" PASS
 pair expand "-- This file carries no \`-- @run-as\` marker; it runs as app_ddl (the @run-as form is T-136's).
 SELECT 1;"
 check CMC3 "CONTROL: header prose that mentions the marker (merged 0003's down file does)" PASS
+plant "$UP" $'-- @phase: expand\r\n\t-- @run-as: bootstrap-superuser \xe2\x80\x94 T-031\r\nCREATE ROLE t031_login NOLOGIN;\r'
+plant "$DOWN" "-- the down file of a planted migration"
+check CMC4 "CONTROL (T-031 self-attack A15): a tab-indented header marker in a CRLF file" PASS
+plant "$UP" $'-- @phase: expand\r\n-- @run-as: bootstrap-superuser \xe2\x80\x94 reviewed\r\nCREATE ROLE t031_login NOLOGIN;\r'
+plant "$DOWN" "-- the down file of a planted migration"
+check CM0B "a CRLF header marker that cites no ticket or decision" R-RUN-AS
 
 echo "== R-MERGED: a comment line the runner reads is not a null edit (T-031, OD-86) — plants on merged 0003"
 U3=$M/0003_int10_guard_relocate_schema.up.sql
