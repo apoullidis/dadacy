@@ -30,6 +30,7 @@
     "gate:contract-drift": "node scripts/gates/contract-drift.ts",
     "gate:constraint-suite": "node scripts/gates/constraint-suite.ts",
     "gate:constraint-suite:static": "node scripts/gates/constraint-suite.ts --static",
+    "gate:migration-lint": "node scripts/gates/migration-lint.ts",
     "gate:pr": "node scripts/gates/pr.ts",
     "gate:heavy": "node scripts/gates/not-yet-supplied.ts gate:heavy"
   },

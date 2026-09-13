@@ -46,6 +46,12 @@ const GATES: readonly Gate[] = [
     name: 'gate:constraint-suite:static',
     why: "the Testcontainers image tag is compose's, and no constraint suite mocks the database (T-115)",
   },
+  {
+    // T-021. Static: SQL and git only, no services. Its rules and the negative case that
+    // falsifies each are published in state/EP-2/T-021.md § Published contract.
+    name: 'gate:migration-lint',
+    why: 'expand/contract, protected objects, append-only grants, and merged migrations change only in comments (SD §DB-13, PROTOCOL §3)',
+  },
 ];
 
 const results: { name: string; code: number }[] = [];
