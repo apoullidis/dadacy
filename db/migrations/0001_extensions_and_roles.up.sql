@@ -6,12 +6,17 @@
 --          SA §INT-10 (the answering-service write-only seam); SA §SEC-9, §SEC-8;
 --          SA §DV-13 (ILIKE banned; the collation half of the reason).
 --
--- WHO RUNS THIS FILE. 0001 is the bootstrap migration and is the ONLY migration that
--- runs as a superuser (locally `postgres`; on RDS the `rds_superuser` master user).
+-- WHO RUNS THIS FILE. 0001 is the bootstrap migration and runs as a superuser (locally
+-- `postgres`; on RDS the `rds_superuser` master user). It is NOT the only migration that
+-- does: a later migration that must replace a superuser-owned object or needs a superuser-
+-- only statement also runs as the bootstrap superuser — 0002 and 0003 both do (T-021,
+-- T-143; corrected 2026-09-13 under R-MERGED — comment-only, provably null: 0002's built-in
+-- runner entry and T-143 both run as superuser, so "the ONLY migration" was false).
 -- CREATE EXTENSION for postgis/pg_stat_statements/pg_partman is not a trusted-extension
 -- operation, and the role that will run migrations from 0002 onward (`app_ddl`) does not
--- exist until this file creates it. Every migration from 0002 onward runs as `app_ddl`,
--- whose credentials require a break-glass checkout (SD §DB-13 rule 6, SA §I-6).
+-- exist until this file creates it. Every migration from 0002 onward runs as `app_ddl`
+-- EXCEPT those superuser-run ones, whose credentials require a break-glass checkout (SD
+-- §DB-13 rule 6, SA §I-6).
 --
 -- TRANSACTION. This file is transactional; run it with `psql --single-transaction`.
 -- It contains no CREATE INDEX CONCURRENTLY and no ALTER TABLE ... VALIDATE CONSTRAINT,
@@ -200,7 +205,8 @@ COMMENT ON ROLE app_safety_rw IS
   'apps/safety-gw. SELECT on session_safety_projection only; INSERT on session_event, '
   'checkin, sos_event, ladder_run only; no other grant exists (SD DB-11). Ticket T-020.';
 
--- app_ddl — the migration role, from 0002 onward. Owns schema public and therefore every
+-- app_ddl — the migration role, from 0002 onward (except superuser-run guard migrations
+-- such as 0002 and 0003; corrected 2026-09-13 under R-MERGED, T-143). Owns schema public and therefore every
 -- object created in it. Credentials require a break-glass checkout with approval and
 -- expiry (SD §DB-13 rule 6; SA §SEC-9, §I-6). No application ever connects as this role.
 CREATE ROLE app_ddl
