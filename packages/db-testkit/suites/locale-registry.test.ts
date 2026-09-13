@@ -20,7 +20,12 @@
  */
 import { afterAll, beforeAll, describe, test } from 'vitest';
 import assert from 'node:assert/strict';
-import { acquireMigratedCluster, PROBE_PASSWORD, type Cluster, type PsqlResult } from '../src/index.ts';
+import {
+  acquireMigratedCluster,
+  PROBE_PASSWORD,
+  type Cluster,
+  type PsqlResult,
+} from '../src/index.ts';
 import { assertPermitted, assertRefused, INT10_RAISE } from '../src/expect.ts';
 
 const SUITE = 'locale-registry';
@@ -77,7 +82,10 @@ function asLogin(login: string, sql: string): Promise<PsqlResult> {
 /** Refused with exactly this ERROR line, and psql named the object that refused it. */
 function assertRefusedBy(what: string, r: PsqlResult, errorLine: string, field: string): void {
   assertRefused(what, r, { message: errorLine });
-  assert.ok(r.output.includes(field), `${what}: expected ${JSON.stringify(field)} in the output.\n${r.output}`);
+  assert.ok(
+    r.output.includes(field),
+    `${what}: expected ${JSON.stringify(field)} in the output.\n${r.output}`,
+  );
 }
 
 describe('0004 — the table, and the three rows SD §DB-17 seeds', () => {
@@ -106,7 +114,9 @@ describe('0004 — constraint refusals (as the superuser, so no privilege is wha
   test('a second row with code en is REFUSED by locale_registry_pkey (23505)', async () => {
     assertRefusedBy(
       'duplicate en',
-      await asSuperuser(`INSERT INTO ${TABLE} VALUES ('en', 'English', 'ltr', true, ARRAY['one','other'], true)`),
+      await asSuperuser(
+        `INSERT INTO ${TABLE} VALUES ('en', 'English', 'ltr', true, ARRAY['one','other'], true)`,
+      ),
       'ERROR:  23505: duplicate key value violates unique constraint "locale_registry_pkey"',
       'CONSTRAINT NAME:  locale_registry_pkey',
     );
@@ -180,7 +190,11 @@ describe('0004 — grants: app_rw reads, and nothing else is granted', () => {
   });
 
   const REFUSED: ReadonlyArray<readonly [what: string, login: string, sql: string]> = [
-    ['app_rw INSERT', LOGINS.app_rw, `INSERT INTO ${TABLE} VALUES ('tr', 'Türkçe', 'ltr', false, ARRAY['one','other'], true)`],
+    [
+      'app_rw INSERT',
+      LOGINS.app_rw,
+      `INSERT INTO ${TABLE} VALUES ('tr', 'Türkçe', 'ltr', false, ARRAY['one','other'], true)`,
+    ],
     ['app_rw UPDATE', LOGINS.app_rw, `UPDATE ${TABLE} SET enabled = false WHERE code = 'ru'`],
     ['app_rw DELETE', LOGINS.app_rw, `DELETE FROM ${TABLE} WHERE code = 'ru'`],
     ['answering_service SELECT', LOGINS.answering_service, `SELECT code FROM ${TABLE}`],
@@ -212,9 +226,15 @@ describe('0004 — the SA §INT-10 guard, called DIRECTLY (OD-76)', () => {
 
   test('the same reading raises on a known-bad state, and is clean again once it is removed', async () => {
     // A detective-only grant (T-020 § contract §5): it fires no trigger, so only the call sees it.
-    assertPermitted('plant', await asSuperuser('GRANT TEMPORARY ON DATABASE kinvara TO answering_service'));
+    assertPermitted(
+      'plant',
+      await asSuperuser('GRANT TEMPORARY ON DATABASE kinvara TO answering_service'),
+    );
     const bad = await asSuperuser('SELECT kinvara_guard.assert_answering_service_write_only()');
-    assertPermitted('remove', await asSuperuser('REVOKE TEMPORARY ON DATABASE kinvara FROM answering_service'));
+    assertPermitted(
+      'remove',
+      await asSuperuser('REVOKE TEMPORARY ON DATABASE kinvara FROM answering_service'),
+    );
     assertRefusedBy(
       'direct call on the known-bad state',
       bad,
