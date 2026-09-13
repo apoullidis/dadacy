@@ -1,0 +1,286 @@
+-- 0002_int10_guard_stat_statements_execute.down.sql
+--
+-- @compliance-review: assert_answering_service_write_only — T-021, two-approval path (PROTOCOL §3); OD-52
+-- @compliance-review: trg_int10_answering_service — T-021, two-approval path (PROTOCOL §3); named only in the COMMENT text
+--
+-- Ticket: T-021 (tech-lead). The inverse of the up file. It restores 0001's function body and
+-- COMMENT byte for byte; both statements below are copied mechanically from
+-- 0001_extensions_and_roles.up.sql. T-021's evidence verifies the result with md5(prosrc) and
+-- md5(obj_description) before up and after down.
+--
+-- READ THIS BEFORE RUNNING IT. Rolling back reopens OD-52: after this file, a missing
+-- pg_stat_statements revoke is again invisible to the guard.
+--
+-- WHO RUNS THIS FILE. The bootstrap superuser, as for the up file.
+
+CREATE OR REPLACE FUNCTION public.assert_answering_service_write_only()
+RETURNS void
+LANGUAGE plpgsql
+STABLE
+SET search_path = pg_catalog, public
+AS $int10$
+DECLARE
+  -- The single permitted INSERT target. Hardcoded on purpose: widening this seam should
+  -- cost a migration and a two-approval review (PROTOCOL §3), not a row in a config table.
+  k_table  constant text := 'public.out_of_hours_report';
+  k_role   constant name := 'answering_service';
+  k_oid    oid;
+  v_msgs   text[] := '{}';
+  v        text;
+BEGIN
+  SELECT oid INTO k_oid FROM pg_roles WHERE rolname = k_role;
+  IF k_oid IS NULL THEN
+    -- The role is absent (0001 has been rolled back). Nothing to assert.
+    RETURN;
+  END IF;
+
+  FOR v IN
+    -- (1) Role attributes. BYPASSRLS in particular would defeat every row-level policy
+    --     in the system without touching a single GRANT.
+    SELECT format('answering_service holds forbidden role attribute(s): %s',
+                  concat_ws(', ',
+                    CASE WHEN r.rolsuper       THEN 'SUPERUSER'   END,
+                    CASE WHEN r.rolcreatedb    THEN 'CREATEDB'    END,
+                    CASE WHEN r.rolcreaterole  THEN 'CREATEROLE'  END,
+                    CASE WHEN r.rolreplication THEN 'REPLICATION' END,
+                    CASE WHEN r.rolbypassrls   THEN 'BYPASSRLS'   END))
+      FROM pg_roles r
+     WHERE r.oid = k_oid
+       AND (r.rolsuper OR r.rolcreatedb OR r.rolcreaterole OR r.rolreplication OR r.rolbypassrls)
+
+    UNION ALL
+    -- (2) Membership in any other role. `GRANT app_rw TO answering_service` cannot be
+    --     trapped by an event trigger — role grants are cluster-global objects and
+    --     PostgreSQL refuses to fire event triggers for the GRANT ROLE tag. This check is
+    --     the compensating control, and it is why the reconciler obligation exists.
+    SELECT format('answering_service is a member of role %I — membership confers privileges '
+                  'that no GRANT on a table would show', r.rolname)
+      FROM pg_roles r
+     WHERE r.oid <> k_oid
+       AND pg_has_role(k_oid, r.oid, 'MEMBER')   -- MEMBER, not USAGE: a membership granted
+                                                --   WITH INHERIT FALSE still permits SET ROLE.
+
+    UNION ALL
+    -- (3) The mirror of (2): a per-environment login principal that is a member of
+    --     answering_service must be a member of NOTHING ELSE. Superusers are excluded
+    --     because pg_has_role() is true for them against every role by definition.
+    SELECT format('login role %I is a member of answering_service and also of %I — it can '
+                  'read what answering_service cannot', m.rolname, o.rolname)
+      FROM pg_roles m
+      JOIN pg_roles o ON o.oid <> m.oid AND o.oid <> k_oid
+     WHERE m.oid <> k_oid
+       AND NOT m.rolsuper
+       AND pg_has_role(m.oid, k_oid, 'MEMBER')
+       AND pg_has_role(m.oid, o.oid, 'MEMBER')
+
+    UNION ALL
+    -- (4) Any relation privilege other than INSERT, anywhere outside the system catalogs.
+    SELECT format('answering_service holds %s on %I.%I — INT-10 permits INSERT and nothing else',
+                  p.priv, n.nspname, c.relname)
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+     CROSS JOIN unnest(ARRAY['SELECT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER','MAINTAIN']) AS p(priv)
+     WHERE c.relkind IN ('r','p','v','m','f')
+       AND n.nspname NOT IN ('pg_catalog','information_schema')
+       AND n.nspname NOT LIKE 'pg\_toast%'
+       AND has_table_privilege(k_oid, c.oid, p.priv)
+
+    UNION ALL
+    -- (5) INSERT on anything but the one permitted table.
+    SELECT format('answering_service holds INSERT on %I.%I — the only permitted target is %s',
+                  n.nspname, c.relname, k_table)
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE c.relkind IN ('r','p','v','m','f')
+       AND n.nspname NOT IN ('pg_catalog','information_schema')
+       AND n.nspname NOT LIKE 'pg\_toast%'
+       AND has_table_privilege(k_oid, c.oid, 'INSERT')
+       AND n.nspname || '.' || c.relname <> k_table
+
+    UNION ALL
+    -- (6) Column-level privileges. A GRANT SELECT (col) does not show up in
+    --     has_table_privilege(), which is exactly why this check is separate.
+    SELECT format('answering_service holds column privilege %s on %I.%I.%I',
+                  p.priv, n.nspname, c.relname, a.attname)
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+     CROSS JOIN unnest(ARRAY['SELECT','UPDATE','REFERENCES']) AS p(priv)
+     WHERE c.relkind IN ('r','p','v','m','f')
+       AND n.nspname NOT IN ('pg_catalog','information_schema')
+       AND n.nspname NOT LIKE 'pg\_toast%'
+       AND has_column_privilege(k_oid, c.oid, a.attnum, p.priv)
+
+    UNION ALL
+    -- (7) Sequences. SELECT on a sequence discloses row counts and arrival rates; USAGE
+    --     is only needed by `serial` defaults, and the permitted table is required by
+    --     Section 4 not to use one.
+    SELECT format('answering_service holds %s on sequence %I.%I', p.priv, n.nspname, c.relname)
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+     CROSS JOIN unnest(ARRAY['SELECT','USAGE','UPDATE']) AS p(priv)
+     WHERE c.relkind = 'S'
+       AND n.nspname NOT IN ('pg_catalog','information_schema')
+       AND has_sequence_privilege(k_oid, c.oid, p.priv)
+
+    UNION ALL
+    -- (8) SECURITY DEFINER functions. A definer function is a read channel that no table
+    --     grant describes.
+    --
+    --     An earlier version of this check excluded extension-owned functions on the
+    --     reasoning that they are vetted and cannot be revoked without breaking the
+    --     extension. qa-verification (QA-F13) measured the exclusion and found it covered
+    --     ZERO functions across all seven extensions — so it was buying nothing today while
+    --     standing as a permanent blind spot for whichever extension a later epic adds.
+    --     CREATE EXTENSION is in this trigger's tag list precisely because that can happen.
+    --     The exclusion is removed: if an extension ships a definer function reachable by
+    --     this principal, that is a read path and the migration adding it must revoke
+    --     EXECUTE from PUBLIC, exactly as Section 3 does for pg_stat_statements.
+    SELECT format('answering_service can EXECUTE SECURITY DEFINER function %s — a definer '
+                  'function is a read channel', p.oid::regprocedure::text)
+      FROM pg_proc p
+      JOIN pg_namespace n ON n.oid = p.pronamespace
+     WHERE p.prosecdef
+       AND n.nspname NOT IN ('pg_catalog','information_schema')
+       AND has_function_privilege(k_oid, p.oid, 'EXECUTE')
+
+    UNION ALL
+    -- (9) Default ACLs — the time bomb. A default privilege granted today applies to a
+    --     table created in EP-13 by an agent who never heard of INT-10.
+    SELECT format('a default privilege grants %s on %s objects in schema %s to %s',
+                  a.privilege_type,
+                  CASE d.defaclobjtype WHEN 'r' THEN 'table' WHEN 'S' THEN 'sequence'
+                                       WHEN 'f' THEN 'function' WHEN 'T' THEN 'type'
+                                       WHEN 'n' THEN 'schema' ELSE d.defaclobjtype::text END,
+                  coalesce(quote_ident(ns.nspname), '(all)'),
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC — answering_service inherits it'
+                       ELSE 'answering_service' END)
+      FROM pg_default_acl d
+      LEFT JOIN pg_namespace ns ON ns.oid = d.defaclnamespace
+     CROSS JOIN LATERAL aclexplode(d.defaclacl) AS a
+     WHERE a.grantee IN (0, k_oid)
+
+    UNION ALL
+    -- (10) CREATE on a schema. Not a read channel by itself, but it lets the principal
+    --      create an object it owns and therefore holds every privilege on — including a
+    --      view, once it has any SELECT anywhere.
+    SELECT format('answering_service holds CREATE on schema %I', n.nspname)
+      FROM pg_namespace n
+     WHERE n.nspname NOT LIKE 'pg\_%'
+       AND n.nspname <> 'information_schema'
+       AND has_schema_privilege(k_oid, n.oid, 'CREATE')
+
+    -- Checks (11) to (16) exist because qa-verification found QA-F9: checks (1) to (10)
+    -- covered relations, columns, sequences, functions, default ACLs, schemas, role
+    -- attributes and membership, and NOTHING ELSE — while this function was published as
+    -- refusing a read path "by any route". `GRANT SELECT ON LARGE OBJECT 424242 TO
+    -- answering_service` returned GRANT, this function returned clean, and the principal
+    -- then read the object in full. A large object is not a relation, so no check saw it.
+    --
+    -- The lesson is the reason these six are written by ENUMERATING PostgreSQL's object
+    -- classes rather than by imagining attacks: the classes GRANT can name are a closed,
+    -- documented list, and going through it is finite work. Every class is now either
+    -- checked below or named in the coverage statement above with the reason it is not.
+
+    UNION ALL
+    -- (11) Large objects. QA-F9 itself.
+    SELECT format('answering_service holds %s on large object %s', p.priv, l.oid)
+      FROM pg_largeobject_metadata l
+     CROSS JOIN unnest(ARRAY['SELECT','UPDATE']) AS p(priv)
+     WHERE has_largeobject_privilege(k_oid, l.oid, p.priv)
+
+    UNION ALL
+    -- (12) Server parameters (PG15+). The second class QA-F9 found unchecked. Not a read
+    --      path on its own, but ALTER SYSTEM in the hands of a principal held outside our
+    --      own staff boundary (SA §SEC-11) is a configuration-control path, and `SET` on
+    --      the wrong parameter is a step towards one.
+    SELECT format('answering_service holds %s on parameter %s', p.priv, a.parname)
+      FROM pg_parameter_acl a
+     CROSS JOIN unnest(ARRAY['SET','ALTER SYSTEM']) AS p(priv)
+     WHERE has_parameter_privilege(k_oid, a.parname, p.priv)
+
+    UNION ALL
+    -- (13) This database. CONNECT is granted by Section 3 and is required. CREATE would let
+    --      the principal create a schema and then objects it owns every privilege on;
+    --      TEMPORARY is a resource-exhaustion path. Scoped to current_database() on purpose:
+    --      PUBLIC holds CONNECT and TEMPORARY on OTHER databases of the cluster by default,
+    --      and 0001 governs its own database, not the cluster's other tenants.
+    SELECT format('answering_service holds %s on database %I', p.priv, d.datname)
+      FROM pg_database d
+     CROSS JOIN unnest(ARRAY['CREATE','TEMPORARY']) AS p(priv)
+     WHERE d.datname = current_database()
+       AND has_database_privilege(k_oid, d.oid, p.priv)
+
+    UNION ALL
+    -- (14) UNTRUSTED PROCEDURAL languages (plpython3u, plperlu, …). USAGE on one, plus
+    --      CREATE on a schema, is arbitrary code execution as the server user. Two filters,
+    --      both load-bearing and both established by measurement rather than by reading:
+    --        lanispl      — excludes `c` and `internal`, which are call handlers rather than
+    --                       languages. has_language_privilege() reports USAGE on both for
+    --                       every role, and creating a function in either requires superuser
+    --                       regardless, so without this filter the check fires on a clean
+    --                       database. It did, on the first run.
+    --        lanpltrusted — trusted languages are deliberately permitted: PUBLIC holds USAGE
+    --                       on plpgsql by default and it is inert without the schema CREATE
+    --                       that check (10) forbids.
+    SELECT format('answering_service holds USAGE on untrusted language %I', l.lanname)
+      FROM pg_language l
+     WHERE l.lanispl
+       AND NOT l.lanpltrusted
+       AND has_language_privilege(k_oid, l.oid, 'USAGE')
+
+    UNION ALL
+    -- (15) Foreign servers and foreign data wrappers. USAGE on a server plus a schema CREATE
+    --      is a foreign table over whatever that server can reach — including, on a
+    --      file_fdw or postgres_fdw, data this database does not hold.
+    SELECT format('answering_service holds USAGE on foreign server %I', srv.srvname)
+      FROM pg_foreign_server srv
+     WHERE has_server_privilege(k_oid, srv.oid, 'USAGE')
+
+    UNION ALL
+    SELECT format('answering_service holds USAGE on foreign data wrapper %I', w.fdwname)
+      FROM pg_foreign_data_wrapper w
+     WHERE has_foreign_data_wrapper_privilege(k_oid, w.oid, 'USAGE')
+
+    UNION ALL
+    -- (16) Tablespaces. Not a read path, and included only so that the coverage claim in the
+    --      published contract is true of every object class GRANT can name rather than of
+    --      every class somebody thought of.
+    SELECT format('answering_service holds CREATE on tablespace %I', t.spcname)
+      FROM pg_tablespace t
+     WHERE has_tablespace_privilege(k_oid, t.oid, 'CREATE')
+  LOOP
+    v_msgs := v_msgs || v;
+  END LOOP;
+
+  IF array_length(v_msgs, 1) IS NOT NULL THEN
+    RAISE EXCEPTION 'INT10_ANSWERING_SERVICE_READ_PATH: the answering-service principal can reach data'
+      USING ERRCODE = 'KV010',
+            DETAIL  = array_to_string(v_msgs, E'\n'),
+            HINT    = 'SA INT-10: this principal has INSERT on public.out_of_hours_report and '
+                      'SELECT on nothing. Revoke, or take the change through a two-approval '
+                      'review that amends 0001''s allowlist (PROTOCOL section 3).';
+  END IF;
+END
+$int10$;
+
+COMMENT ON FUNCTION public.assert_answering_service_write_only() IS
+  'SA INT-10 boundary check for role answering_service. Raises SQLSTATE KV010 on any '
+  'privilege that lets it reach data. Uses has_*_privilege(), so it sees reachability '
+  'through PUBLIC and through role membership, not only a GRANT naming the role. '
+  'COVERS every object class GRANT can name: relations, columns, sequences, SECURITY '
+  'DEFINER functions, default ACLs, schema CREATE, large objects, server parameters, this '
+  'database, untrusted procedural languages, foreign servers, foreign data wrappers, '
+  'tablespaces; plus role attributes and role membership in both directions. '
+  'DOES NOT COVER, deliberately: types and domains (PUBLIC USAGE is required and conveys '
+  'no data); trusted languages (inert without the schema CREATE this rejects); the system '
+  'catalogues, which PostgreSQL makes world-readable — pg_stat_user_tables leaks row '
+  'counts and arrival rates but no row data; and other databases of the cluster. '
+  'PREVENTIVE only where the GRANT fires an event trigger, which is exactly the '
+  'per-database catalogues. DETECTIVE ONLY for the four grantable shared catalogues — '
+  'pg_database, pg_parameter_acl, pg_tablespace and pg_auth_members (role membership) — '
+  'which fire nothing. A scheduled reconciler (T-033) is what closes those four. '
+  'Wired to event trigger trg_int10_answering_service. Ticket T-020.';
+
+-- Assert the state this file leaves.
+SELECT public.assert_answering_service_write_only();
