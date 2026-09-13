@@ -62,7 +62,9 @@
  *                        `case_note` or `decision_record`, on a table named after one with an
  *                        underscore suffix (a partition), or on `ALL TABLES IN SCHEMA`
  *                        (SA §SEC-8). Column-level grants count. The grantee does not matter.
- *                        Also refused: `ALTER TABLE <one of them> OWNER TO`, because an owner
+ *                        Also refused: an `ALTER TABLE` naming one of them with `OWNER TO`
+ *                        ANYWHERE in the statement (a later action of a multi-action list, after
+ *                        the `*` marker, `ONLY ( name )`; rework 2, QR-F1), because an owner
  *                        holds every privilege; granting the role `app_ddl` to anyone,
  *                        because `app_ddl` owns every table, and likewise `CREATE ROLE|USER|GROUP`
  *                        naming `app_ddl` or `ALTER ROLE|USER|GROUP app_ddl` (membership without
@@ -818,9 +820,15 @@ for (const m of migrations) {
     }
   }
 
-  // R-APPEND-ONLY, the two routes that are not a privilege grant.
+  // R-APPEND-ONLY, the routes that are not a privilege grant.
   for (const f of frags) {
-    const owner = /\bALTER TABLE (?:IF EXISTS )?(?:ONLY )?([A-Z0-9_$.]+) OWNER TO\b/.exec(f);
+    // OWNER TO ANYWHERE in the statement (rework 2, QR-F1/OD-77). PostgreSQL's grammar is
+    // `ALTER TABLE [IF EXISTS] { name [*] | ONLY name | ONLY ( name ) } action [, …]`, and
+    // OWNER TO is one action: it may follow another action or the `*` marker. A fragment is
+    // one statement (split on `;`) with string literals blanked out, so the lookahead cannot
+    // reach the next statement or a string's contents.
+    const owner =
+      /\bALTER TABLE (?:IF EXISTS )?(?:ONLY ?)?(?:\( ?)?([A-Z0-9_$.]+)(?=.*\bOWNER TO\b)/.exec(f);
     if (owner !== null && APPEND_ONLY.test(bareName(owner[1] ?? ''))) {
       problem(
         'R-APPEND-ONLY',
