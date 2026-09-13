@@ -18,6 +18,12 @@
 # Runs inside the toolbox: needs node, git, grep, sed, sort. Writes only under db/migrations/
 # and one file under scripts/, and removes both. Case C99 also creates a detached git
 # worktree under the container's /tmp and removes it.
+#
+# T-031 adds four sections: R-ROLE-SWITCH (CR*), R-RUN-AS (CM*), runner-read marker lines in a
+# merged migration under R-MERGED (C8F-C8I, OD-86), and R-TRAILER (CT*). The R-TRAILER cases
+# COMMIT in a second detached worktree under /tmp (git identity t031-negative-test, never merged),
+# run that tree's gate with --base=<this tree's HEAD>, and remove the worktree at the end. The
+# commits stay in the object store as unreachable objects until git gc.
 set -uo pipefail
 cd "$(dirname "$0")/../.." || exit 2
 
@@ -511,6 +517,273 @@ git -C "$WT" -c user.name=t021-negative-test -c user.email=t021@kinvara.test com
 (cd "$WT" && node scripts/gates/migration-lint.ts --base=HEAD) >"$OUT" 2>&1
 judge C99 "0001 changed and committed at HEAD, gate run with --base=HEAD in that tree" R-BASELINE "$?"
 git worktree remove --force "$WT" && git worktree prune
+restore
+
+echo "== R-ROLE-SWITCH (T-031; T-136 § contract §6 C6-BOUND and §8, QA-A2): a migration never leaves its session role"
+pair expand "RESET ROLE;
+CREATE ROLE t031_escape;"
+check CR01 "RESET ROLE, then a superuser-only statement (T-136 C6-BOUND's shape)" R-ROLE-SWITCH
+pair expand "SET ROLE app;"
+check CR02 "SET ROLE <the bootstrap superuser>" R-ROLE-SWITCH
+pair expand "SET SESSION AUTHORIZATION app;"
+check CR03 "SET SESSION AUTHORIZATION <named>" R-ROLE-SWITCH
+pair expand "SET SESSION AUTHORIZATION DEFAULT;"
+check CR04 "SET SESSION AUTHORIZATION DEFAULT" R-ROLE-SWITCH
+pair expand "DO \$\$ BEGIN RESET ROLE; END \$\$;"
+check CR05 "QA-A2: a DO block that runs RESET ROLE" R-ROLE-SWITCH
+pair expand "set local
+  role app;"
+check CR06 "lower case, SET LOCAL ROLE across two lines" R-ROLE-SWITCH
+pair expand "SET SESSION ROLE app;"
+check CR07 "SET SESSION ROLE" R-ROLE-SWITCH
+pair expand "RESET SESSION AUTHORIZATION;"
+check CR08 "RESET SESSION AUTHORIZATION" R-ROLE-SWITCH
+pair expand "SET /* back to the session user */ ROLE app;"
+check CR09 "a block comment between SET and ROLE" R-ROLE-SWITCH
+pair expand "SET \"role\" TO 'app';"
+check CR0A "the parameter name as a quoted identifier" R-ROLE-SWITCH
+pair expand "DO \$do\$ BEGIN EXECUTE 'SET ROLE app'; END \$do\$;"
+check CR0B "SET ROLE as an EXECUTE string inside a DO block" R-ROLE-SWITCH
+pair expand "SELECT set_config('role', 'app', false);"
+check CR0C "set_config('role', …)" R-ROLE-SWITCH
+pair expand "DO \$do\$ BEGIN EXECUTE 'SELECT pg_catalog.set_config(''role'', ''app'', false)'; END \$do\$;"
+check CR0D "set_config('role', …) inside an EXECUTE string, quotes doubled" R-ROLE-SWITCH
+pair expand "SET session_authorization = 'app';"
+check CR0E "session_authorization spelled as a parameter name" R-ROLE-SWITCH
+pair expand "SELECT 1;"
+plant "$DOWN" "RESET ROLE;"
+check CR0F "in a DOWN file (a down file runs as its up file does, T-136 C2e)" R-ROLE-SWITCH
+pair expand "CREATE FUNCTION public.t031_f() RETURNS void LANGUAGE plpgsql AS \$f\$ BEGIN SET ROLE app; END \$f\$;"
+check CR0G "inside the body of a function the migration creates" R-ROLE-SWITCH
+pair expand "ALTER FUNCTION public.t031_f() SET role = app;"
+check CR0H "a function-level SET role clause" R-ROLE-SWITCH
+pair expand "UPDATE public.t031_thing SET note = 'x' WHERE false; SET ROLE app;"
+check CR0I "SET ROLE on one line with an UPDATE (the UPDATE … SET role exemption is per statement)" R-ROLE-SWITCH
+pair expand "\\connect - app
+CREATE ROLE t031_escape;"
+check CR0J "psql \\connect (the runner executes a migration file with psql)" R-ROLE-SWITCH
+pair expand "\\i db/migrations/t031_unread.sql"
+check CR0K "psql \\i, which runs SQL from a file this gate does not read" R-ROLE-SWITCH
+pair expand "-- @no-transaction
+DISCARD ALL;"
+check CR0L "DISCARD ALL, which includes SET SESSION AUTHORIZATION DEFAULT" R-ROLE-SWITCH
+pair expand "-- SET ROLE app;
+/* RESET ROLE; SET SESSION AUTHORIZATION app; */
+SELECT 1;"
+check CRC1 "CONTROL: role switches inside comments" PASS
+pair expand "CREATE FUNCTION public.t031_f() RETURNS void LANGUAGE plpgsql AS \$f\$
+BEGIN
+  PERFORM 1;                                    --   WITH INHERIT FALSE still permits SET ROLE.
+END
+\$f\$;"
+check CRC2 "CONTROL (T-143 TL-A1): SET ROLE in a -- comment inside a function body, as merged 0001-0003 carry it" PASS
+pair data "UPDATE public.account_role SET role = 'ts_senior' WHERE account_id = 1;"
+check CRC3 "CONTROL: UPDATE … SET role = (a column named role)" PASS
+pair data "UPDATE ONLY public.account_role AS ar SET role = 'parent' WHERE ar.account_id = 1;"
+check CRC4 "CONTROL: UPDATE ONLY … AS alias SET role =" PASS
+pair data "INSERT INTO public.account_role (account_id, role) VALUES (1, 'parent') ON CONFLICT (account_id, role) DO UPDATE SET role = EXCLUDED.role;"
+check CRC5 "CONTROL: INSERT … ON CONFLICT DO UPDATE SET role =" PASS
+pair expand "SET LOCAL lock_timeout = '5s';
+SET search_path = public;
+SELECT set_config('statement_timeout', '5s', true);"
+check CRC6 "CONTROL: SET LOCAL lock_timeout, SET search_path, set_config of another parameter" PASS
+pair expand "CREATE TABLE public.t031_thing (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, role text NOT NULL);
+GRANT SELECT, INSERT ON public.t031_thing TO app_rw;"
+check CRC7 "CONTROL: a column named role in CREATE TABLE" PASS
+
+echo "== R-RUN-AS (T-031; T-136 § contract §6-§7, QA-A1): the superuser marker sits in the header, outside any string, citing a reference"
+pair expand "SELECT '
+-- @run-as: bootstrap-superuser — T-143
+';
+CREATE ROLE t031_escape;"
+check CM01 "QA-A1: the marker on a line inside a string literal (the runner reads lines, not SQL)" R-RUN-AS
+pair expand "DO \$\$ BEGIN
+-- @run-as: bootstrap-superuser — T-143
+PERFORM 1; END \$\$;"
+check CM02 "the marker on a line inside a dollar-quoted DO body" R-RUN-AS
+pair expand "SELECT 1;
+-- @run-as: bootstrap-superuser — T-143
+CREATE ROLE t031_escape;"
+check CM03 "the marker as a -- line after the first statement" R-RUN-AS
+pair expand "/*
+-- @run-as: bootstrap-superuser — T-143
+*/
+CREATE ROLE t031_escape;"
+check CM04 "the marker on a line inside a block comment" R-RUN-AS
+pair expand "-- @run-as: bootstrap-superuser — needed for CREATE ROLE
+CREATE ROLE t031_escape;"
+check CM05 "a header marker that cites no ticket or decision" R-RUN-AS
+pair expand "-- @run-as: bootstrap-superuser — T-143
+-- @run-as: bootstrap-superuser — OE-23
+CREATE ROLE t031_escape;"
+check CM06 "two markers in the header" R-RUN-AS
+pair expand "SELECT 1;"
+plant "$DOWN" "-- @run-as: bootstrap-superuser — T-143
+SELECT 1;"
+check CM07 "a marker in a DOWN file (the runner refuses one; T-136 A6b)" R-RUN-AS
+pair expand "-- @run-as: app — T-143
+CREATE ROLE t031_escape;"
+check CM08 "a marker naming a principal other than bootstrap-superuser" R-RUN-AS
+pair expand "-- @run-as bootstrap-superuser — T-143
+CREATE ROLE t031_escape;"
+check CM09 "a marker with no colon" R-RUN-AS
+pair expand "SELECT 1; -- @run-as: bootstrap-superuser — T-143"
+check CM0A "a marker trailing a statement, which the runner does not read" R-RUN-AS
+plant "$UP" "$(git show "HEAD:$M/0003_int10_guard_relocate_schema.up.sql")"
+plant "$DOWN" "-- the down file of a planted migration"
+check CMC1 "CONTROL (T-143 § contract §6): merged 0003's up file verbatim as a new migration (marker line, -- continuation lines, SET ROLE in comments)" PASS
+pair expand "-- @run-as: bootstrap-superuser — T-031
+CREATE ROLE t031_login NOLOGIN;"
+check CMC2 "CONTROL: the minimal legitimate header marker" PASS
+pair expand "-- This file carries no \`-- @run-as\` marker; it runs as app_ddl (the @run-as form is T-136's).
+SELECT 1;"
+check CMC3 "CONTROL: header prose that mentions the marker (merged 0003's down file does)" PASS
+
+echo "== R-MERGED: a comment line the runner reads is not a null edit (T-031, OD-86) — plants on merged 0003"
+U3=$M/0003_int10_guard_relocate_schema.up.sql
+mutate "$U3" "-- @phase: expand
+" "-- @phase: expand
+-- @no-transaction
+"
+check C8F "OD-86: -- @no-transaction added to merged 0003's header, a comment-only edit" R-MERGED
+mutate "$U3" "-- @run-as: bootstrap-superuser — OE-23; T-143" "-- run-as: bootstrap-superuser — OE-23; T-143"
+check C8G "merged 0003's @run-as marker disabled by deleting its @" R-MERGED
+mutate "$U3" "-- @run-as: bootstrap-superuser — OE-23; T-143" "-- @run-as: bootstrap-superuser — OE-23; T-143, T-031"
+check C8H "merged 0003's marker line reworded (refused although only the reference changes)" R-MERGED
+mutate "$U3" "superuser owns — ALTER FUNCTION SET SCHEMA" "superuser owns: ALTER FUNCTION SET SCHEMA"
+check C8I "CONTROL: a -- continuation line under merged 0003's marker reworded" PASS
+
+echo "== R-TRAILER (T-031; PROTOCOL §3): every commit touching db/migrations/ carries one Ticket trailer, read by git's trailer parser"
+# Each case commits in a detached worktree under the container's /tmp and runs THAT tree's gate with
+# --base=<this tree's HEAD>, so the range is exactly the planted commits. The 'parser:' lines print what
+# git's own parser returns for each commit, independently of the gate. The worktree is reset and
+# asserted clean after each case, and removed at the end.
+BASE_SHA=$(git rev-parse HEAD)
+WT2="$(mktemp -d)/wt"
+git worktree add -q --detach "$WT2" HEAD || {
+  echo "ABORT: git worktree add"
+  exit 2
+}
+T_UP=$M/9001_t031_trailer.up.sql
+T_DOWN=$M/9001_t031_trailer.down.sql
+GITID=(-c user.name=t031-negative-test -c user.email=t031@kinvara.test)
+wt_write() {
+  printf '%s\n' "$2" >"$WT2/$1"
+  if [ "$(cat "$WT2/$1")" != "$2" ]; then
+    echo "ABORT: the plant did not land in $WT2/$1"
+    exit 2
+  fi
+}
+# wt_commit <message>: commit everything in the worktree with exactly this message; assert a new
+# commit exists, carries the message byte for byte, and left the worktree clean.
+wt_commit() {
+  local before
+  before=$(git -C "$WT2" rev-parse HEAD)
+  git -C "$WT2" add -A || {
+    echo "ABORT: git add"
+    exit 2
+  }
+  printf '%s\n' "$1" | git -C "$WT2" "${GITID[@]}" commit -q -F - || {
+    echo "ABORT: git commit"
+    exit 2
+  }
+  if [ "$(git -C "$WT2" rev-parse HEAD)" = "$before" ] || [ "$(git -C "$WT2" log -1 --format=%B)" != "$1" ] || [ -n "$(git -C "$WT2" status --porcelain)" ]; then
+    echo "ABORT: the commit did not land as written"
+    exit 2
+  fi
+}
+wt_migration() {
+  wt_write "$T_UP" "-- @phase: expand
+SELECT 1;"
+  wt_write "$T_DOWN" "-- the down file of a planted migration"
+}
+wt_check() {
+  local code
+  (cd "$WT2" && node scripts/gates/migration-lint.ts --base="$BASE_SHA") >"$OUT" 2>&1
+  code=$?
+  judge "$1" "$2" "$3" "$code"
+  git -C "$WT2" log --format='       parser: %h Ticket=[%(trailers:key=Ticket,valueonly,separator=%x2C)] %s' "$BASE_SHA..HEAD"
+  git -C "$WT2" reset -q --hard "$BASE_SHA" && git -C "$WT2" clean -fdq
+  if [ "$(git -C "$WT2" rev-parse HEAD)" != "$BASE_SHA" ] || [ -n "$(git -C "$WT2" status --porcelain)" ]; then
+    echo "ABORT: the worktree did not reset"
+    exit 2
+  fi
+}
+SUBJECT="feat(db): plant a migration for the trailer cases"
+wt_migration
+wt_commit "$SUBJECT"
+wt_check CT01 "a migration commit with no Ticket trailer" R-TRAILER
+wt_migration
+wt_commit "$SUBJECT
+
+Ticket: T-031"
+wt_check CT02 "CONTROL: a migration commit whose only trailer is Ticket" PASS
+wt_migration
+wt_commit "$SUBJECT
+
+A body paragraph.
+
+Ticket: T-031
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_t031_negative_test"
+wt_check CT03 "CONTROL (the positional-parsing bug): Ticket is not the final line of the trailer block" PASS
+wt_migration
+wt_commit "$SUBJECT
+
+Ticket: T-031
+
+A paragraph after it, so the Ticket line is not in the final trailer block."
+wt_check CT04 "a Ticket line in the body, followed by another paragraph" R-TRAILER
+wt_migration
+wt_commit "$SUBJECT
+
+This plants a migration for the negative suite.
+Ticket: T-031"
+wt_check CT05 "Ticket as the LAST LINE of a prose paragraph: a last-line check reads it, git's parser does not" R-TRAILER
+wt_migration
+wt_commit "$SUBJECT
+
+Ticket: TBD"
+wt_check CT06 "a Ticket trailer whose value is not a ticket id" R-TRAILER
+wt_migration
+wt_commit "$SUBJECT
+
+Ticket: T-031
+Ticket: T-060"
+wt_check CT07 "two Ticket trailers" R-TRAILER
+wt_migration
+wt_commit "$SUBJECT
+
+Ticket: T-031"
+wt_write "$T_DOWN" "-- the down file, amended by a second commit"
+wt_commit "fix(db): amend the planted down file"
+wt_check CT08 "two migration commits, only the FIRST with a trailer (every commit is read, not only the last)" R-TRAILER
+wt_write "$APP" "application code in a commit with no trailer"
+wt_commit "chore: a commit touching nothing under db/migrations"
+wt_check CT09 "CONTROL: a commit with no trailer that touches nothing under db/migrations/" PASS
+wt_migration
+wt_commit "$SUBJECT
+
+Ticket: T-031"
+SIDE=$(git -C "$WT2" rev-parse HEAD)
+git -C "$WT2" checkout -q --detach "$BASE_SHA" || {
+  echo "ABORT: checkout"
+  exit 2
+}
+wt_write "$APP" "a commit on the other line of history"
+wt_commit "chore: the other line of history
+
+Ticket: T-031"
+git -C "$WT2" "${GITID[@]}" merge -q --no-ff --no-edit "$SIDE" || {
+  echo "ABORT: merge"
+  exit 2
+}
+if [ "$(git -C "$WT2" log -1 --format=%P | wc -w)" -ne 2 ]; then
+  echo "ABORT: the merge commit did not land"
+  exit 2
+fi
+wt_check CT0A "a non-fast-forward merge commit with git's default message, bringing the migration in on its second parent" R-TRAILER
+git worktree remove --force "$WT2" && git worktree prune
 restore
 
 echo
