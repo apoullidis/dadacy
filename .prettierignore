@@ -20,3 +20,9 @@ pnpm-lock.yaml
 # still reads the client.
 packages/contracts/openapi.json
 packages/contracts/src/generated/
+
+# T-138. db/schema.ts is drizzle-kit's `pull` output under a generated header, and
+# `pnpm run db:introspect:check` compares it byte for byte with a fresh introspection.
+# Same reasoning as above: prettier would reformat it and the parity check would then
+# fail. The generator owns its formatting.
+db/schema.ts

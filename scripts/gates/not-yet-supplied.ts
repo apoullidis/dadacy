@@ -11,10 +11,6 @@
  */
 const OWED: ReadonlyMap<string, string> = new Map([
   [
-    'db:introspect:check',
-    'tech-lead — Drizzle introspection parity against db/schema.ts (SD §DH-1, §QD-4). Blocked on T-020/T-021.',
-  ],
-  [
     'gate:heavy',
     'platform-infrastructure T-006 — Lighthouse CI, axe-core, Playwright, Testcontainers (SD §QD-4 "PR (heavy)"). Blocked on T-005, T-115, T-034 (T-018 was retired under PROTOCOL §4 and re-cut into T-034 + T-035).',
   ],

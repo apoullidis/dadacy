@@ -1,0 +1,199 @@
+#!/usr/bin/env bash
+# T-138 — negative tests for db:introspect:check (scripts/db-introspect.ts).
+#
+#   cd /home/alex/projects/nanny/app && ./scripts/svc run <ticket> -- bash scripts/negative-tests/db-introspect.sh
+#
+# Needs the ticket's `db` project and a clean, committed tree. The check itself migrates the
+# database up, so the database may start fresh or already at the highest committed migration.
+#
+# Each case plants one thing and ASSERTS THE PLANT LANDED, runs `node scripts/db-introspect.ts
+# --check`, and judges the run by three readings that a check doing nothing could not all produce:
+#   1. the exit status (0 PASS, 1 FAIL, 70 CRASH);
+#   2. exactly one `GATE PASS|FAIL|CRASH  db:introspect:check` banner, of the expected kind;
+#   3. the SET of `[I-TAG]` problem tags, which must EQUAL the expected set.
+# Some cases also require one line in the output, proving the planted state was reached, for
+# example that the planted migration was applied. After each case the database is brought back to
+# the highest committed migration and its record is asserted, the tree is restored, and
+# `git status` is asserted clean.
+set -uo pipefail
+cd "$(dirname "$0")/../.." || exit 2
+
+if [ -n "$(git status --porcelain)" ]; then
+  echo "REFUSED: the tree is not clean. Commit first."
+  git status --porcelain
+  exit 2
+fi
+
+M=db/migrations
+HIGHEST=$(ls "$M" | sed -nE 's/^([0-9]{4})_[a-z0-9_]+\.up\.sql$/\1/p' | sort | tail -1)
+NEXT=$(printf '%04d' $((10#$HIGHEST + 1)))
+UP=$M/${NEXT}_t138_plant.up.sql
+DOWN=$M/${NEXT}_t138_plant.down.sql
+SCHEMA=db/schema.ts
+SCRIPT=scripts/db-introspect.ts
+OUT=$(mktemp)
+total=0
+bad=0
+echo "highest committed migration $HIGHEST; plants are numbered $NEXT"
+
+record() {
+  psql -X -A -t -q -c "SELECT coalesce(shobj_description(oid, 'pg_database'), '') FROM pg_database WHERE datname = current_database()"
+}
+
+owned_in_public() {
+  psql -X -A -t -q -c "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind IN ('r','p','v','m','f') AND n.nspname = 'public' AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e')"
+}
+
+abort() {
+  echo "ABORT: $1"
+  exit 2
+}
+
+restore() {
+  if [ "$(record)" != "kinvara-migrate version=$HIGHEST" ]; then
+    node scripts/db-migrate.ts down --to "$HIGHEST" >"$OUT.down" 2>&1
+    grep -q '^MIGRATE OK  down: ' "$OUT.down" || { cat "$OUT.down"; abort "could not bring the database back to $HIGHEST"; }
+  fi
+  [ "$(record)" = "kinvara-migrate version=$HIGHEST" ] || abort "the record reads '$(record)', not $HIGHEST"
+  rm -f "$M/${NEXT}_t138_plant.up.sql" "$M/${NEXT}_t138_plant.down.sql"
+  git checkout -q -- "$SCHEMA" "$SCRIPT"
+  if [ -n "$(git status --porcelain)" ]; then
+    git status --porcelain
+    abort "the tree did not restore cleanly"
+  fi
+}
+
+# plant <file> <content>: write, then assert the bytes on disk are the bytes intended.
+plant() {
+  printf '%s\n' "$2" >"$1"
+  [ "$(cat "$1")" = "$2" ] || abort "the plant did not land in $1"
+}
+
+# a migration NEXT that creates one table in public, with a grant and a down file.
+plant_table() {
+  plant "$UP" "-- @phase: expand
+CREATE TABLE public.t138_plant (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, note text NOT NULL);
+GRANT SELECT, INSERT ON public.t138_plant TO app_rw;"
+  plant "$DOWN" "DROP TABLE public.t138_plant;"
+}
+
+# mutate <file> <from> <to>: mutate.mjs exits non-zero if the anchor is absent; the file must differ from HEAD.
+mutate() {
+  node scripts/negative-tests/mutate.mjs "$1" "$2" "$3" || abort "mutation anchor missing in $1"
+  if git diff --quiet -- "$1"; then abort "the mutation did not change $1"; fi
+}
+
+# append a line to db/schema.ts by hand; the file must differ from HEAD.
+hand_edit() {
+  printf '%s\n' "$1" >>"$SCHEMA"
+  if git diff --quiet -- "$SCHEMA"; then abort "the hand edit did not change $SCHEMA"; fi
+}
+
+# recompute db/schema.ts's header over its current body, as an editor covering their tracks would.
+rehash() {
+  node --input-type=module -e '
+    import fs from "node:fs";
+    import { renderSchemaFile, verifySchemaFile } from "./scripts/gates/lib/schema-digest.ts";
+    const lines = fs.readFileSync("db/schema.ts", "utf8").split("\n");
+    const version = /drizzle-kit (\S+) sha256/.exec(lines[2] ?? "")?.[1] ?? "unknown";
+    fs.writeFileSync("db/schema.ts", renderSchemaFile(lines.slice(3).join("\n"), version));
+    if (!verifySchemaFile(fs.readFileSync("db/schema.ts", "utf8")).ok) process.exit(3);
+  ' || abort "rehash did not produce a verifying header"
+}
+
+# judge <id> <description> <expect> <exit code> [required output regex]
+# expect: PASS, CRASH, or I-TAGs separated by spaces.
+judge() {
+  local id=$1 desc=$2 expect=$3 code=$4 require=${5:-} got want banners verdict=BAD
+  total=$((total + 1))
+  banners=$(grep -cE '^GATE (PASS|FAIL|CRASH)  db:introspect:check($| — |: )' "$OUT")
+  got=$(grep -oE '^  - \[I-[A-Z]+\]' "$OUT" | sed -E 's/^  - \[(.*)\]$/\1/' | sort -u | tr '\n' ' ' | sed 's/ $//')
+  case "$expect" in
+    PASS)
+      if [ "$code" -eq 0 ] && [ "$banners" -eq 1 ] && grep -qx 'GATE PASS  db:introspect:check' "$OUT" && [ -z "$got" ]; then verdict=ok; fi
+      ;;
+    CRASH)
+      if [ "$code" -eq 70 ] && [ "$banners" -eq 1 ] && grep -q '^GATE CRASH  db:introspect:check: ' "$OUT" && [ -z "$got" ]; then verdict=ok; fi
+      ;;
+    *)
+      # shellcheck disable=SC2086
+      want=$(printf '%s\n' $expect | sort -u | tr '\n' ' ' | sed 's/ $//')
+      if [ "$code" -eq 1 ] && [ "$banners" -eq 1 ] && grep -q '^GATE FAIL  db:introspect:check — ' "$OUT" && [ "$got" = "$want" ]; then verdict=ok; fi
+      ;;
+  esac
+  if [ -n "$require" ] && ! grep -qE -- "$require" "$OUT"; then
+    verdict=BAD
+    require="$require  <- NOT FOUND"
+  fi
+  [ "$verdict" = ok ] || bad=$((bad + 1))
+  printf '%-4s %s  %s\n       exit %s; banners %s; expected %s; reported %s\n' "$verdict" "$id" "$desc" "$code" "$banners" "$expect" "${got:-none}"
+  [ -z "$require" ] || printf '       required: %s\n' "$require"
+  grep -E '^  - \[|^GATE |VACUOUS:|byte-identical|db:migrate up:' "$OUT" | cut -c1-240 | sed 's/^/       /'
+}
+
+check() {
+  local id=$1 desc=$2 expect=$3 require=${4:-}
+  node scripts/db-introspect.ts --check >"$OUT" 2>&1
+  judge "$id" "$desc" "$expect" "$?" "$require"
+  restore
+}
+
+echo "== control"
+check K00 "CONTROL: the committed tree, nothing planted" PASS 'byte-identical to a fresh introspection'
+OWNED=$(owned_in_public)
+echo "   relations in public owned by no extension at $HIGHEST: $OWNED"
+
+echo "== (i) a hand edit to db/schema.ts"
+hand_edit 'export const handWritten = 1;'
+check K01 "(i) a line added by hand, header untouched" "I-DIGEST I-DIFF"
+hand_edit 'export const handWritten = 1;'
+rehash
+check K02 "(i) a line added by hand AND the header digest recomputed: parity still refuses it" I-DIFF
+
+echo "== (ii) a migration adding a table, with and without regeneration"
+plant_table
+check K03 "(ii) a migration adding a table, db/schema.ts not regenerated" I-DIFF "MIGRATE OK  up: $HIGHEST -> $NEXT"
+plant_table
+node scripts/db-introspect.ts --write >"$OUT.w" 2>&1 || { cat "$OUT.w"; abort "regeneration failed"; }
+grep -q 'pgTable("t138_plant"' "$SCHEMA" || abort "regeneration did not add t138_plant to $SCHEMA"
+check K04 "CONTROL (ii): the same migration with db/schema.ts regenerated" PASS 'byte-identical to a fresh introspection'
+
+echo "== (iii) db/schema.ts deleted"
+rm -f "$SCHEMA"
+[ ! -e "$SCHEMA" ] || abort "$SCHEMA still exists"
+check K05 "(iii) db/schema.ts deleted: a failure, not nothing to compare" I-MISSING
+
+echo "== (iv) anti-vacuity, anchored on the catalogue"
+plant_table
+mutate "$SCRIPT" "schemaFilter: [INTROSPECTED_SCHEMA]," "schemaFilter: ['t138_no_such_schema'],"
+check K06 "(iv) introspection mutated to read no schema, while the catalogue holds a table" I-VACUOUS "MIGRATE OK  up: $HIGHEST -> $NEXT"
+mutate "$SCRIPT" "schemaFilter: [INTROSPECTED_SCHEMA]," "schemaFilter: ['t138_no_such_schema'],"
+if [ "$OWNED" -eq 0 ]; then
+  check K07 "BOUND (iv): the same mutation, no table planted, catalogue holds 0 un-owned relations -> NOT detected" PASS 'VACUOUS: 0 relations introspected'
+else
+  check K07 "(iv) the same mutation against the committed relations" I-VACUOUS
+fi
+
+echo "== scope, migration failure, crash"
+plant "$UP" "-- @phase: expand
+-- @run-as: bootstrap-superuser — T-138
+CREATE SCHEMA t138_other;
+CREATE TABLE t138_other.t138_plant (id bigint PRIMARY KEY);"
+plant "$DOWN" "DROP TABLE t138_other.t138_plant;
+DROP SCHEMA t138_other;"
+check K08 "a table owned by no extension outside public" I-SCOPE "MIGRATE OK  up: $HIGHEST -> $NEXT"
+plant "$UP" "-- @phase: expand
+SELECT 1/0;"
+plant "$DOWN" "-- the down file of a planted migration"
+check K09 "a migration that fails to apply" I-MIGRATE
+mutate "$SCRIPT" "  // 1. migrations" "  throw new Error('t138 planted crash');
+  // 1. migrations"
+check K10 "the script throws: a crash, told apart from a refusal" CRASH
+
+echo
+if [ "$bad" -eq 0 ]; then
+  echo "ALL $total CASES BEHAVED AS EXPECTED"
+  exit 0
+fi
+echo "!! $bad of $total cases misbehaved"
+exit 1

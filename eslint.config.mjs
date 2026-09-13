@@ -25,6 +25,14 @@ export default tseslint.config(
       '**/coverage/**',
       '.pnpm-store/**',
       '.cache/**',
+      // T-138. db/schema.ts is drizzle-kit `pull` output under a generated header, and
+      // `db:introspect:check` holds it byte for byte against a fresh introspection, so it
+      // cannot be edited to satisfy a lint rule. Measured: the empty baseline schema
+      // imports `pgTable` and `sql` and uses neither (no-unused-vars, 2 errors). The same
+      // reasoning exempts it from prettier (.prettierignore). It is NOT typechecked by the
+      // root program either: tsconfig.json includes apps/, packages/ and scripts/ only, so
+      // it is typechecked when a module imports it.
+      'db/schema.ts',
     ],
   },
   js.configs.recommended,
