@@ -190,10 +190,13 @@ describe('SA §INT-10 — the guard refuses future grants', () => {
     );
   });
 
-  test('app_ddl cannot disarm the guard — every migration from 0002 runs as it', async () => {
-    // DROP EVENT TRIGGER requires superuser and app_ddl is NOSUPERUSER, so no
-    // ordinary migration can turn this off. Asserted rather than assumed,
-    // because the whole layering argument rests on it.
+  test('PREMISES ONLY — app_ddl is NOSUPERUSER and trg_int10_answering_service is enabled (disarming is not attempted here)', async () => {
+    // Asserts two premises and nothing more: app_ddl's rolsuper is false, and the
+    // event trigger is enabled ('O'). It does NOT show that app_ddl cannot disarm
+    // the guard, and that claim is false on 0001 (the harness applies 0001 alone):
+    // as owner of schema public, an app_ddl login can drop the guard's functions
+    // (OD-73/OD-75 routes A4, A5). Migration 0003 moves them to kinvara_guard
+    // (T-143); porting those refusals here is T-122/T-137's.
     assert.equal(
       await db.value(`SELECT rolsuper::text FROM pg_roles WHERE rolname = 'app_ddl'`),
       'false',
