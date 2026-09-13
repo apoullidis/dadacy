@@ -208,7 +208,7 @@ describe('distinguishable from a crash — the same real run, changed one way at
   }
 });
 
-describe('the dir option can add a migration, never drop or alter a committed one', () => {
+describe('the dir option must carry every committed migration file byte for byte, and may add files (it fixes files, not the state they leave)', () => {
   test('CONTROL — the scratch directory carries every committed migration', () => {
     assert.deepEqual(
       assertCarriesEveryCommittedMigration(SUITE, scratch),

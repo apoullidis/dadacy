@@ -80,7 +80,9 @@ export interface MigratedClusterOptions {
   /**
    * A migrations directory other than `db/migrations`. It must carry every
    * committed migration byte for byte (refused before a cluster starts
-   * otherwise), so it can only ADD migrations — the scratch-migration case.
+   * otherwise), so it can only ADD migration files — the scratch-migration case.
+   * It fixes which files are applied, not the state they leave: an added
+   * migration can undo a committed one's effect (tech-lead TV-A2).
    */
   readonly dir?: string;
 }

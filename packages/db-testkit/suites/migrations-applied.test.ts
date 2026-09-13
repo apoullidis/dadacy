@@ -3,14 +3,27 @@
  *
  * `acquireMigratedCluster` runs `T-136`'s `db:migrate up` against this suite's
  * cluster. This file checks the result from the database side, over its own
- * connection: the record, and the object the HIGHEST committed migration creates.
+ * connection: the record, and the objects the migrations keyed in `CREATED_BY`
+ * create.
  *
- * THE TRIPWIRE. `HIGHEST_COMMITTED` is a literal, not a reading of the
- * directory, so it is an anchor from outside the thing it checks. When `0004`
- * lands, the first test goes red on purpose: whoever adds a migration adds an
- * assertion here for the object it creates, and moves the literal. Without it
- * this suite would keep passing on `0003`'s object while no longer asserting the
- * highest migration at all.
+ * THE TRIPWIRE, in two halves (T-137 § Published contract (rework 1) §5).
+ *
+ *   1. `HIGHEST_COMMITTED` is a literal, not a reading of the directory, so the
+ *      first test is anchored outside the thing it checks: a new up file in
+ *      db/migrations turns it red.
+ *   2. Moving the literal alone is not enough (tech-lead TV-F1, OD-82).
+ *      `CREATED_BY` keys probes by migration number. The LAST describe block
+ *      reads the highest up file in db/migrations and requires: at least one
+ *      probe keyed to it; every one of those probes ran and held after `up`;
+ *      and, after `db:migrate down --to <highest - 1>`, every one of them exits
+ *      0 and no longer holds. A probe must therefore tell the new migration's
+ *      state from the state below it.
+ *
+ * What it cannot see is WHICH object a probe names. Any reading that differs
+ * between the two states satisfies it; the database's own record does.
+ * Review checks that each probe names an object its migration creates.
+ *
+ * The down step changes the cluster, so its describe block stays LAST.
  */
 import { afterAll, beforeAll, describe, test } from 'vitest';
 import assert from 'node:assert/strict';
@@ -18,6 +31,7 @@ import path from 'node:path';
 import {
   acquireMigratedCluster,
   highestMigrationIn,
+  judgeMigrateRun,
   MIGRATIONS_DIR,
   REPO_ROOT,
   SUPERUSER,
@@ -27,6 +41,68 @@ import { assertPermitted, assertRefused, INT10_RAISE } from '../src/expect.ts';
 
 const SUITE = 'migrations-applied';
 const HIGHEST_COMMITTED = '0003';
+const COMMITTED_DIR = path.join(REPO_ROOT, MIGRATIONS_DIR);
+const RECORD_SQL = `SELECT coalesce(shobj_description(oid, 'pg_database'), '(no comment)')
+                      FROM pg_database WHERE datname = current_database()`;
+
+interface Probe {
+  /** The test title. */
+  readonly title: string;
+  /**
+   * One value, and it must not raise: it is read again after the down step,
+   * where the object it names may be gone.
+   */
+  readonly sql: string;
+  /** What `sql` returns once every committed migration is applied. */
+  readonly holds: string;
+}
+
+/**
+ * Probes, keyed by the migration whose objects they assert. The ticket that
+ * adds a migration adds its entry here, in the same change set.
+ */
+const CREATED_BY: Readonly<
+  Record<string, { readonly source: string; readonly probes: readonly Probe[] }>
+> = {
+  '0003': {
+    source: 'T-143',
+    probes: [
+      {
+        title: 'schema kinvara_guard exists, owned by the bootstrap superuser',
+        sql: `SELECT coalesce((SELECT pg_get_userbyid(nspowner) FROM pg_namespace
+                              WHERE nspname = 'kinvara_guard'), '(absent)')`,
+        holds: SUPERUSER,
+      },
+      {
+        title:
+          'the check function lives in kinvara_guard, and no schema but kinvara_guard holds one',
+        sql: `SELECT coalesce(string_agg(n.nspname, ',' ORDER BY n.nspname), '(none)')
+                FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+               WHERE p.proname = 'assert_answering_service_write_only'`,
+        holds: 'kinvara_guard',
+      },
+      {
+        title: 'the event trigger calls the trigger function relocated into kinvara_guard',
+        sql: `SELECT coalesce((SELECT n.nspname || '.' || p.proname
+                               FROM pg_event_trigger e
+                               JOIN pg_proc p ON p.oid = e.evtfoid
+                               JOIN pg_namespace n ON n.oid = p.pronamespace
+                              WHERE e.evtname = 'trg_int10_answering_service'), '(absent)')`,
+        holds: 'kinvara_guard.trg_assert_answering_service_write_only',
+      },
+    ],
+  },
+};
+
+/** `<id> <title>` of every probe that ran and held after `up`. */
+const heldAfterUp = new Set<string>();
+const heldKey = (id: string, probe: Probe): string => `${id} ${probe.title}`;
+
+const WHAT_IS_CHECKED =
+  'The gate checks the literal, and that CREATED_BY[<highest>] has probes that held after up and ' +
+  'stop holding after a down to the migration below. It does not check that a probe names an ' +
+  'object the migration creates; review does (T-137 § Published contract (rework 1) §5).';
+
 let db: Cluster;
 
 beforeAll(async () => {
@@ -38,61 +114,33 @@ afterAll(async () => {
 });
 
 describe('every committed migration is applied', () => {
-  test('TRIPWIRE — the highest committed migration is the one this suite asserts', async () => {
+  test('TRIPWIRE, first half — the highest up file in db/migrations equals the literal HIGHEST_COMMITTED', async () => {
+    const actual = highestMigrationIn(COMMITTED_DIR);
     assert.equal(
-      highestMigrationIn(path.join(REPO_ROOT, MIGRATIONS_DIR)),
+      actual,
       HIGHEST_COMMITTED,
-      `db/migrations has a migration above ${HIGHEST_COMMITTED}. Add a test below for an object ` +
-        `it creates, then move HIGHEST_COMMITTED (T-137 § Published contract).`,
+      `db/migrations' highest up file is ${actual}; this suite asserts ${HIGHEST_COMMITTED}. ` +
+        `If you added ${actual}: in this file, add CREATED_BY['${actual}'] with probes asserting ` +
+        `objects ${actual} creates, and move HIGHEST_COMMITTED, in the same change set. If ` +
+        `${actual} is below ${HIGHEST_COMMITTED}, a committed migration is missing. ${WHAT_IS_CHECKED}`,
     );
   });
 
   test('the database records the highest committed migration, read back over this suite’s connection', async () => {
-    assert.equal(
-      await db.value(
-        `SELECT coalesce(shobj_description(oid, 'pg_database'), '(no comment)')
-           FROM pg_database WHERE datname = current_database()`,
-      ),
-      `kinvara-migrate version=${HIGHEST_COMMITTED}`,
-    );
+    assert.equal(await db.value(RECORD_SQL), `kinvara-migrate version=${HIGHEST_COMMITTED}`);
   });
 });
 
-describe('0003 (T-143) — the objects the highest committed migration creates', () => {
-  test('schema kinvara_guard exists, owned by the bootstrap superuser', async () => {
-    assert.equal(
-      await db.value(
-        `SELECT coalesce((SELECT pg_get_userbyid(nspowner) FROM pg_namespace
-                           WHERE nspname = 'kinvara_guard'), '(absent)')`,
-      ),
-      SUPERUSER,
-    );
+for (const [id, keyed] of Object.entries(CREATED_BY)) {
+  describe(`${id} (${keyed.source}) — the objects this migration creates`, () => {
+    for (const probe of keyed.probes) {
+      test(probe.title, async () => {
+        assert.equal(await db.value(probe.sql), probe.holds);
+        heldAfterUp.add(heldKey(id, probe));
+      });
+    }
   });
-
-  test('the check function lives in kinvara_guard, and no schema but kinvara_guard holds one', async () => {
-    assert.equal(
-      await db.value(
-        `SELECT coalesce(string_agg(n.nspname, ',' ORDER BY n.nspname), '(none)')
-           FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-          WHERE p.proname = 'assert_answering_service_write_only'`,
-      ),
-      'kinvara_guard',
-    );
-  });
-
-  test('the event trigger calls the trigger function relocated into kinvara_guard', async () => {
-    assert.equal(
-      await db.value(
-        `SELECT coalesce((SELECT n.nspname || '.' || p.proname
-                            FROM pg_event_trigger e
-                            JOIN pg_proc p ON p.oid = e.evtfoid
-                            JOIN pg_namespace n ON n.oid = p.pronamespace
-                           WHERE e.evtname = 'trg_int10_answering_service'), '(absent)')`,
-      ),
-      'kinvara_guard.trg_assert_answering_service_write_only',
-    );
-  });
-});
+}
 
 describe('check 17 (0002, T-021) — re-runnable now that the harness applies past 0001', () => {
   // T-021 § Published contract (rework 2) §4, cases S2-N1, S2-N2 and S2-C. The
@@ -137,5 +185,64 @@ describe('check 17 (0002, T-021) — re-runnable now that the harness applies pa
         ],
       }),
     );
+  });
+});
+
+// LAST: the down step below changes the cluster.
+describe('TRIPWIRE, second half — the highest committed migration keys probes that ran, and a down undoes each', () => {
+  function keyedToHighest(): { readonly highest: string; readonly probes: readonly Probe[] } {
+    const highest = highestMigrationIn(COMMITTED_DIR);
+    const probes = CREATED_BY[highest]?.probes ?? [];
+    assert.ok(
+      probes.length > 0,
+      `db/migrations' highest up file is ${highest}, and no probe in this file is keyed to it. ` +
+        `In this file, add CREATED_BY['${highest}'] with at least one probe asserting an object ` +
+        `${highest} creates, and move HIGHEST_COMMITTED, in the same change set. ${WHAT_IS_CHECKED}`,
+    );
+    return { highest, probes };
+  }
+
+  test('at least one probe is keyed to the highest committed migration, and every one of them ran and held after up', () => {
+    const { highest, probes } = keyedToHighest();
+    for (const probe of probes) {
+      assert.ok(
+        heldAfterUp.has(heldKey(highest, probe)),
+        `probe '${probe.title}' (keyed ${highest}) did not run and hold after up; see its own test above.`,
+      );
+    }
+  });
+
+  test('after db:migrate down to the migration below it, every probe keyed to the highest committed migration stops holding', async () => {
+    const { highest, probes } = keyedToHighest();
+    const below = String(Number(highest) - 1).padStart(4, '0');
+    const run = await db.migrate(['down', '--to', below, '--dir', COMMITTED_DIR]);
+    const verdict = judgeMigrateRun(run);
+    assert.equal(
+      verdict.kind,
+      'OK',
+      `db:migrate down --to ${below} was judged ${verdict.kind}, so no probe can be read against ` +
+        `${below}'s state. A migration with no down file cannot satisfy this check.\n${run.output}`,
+    );
+    assert.equal(
+      await db.value(RECORD_SQL),
+      `kinvara-migrate version=${below}`,
+      'the down step must have landed before any probe is read against it',
+    );
+    for (const probe of probes) {
+      const r = await db.psql({ raw: true, commands: [probe.sql] });
+      assert.equal(
+        r.code,
+        0,
+        `probe '${probe.title}' raised at ${below}. Write it as a reading that returns a value ` +
+          `when the object is absent.\n${r.output}`,
+      );
+      assert.notEqual(
+        r.stdout.trim(),
+        probe.holds,
+        `probe '${probe.title}' (keyed ${highest}) still returns '${probe.holds}' at ${below}, so ` +
+          `it does not tell ${highest}'s state from the state below it. Assert an object ` +
+          `${highest} creates. ${WHAT_IS_CHECKED}`,
+      );
+    }
   });
 });

@@ -18,8 +18,10 @@
  *      compared with the highest migration THIS file lists from the directory,
  *      so a run that printed `MIGRATE OK` and applied nothing is refused;
  *   3. before any cluster starts: a `dir` other than `db/migrations` must carry
- *      every committed migration byte for byte, so the `dir` option can add a
- *      scratch migration but cannot drop or alter a committed one.
+ *      every committed migration FILE byte for byte, so the `dir` option can
+ *      add a scratch migration file but cannot drop or alter a committed file.
+ *      It fixes which files are applied, not the state they leave: an added
+ *      migration can undo a committed one's effect (tech-lead TV-A2, D4c).
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -187,7 +189,7 @@ export function assertCarriesEveryCommittedMigration(suite: string, dir: string)
       suite,
       summary:
         `${dir} does not carry every committed migration (${problems.join('; ')}). A scratch ` +
-        `directory may ADD a migration; it may not drop or alter one in ${MIGRATIONS_DIR}.`,
+        `directory may ADD migration files; it may not drop or alter a file in ${MIGRATIONS_DIR}.`,
     });
   }
   return committed;
@@ -228,7 +230,9 @@ export async function applyMigrations(cluster: Cluster, dir: string): Promise<Ps
       throw new MigrationsNotApplied({
         kind: 'CRASH',
         suite: cluster.suite,
-        summary: `db:migrate CRASHED; this is not a migration failure: ${verdict.reason}`,
+        summary:
+          `db:migrate did not report in T-136 § contract §2's form, so the harness cannot say ` +
+          `whether a migration failed: ${verdict.reason}`,
         run,
         verdict,
       });
