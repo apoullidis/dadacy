@@ -39,6 +39,10 @@
  *                        expand would need a parse of object names, and a reading that misses
  *                        a quoted or schema-qualified name would pass the case this rule
  *                        exists for.
+ *   [R-CONTRACT-PURE]    an up file declared `contract` contains no expand statement: no
+ *                        `CREATE …` (other than `CREATE` as a privilege name), no
+ *                        `ALTER … ADD …`, no `GRANT … TO`. Such a file also loses the
+ *                        contract exemption from the down-file rule (T-021 rework 1, QA-F1).
  *   [R-PROTECTED]        a migration that names a protected object carries
  *                        `-- @compliance-review: <object> — <reference>`, where the reference
  *                        cites a ticket or a decision. SD §DB-13 rule 7 and §UC-4 part 1
@@ -49,7 +53,7 @@
  *   [R-TRIGGER-BYPASS]   no `DISABLE TRIGGER ALL|USER` and no `session_replication_role`. Both
  *                        switch protected triggers off without naming them. There is no
  *                        marker that permits either.
- *   [R-CASCADE]          no `DROP … CASCADE`. CASCADE removes objects the statement does not
+ *   [R-CASCADE]          no `DROP … CASCADE` and no `DROP OWNED`. Both remove objects the statement does not
  *                        name, and no rule that reads names can see what it removed:
  *                        `DROP FUNCTION assert_sitter_bookable() CASCADE` takes
  *                        `trg_booking_sitter_bookable` with it, and OD-73's A5 removed the INT-10
@@ -59,12 +63,19 @@
  *                        underscore suffix (a partition), or on `ALL TABLES IN SCHEMA`
  *                        (SA §SEC-8). Column-level grants count. The grantee does not matter.
  *                        Also refused: `ALTER TABLE <one of them> OWNER TO`, because an owner
- *                        holds every privilege; and granting the role `app_ddl` to anyone,
- *                        because `app_ddl` owns every table.
+ *                        holds every privilege; granting the role `app_ddl` to anyone,
+ *                        because `app_ddl` owns every table; and `REASSIGN OWNED` in any
+ *                        form, because this gate cannot see what the named role owns (QA-F3).
+ *                        `ALTER VIEW|MATERIALIZED VIEW|FOREIGN TABLE|SEQUENCE <table> OWNER TO`
+ *                        is not matched: PostgreSQL refuses each on a table (rework 1, M2).
  *   [R-DEFAULT-PRIVILEGES] no `ALTER DEFAULT PRIVILEGES` (`T-020` contract §4).
- *   [R-ANSWERING-SERVICE] the only GRANT naming `answering_service` is INSERT on
- *                        `out_of_hours_report`; no role is granted to it; nothing is granted
- *                        to PUBLIC, because PUBLIC includes it (`T-020` contract §6).
+ *   [R-ANSWERING-SERVICE] the only GRANT naming `answering_service` is exactly INSERT on
+ *                        `out_of_hours_report`, to it alone, with no `WITH GRANT OPTION` or
+ *                        `GRANTED BY`; no role is granted to it and it is granted to no one;
+ *                        nothing is granted to PUBLIC, because PUBLIC includes it (`T-020`
+ *                        contract §6). Also refused (QA-F2): `CREATE ROLE|USER|GROUP` naming
+ *                        it, `ALTER ROLE|USER|GROUP answering_service`, `OWNER TO
+ *                        answering_service`, and `REASSIGN OWNED … TO answering_service`.
  *   [R-TABLE-GRANT]      every CREATE TABLE in an up file is followed in the same file by a
  *                        GRANT on that table. There are no default privileges, so a table with
  *                        no grant is a table nobody can use (`T-020` contract §4/§6).
@@ -162,6 +173,18 @@ const PROTECTED: readonly Protected[] = [
     id: 'trg_assert_answering_service_write_only',
     why: "the guard event trigger's function; DROP … CASCADE on it drops the event trigger (OD-73)",
   },
+];
+
+/**
+ * Statements that make a migration expand-phase, which a file declared `contract` may not
+ * contain (R-CONTRACT-PURE, T-021 rework 1, QA-F1). SD §DB-13's table lists `0082` as
+ * "expand + contract" and `0077` as "expand ×3": a Kind cell names a SEQUENCE of migrations,
+ * and rule 3 needs a down file for the expand half. `CREATE` used as a privilege name
+ * (`REVOKE CREATE ON …`) is not an expand. A `GRANT … TO` is matched by `grantsIn()`.
+ */
+const EXPAND_STATEMENTS: readonly (readonly [RegExp, string])[] = [
+  [/\bCREATE (?!ON\b)/, 'CREATE'],
+  [/\bALTER\b.*[ ,]ADD\b/, 'ALTER … ADD'],
 ];
 
 const APPEND_ONLY = /^(?:AUDIT_LOG|CASE_NOTE|DECISION_RECORD)(?:_[A-Z0-9_$]+)?$/;
@@ -447,6 +470,8 @@ interface Grant {
   readonly targets: readonly string[] | null;
   readonly allTablesInSchema: boolean;
   readonly grantees: readonly string[];
+  /** The trailing `WITH GRANT OPTION`, `WITH ADMIN|INHERIT|SET …` or `GRANTED BY …`; '' if none. */
+  readonly options: string;
   readonly clause: string;
 }
 
@@ -463,7 +488,7 @@ function grantsIn(fragment: string): Grant[] {
   for (const piece of fragment.split(/(?=\bGRANT\b|\bREVOKE\b)/)) {
     const clause = piece.trim();
     if (!clause.startsWith('GRANT ')) continue;
-    const onForm = /^GRANT (.+?) ON (.+?) TO (.+?)(?: WITH GRANT OPTION.*| GRANTED BY .*)?$/.exec(
+    const onForm = /^GRANT (.+?) ON (.+?) TO (.+?)( WITH GRANT OPTION.*| GRANTED BY .*)?$/.exec(
       clause,
     );
     if (onForm !== null) {
@@ -479,17 +504,19 @@ function grantsIn(fragment: string): Grant[] {
               .map(bareName),
         allTablesInSchema: allTables,
         grantees: (onForm[3] ?? '').split(',').map((g) => g.trim().replace(/^GROUP /, '')),
+        options: (onForm[4] ?? '').trim(),
         clause,
       });
       continue;
     }
-    const roleForm = /^GRANT (.+?) TO (.+?)(?: WITH .*| GRANTED BY .*)?$/.exec(clause);
+    const roleForm = /^GRANT (.+?) TO (.+?)( WITH .*| GRANTED BY .*)?$/.exec(clause);
     if (roleForm !== null) {
       out.push({
         privileges: (roleForm[1] ?? '').trim(),
         targets: null,
         allTablesInSchema: false,
         grantees: (roleForm[2] ?? '').split(',').map((g) => g.trim().replace(/^GROUP /, '')),
+        options: (roleForm[3] ?? '').trim(),
         clause,
       });
     }
@@ -649,6 +676,9 @@ const changed = new Map(changes.map((c) => [c.path, c]));
 // ---- per-file rules -------------------------------------------------------
 
 const phaseOf = new Map<string, string>();
+/** Contract up files holding an expand statement; they lose the down-file exemption. */
+const impureContracts = new Set<string>();
+let contractsReadForExpand = 0;
 let grantsRead = 0;
 let tablesRead = 0;
 let protectedMentions = 0;
@@ -715,6 +745,22 @@ for (const m of migrations) {
     }
   }
 
+  // R-CONTRACT-PURE: expand statements inside a contract migration (QA-F1).
+  if (m.dir === 'up' && phaseOf.get(m.name) === 'contract') {
+    contractsReadForExpand += 1;
+    for (const f of frags) {
+      const hit = EXPAND_STATEMENTS.find(([re]) => re.test(f));
+      const label = hit !== undefined ? hit[1] : grantsIn(f).length > 0 ? 'GRANT' : null;
+      if (label === null) continue;
+      impureContracts.add(m.name);
+      problem(
+        'R-CONTRACT-PURE',
+        m.rel,
+        `declared @phase contract but contains an expand statement (${label}); the expand is its own migration, a release earlier, with a down file (SD §DB-13 rules 2–3): ${snippet(f)}`,
+      );
+    }
+  }
+
   // R-PROTECTED.
   for (const p of PROTECTED) {
     const re = new RegExp(`(^|[^A-Z0-9_$])${p.id.toUpperCase()}([^A-Z0-9_$]|$)`);
@@ -758,6 +804,12 @@ for (const m of migrations) {
         m.rel,
         `DROP … CASCADE removes objects this statement does not name, protected ones included (OD-73 A5); drop each one explicitly: ${snippet(f)}`,
       );
+    } else if (/\bDROP OWNED\b/.test(f)) {
+      problem(
+        'R-CASCADE',
+        m.rel,
+        `DROP OWNED removes every object the role owns without naming one, protected ones included; drop each one explicitly: ${snippet(f)}`,
+      );
     }
   }
 
@@ -769,6 +821,29 @@ for (const m of migrations) {
         'R-APPEND-ONLY',
         m.rel,
         `transfers ownership of append-only ${bareName(owner[1] ?? '')}; an owner holds UPDATE and DELETE without any GRANT (SA §SEC-8): ${snippet(f)}`,
+      );
+    }
+    if (/\bREASSIGN OWNED\b/.test(f)) {
+      problem(
+        'R-APPEND-ONLY',
+        m.rel,
+        `REASSIGN OWNED transfers every object a role owns without naming one, and app_ddl owns the append-only tables; this gate cannot see what a role owns, so every form is refused (SA §SEC-8, QA-F3): ${snippet(f)}`,
+      );
+    }
+  }
+
+  // R-ANSWERING-SERVICE, the routes that are not a privilege grant (QA-F2).
+  for (const f of frags) {
+    if (
+      /\bCREATE (?:ROLE|USER|GROUP)\b.*\bANSWERING_SERVICE\b/.test(f) ||
+      /\bALTER (?:ROLE|USER|GROUP) ANSWERING_SERVICE\b/.test(f) ||
+      /\bOWNER TO ANSWERING_SERVICE\b/.test(f) ||
+      /\bREASSIGN OWNED\b.*\bTO ANSWERING_SERVICE\b/.test(f)
+    ) {
+      problem(
+        'R-ANSWERING-SERVICE',
+        m.rel,
+        `confers membership in, membership through, or ownership to answering_service without a GRANT; SA §INT-10 permits INSERT on out_of_hours_report and nothing else: ${snippet(f)}`,
       );
     }
   }
@@ -819,6 +894,17 @@ for (const m of migrations) {
         }
       }
 
+      if (
+        g.targets === null &&
+        g.privileges.split(',').some((r) => r.trim() === 'ANSWERING_SERVICE')
+      ) {
+        problem(
+          'R-ANSWERING-SERVICE',
+          m.rel,
+          `grants the role answering_service, which makes each grantee a member of the vendor principal (QA-F2): ${snippet(g.clause)}`,
+        );
+      }
+
       const toVendor = g.grantees.includes('ANSWERING_SERVICE');
       const toPublic = g.grantees.includes('PUBLIC');
       if (toPublic) {
@@ -832,12 +918,14 @@ for (const m of migrations) {
           g.targets !== null &&
           g.privileges === 'INSERT' &&
           g.targets.length === 1 &&
-          g.targets[0] === 'OUT_OF_HOURS_REPORT';
+          g.targets[0] === 'OUT_OF_HOURS_REPORT' &&
+          g.grantees.length === 1 &&
+          g.options === '';
         if (!permitted) {
           problem(
             'R-ANSWERING-SERVICE',
             m.rel,
-            `${g.targets === null ? 'grants a role to' : 'grants more than INSERT on out_of_hours_report to'} answering_service; SA §INT-10 permits that one grant and nothing else: ${snippet(g.clause)}`,
+            `${g.targets === null ? 'grants a role to' : 'grants answering_service something other than exactly INSERT on out_of_hours_report, to it alone, with no WITH GRANT OPTION or GRANTED BY, to'} answering_service; SA §INT-10 permits that one grant and nothing else: ${snippet(g.clause)}`,
           );
         }
       }
@@ -875,6 +963,12 @@ for (const m of migrations) {
       'R-STRUCT',
       m.rel,
       `no ${other}; only a contract migration may omit its down file (SD §DB-13 rule 3)`,
+    );
+  } else if (impureContracts.has(m.name)) {
+    problem(
+      'R-STRUCT',
+      m.rel,
+      `no ${other}; this contract migration holds an expand statement (R-CONTRACT-PURE), and an expand needs a down file (SD §DB-13 rule 3)`,
     );
   }
 }
@@ -961,6 +1055,6 @@ console.log(
   `  GRANT clauses read: ${String(grantsRead)}; CREATE TABLEs read: ${String(tablesRead)}; protected-object mentions: ${String(protectedMentions)}`,
 );
 console.log(
-  `  merged migrations changed and compared outside comments: ${String(mergedCompared)}; contract migrations added: ${String(addedContracts.length)}`,
+  `  merged migrations changed and compared outside comments: ${String(mergedCompared)}; contract migrations added: ${String(addedContracts.length)}; contract up files read for expand statements: ${String(contractsReadForExpand)}`,
 );
 finish(GATE, failures);
