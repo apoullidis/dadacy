@@ -49,10 +49,18 @@
  *   [R-TRIGGER-BYPASS]   no `DISABLE TRIGGER ALL|USER` and no `session_replication_role`. Both
  *                        switch protected triggers off without naming them. There is no
  *                        marker that permits either.
+ *   [R-CASCADE]          no `DROP … CASCADE`. CASCADE removes objects the statement does not
+ *                        name, and no rule that reads names can see what it removed:
+ *                        `DROP FUNCTION assert_sitter_bookable() CASCADE` takes
+ *                        `trg_booking_sitter_bookable` with it, and OD-73's A5 removed the INT-10
+ *                        event trigger that way. Write each drop out. No marker permits it.
  *   [R-APPEND-ONLY]      no UPDATE, DELETE, TRUNCATE or ALL is granted on `audit_log`,
  *                        `case_note` or `decision_record`, on a table named after one with an
  *                        underscore suffix (a partition), or on `ALL TABLES IN SCHEMA`
  *                        (SA §SEC-8). Column-level grants count. The grantee does not matter.
+ *                        Also refused: `ALTER TABLE <one of them> OWNER TO`, because an owner
+ *                        holds every privilege; and granting the role `app_ddl` to anyone,
+ *                        because `app_ddl` owns every table.
  *   [R-DEFAULT-PRIVILEGES] no `ALTER DEFAULT PRIVILEGES` (`T-020` contract §4).
  *   [R-ANSWERING-SERVICE] the only GRANT naming `answering_service` is INSERT on
  *                        `out_of_hours_report`; no role is granted to it; nothing is granted
@@ -742,6 +750,29 @@ for (const m of migrations) {
     }
   }
 
+  // R-CASCADE.
+  for (const f of frags) {
+    if (/\bDROP\b.*\bCASCADE\b/.test(f)) {
+      problem(
+        'R-CASCADE',
+        m.rel,
+        `DROP … CASCADE removes objects this statement does not name, protected ones included (OD-73 A5); drop each one explicitly: ${snippet(f)}`,
+      );
+    }
+  }
+
+  // R-APPEND-ONLY, the two routes that are not a privilege grant.
+  for (const f of frags) {
+    const owner = /\bALTER TABLE (?:IF EXISTS )?(?:ONLY )?([A-Z0-9_$.]+) OWNER TO\b/.exec(f);
+    if (owner !== null && APPEND_ONLY.test(bareName(owner[1] ?? ''))) {
+      problem(
+        'R-APPEND-ONLY',
+        m.rel,
+        `transfers ownership of append-only ${bareName(owner[1] ?? '')}; an owner holds UPDATE and DELETE without any GRANT (SA §SEC-8): ${snippet(f)}`,
+      );
+    }
+  }
+
   // R-DEFAULT-PRIVILEGES.
   for (const f of frags) {
     if (/\bALTER DEFAULT PRIVILEGES\b/.test(f)) {
@@ -760,6 +791,14 @@ for (const m of migrations) {
       grantsRead += 1;
       const dangerous = /\b(?:UPDATE|DELETE|TRUNCATE|ALL)\b/.test(g.privileges);
       if (g.targets !== null) for (const t of g.targets) grantedTables.add(t);
+
+      if (g.targets === null && g.privileges.split(',').some((r) => r.trim() === 'APP_DDL')) {
+        problem(
+          'R-APPEND-ONLY',
+          m.rel,
+          `grants the role app_ddl, which owns every table, the append-only ones included, so its members can UPDATE and DELETE them (SA §SEC-8): ${snippet(g.clause)}`,
+        );
+      }
 
       if (dangerous && g.allTablesInSchema) {
         problem(

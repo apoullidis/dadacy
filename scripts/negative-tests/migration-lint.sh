@@ -146,6 +146,14 @@ SELECT 1;"
 check C1C "CONTROL: the same grants inside comments" PASS
 pair expand "REVOKE UPDATE, DELETE ON audit_log FROM app_rw;"
 check C1D "CONTROL: REVOKE UPDATE, DELETE" PASS
+pair expand "ALTER TABLE public.audit_log OWNER TO app_rw;"
+check C1E "ownership of audit_log transferred (an owner holds every privilege)" R-APPEND-ONLY
+pair expand "GRANT app_ddl TO app_rw;"
+check C1F "the role app_ddl, which owns every table, granted to app_rw" R-APPEND-ONLY
+pair expand "ALTER TABLE public.t021_thing OWNER TO app_ddl;"
+check C1G "CONTROL: ownership of a table that is not append-only" PASS
+pair expand "GRANT app_rw TO t021_login_principal;"
+check C1H "CONTROL: an ordinary role granted to a login principal" PASS
 
 echo "== R-DEFAULT-PRIVILEGES (T-020 contract §4)"
 pair expand "ALTER DEFAULT PRIVILEGES FOR ROLE app_ddl IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app_rw;"
@@ -160,7 +168,7 @@ pair contract "ALTER TABLE public.booking DROP COLUMN legacy_note;"
 plant "$APP" "application code that stopped reading legacy_note"
 check C31 "a contract migration in the same change set as application code" R-CONTRACT-ALONE
 pair contract "ALTER TABLE public.booking DROP COLUMN legacy_note;"
-mutate "$UP1" "-- rotate every 30 days (SA §SEC-11)." "-- rotate every 30 days (SA §SEC-10)."
+mutate "$UP1" "-- rotate every 30 days (SA §SEC-10)." "-- rotate every thirty days (SA §SEC-10)."
 check C32 "a contract migration alongside a comment-only edit to a merged migration" R-CONTRACT-ALONE
 plant "$UP" "-- @phase: contract
 ALTER TABLE public.booking DROP COLUMN legacy_note;"
@@ -197,7 +205,7 @@ check C42 "DISABLE TRIGGER trg_booking_staffed_hours" R-PROTECTED
 pair expand "CREATE OR REPLACE FUNCTION assert_within_staffed_hours() RETURNS trigger LANGUAGE plpgsql AS \$f\$ BEGIN RETURN NEW; END \$f\$;"
 check C43 "assert_within_staffed_hours() replaced with a no-op" R-PROTECTED
 pair expand "DROP FUNCTION public.trg_assert_answering_service_write_only() CASCADE;"
-check C44 "OD-73 A5: DROP the guard event trigger's function CASCADE" R-PROTECTED
+check C44 "OD-73 A5: DROP the guard event trigger's function CASCADE" "R-PROTECTED R-CASCADE"
 pair expand "DROP FUNCTION public.assert_answering_service_write_only();
 CREATE FUNCTION public.assert_answering_service_write_only() RETURNS void LANGUAGE sql AS 'SELECT';"
 check C45 "OD-73 A4: DROP the guard function and install a no-op" R-PROTECTED
@@ -236,6 +244,17 @@ check C52 "SET session_replication_role" R-TRIGGER-BYPASS
 pair expand "SELECT set_config('session_replication_role', 'replica', true);"
 check C53 "set_config('session_replication_role', …)" R-TRIGGER-BYPASS
 
+echo "== R-CASCADE"
+pair expand "DROP FUNCTION assert_sitter_bookable() CASCADE;"
+check C54 "DROP FUNCTION <a protected trigger's function> CASCADE, which names no protected object" R-CASCADE
+pair contract "DROP TABLE public.booking CASCADE;"
+check C55 "DROP TABLE … CASCADE in a contract migration" R-CASCADE
+pair expand "drop schema t021_scratch
+  cascade;"
+check C56 "lower case, across two lines" R-CASCADE
+pair expand "DROP FUNCTION IF EXISTS public.t021_helper(integer) RESTRICT;"
+check C57 "CONTROL: DROP … RESTRICT" PASS
+
 echo "== R-ANSWERING-SERVICE (T-020 contract §6)"
 pair expand "GRANT SELECT ON out_of_hours_report TO answering_service;"
 check C60 "SELECT on out_of_hours_report" R-ANSWERING-SERVICE
@@ -263,8 +282,8 @@ GRANT SELECT ON public.t021_other TO app_rw;'
 check C71 "CREATE TABLE with a GRANT on a different table" R-TABLE-GRANT
 
 echo "== R-MERGED (PROTOCOL §3, OD-13, OD-72) — every plant is on 0001, which is at the base"
-mutate "$UP1" "-- rotate every 30 days (SA §SEC-11)." "-- rotate every 30 days (SA §SEC-10)."
-check C80 "CONTROL: OD-13's line-163 correction, a top-level comment" PASS
+mutate "$UP1" "-- rotate every 30 days (SA §SEC-10)." "-- rotate every thirty days (SA §SEC-10)."
+check C80 "CONTROL: a top-level comment line reworded (the shape of OD-13's line-163 fix, committed as 7f46c82)" PASS
 mutate "$UP1" "own staff boundary (SA §SEC-11)" "own staff boundary (SA §SEC-10)"
 check C81 "OD-72: the line-627 citation, which sits inside the dollar-quoted function body" "R-MERGED R-BASELINE"
 mutate "$UP1" "'Wired to event trigger trg_int10_answering_service. Ticket T-020.';" "'Wired to event trigger trg_int10_answering_service. Tickets T-020, T-021.';"
@@ -298,6 +317,9 @@ mutate "$DOWN1" "DROP ROLE IF EXISTS app_admin_rw;
 DROP ROLE IF EXISTS app_rw;" "DROP ROLE IF EXISTS app_rw;
 DROP ROLE IF EXISTS app_admin_rw;"
 check C8D "two statements reordered in the down file (item iii's shape)" "R-MERGED R-BASELINE"
+sed -i 's/$/\r/' "$UP1"
+if git diff --quiet -- "$UP1" || ! grep -q $'\r$' "$UP1"; then echo "ABORT: the CRLF conversion did not land"; exit 2; fi
+check C8E "the whole of 0001 converted to CRLF line endings (an editor setting)" "R-MERGED R-BASELINE"
 
 echo "== R-STRUCT, R-LEX, R-BASE"
 plant "$UP" "-- @phase: expand
