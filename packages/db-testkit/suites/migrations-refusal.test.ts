@@ -113,9 +113,15 @@ describe('a scratch migration that does not apply — acquisition throws, naming
 
   test('it stopped AT the scratch file, after every committed migration applied in order — not refused before running', () => {
     const out = realRun().output;
+    // The runner pads the verb (`apply  <file>`); match on whitespace, not a count of spaces.
+    const applyLine = (file: string, from: number): number => {
+      const re = new RegExp(`\\bapply\\s+${file.replace(/[.]/g, '\\.')}\\b`, 'g');
+      re.lastIndex = from;
+      return re.exec(out)?.index ?? -1;
+    };
     let at = 0;
     for (const up of committedUps) {
-      const applyAt = out.indexOf(`apply ${up}`, at);
+      const applyAt = applyLine(up, at);
       assert.ok(applyAt >= at, `expected "apply ${up}" after offset ${String(at)}.\n${out}`);
       const okAt = out.indexOf(`ok; record -> ${up.slice(0, 4)}`, applyAt);
       assert.ok(
@@ -124,7 +130,7 @@ describe('a scratch migration that does not apply — acquisition throws, naming
       );
       at = okAt;
     }
-    assert.ok(out.indexOf(`apply ${brokenUp}`, at) > at, `the scratch file must run last.\n${out}`);
+    assert.ok(applyLine(brokenUp, at) > at, `the scratch file must run last.\n${out}`);
     assert.ok(
       !out.includes(`ok; record -> ${brokenId}`),
       `the scratch file must not be recorded.\n${out}`,
