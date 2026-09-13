@@ -17,6 +17,7 @@
     "build": "turbo run build",
     "size-limit": "node scripts/gates/size-limit.ts",
     "db:introspect:check": "node scripts/gates/not-yet-supplied.ts db:introspect:check",
+    "db:migrate": "node scripts/db-migrate.ts",
     "gate:typecheck": "pnpm run --silent typecheck && echo '\nGATE PASS  gate:typecheck'",
     "gate:lint": "pnpm run --silent lint",
     "gate:deps": "node scripts/gates/deps.ts",
