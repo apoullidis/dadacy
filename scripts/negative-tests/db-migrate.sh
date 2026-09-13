@@ -38,7 +38,7 @@ SNAP_SQL="SELECT k || ' ' || v FROM (
   UNION ALL SELECT 'ext', extname || ' ' || extversion FROM pg_extension
   UNION ALL SELECT 'nsp', nspname || ' owner=' || pg_get_userbyid(nspowner) || ' acl=' || coalesce(nspacl::text, '')
     FROM pg_namespace WHERE nspname NOT LIKE 'pg\\_%' AND nspname <> 'information_schema'
-  UNION ALL SELECT 'rel', n.nspname || '.' || c.relname || ' kind=' || c.relkind || ' owner=' || pg_get_userbyid(c.relowner)
+  UNION ALL SELECT 'rel', n.nspname || '.' || c.relname || ' kind=' || c.relkind::text || ' owner=' || pg_get_userbyid(c.relowner)
       || ' acl=' || coalesce(c.relacl::text, '')
     FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
    WHERE n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
@@ -46,7 +46,7 @@ SNAP_SQL="SELECT k || ' ' || v FROM (
       || ' src=' || md5(coalesce(p.prosrc, '')) || ' acl=' || coalesce(p.proacl::text, '')
     FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
    WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
-  UNION ALL SELECT 'evt', evtname || ' ' || evtenabled FROM pg_event_trigger
+  UNION ALL SELECT 'evt', evtname || ' ' || evtenabled::text FROM pg_event_trigger
   UNION ALL SELECT 'db', 'acl=' || coalesce(datacl::text, '') || ' comment=' || coalesce(shobj_description(oid, 'pg_database'), '<none>')
     FROM pg_database WHERE datname = current_database()
 ) s ORDER BY 1"

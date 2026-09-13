@@ -14,7 +14,7 @@ SELECT 'extensions other than plpgsql (0001)',
  WHERE extname <> 'plpgsql'
 UNION ALL
 SELECT 'event triggers (0001)',
-       coalesce(string_agg(evtname || ':' || evtenabled, ',' ORDER BY evtname), '<none>')
+       coalesce(string_agg(evtname || ':' || evtenabled::text, ',' ORDER BY evtname), '<none>')
   FROM pg_event_trigger
 UNION ALL
 SELECT 'guard functions; check17 = body reads k_stat_extensions (0002)',
