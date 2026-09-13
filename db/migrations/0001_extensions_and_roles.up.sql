@@ -160,7 +160,7 @@ CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
 --
 -- All five are NOLOGIN group roles with NO password. Login principals are created per
 -- environment and granted membership; their credentials live in Secrets Manager and
--- rotate every 30 days (SA §SEC-11). A password in a migration is a password in git.
+-- rotate every 30 days (SA §SEC-10). A password in a migration is a password in git.
 --
 -- The attributes are spelled out rather than left to defaults, because the defaults are
 -- what a future `CREATE ROLE x` would inherit and this file is the place a reader looks
