@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Kinvara monorepo \u2014 pnpm workspace + Turborepo (SD \u00a7DH-1)",
+  "description": "Kinvara monorepo — pnpm workspace + Turborepo (SD §DH-1)",
   "packageManager": "pnpm@11.25.0",
   "engines": {
     "node": "24.20.0"
@@ -40,8 +40,11 @@
     "@size-limit/file": "13.0.3",
     "@types/node": "26.4.1",
     "dependency-cruiser": "18.2.0",
+    "drizzle-kit": "0.31.10",
+    "drizzle-orm": "0.45.2",
     "eslint": "10.9.1",
     "eslint-config-prettier": "10.1.8",
+    "pg": "8.23.0",
     "prettier": "3.9.6",
     "size-limit": "13.0.3",
     "turbo": "2.10.12",

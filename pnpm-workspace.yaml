@@ -12,3 +12,11 @@
 packages:
   - 'apps/*'
   - 'packages/*'
+
+# T-138. drizzle-kit (db:introspect, db:introspect:check) depends on esbuild, whose
+# install script only validates the platform binary that pnpm already installs as the
+# optional dependency @esbuild/<platform>. pnpm 11 refuses an install that leaves a
+# build script undecided (ERR_PNPM_IGNORED_BUILDS), so the decision is recorded here:
+# no dependency script runs.
+allowBuilds:
+  esbuild: false
