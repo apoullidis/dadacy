@@ -154,6 +154,10 @@ pair expand "ALTER TABLE public.t021_thing OWNER TO app_ddl;"
 check C1G "CONTROL: ownership of a table that is not append-only" PASS
 pair expand "GRANT app_rw TO t021_login_principal;"
 check C1H "CONTROL: an ordinary role granted to a login principal" PASS
+pair expand "REASSIGN OWNED BY app_ddl TO app_rw;"
+check C1I "QA X7 (QA-F3): REASSIGN OWNED BY app_ddl TO app_rw, which transfers audit_log unnamed" R-APPEND-ONLY
+pair expand "REASSIGN OWNED BY app_admin_rw TO app_rw;"
+check C1J "REASSIGN OWNED in any form (the gate cannot see what a role owns)" R-APPEND-ONLY
 
 echo "== R-DEFAULT-PRIVILEGES (T-020 contract §4)"
 pair expand "ALTER DEFAULT PRIVILEGES FOR ROLE app_ddl IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app_rw;"
@@ -191,6 +195,27 @@ check C3A "no @phase marker" R-PHASE
 plant "$UP" "SELECT '-- @phase: expand';"
 plant "$DOWN" "-- down"
 check C3B "the @phase marker inside a string, not a comment" R-PHASE
+pair contract "ALTER TABLE public.booking ADD COLUMN note text;
+UPDATE public.booking SET note = legacy_note;
+ALTER TABLE public.booking DROP COLUMN legacy_note;"
+check C3C "QA X1 (QA-F1): an expand and a contract in ONE file declared contract" R-CONTRACT-PURE
+plant "$UP" "-- @phase: contract
+CREATE TABLE public.booking_note (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, note text);
+GRANT SELECT, INSERT ON public.booking_note TO app_rw;
+ALTER TABLE public.booking DROP COLUMN legacy_note;"
+check C3D "QA X2 (QA-F1): CREATE TABLE + GRANT in a contract file with no down file (loses the down-file exemption)" "R-CONTRACT-PURE R-STRUCT"
+pair contract "GRANT SELECT ON public.booking TO app_rw;
+ALTER TABLE public.booking DROP COLUMN legacy_note;"
+check C3E "a GRANT alone in a contract file" R-CONTRACT-PURE
+pair contract "DO \$do\$ BEGIN EXECUTE 'CREATE INDEX booking_note_idx ON public.booking (note)'; END \$do\$;
+ALTER TABLE public.booking DROP COLUMN legacy_note;"
+check C3F "CREATE INDEX as an EXECUTE string in a contract file" R-CONTRACT-PURE
+plant "$UP" "-- @phase: contract
+REVOKE CREATE ON SCHEMA public FROM app_rw;
+DROP INDEX IF EXISTS public.booking_legacy_note_idx;
+COMMENT ON TABLE public.booking IS 'legacy_note removed';
+ALTER TABLE public.booking DROP COLUMN legacy_note;"
+check C3G "CONTROL: a contract file of REVOKE CREATE, DROP INDEX, COMMENT ON and DROP COLUMN, no down file" PASS
 
 echo "== R-PROTECTED (SD §DB-13 rule 7, §UC-4 part 1; T-020 contract §6; OD-73)"
 pair expand "DROP TRIGGER trg_booking_sitter_bookable ON booking;"
@@ -254,6 +279,8 @@ pair expand "drop schema t021_scratch
 check C56 "lower case, across two lines" R-CASCADE
 pair expand "DROP FUNCTION IF EXISTS public.t021_helper(integer) RESTRICT;"
 check C57 "CONTROL: DROP … RESTRICT" PASS
+pair expand "DROP OWNED BY app_rw;"
+check C58 "DROP OWNED BY, which removes every object the role owns without naming one" R-CASCADE
 
 echo "== R-ANSWERING-SERVICE (T-020 contract §6)"
 pair expand "GRANT SELECT ON out_of_hours_report TO answering_service;"
@@ -273,6 +300,27 @@ check C66 "INSERT plus SELECT on out_of_hours_report" R-ANSWERING-SERVICE
 pair expand "CREATE TABLE public.out_of_hours_report (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, body text);
 GRANT INSERT ON out_of_hours_report TO answering_service;"
 check C67 "CONTROL: the one permitted grant, with its table" PASS
+pair expand "GRANT answering_service TO app_rw;"
+check C68 "QA X4 (QA-F2): the role answering_service granted TO app_rw" R-ANSWERING-SERVICE
+pair expand "GRANT INSERT ON out_of_hours_report TO answering_service WITH GRANT OPTION;"
+check C69 "QA X5 (QA-F2): the permitted grant WITH GRANT OPTION" R-ANSWERING-SERVICE
+pair expand "GRANT INSERT ON out_of_hours_report TO answering_service GRANTED BY app_ddl;"
+check C6A "the permitted grant with GRANTED BY" R-ANSWERING-SERVICE
+pair expand "GRANT INSERT ON out_of_hours_report TO answering_service, app_rw;"
+check C6B "the permitted grant with a second grantee" R-ANSWERING-SERVICE
+pair expand "CREATE ROLE t021_login_principal NOLOGIN IN ROLE answering_service;"
+check C6C "CREATE ROLE … IN ROLE answering_service (membership without a GRANT)" R-ANSWERING-SERVICE
+pair expand "CREATE ROLE t021_login_principal NOLOGIN ROLE answering_service;"
+check C6H "CREATE ROLE … ROLE answering_service (the vendor becomes a member of the new role)" R-ANSWERING-SERVICE
+pair expand "ALTER GROUP answering_service ADD USER app_rw;"
+check C6D "ALTER GROUP answering_service ADD USER (membership without a GRANT)" R-ANSWERING-SERVICE
+pair expand "ALTER TABLE public.out_of_hours_report OWNER TO answering_service;"
+check C6E "ownership of a table transferred to answering_service" R-ANSWERING-SERVICE
+pair expand "GRANT app_admin_rw, answering_service TO t021_login_principal;"
+check C6F "answering_service second in a granted role list" R-ANSWERING-SERVICE
+pair expand "CREATE TABLE public.out_of_hours_report (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, body text);
+GRANT INSERT ON TABLE public.out_of_hours_report TO answering_service;"
+check C6G "CONTROL: the permitted grant spelled ON TABLE public.out_of_hours_report" PASS
 
 echo "== R-TABLE-GRANT (T-020 contract §4/§6)"
 pair expand "CREATE TABLE public.t021_thing (id int);"
