@@ -40,7 +40,7 @@ import {
 import { assertPermitted, assertRefused, INT10_RAISE } from '../src/expect.ts';
 
 const SUITE = 'migrations-applied';
-const HIGHEST_COMMITTED = '0003';
+const HIGHEST_COMMITTED = '0004';
 const COMMITTED_DIR = path.join(REPO_ROOT, MIGRATIONS_DIR);
 const RECORD_SQL = `SELECT coalesce(shobj_description(oid, 'pg_database'), '(no comment)')
                       FROM pg_database WHERE datname = current_database()`;
@@ -89,6 +89,18 @@ const CREATED_BY: Readonly<
                                JOIN pg_namespace n ON n.oid = p.pronamespace
                               WHERE e.evtname = 'trg_int10_answering_service'), '(absent)')`,
         holds: 'kinvara_guard.trg_assert_answering_service_write_only',
+      },
+    ],
+  },
+  '0004': {
+    source: 'T-144',
+    probes: [
+      {
+        // Names the one relation 0004 creates. to_regclass returns NULL rather than raising
+        // when the table is absent, so the reading still returns a value after the down step.
+        title: 'table public.locale_registry exists',
+        sql: `SELECT (to_regclass('public.locale_registry') IS NOT NULL)::text`,
+        holds: 'true',
       },
     ],
   },
