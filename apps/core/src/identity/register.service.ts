@@ -1,7 +1,11 @@
 /**
  * Account creation: SD §BE-4 `POST /v1/auth/register`, as ruled by decisions.md OE-22.
  *
- * THE ORDER, and why:
+ * WITHOUT A PASSWORD (T-141 rework 1; SD §BE-4 line 1020 `password?`, SA §CC-1 line 2551): steps 1
+ * and 2 are skipped entirely. No HIBP request is made, `password_hash` is NULL, and the session's
+ * `auth_method` is `PASSWORDLESS_SESSION_AUTH_METHOD`.
+ *
+ * THE ORDER WITH A PASSWORD, and why:
  *   1. HIBP range check (SA §SEC-5, SD §INT-F). It runs first, so a breached password costs no
  *      argon2id run.
  *        - `breached` → `PasswordBreachedError` (422), and nothing is written.
@@ -40,7 +44,8 @@ import {
 
 export interface RegisterInput {
   readonly email: string;
-  readonly password: string;
+  /** Absent for a passwordless registration (SD §BE-4 `password?`; SA §CC-1). */
+  readonly password?: string;
   readonly role: 'parent' | 'sitter';
   readonly tosVersion: string;
 }
@@ -49,9 +54,21 @@ export interface Registered {
   readonly accountId: AccountId;
   /** Its `cookieValue` goes to `Set-Cookie` and nowhere else. */
   readonly session: SessionToken;
-  /** What the breach check concluded: `clean`, or `unavailable` when this registration failed open. */
-  readonly hibp: Exclude<HibpVerdict['kind'], 'breached'>;
+  /**
+   * What the breach check concluded: `clean`; `unavailable` when this registration failed open; or
+   * `not_checked` when no password was given and no HIBP request was made.
+   */
+  readonly hibp: Exclude<HibpVerdict['kind'], 'breached'> | 'not_checked';
 }
+
+/**
+ * The `app_session.auth_method` of a passwordless registration's session. A READING, because the
+ * spec is silent. SD §DB-2 line 1813 allows only `password`, `magic_link`, `passkey`, `otp` and
+ * `sso`, and SD §BE-4 gives the session no method. `magic_link` is the passwordless path SA §CC-1
+ * names, and the most restricted value: SA §SEC-5 says a magic link never grants admin. `password`
+ * would claim a factor that was never presented. `decisions.md` OD-127 asks for a ruling.
+ */
+export const PASSWORDLESS_SESSION_AUTH_METHOD = 'magic_link';
 
 export const REGISTER_LOG = Object.freeze({
   hibpUnavailable:
@@ -75,13 +92,18 @@ export class RegisterService {
   }
 
   async register(input: RegisterInput): Promise<Registered> {
-    const verdict = await this.#hibp.check(input.password);
-    if (verdict.kind === 'breached') throw new PasswordBreachedError({ field: 'password' });
-    if (verdict.kind === 'unavailable') {
-      this.#log(`${REGISTER_LOG.hibpUnavailable} reason=${verdict.reason}`);
+    let passwordHash: string | null = null;
+    let hibp: Registered['hibp'] = 'not_checked';
+    if (input.password !== undefined) {
+      const verdict = await this.#hibp.check(input.password);
+      if (verdict.kind === 'breached') throw new PasswordBreachedError({ field: 'password' });
+      if (verdict.kind === 'unavailable') {
+        this.#log(`${REGISTER_LOG.hibpUnavailable} reason=${verdict.reason}`);
+      }
+      hibp = verdict.kind;
+      passwordHash = await hashPassword(input.password);
     }
 
-    const passwordHash = await hashPassword(input.password);
     const id = newAccountId();
     const session = newSessionToken();
     const absoluteExpiresAt = new Date(Date.now() + CONSUMER_ABSOLUTE_TTL_SECONDS * 1000);
@@ -101,6 +123,7 @@ export class RegisterService {
           accountId: id,
           tokenHash: session.tokenHash,
           absoluteExpiresAt,
+          authMethod: passwordHash === null ? PASSWORDLESS_SESSION_AUTH_METHOD : 'password',
         });
       });
     } catch (thrown) {
@@ -109,6 +132,6 @@ export class RegisterService {
       }
       throw thrown;
     }
-    return { accountId: id, session, hibp: verdict.kind };
+    return { accountId: id, session, hibp };
   }
 }

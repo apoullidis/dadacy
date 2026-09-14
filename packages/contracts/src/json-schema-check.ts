@@ -26,7 +26,7 @@
  * SUPPORTED KEYWORDS — and an unsupported one is a FAIL, never a pass
  * (`fail closed`): `$ref` (to `#/components/schemas/*` only), `type`
  * (object/string/integer/number/boolean/array), `const`, `enum`, `pattern`,
- * `minLength`, `minimum`, `maximum`, `properties`, `required`,
+ * `minLength`, `maxLength` (code points, T-141), `minimum`, `maximum`, `properties`, `required`,
  * `additionalProperties` (boolean or schema), `items`, `not`, `anyOf`,
  * `allOf`. Anything else in a schema object raises, so a generator that
  * started emitting a keyword this cannot read turns the tests red instead of
@@ -50,6 +50,7 @@ const KNOWN = new Set([
   'enum',
   'pattern',
   'minLength',
+  'maxLength',
   'minimum',
   'maximum',
   'properties',
@@ -134,6 +135,13 @@ export function validate(value: unknown, schema: unknown, root: SchemaRoot, path
     const minLength = schema['minLength'];
     if (typeof minLength === 'number' && value.length < minLength) {
       problems.push(`${path}: shorter than minLength ${String(minLength)}`);
+    }
+    // T-141: JSON Schema 2020-12 §6.3.1 counts a string's length in characters as RFC 8259
+    // defines them (code points), not UTF-16 units. The document's only `maxLength` today is
+    // `RegisterRequest.email`, which `z.email()` limits to ASCII, where the two counts agree.
+    const maxLength = schema['maxLength'];
+    if (typeof maxLength === 'number' && [...value].length > maxLength) {
+      problems.push(`${path}: longer than maxLength ${String(maxLength)}`);
     }
   }
 

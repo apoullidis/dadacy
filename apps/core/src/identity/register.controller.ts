@@ -16,6 +16,12 @@
  * THE COOKIE is set only after everything that can throw has run, so no error response carries a
  * session. Nothing here writes a response head itself (T-135 QR-A5).
  *
+ * `Cache-Control: private, no-store` travels with the cookie (T-141 rework 1, ruling on QR-A8).
+ * SD line 4037 and SA line 930: no authenticated response is ever edge-cacheable. Held by
+ * `test/register.container.test.ts` › *register 201 …* and *no password …*.
+ *
+ * `password` is passed on only when present: absence is the passwordless registration.
+ *
  * DECORATORS are function calls (OE-27; `src/nest-decorate.ts`). Nest's parameter decorators are
  * called with the prototype, method name and index, exactly as `@Body()` would call them.
  */
@@ -66,13 +72,15 @@ export class RegisterController {
         typeof first === 'string' && FIELD_NAMES.has(first) ? { field: first } : {},
       );
     }
+    const { password } = parsed.data;
     const registered = await this.#service.register({
       email: parsed.data.email,
-      password: parsed.data.password,
       role: parsed.data.role,
       tosVersion: parsed.data.tosVersion,
+      ...(password === undefined ? {} : { password }),
     });
     const created = RegisterResponse.parse({ accountId: registered.accountId });
+    reply.header('cache-control', 'private, no-store');
     reply.header('set-cookie', sessionSetCookie(registered.session));
     return created;
   }

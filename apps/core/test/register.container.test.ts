@@ -88,6 +88,7 @@ interface Answer {
   readonly status: number;
   readonly contentType: string;
   readonly setCookie: readonly string[];
+  readonly cacheControl: string | null;
   readonly text: string;
 }
 
@@ -101,6 +102,7 @@ async function post(body: string, contentType = 'application/json'): Promise<Ans
     status: res.status,
     contentType: res.headers.get('content-type') ?? '',
     setCookie: res.headers.getSetCookie(),
+    cacheControl: res.headers.get('cache-control'),
     text: await res.text(),
   };
 }
@@ -180,6 +182,12 @@ test('register 201: a new parent gets {accountId}, valid against the committed o
   assert.notDeepEqual(validateAgainstDocument({ accountId: 'x' }, schema, doc), []);
   assert.equal(answer.setCookie.length, 1, 'exactly one Set-Cookie');
   assert.equal(answer.text.includes(cookieValue), false, 'the cookie value is in the body');
+  // SD line 4037: no authenticated response is ever cacheable (T-141 rework 1, QR-A8).
+  assert.equal(
+    answer.cacheControl,
+    'private, no-store',
+    'the 201 that sets the session is cacheable',
+  );
 });
 
 test('the stored password_hash parses as argon2id at SA SEC-5 m=64 MiB t=3 p=1, is not the input, and verifies the input only', async () => {
@@ -359,4 +367,130 @@ test('a body that is not the contract answers 400 invalid_input, never 500, and 
     );
   }
   assert.equal(await accountsHolding(email), 0);
+});
+
+// ---- T-141 rework 1 -------------------------------------------------------------------------
+
+test('no password (SD BE-4 password?, SA CC-1): 201 with one session cookie and Cache-Control private, no-store, password_hash IS NULL, and a magic_link session', async () => {
+  const email = uniqueEmail('passwordless');
+  const answer = await post(
+    JSON.stringify({
+      email,
+      role: 'parent',
+      tosVersion: 'tos-t141',
+      turnstileToken: 'turnstile-t141',
+    }),
+  );
+  assert.equal(answer.status, 201, answer.text);
+  assert.equal(answer.setCookie.length, 1, 'exactly one Set-Cookie');
+  const match = COOKIE.exec(answer.setCookie[0] ?? '');
+  assert.ok(
+    match?.[1],
+    `Set-Cookie is not the SD 1235 session cookie: ${answer.setCookie.join(' | ')}`,
+  );
+  assert.equal(answer.cacheControl, 'private, no-store');
+  const { accountId } = JSON.parse(answer.text) as { accountId: string };
+  const { rows } = await database().query<{
+    hash_is_null: boolean;
+    auth_method: string;
+    token_hash: Buffer;
+  }>(
+    'SELECT a.password_hash IS NULL AS hash_is_null, s.auth_method, s.token_hash ' +
+      'FROM public.account a JOIN public.app_session s ON s.account_id = a.id WHERE a.id = $1',
+    [accountId],
+  );
+  assert.equal(rows.length, 1, 'exactly one account with one session');
+  assert.equal(rows[0]?.hash_is_null, true, 'a passwordless account has a password_hash');
+  assert.equal(rows[0]?.auth_method, 'magic_link');
+  const digest = createHash('sha256').update(match[1], 'utf8').digest();
+  assert.ok(rows[0]?.token_hash.equals(digest), 'token_hash is not SHA-256 of the cookie value');
+});
+
+test('password null or not a string answers 400 invalid_input on password and creates nothing: only an absent password is passwordless', async () => {
+  const values: readonly (readonly [string, unknown])[] = [
+    ['null', null],
+    ['a number', 123456789012],
+    ['true', true],
+    ['an array', ['kinvara-T139-synthetic-clean-01']],
+    ['an object', {}],
+    ['an empty string', ''],
+  ];
+  for (const [name, password] of values) {
+    const email = uniqueEmail('password-type');
+    const answer = await post(JSON.stringify({ ...registration(email, T139.clean01), password }));
+    assert.equal(answer.status, 400, `password ${name}: ${answer.text}`);
+    assert.deepEqual(
+      JSON.parse(answer.text),
+      problem('invalid_input', 'Invalid input', 400, 'password'),
+      name,
+    );
+    assert.deepEqual(answer.setCookie, [], name);
+    assert.equal(await accountsHolding(email), 0, name);
+  }
+});
+
+test('an email over 254 octets answers 400 invalid_input on email, never 500; 254 octets is accepted', async () => {
+  const suffix = `-${randomBytes(4).toString('hex')}@example.cy`;
+  for (const length of [255, 8011]) {
+    const email = `${'b'.repeat(length - suffix.length)}${suffix}`;
+    assert.equal(email.length, length, 'premise');
+    const answer = await post(JSON.stringify(registration(email, T139.clean01)));
+    assert.equal(answer.status, 400, `${String(length)} octets: ${String(answer.status)}`);
+    assert.deepEqual(
+      JSON.parse(answer.text),
+      problem('invalid_input', 'Invalid input', 400, 'email'),
+    );
+    assert.deepEqual(answer.setCookie, []);
+  }
+  const atLimit = `${'a'.repeat(254 - suffix.length)}${suffix}`;
+  assert.equal(atLimit.length, 254, 'premise');
+  const answer = await post(JSON.stringify(registration(atLimit, T139.clean01)));
+  assert.equal(answer.status, 201, answer.text);
+  assert.equal(await accountsHolding(atLimit), 1);
+});
+
+test('a tosVersion over 64 characters answers 400 invalid_input on tosVersion; 64 characters is accepted', async () => {
+  for (const length of [65, 900000]) {
+    const email = uniqueEmail('tos-long');
+    const answer = await post(
+      JSON.stringify({ ...registration(email, T139.clean01), tosVersion: 'v'.repeat(length) }),
+    );
+    assert.equal(answer.status, 400, `${String(length)} characters: ${String(answer.status)}`);
+    assert.deepEqual(
+      JSON.parse(answer.text),
+      problem('invalid_input', 'Invalid input', 400, 'tosVersion'),
+    );
+    assert.equal(await accountsHolding(email), 0);
+  }
+  const email = uniqueEmail('tos-64');
+  const answer = await post(
+    JSON.stringify({ ...registration(email, T139.clean01), tosVersion: 'v'.repeat(64) }),
+  );
+  assert.equal(answer.status, 201, answer.text);
+  assert.equal(await accountsHolding(email), 1);
+});
+
+test('a control character in any string field answers 400 invalid_input on that field, never 500', async () => {
+  const cases: readonly { readonly field: string; readonly patch: Record<string, string> }[] = [
+    { field: 'tosVersion', patch: { tosVersion: 'tos\u0000t141' } },
+    { field: 'tosVersion', patch: { tosVersion: 'tos\u0085t141' } },
+    { field: 'turnstileToken', patch: { turnstileToken: 'turnstile\u001Ft141' } },
+    { field: 'password', patch: { password: `${T139.clean01}\u0000` } },
+    {
+      field: 'email',
+      patch: { email: `t141\u007Fctl-${randomBytes(4).toString('hex')}@example.cy` },
+    },
+  ];
+  for (const c of cases) {
+    const email = uniqueEmail('control');
+    const body = { ...registration(email, T139.clean01), ...c.patch };
+    const answer = await post(JSON.stringify(body));
+    assert.equal(answer.status, 400, `${c.field}: ${String(answer.status)} ${answer.text}`);
+    assert.deepEqual(
+      JSON.parse(answer.text),
+      problem('invalid_input', 'Invalid input', 400, c.field),
+      c.field,
+    );
+    assert.equal(await accountsHolding(body['email'] ?? email), 0, c.field);
+  }
 });

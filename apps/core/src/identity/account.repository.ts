@@ -33,7 +33,8 @@ export interface NewAccount {
   readonly id: AccountId;
   readonly pseudonym: Ulid;
   readonly email: string;
-  readonly passwordHash: string;
+  /** NULL for a passwordless registration (SD §DB-2 line 1770; SA §CC-1). */
+  readonly passwordHash: string | null;
   readonly tosVersion: string;
 }
 
@@ -42,6 +43,7 @@ export interface NewSession {
   readonly accountId: AccountId;
   readonly tokenHash: Buffer;
   readonly absoluteExpiresAt: Date;
+  readonly authMethod: 'password' | 'magic_link';
 }
 
 /** `status`, `locale`, `jurisdiction` and the other columns take SD §DB-2's defaults. */
@@ -63,13 +65,13 @@ export async function insertRole(
   await tx.insert(accountRole).values({ accountId: owner, role });
 }
 
-/** A password session. The token hash is checked to be a 32-byte digest before it is sent. */
+/** A session. The token hash is checked to be a 32-byte digest before it is sent. */
 export async function insertSession(tx: Tx, session: NewSession): Promise<void> {
   await tx.insert(appSession).values({
     id: session.id,
     tokenHash: assertSessionDigest(session.tokenHash),
     accountId: session.accountId,
-    authMethod: 'password',
+    authMethod: session.authMethod,
     absoluteExpiresAt: session.absoluteExpiresAt.toISOString(),
   });
 }

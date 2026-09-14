@@ -206,12 +206,13 @@
         "properties": {
           "email": {
             "type": "string",
+            "maxLength": 254,
             "format": "email",
             "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
           },
           "password": {
             "type": "string",
-            "pattern": "^[\\s\\S]{12,}$"
+            "pattern": "^[^\\p{Cc}]{12,}$"
           },
           "role": {
             "type": "string",
@@ -222,16 +223,15 @@
           },
           "tosVersion": {
             "type": "string",
-            "minLength": 1
+            "pattern": "^[^\\p{Cc}]{1,64}$"
           },
           "turnstileToken": {
             "type": "string",
-            "minLength": 1
+            "pattern": "^[^\\p{Cc}]+$"
           }
         },
         "required": [
           "email",
-          "password",
           "role",
           "tosVersion",
           "turnstileToken"

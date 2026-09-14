@@ -288,6 +288,73 @@ const CORPUS: {
     payload: { ...VALID_REGISTER, tosVersion: '' },
     valid: false,
   },
+  // T-141 rework 1. QR-F1: SD §BE-4 `password?`, SA §CC-1 "no flow may require a password".
+  {
+    name: 'register: no password is a passwordless registration',
+    schema: 'RegisterRequest',
+    payload: {
+      email: VALID_REGISTER.email,
+      role: VALID_REGISTER.role,
+      tosVersion: VALID_REGISTER.tosVersion,
+      turnstileToken: VALID_REGISTER.turnstileToken,
+    },
+    valid: true,
+  },
+  {
+    name: 'register: a null password',
+    schema: 'RegisterRequest',
+    payload: { ...VALID_REGISTER, password: null },
+    valid: false,
+  },
+  // QR-A2: RFC 5321 §4.5.3.1.3 (254 octets), a 64-character tosVersion, no Cc code point.
+  {
+    name: 'register: an email of exactly 254 octets',
+    schema: 'RegisterRequest',
+    payload: { ...VALID_REGISTER, email: `${'a'.repeat(243)}@example.cy` },
+    valid: true,
+  },
+  {
+    name: 'register: an email of 255 octets',
+    schema: 'RegisterRequest',
+    payload: { ...VALID_REGISTER, email: `${'a'.repeat(244)}@example.cy` },
+    valid: false,
+  },
+  {
+    name: 'register: a tosVersion of 64 characters',
+    schema: 'RegisterRequest',
+    payload: { ...VALID_REGISTER, tosVersion: 'v'.repeat(64) },
+    valid: true,
+  },
+  {
+    name: 'register: a tosVersion of 65 characters',
+    schema: 'RegisterRequest',
+    payload: { ...VALID_REGISTER, tosVersion: 'v'.repeat(65) },
+    valid: false,
+  },
+  {
+    name: 'register: U+0000 in tosVersion',
+    schema: 'RegisterRequest',
+    payload: { ...VALID_REGISTER, tosVersion: 'tos\u0000v1' },
+    valid: false,
+  },
+  {
+    name: 'register: U+0085, a C1 control, in turnstileToken',
+    schema: 'RegisterRequest',
+    payload: { ...VALID_REGISTER, turnstileToken: 'token\u0085x' },
+    valid: false,
+  },
+  {
+    name: 'register: U+001F in a 12-character password',
+    schema: 'RegisterRequest',
+    payload: { ...VALID_REGISTER, password: 'abcdefghijk\u001Fl' },
+    valid: false,
+  },
+  {
+    name: 'register: U+007F in email',
+    schema: 'RegisterRequest',
+    payload: { ...VALID_REGISTER, email: 'par\u007Fent@example.cy' },
+    valid: false,
+  },
   {
     name: 'register response: a ULID account id',
     schema: 'RegisterResponse',

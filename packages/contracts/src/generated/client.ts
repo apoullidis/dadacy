@@ -31,7 +31,7 @@ export interface PlatformFee {
 
 export interface RegisterRequest {
   readonly email: string;
-  readonly password: string;
+  readonly password?: string;
   readonly role: "parent" | "sitter";
   readonly tosVersion: string;
   readonly turnstileToken: string;
