@@ -11,13 +11,13 @@
 # deletes the canonical order and must go red, K22 plants composite keys whose column order only the
 # catalogue knows, and K23–K25 are the step's own I-ORDER refusals.
 #
-# T-152 rework 1 — K26–K34: row-level security policies (OD-109, QA-F1). drizzle-kit keeps a policy's
+# T-152 rework 1 — K26–K35: row-level security policies (OD-109, QA-F1). drizzle-kit keeps a policy's
 # using/withCheck only for the first pg_policies row of each table, so the generator renders every
 # pgPolicy from pg_policy (scripts/gates/lib/schema-policy.ts, I-POLICY). K26 is qa-verification's
 # two-policy table (db-introspect-policies-qa.sql) and K27 the attribute shapes
 # (db-introspect-policies-shapes.sql); each fixture's `-- expect:` lines must be in db/schema.ts. K26
 # runs FIRST, so on a fresh project its first write sees a catalogue nobody has ANALYZEd, and it is
-# then checked after ANALYZE and after a down/up. K28–K34 are the step's refusals.
+# then checked after ANALYZE and after a down/up. K28–K35 are the step's refusals.
 #
 #   cd /home/alex/projects/nanny/app && ./scripts/svc run <ticket> -- bash scripts/negative-tests/db-introspect.sh
 #
@@ -426,13 +426,23 @@ check K32 "(T-152 r1) the catalogue's policy names differ: a rendered policy wit
 mutate "$POLICY" "    FROM pg_policy pol" "    FROM pg_policy_t152 pol"
 check K33 "(T-152 r1) the policy query unreadable, committed tree: refused" I-POLICY 'cannot read row-level security policies from the catalogue'
 
+plant "$UP" "-- @phase: expand
+CREATE TABLE public.t152_slash (id integer PRIMARY KEY, note text NOT NULL);
+ALTER TABLE public.t152_slash ENABLE ROW LEVEL SECURITY;
+CREATE POLICY t152_slash_select ON public.t152_slash FOR SELECT TO app_rw USING (note <> '\\d');"
+plant "$DOWN" "DROP TABLE public.t152_slash;"
+grep -qF "'\\d'" "$UP" || abort "the backslash did not land in $UP"
+check K34 "(T-152 r1) a policy expression containing a backslash parses but cannot be written inside sql\`…\` byte for byte: refused" I-POLICY 'the expression .* cannot be written inside sql`…` byte for byte'
+
+# A backtick does not reach that rule: drizzle-kit writes it raw, so its sql`…` no longer parses as one
+# template literal, and the entry is refused as a shape the step does not know (measured, suite run 1).
 TICK='`'
 plant "$UP" "-- @phase: expand
 CREATE TABLE public.t152_tick (id integer PRIMARY KEY, note text NOT NULL);
 ALTER TABLE public.t152_tick ENABLE ROW LEVEL SECURITY;
 CREATE POLICY t152_tick_select ON public.t152_tick FOR SELECT TO app_rw USING (note <> '${TICK}');"
 plant "$DOWN" "DROP TABLE public.t152_tick;"
-check K34 "(T-152 r1) a policy expression containing a backtick cannot be written inside sql\`…\` byte for byte: refused" I-POLICY 'the expression .* cannot be written inside sql`…` byte for byte'
+check K35 "(T-152 r1) a policy expression containing a backtick breaks drizzle-kit's template: refused as an unknown shape, never written" I-POLICY 'table "t152_tick": pgPolicy .* this step does not know'
 
 echo
 if [ "$bad" -eq 0 ]; then
