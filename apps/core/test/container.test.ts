@@ -24,6 +24,7 @@ import {
   validateAgainstDocument,
   type SchemaRoot,
 } from '@kinvara/contracts';
+import { rawGet } from './fixtures/raw-http.ts';
 
 const SENTINEL = 'KINVARA-T135-SENTINEL-c0ntainer-7e2b';
 const DOCUMENT_PATH = join(
@@ -124,4 +125,56 @@ test('refusal (i) in the container: an unmatched route throws NotFoundError and 
   // The document can refuse: the same body with `detail` added.
   const withDetail = { ...(body as Record<string, unknown>), detail: 'x' };
   assert.notDeepEqual(validateAgainstDocument(withDetail, problemSchema, doc), []);
+});
+
+/**
+ * QA-F1 / OD-102, QA's three request targets, sent byte for byte over a raw socket
+ * (`fetch` could normalise them). Before the rework, Fastify's router answered each
+ * itself: `400 application/json` with the raw path in `message` (T-135 § QA-8).
+ */
+async function assertUndecodablePathRefused(path: string): Promise<void> {
+  const res = await rawGet(base(), path);
+  let body: unknown;
+  try {
+    body = JSON.parse(res.body);
+  } catch {
+    body = `<not JSON: ${res.body.slice(0, 200)}>`;
+  }
+  const expected = {
+    type: 'https://errors.kinvara.cy/invalid_input',
+    title: 'Invalid input',
+    status: 400,
+    code: 'invalid_input',
+    retryable: false,
+  };
+  assert.deepEqual(
+    {
+      status: res.status,
+      contentType: res.headers['content-type'] ?? null,
+      sentinelInBody: res.body.includes(SENTINEL),
+      body,
+    },
+    {
+      status: 400,
+      contentType: 'application/problem+json; charset=utf-8',
+      sentinelInBody: false,
+      body: expected,
+    },
+  );
+  assert.deepEqual(
+    validateAgainstDocument(body, { $ref: '#/components/schemas/Problem' }, readDocument()),
+    [],
+  );
+}
+
+test('QA-F1 in the container: invalid UTF-8 in a percent-encoded path answers 400 invalid_input problem+json, echoing nothing', async () => {
+  await assertUndecodablePathRefused(`/v1/%E0%A4%A${SENTINEL}`);
+});
+
+test('QA-F1 in the container: %ZZ after the real route answers 400 invalid_input problem+json, echoing nothing', async () => {
+  await assertUndecodablePathRefused(`/v1/meta/platform-fee%ZZ${SENTINEL}`);
+});
+
+test('QA-F1 in the container: a lone percent at the end of the path answers 400 invalid_input problem+json, echoing nothing', async () => {
+  await assertUndecodablePathRefused(`/${SENTINEL}%`);
 });
