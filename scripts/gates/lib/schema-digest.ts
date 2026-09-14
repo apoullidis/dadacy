@@ -2,7 +2,8 @@
  * The generated header of `db/schema.ts` — T-138 (tech-lead).
  *
  * `scripts/db-introspect.ts` writes `db/schema.ts` as three header lines followed by
- * drizzle-kit's `schema.ts`, byte for byte. The third header line carries the sha256 of
+ * drizzle-kit's `schema.ts` with its unparsed column types mapped and its unused identifiers
+ * removed by TypeScript (`schema-render.ts`, T-150). The third header line carries the sha256 of
  * that body.
  *
  * Two readers:
@@ -31,7 +32,7 @@ export function digestOf(body: string): string {
   return createHash('sha256').update(body, 'utf8').digest('hex');
 }
 
-/** The whole file: the three header lines, then drizzle-kit's schema.ts unchanged. */
+/** The whole file: the three header lines, then the body exactly as the caller passes it. */
 export function renderSchemaFile(body: string, drizzleKitVersion: string): string {
   return `${LINE1}\n${LINE2}\n// @generated drizzle-kit ${drizzleKitVersion} sha256:${digestOf(body)}\n${body}`;
 }

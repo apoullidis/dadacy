@@ -28,12 +28,20 @@
  *      schemaFilter `public` and one `!<name>` tablesFilter per extension member. So extension
  *      internals (postgis, pg_partman, pg_stat_statements) are excluded by a catalogue rule,
  *      not by a list kept here.
- *   5. [I-VACUOUS] anti-vacuity, anchored OUTSIDE drizzle-kit: the relation names drizzle-kit
- *      wrote must equal the names the catalogue lists as owned by no extension in `public`. An
+ *   4a. [I-MAP] (T-150, OD-97) each `unknown("col")` drizzle-kit writes for a type it cannot parse
+ *      is rewritten from a CLOSED map (`citext`, `bytea` -> customType). Any other type fails the
+ *      run: `unknown(...)` is never written (scripts/gates/lib/schema-render.ts).
+ *   4b. [I-TSC] (T-150, OD-93) TypeScript's own unused-identifier fixes are applied until a pass
+ *      edits nothing, with the compiler options of the root tsconfig.json. Any diagnostic left in
+ *      the rendering fails the run, so a file `tsc` would refuse at its first importer is neither
+ *      written nor accepted.
+ *   5. [I-VACUOUS] anti-vacuity, anchored OUTSIDE drizzle-kit: the relation names in the rendering
+ *      must equal the names the catalogue lists as owned by no extension in `public`. An
  *      introspection that returns nothing while the catalogue holds a relation fails. When both
  *      are empty, the run says so on stdout (T-001 contract, gate rule 2) and does not fail: the
  *      committed migrations are then genuinely relation-free.
- *   6. write mode: db/schema.ts := the generated header + drizzle-kit's schema.ts, byte for byte.
+ *   6. write mode: db/schema.ts := the generated header + drizzle-kit's schema.ts after 4a and 4b.
+ *      Both modes build that rendering the same way, so the parity check compares against it.
  *      check mode: [I-MISSING] db/schema.ts absent; [I-DIGEST] its header does not verify
  *      (scripts/gates/lib/schema-digest.ts); [I-DIFF] it differs from the fresh rendering.
  *
@@ -47,8 +55,15 @@ import os from 'node:os';
 import path from 'node:path';
 import { REPO_ROOT, bin, capture } from './gates/lib/run.ts';
 import { SCHEMA_REL, renderSchemaFile, verifySchemaFile } from './gates/lib/schema-digest.ts';
+import {
+  TYPESCRIPT_VERSION,
+  mapColumnTypes,
+  pruneUnused,
+  readRootCompilerOptions,
+} from './gates/lib/schema-render.ts';
 
 const INTROSPECTED_SCHEMA = 'public';
+const TSCONFIG_PATH = path.join(REPO_ROOT, 'tsconfig.json');
 const MIGRATIONS_DIR = path.join(REPO_ROOT, 'db', 'migrations');
 const SCHEMA_PATH = path.join(REPO_ROOT, SCHEMA_REL);
 const UP_FILE = /^(\d{4})_[a-z0-9][a-z0-9_]*\.up\.sql$/;
@@ -224,19 +239,52 @@ function main(): void {
   ).version;
   const pull = capture(bin('drizzle-kit'), ['pull', `--config=${cfgPath}`]);
   const pulled = path.join(out, 'schema.ts');
-  let body = '';
+  let raw = '';
   if (pull.code !== 0 || !fs.existsSync(pulled)) {
     problem(
       'I-PULL',
       `drizzle-kit ${kitVersion} pull exit ${String(pull.code)}, schema.ts ${fs.existsSync(pulled) ? 'written' : 'NOT written'}:\n      ${tail(`${pull.stdout}${pull.stderr}`)}`,
     );
   } else {
-    body = fs.readFileSync(pulled, 'utf8');
+    raw = fs.readFileSync(pulled, 'utf8');
   }
   fs.rmSync(tmp, { recursive: true, force: true });
   if (failures.length > 0) done();
 
-  // 5. anti-vacuity, against the catalogue
+  // 4a. map the column types drizzle-kit cannot render, from a closed map (T-150, OD-97)
+  const mapping = mapColumnTypes(raw);
+  if (!mapping.ok) {
+    for (const p of mapping.problems) problem('I-MAP', p);
+    done();
+  }
+  const mappedBody = mapping.ok ? mapping.body : raw;
+  console.log(
+    `  mapped column type(s): ${mapping.ok && mapping.mapped.length > 0 ? mapping.mapped.join(', ') : 'none'}`,
+  );
+
+  // 4b. prune unused identifiers with TypeScript's own fixes, under the root tsconfig (T-150, OD-93)
+  const root = readRootCompilerOptions(TSCONFIG_PATH);
+  if (root.errors.length > 0) {
+    for (const e of root.errors) problem('I-TSC', `tsconfig.json: ${e}`);
+    done();
+  }
+  const pruned = pruneUnused(mappedBody, SCHEMA_PATH, root.options);
+  console.log(
+    `  pruned with typescript ${TYPESCRIPT_VERSION}: ${String(pruned.edits)} edit(s) in ${String(pruned.passes)} pass(es); ${String(pruned.diagnostics.length)} diagnostic(s) left`,
+  );
+  if (!pruned.converged) {
+    problem('I-TSC', `pruning still made edits after ${String(pruned.passes)} passes`);
+  }
+  for (const d of pruned.diagnostics) {
+    problem(
+      'I-TSC',
+      `the rendering of ${SCHEMA_REL} would not typecheck under tsconfig.json when imported: ${d}`,
+    );
+  }
+  if (failures.length > 0) done();
+  const body = pruned.text;
+
+  // 5. anti-vacuity, against the catalogue, read from the rendering that is written and compared
   const introspected = [
     ...body.matchAll(/^export const [\w$]+ = pg(?:Table|View|MaterializedView)\("([^"]+)"/gm),
   ]
