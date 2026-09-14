@@ -168,16 +168,31 @@ test('the captured process output: the sentinel is ABSENT, no stack frame is log
   assert.equal(code, 0, 'the fault server drained and exited 0');
   const out = server.output();
 
-  // The capture is live from process start and saw the filter run (anti-vacuity).
-  assert.match(out, /listening on 127\.0\.0\.1:\d+/);
-  assert.equal(count(out, `${LOG_MARKERS.toProblemThrew} class=TypeError`), 1, 'the D4a Proxy');
-  assert.equal(count(out, `${LOG_MARKERS.toProblemThrew} class=Error`), 1, 'problemExtensions');
-  assert.equal(count(out, `${LOG_MARKERS.internalError} class=Error`), 1, 'the plain Error');
-  assert.equal(count(out, `${LOG_MARKERS.internalError} class=object`), 1, 'the non-Error');
-
-  assert.equal(out.includes(SENTINEL), false, 'the sentinel reached the log');
-  assert.doesNotMatch(out, /^\s+at\s/m, 'a stack frame reached the log');
-  assert.doesNotMatch(out, /Cannot (GET|POST)/, "Nest's not-found message reached the log");
+  // Every observation at once, so a failure shows its whole shape rather than the first
+  // assertion to trip. The marker counts are the anti-vacuity half: the capture is live
+  // from process start and saw each path through the filter.
+  assert.deepEqual(
+    {
+      captureLive: /listening on 127\.0\.0\.1:\d+/.test(out),
+      toProblemThrewTypeError: count(out, `${LOG_MARKERS.toProblemThrew} class=TypeError`),
+      toProblemThrewError: count(out, `${LOG_MARKERS.toProblemThrew} class=Error`),
+      internalErrorError: count(out, `${LOG_MARKERS.internalError} class=Error`),
+      internalErrorObject: count(out, `${LOG_MARKERS.internalError} class=object`),
+      sentinelInLog: out.includes(SENTINEL),
+      stackFrameInLog: /^\s+at\s/m.test(out),
+      notFoundMessageInLog: /Cannot (GET|POST)/.test(out),
+    },
+    {
+      captureLive: true,
+      toProblemThrewTypeError: 1,
+      toProblemThrewError: 1,
+      internalErrorError: 1,
+      internalErrorObject: 1,
+      sentinelInLog: false,
+      stackFrameInLog: false,
+      notFoundMessageInLog: false,
+    },
+  );
 });
 
 test('SIGTERM with a request in flight: the request completes, a new connection is refused, and the process exits 0', async () => {
