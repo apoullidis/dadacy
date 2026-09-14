@@ -5,13 +5,14 @@
 #
 #   ./scripts/dev bash scripts/negative-tests/dev-deps-guard.sh
 #
-# DEV_DEPS_GUARD=<path> runs the same cases against another copy of the guard
-# (for example main's, extracted with `git show`), to see which cases depend on
-# the guard under test.
+# DEV_DEPS_GUARD=<path> runs the same cases against another copy of the guard.
 #
 # The image builds prove the guard RUNS in the stage that ships. This suite
 # proves what the rule DECIDES, including the one route it lets through (D3),
 # which is recorded as an expected OK so the bound is visible in the output.
+# D8-D12 mirror app.Dockerfile: the prod-deps run writes a bundle from the whole
+# workspace ($W), and the runtime run judges an image tree ($I, which holds only
+# apps/app1 and no lockfile) against that bundle.
 #
 # Every case asserts the exit status AND the guard's own line:
 #   OK       exit 0 and "OK — none of the checked names is present"
@@ -26,7 +27,9 @@ cd "$(dirname "$0")/../.." || exit 99
 GUARD="${DEV_DEPS_GUARD:-docker/app-runtime/assert-no-dev-deps.mjs}"
 W="$(mktemp -d)"
 I="$(mktemp -d)"
-trap 'rm -rf "$W" "$I"' EXIT
+B="$(mktemp -d)"
+BUN="$B/workspace-manifests.json"
+trap 'rm -rf "$W" "$I" "$B"' EXIT
 bad=0; harness=0; ran=0
 
 put() { mkdir -p "$(dirname "$W/$1")"; printf '%s\n' "$2" > "$W/$1"; }
@@ -38,7 +41,7 @@ store() { mkdir -p "$W/node_modules/.pnpm/$1"; }
 # `other` (outside the closure) calls zod dev. pnpm-lock.yaml lists the four
 # projects as importers, in both of pnpm's spellings (a block, and `{}`).
 reset() {
-  rm -rf "${W:?}"/* "$W"/.[!.]* "${I:?}"/* "$I"/.[!.]* 2>/dev/null
+  rm -rf "${W:?}"/* "$W"/.[!.]* "${I:?}"/* "$I"/.[!.]* "${B:?}"/* 2>/dev/null
   put package.json '{"name":"kinvara","devDependencies":{"typescript":"6.0.3","drizzle-kit":"0.31.10","drizzle-orm":"0.45.2","pg":"8.23.0"}}'
   put apps/app1/package.json '{"name":"@kinvara/app1","dependencies":{"@kinvara/lib":"workspace:*","drizzle-orm":"0.45.2","pg":"8.23.0"},"devDependencies":{"vitest":"5.0.0"}}'
   put packages/lib/package.json '{"name":"@kinvara/lib","dependencies":{},"devDependencies":{"typescript":"6.0.3","vitest":"5.0.0"}}'
@@ -83,16 +86,31 @@ image_of_runtime() {
 # landed <file> <string>: the planted change is in the tree, or the case does not run
 landed() { grep -qF -- "$2" "$W/$1" || { echo "   HARNESS ERROR: '$2' not in $1"; harness=$((harness+1)); return 1; }; }
 landed_store() { [[ -d "$W/node_modules/.pnpm/$1" ]] || { echo "   HARNESS ERROR: store dir $1 absent"; harness=$((harness+1)); return 1; }; }
-# in_image / not_in <tree> <rel>: a path is (is not) present in $I or $W
-in_image() { [[ -e "$I/$1" ]] || { echo "   HARNESS ERROR: $1 absent from the image tree"; harness=$((harness+1)); return 1; }; }
+in_tree() { [[ -e "$1/$2" ]] || { echo "   HARNESS ERROR: $2 absent under $1"; harness=$((harness+1)); return 1; }; }
 not_in() { [[ ! -e "$1/$2" ]] || { echo "   HARNESS ERROR: $2 still present under $1"; harness=$((harness+1)); return 1; }; }
 
-# run_case <label> <OK|REFUSED|CRASH> <text the output must contain> [app] [guard path] [image tree]
-# The workspace tree is $W unless WS=<tree> is set for the call.
+# mkbundle: the prod-deps run over $W, writing $BUN. Its output is kept in
+# $BUNDLE_OUT. A run that does not pass and write the bundle is a HARNESS ERROR.
+BUNDLE_OUT=""
+mkbundle() {
+  local code
+  BUNDLE_OUT="$(node "$GUARD" "$W" app1 --bundle-out "$BUN" 2>&1)"; code=$?
+  if [[ $code -eq 0 && -s "$BUN" && "$BUNDLE_OUT" == *"wrote the bundle for the runtime run"* ]]; then return 0; fi
+  echo "   HARNESS ERROR: the prod-deps-style run did not pass and write the bundle (exit $code)"
+  printf '%s\n' "$BUNDLE_OUT" | sed 's/^/       | /'
+  harness=$((harness+1)); return 1
+}
+
+# run_case <label> <OK|REFUSED|CRASH> <text the output must contain> [app] [guard path] [extra guard args...]
+# The tree passed as <root> is $W unless ROOT=<tree> is set for the call. The
+# output of the last run is kept in $LAST_OUT.
+LAST_OUT=""
 run_case() {
-  local label="$1" expect="$2" needle="$3" app="${4-app1}" guard="${5-$GUARD}" image="${6-}" ws="${WS:-$W}" out code verdict
+  local label="$1" expect="$2" needle="$3" app="${4-app1}" guard="${5-$GUARD}" root="${ROOT:-$W}" out code verdict
+  local -a extra=("${@:6}")
   ran=$((ran+1))
-  out="$(node "$guard" "$ws" ${app:+"$app"} ${image:+"$image"} 2>&1)"; code=$?
+  out="$(node "$guard" "$root" ${app:+"$app"} "${extra[@]}" 2>&1)"; code=$?
+  LAST_OUT="$out"
   if [[ $code -eq 0 && "$out" == *"OK — none of the checked names is present"* ]]; then verdict=OK
   elif [[ $code -eq 1 && ( "$out" == *"DEVDEPENDENCIES ARE IN THE RUNTIME DEPENDENCY TREE."* || "$out" == *"refusing to pass"* ) ]]; then verdict=REFUSED
   else verdict=CRASH
@@ -105,6 +123,8 @@ run_case() {
     bad=$((bad+1))
   fi
 }
+
+set_of() { printf '%s\n' "$1" | grep -o 'manifest set sha256:[0-9a-f]*' | head -1; }
 
 echo "=== the rule: exempt only if NO closure manifest calls it dev AND a closure manifest declares it runtime ==="
 
@@ -147,33 +167,55 @@ reset; mkdir -p "$W/node_modules/typescript"
 [[ -d "$W/node_modules/typescript" ]] \
   && run_case "D7 typescript as a TOP-LEVEL node_modules entry" REFUSED 'typescript  (top-level node_modules/typescript'
 
-echo; echo "=== the stage that ships holds only apps/<APP>: names come from the WORKSPACE tree, the store from the IMAGE tree (OD-122) ==="
+echo; echo "=== the runtime run: names from the prod-deps run's BUNDLE, the store from an image tree without other apps (OD-122) ==="
 
 reset; image_of_runtime
-in_image apps/app1/package.json && not_in "$I" apps/other/package.json && not_in "$I" pnpm-lock.yaml \
-  && run_case "D8 CONTROL: image tree without apps/other or the lockfile, nothing planted" OK \
-       'image: 3 manifest(s), each byte-identical to the workspace' app1 "$GUARD" "$I"
+mkbundle && not_in "$I" apps/other/package.json && not_in "$I" pnpm-lock.yaml \
+  && ROOT="$I" run_case "D8 CONTROL: image tree + bundle, nothing planted" OK \
+       'image tree: 3 manifest(s) under' app1 "$GUARD" --bundle "$BUN"
 
-reset; store esbuild@0.28.2
+reset
 put apps/other/package.json '{"name":"@kinvara/other","devDependencies":{"esbuild":"0.28.2"}}'
-image_of_runtime
-landed apps/other/package.json '"esbuild":"0.28.2"' && in_image node_modules/.pnpm/esbuild@0.28.2 && not_in "$I" apps/other/package.json \
-  && run_case "D9 QA-K11: esbuild dev ONLY in apps/other (absent from the image), in the image store" REFUSED \
-       'esbuild  (virtual store: esbuild@0.28.2; declared in apps/other/package.json)' app1 "$GUARD" "$I"
+image_of_runtime; mkdir -p "$I/node_modules/.pnpm/esbuild@0.28.2"
+landed apps/other/package.json '"esbuild":"0.28.2"' && mkbundle && in_tree "$I" node_modules/.pnpm/esbuild@0.28.2 && not_in "$I" apps/other/package.json \
+  && ROOT="$I" run_case "D9 QA-K11: esbuild dev ONLY in apps/other (not in the image), planted in the image store" REFUSED \
+       'esbuild  (virtual store: esbuild@0.28.2; declared in apps/other/package.json)' app1 "$GUARD" --bundle "$BUN"
+d9_runtime="$LAST_OUT"
 
-reset; store esbuild@0.28.2
+reset
 put packages/lib/package.json '{"name":"@kinvara/lib","dependencies":{},"devDependencies":{"typescript":"6.0.3","vitest":"5.0.0","esbuild":"0.28.2"}}'
-image_of_runtime
-landed packages/lib/package.json '"esbuild":"0.28.2"' && in_image node_modules/.pnpm/esbuild@0.28.2 && in_image packages/lib/package.json \
-  && run_case "D10 QA-K11c: esbuild dev ONLY in packages/lib (present in the image), in the image store" REFUSED \
-       'esbuild  (virtual store: esbuild@0.28.2; declared in packages/lib/package.json)' app1 "$GUARD" "$I"
+image_of_runtime; mkdir -p "$I/node_modules/.pnpm/esbuild@0.28.2"
+landed packages/lib/package.json '"esbuild":"0.28.2"' && mkbundle && in_tree "$I" node_modules/.pnpm/esbuild@0.28.2 && in_tree "$I" packages/lib/package.json \
+  && ROOT="$I" run_case "D10 QA-K11c: esbuild dev ONLY in packages/lib (in the image), planted in the image store" REFUSED \
+       'esbuild  (virtual store: esbuild@0.28.2; declared in packages/lib/package.json)' app1 "$GUARD" --bundle "$BUN"
 
-reset; store esbuild@0.28.2
+reset
+put apps/other/package.json '{"name":"@kinvara/other","devDependencies":{"esbuild":"0.28.2"}}'
+image_of_runtime; mkdir -p "$I/node_modules/.pnpm/esbuild@0.28.2"
+landed apps/other/package.json '"esbuild":"0.28.2"' && not_in "$I" pnpm-lock.yaml && not_in "$I" apps/other/package.json \
+  && ROOT="$I" run_case "D11 the K11 image tree judged with NO bundle (the pre-rework runtime invocation)" REFUSED \
+       'has no pnpm-lock.yaml and no --bundle was given' app1
+
+# D12: the two runs of one build judge ONE manifest set. The prod-deps-style run
+# (mkbundle) and the runtime-style run over $I must print the same digest, and a
+# different workspace must print a different one (so the digest is not constant).
+reset
 put apps/other/package.json '{"name":"@kinvara/other","devDependencies":{"esbuild":"0.28.2"}}'
 image_of_runtime
-landed apps/other/package.json '"esbuild":"0.28.2"' && not_in "$I" pnpm-lock.yaml && not_in "$I" apps/other/package.json \
-  && WS="$I" run_case "D11 the K11 image tree judged ALONE (the pre-rework runtime invocation)" REFUSED \
-       'has no pnpm-lock.yaml, so it is not a whole workspace' app1
+if mkbundle; then
+  first="$(set_of "$BUNDLE_OUT")"
+  ROOT="$I" run_case "D12a the runtime-style run over the image tree (control for D12)" OK 'manifest set sha256:' app1 "$GUARD" --bundle "$BUN"
+  second="$(set_of "$LAST_OUT")"; third="$(set_of "$d9_runtime")"
+  put apps/other/package.json '{"name":"@kinvara/other","devDependencies":{"esbuild":"0.28.3"}}'
+  landed apps/other/package.json '0.28.3' && mkbundle && fourth="$(set_of "$BUNDLE_OUT")"
+  ran=$((ran+1))
+  if [[ -n "$first" && "$first" == "$second" && "$first" == "$third" && -n "${fourth-}" && "$fourth" != "$first" ]]; then
+    printf '  ok   %-70s %s\n' "D12 prod-deps run == runtime run (and == D9's); a changed manifest changes it" "SAME SET"
+  else
+    printf '  BAD  %-70s first=%s second=%s d9=%s changed=%s\n' "D12 same manifest set in both runs" "$first" "$second" "$third" "${fourth-}"
+    bad=$((bad+1))
+  fi
+fi
 
 echo; echo "=== fail closed ==="
 reset
@@ -192,12 +234,11 @@ landed package.json '{"name":"kinvara","devDependencies":{"pg":"8.23.0"}}' \
 
 reset; rm -f "$W/pnpm-lock.yaml"
 not_in "$W" pnpm-lock.yaml \
-  && run_case "F5 the workspace tree has no pnpm-lock.yaml" REFUSED 'has no pnpm-lock.yaml, so it is not a whole workspace'
+  && run_case "F5 a tree with no pnpm-lock.yaml and no --bundle" REFUSED 'has no pnpm-lock.yaml and no --bundle was given'
 
 reset; rm -rf "$W/apps/other"
 not_in "$W" apps/other/package.json && landed pnpm-lock.yaml '  apps/other: {}' \
-  && run_case "F6 a lockfile importer (apps/other) whose package.json is not in the workspace tree" REFUSED \
-       'whose package.json is not under'
+  && run_case "F6 a lockfile importer (apps/other) whose package.json is not in the tree" REFUSED 'whose package.json is not in'
 
 reset; put pnpm-lock.yaml "lockfileVersion: '9.0'
 
@@ -210,15 +251,37 @@ landed pnpm-lock.yaml 'lockfileVersion' && ! grep -q '^importers:' "$W/pnpm-lock
 
 reset; image_of_runtime
 printf '%s\n' '{"name":"@kinvara/app1","dependencies":{"@kinvara/lib":"workspace:*","drizzle-orm":"0.45.2","pg":"8.23.0","zod":"4.5.4"},"devDependencies":{"vitest":"5.0.0"}}' > "$I/apps/app1/package.json"
-grep -qF '"zod":"4.5.4"' "$I/apps/app1/package.json" && ! grep -qF '"zod"' "$W/apps/app1/package.json" \
-  && run_case "F8 the image's apps/app1/package.json differs from the workspace's" REFUSED \
-       'differs from' app1 "$GUARD" "$I"
+mkbundle && grep -qF '"zod":"4.5.4"' "$I/apps/app1/package.json" && ! grep -qF '"zod"' "$W/apps/app1/package.json" \
+  && ROOT="$I" run_case "F8 the image's apps/app1/package.json differs from the bundle's" REFUSED \
+       "differs from the bundle's copy" app1 "$GUARD" --bundle "$BUN"
 
 reset; image_of_runtime
 mkdir -p "$I/packages/extra" && printf '%s\n' '{"name":"@kinvara/extra"}' > "$I/packages/extra/package.json"
-in_image packages/extra/package.json && not_in "$W" packages/extra/package.json \
-  && run_case "F9 a package.json in the image with no counterpart in the workspace" REFUSED \
-       'is in the image but not in the workspace' app1 "$GUARD" "$I"
+mkbundle && in_tree "$I" packages/extra/package.json && not_in "$W" packages/extra/package.json \
+  && ROOT="$I" run_case "F9 a package.json in the image that the bundle does not carry" REFUSED \
+       'is in the image but not in the bundle' app1 "$GUARD" --bundle "$BUN"
+
+reset; image_of_runtime
+not_in "$B" workspace-manifests.json \
+  && ROOT="$I" run_case "F10 --bundle names a file that does not exist" REFUSED 'cannot read the bundle' app1 "$GUARD" --bundle "$BUN"
+
+reset; image_of_runtime
+mkbundle && node -e 'const fs=require("fs");const f=process.argv[1];const b=JSON.parse(fs.readFileSync(f,"utf8"));delete b.manifests["apps/other/package.json"];fs.writeFileSync(f,JSON.stringify(b))' "$BUN" \
+  && ! grep -qF '"apps/other/package.json"' "$BUN" && grep -qF '"apps/other"' "$BUN" \
+  && ROOT="$I" run_case "F11 a bundle missing an importer's manifest (apps/other)" REFUSED 'whose package.json is not in' app1 "$GUARD" --bundle "$BUN"
+
+reset; image_of_runtime
+mkbundle && node -e 'const fs=require("fs");const f=process.argv[1];const b=JSON.parse(fs.readFileSync(f,"utf8"));b.kind="something-else";fs.writeFileSync(f,JSON.stringify(b))' "$BUN" \
+  && grep -qF '"something-else"' "$BUN" \
+  && ROOT="$I" run_case "F12 a file that is not a bundle of this kind" REFUSED 'is not a kinvara-workspace-manifests/v1 bundle' app1 "$GUARD" --bundle "$BUN"
+
+reset
+mkbundle && in_tree "$W" pnpm-lock.yaml \
+  && run_case "F13 a whole workspace (lockfile present) AND --bundle" REFUSED 'not both' app1 "$GUARD" --bundle "$BUN"
+
+reset; image_of_runtime
+not_in "$I" pnpm-lock.yaml \
+  && ROOT="$I" run_case "F14 --bundle-out from a tree with no lockfile" REFUSED '--bundle-out needs a whole workspace' app1 "$GUARD" --bundle-out "$B/out.json"
 
 echo; echo "=== the harness can tell a crash from a refusal ==="
 reset

@@ -179,8 +179,12 @@ RUN --mount=type=cache,id=kinvara-pnpm-store,target=/pnpm/store,sharing=locked \
 #
 # What it catches: the regression above, immediately — reinstating `FROM deps`
 # puts turbo and typescript back and this fails.
+#
+# --bundle-out writes every manifest it judged (exact bytes) and the lockfile's
+# importer list to /tmp, OUTSIDE /srv/kinvara, for the runtime run (T-154
+# rework 1, OD-122). Nothing copies /tmp of this stage except that one file.
 COPY docker/app-runtime/assert-no-dev-deps.mjs /tmp/assert-no-dev-deps.mjs
-RUN node /tmp/assert-no-dev-deps.mjs /srv/kinvara "${APP}" && rm /tmp/assert-no-dev-deps.mjs
+RUN node /tmp/assert-no-dev-deps.mjs /srv/kinvara "${APP}" --bundle-out /tmp/kinvara-workspace-manifests.json && rm /tmp/assert-no-dev-deps.mjs
 
 # -----------------------------------------------------------------------------
 # runtime — what actually ships. No pnpm, no corepack, no devDependencies, no
@@ -235,6 +239,11 @@ COPY --from=build --chown=10001:10001 /srv/kinvara/apps/${APP} ./apps/${APP}
 COPY --from=build --chown=10001:10001 /srv/kinvara/db/schema.ts ./db/schema.ts
 RUN ln -s "../apps/${APP}/node_modules" /srv/kinvara/db/node_modules
 COPY --chown=10001:10001 docker/app-runtime/ ./app-runtime/
+# The manifests the prod-deps run judged (T-154 rework 1, OD-122; see below).
+# AFTER the app-runtime COPY, so a file of this name committed under
+# docker/app-runtime/ is overwritten by the one this build wrote. Not --chown:
+# root-owned, mode 0644, data only.
+COPY --from=prod-deps /tmp/kinvara-workspace-manifests.json ./app-runtime/workspace-manifests.json
 
 # THE GUARD, RUN AGAIN — HERE, AFTER THE LAST COPY, IN THE STAGE THAT SHIPS.
 #
@@ -254,14 +263,13 @@ COPY --chown=10001:10001 docker/app-runtime/ ./app-runtime/
 # WHERE THE NAMES COME FROM (T-154 rework 1, decisions.md OD-122). This stage
 # holds only apps/${APP}'s manifest, so the names another app declares as
 # devDependencies are not in it; QA planted `esbuild` (dev only in apps/worker)
-# here and this run passed. So the guard reads every manifest and the lockfile
-# from prod-deps' tree, BIND-MOUNTED for this one RUN, and inspects the
-# node_modules of /srv/kinvara. A bind mount is not a layer: it adds nothing to
-# the image. The guard refuses a workspace tree without pnpm-lock.yaml or
-# missing any importer's manifest, and refuses if any package.json in the image
-# differs from the one it judged. Both runs print the manifest set's sha256.
-RUN --mount=type=bind,from=prod-deps,source=/srv/kinvara,target=/run/kinvara-workspace \
-    node /srv/kinvara/app-runtime/assert-no-dev-deps.mjs /run/kinvara-workspace "${APP}" /srv/kinvara
+# here and this run passed. So this run judges the bundle the prod-deps run
+# wrote (every workspace manifest's exact bytes, and the lockfile's importers)
+# and inspects /srv/kinvara/node_modules. It refuses without the bundle (there
+# is no lockfile in this stage), a bundle missing any importer's manifest, and
+# any package.json in this image that is not in the bundle byte for byte. Both
+# runs print the same manifest-set sha256.
+RUN node /srv/kinvara/app-runtime/assert-no-dev-deps.mjs /srv/kinvara "${APP}" --bundle /srv/kinvara/app-runtime/workspace-manifests.json
 
 USER 10001:10001
 
