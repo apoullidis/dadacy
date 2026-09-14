@@ -1,5 +1,5 @@
 /**
- * The identity module's Postgres access.
+ * The identity module's Postgres access: Drizzle over `pg` (SD §DB-1 line 1755, §SEC-I2 line 3893).
  *
  * ONE POOL PER PROCESS, CREATED ON FIRST USE. `tools/build.ts` and T-135's fault server load
  * `AppModule` with no database, and they connect to nothing.
@@ -10,14 +10,20 @@
  * `app_rw`'s grants is refused inside the transaction. Held by `test/identity.inprocess.test.ts` ›
  * *withAppRw runs as app_rw …*.
  *
- * A superuser session can `RESET ROLE`. So this guards this module's own SQL against exceeding the
- * grants; it is not a boundary around `core`.
+ * A superuser session can `RESET ROLE`. So this guards this module's own queries against exceeding
+ * the grants; it is not a boundary around `core`.
+ *
+ * The three session statements (`BEGIN`, `SET LOCAL ROLE app_rw`, `COMMIT`/`ROLLBACK`) are constant
+ * strings with no parameters, sent on the pooled connection. Every read and write of a table goes
+ * through the Drizzle handle `work` receives.
  */
 import pg from 'pg';
 import type { Pool, PoolClient } from 'pg';
+import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { errorClass } from '../problem-json/error-class.ts';
 
-export type Tx = PoolClient;
+/** A Drizzle handle bound to ONE pooled connection, inside an `app_rw` transaction. */
+export type Tx = NodePgDatabase;
 
 export type LogLine = (line: string) => void;
 
@@ -59,12 +65,12 @@ export class Database {
 
   /** One transaction as `app_rw`: BEGIN, SET LOCAL ROLE app_rw, `work`, COMMIT (or ROLLBACK). */
   async withAppRw<T>(work: (tx: Tx) => Promise<T>): Promise<T> {
-    const client = await this.#pool_().connect();
+    const client: PoolClient = await this.#pool_().connect();
     let broken = false;
     try {
       await client.query('BEGIN');
       await client.query('SET LOCAL ROLE app_rw');
-      const result = await work(client);
+      const result = await work(drizzle({ client }));
       await client.query('COMMIT');
       return result;
     } catch (thrown) {

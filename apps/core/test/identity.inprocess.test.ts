@@ -25,9 +25,11 @@ import {
   UpstreamCallFailedError,
   type CircuitBreaker,
 } from '@kinvara/integration-kit';
+import { sql } from 'drizzle-orm';
 import pg from 'pg';
 import { findAccountIdByEmail, insertSession } from '../src/identity/account.repository.ts';
 import { Database } from '../src/identity/database.ts';
+import { EmailInUseError } from '../src/identity/errors.ts';
 import { HibpChecker } from '../src/identity/hibp.ts';
 import { newSessionId } from '../src/identity/ids.ts';
 import {
@@ -268,18 +270,47 @@ test('findAccountIdByEmail finds an address differing only in case, because the 
   );
 });
 
+/** The SQLSTATE of a pg error, directly or as the `cause` Drizzle wraps it in. */
+function sqlState(thrown: unknown): unknown {
+  let current: unknown = thrown;
+  for (let depth = 0; depth < 3; depth++) {
+    if (typeof current !== 'object' || current === null) return undefined;
+    if ('code' in current && typeof current.code === 'string') return current.code;
+    current = 'cause' in current ? current.cause : undefined;
+  }
+  return undefined;
+}
+
 test('withAppRw runs as app_rw: current_user reads app_rw, and a DELETE on account inside it is refused 42501', async () => {
-  const who = await db.withAppRw(
-    async (tx) => (await tx.query<{ u: string }>('SELECT current_user AS u')).rows[0]?.u,
-  );
+  const who = await db.withAppRw(async (tx) => {
+    const result = await tx.execute<{ u: string }>(sql`SELECT current_user AS u`);
+    return result.rows[0]?.u;
+  });
   assert.equal(who, 'app_rw');
   await assert.rejects(
-    db.withAppRw((tx) => tx.query('DELETE FROM public.account WHERE false')),
-    (e: unknown) => typeof e === 'object' && e !== null && 'code' in e && e.code === '42501',
+    db.withAppRw((tx) => tx.execute(sql`DELETE FROM public.account WHERE false`)),
+    (e: unknown) => sqlState(e) === '42501',
   );
   // Control: the login this module is given is not app_rw on its own (decisions.md OD-116).
   const plain = await superuser().query<{ u: string }>('SELECT current_user AS u');
   assert.notEqual(plain.rows[0]?.u, 'app_rw');
+});
+
+test('registering an address already in use throws EmailInUseError, for the same spelling and for a case variant, and one account holds it', async () => {
+  const email = `T141-InProcess-InUse-${randomBytes(6).toString('hex')}@Example.CY`;
+  const { log } = capture();
+  const service = new RegisterService(db, realChecker(), log);
+  await service.register(input(email, T139_CLEAN_01));
+  for (const again of [email, email.toLowerCase()]) {
+    await assert.rejects(service.register(input(again, T139_CLEAN_01)), (e: unknown) => {
+      return e instanceof EmailInUseError && e.code === 'email_in_use' && e.status === 409;
+    });
+  }
+  const { rows } = await superuser().query<{ n: number }>(
+    'SELECT count(*)::int AS n FROM public.account WHERE email_ci = $1::citext',
+    [email],
+  );
+  assert.equal(rows[0]?.n, 1);
 });
 
 test('a token_hash that is not a 32-byte SHA-256 digest is refused in code and never reaches app_session', async () => {
@@ -312,6 +343,26 @@ test('a token_hash that is not a 32-byte SHA-256 digest is refused in code and n
   const { rows } = await superuser().query<{ n: number }>(
     'SELECT count(*)::int AS n FROM public.app_session WHERE id = $1',
     [id],
+  );
+  assert.equal(rows[0]?.n, 0);
+});
+
+test('the seeded breached password is refused with a 422 password_breached error, logs nothing and writes no account', async () => {
+  const email = uniqueEmail('breached');
+  const { lines, log } = capture();
+  await assert.rejects(
+    new RegisterService(db, realChecker(), log).register(input(email, T139_BREACHED_01)),
+    (e: unknown) =>
+      e instanceof Error &&
+      'code' in e &&
+      e.code === 'password_breached' &&
+      'status' in e &&
+      e.status === 422,
+  );
+  assert.deepEqual(lines, []);
+  const { rows } = await superuser().query<{ n: number }>(
+    'SELECT count(*)::int AS n FROM public.account WHERE email_ci = $1::citext',
+    [email],
   );
   assert.equal(rows[0]?.n, 0);
 });
