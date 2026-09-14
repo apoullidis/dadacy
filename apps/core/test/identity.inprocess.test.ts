@@ -55,8 +55,8 @@ function env(name: string): string {
 }
 
 const db = new Database(process.env['DATABASE_URL']);
-let superuserPool: pg.Pool | undefined;
-function superuser(): pg.Pool {
+let superuserPool: InstanceType<typeof pg.Pool> | undefined;
+function superuser(): InstanceType<typeof pg.Pool> {
   superuserPool ??= new pg.Pool({ connectionString: env('DATABASE_URL'), max: 2 });
   return superuserPool;
 }

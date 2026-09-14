@@ -40,6 +40,32 @@ Two repository constraints shape the choice, and each was measured on this branc
 
 ## Consequences
 
-- **The native binding in the shipped image is not yet shown.** Alpine selects the musl binary, and T-141 requires one argon2id execution inside the built `core` image. On `main` `59a7952` that image cannot be built with any database dependency (`decisions.md` OD-117), so that check waits on OD-117's fix. Until it passes, this ADR stays **proposed**.
+- **The native binding in the shipped image is not yet shown.** Alpine selects the musl binary, and T-141 requires one argon2id execution inside the built `core` image. On `main` `59a7952` that image could not be built with any database dependency (`decisions.md` OD-117, closed by `T-154` at `8784aa5`). This ADR stays **proposed** until that execution runs on the resumed branch.
 - A bump of `@node-rs/argon2` is a dependency change under OD-51's release-age rule, with the in-image execution re-run.
 - The login ticket (`T-026`) verifies with the same library, and must keep the absent-account dummy verify at these same parameters (OE-22 G4/G5).
+
+## OD-121: `apps/core` declares no `@types/pg`
+
+**Context (measured).** `T-154` made the image guard judge each app's runtime closure, so `apps/core` can declare `pg` and `drizzle-orm` as runtime dependencies. The branch as first written also declared `@types/pg` 8.23.1 under `apps/core` devDependencies. Rebased onto `8784aa5`, its `--verify --build` exits 1 at `[core prod-deps 7/7]` (`state/EP-2/T-141.md` § Resumption, R0):
+
+- The guard exempts `drizzle-orm` and `pg`.
+- It then refuses `@types/pg (virtual store: @types+pg@8.23.1; declared in apps/core/package.json)` and `@types/node (… declared in package.json)`.
+
+The lockfile snapshot is `drizzle-orm@0.45.2(@types/pg@8.23.1)(pg@8.23.0)`: pnpm resolves the declared type package as `drizzle-orm`'s optional peer and links it, with its own dependency `@types/node`, into the production install.
+
+**Routes, and why one was taken.**
+
+| Route                                                                                       | What is known                                                                                                                                                                                                                                                                  | Verdict                                                                                                                                                                   |
+| ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@types/pg` at the root instead                                                             | `T-154` § Published contract §3 (block E1): the peer still resolves from the workspace root, and the guard refuses `@types/pg` and `@types/node`                                                                                                                               | Rejected, measured by `T-154`                                                                                                                                             |
+| `@types/pg` **and** `@types/node` under `apps/core` `dependencies`                          | `decisions.md` OD-123 (QA A2m/A2m2): refused with `@types/pg` alone; builds with both, and the image then carries both declaration-only packages                                                                                                                               | Rejected. `T-154` § contract §3 says _"Do not declare a devtool under `dependencies`"_, and this route ships type packages in the runtime image to satisfy a type-checker |
+| A pnpm peer setting, or a guard exemption for `@types/*`                                    | Needs `pnpm-workspace.yaml`, the guard or `gate:app-images`, each `platform-infrastructure`'s                                                                                                                                                                                  | Not taken, and not needed                                                                                                                                                 |
+| **No `@types/pg` anywhere. `apps/core/src/pg.d.ts` declares the members `apps/core` calls** | The lockfile, re-resolved from `main`'s with `scripts/dev pnpm install --no-frozen-lockfile`, holds `drizzle-orm@0.45.2(pg@8.23.0)` and no `@types/pg` entry. `pnpm-workspace.yaml` is unchanged. `pnpm -w typecheck` exits 0. The build's guard output is in § Resumption R1a | **Adopted**                                                                                                                                                               |
+
+**What the adopted route costs, stated.**
+
+- `pg.d.ts` is hand-written. It describes only the members `src/identity/database.ts` and the tests call: `Pool` with its constructor, `connect`, `query`, `on('error')` and `end`; `PoolClient` with `query` and `release`; and `QueryResult.rows`.
+- It is checked by those members running in the in-process and container suites, not by `tsc`. `skipLibCheck` skips declaration files, so a wrongly declared member compiles, and fails at run time.
+- `drizzle-orm/node-postgres`'s declarations now import their `pg` types from this file. Where they name a member it lacks, their types degrade silently.
+- A later ticket that calls more of `pg` extends the file and runs what it adds.
+- The alternative, restoring `@types/pg`, needs one of the rejected routes above.

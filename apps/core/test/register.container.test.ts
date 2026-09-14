@@ -75,8 +75,8 @@ function registerPath(): string {
   throw new TypeError('the committed document declares no POST registerAccount');
 }
 
-let pool: pg.Pool | undefined;
-function database(): pg.Pool {
+let pool: InstanceType<typeof pg.Pool> | undefined;
+function database(): InstanceType<typeof pg.Pool> {
   pool ??= new pg.Pool({ connectionString: env('DATABASE_URL'), max: 2 });
   return pool;
 }

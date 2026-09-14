@@ -25,7 +25,7 @@ importers:
         version: 0.31.10
       drizzle-orm:
         specifier: 0.45.2
-        version: 0.45.2(@types/pg@8.23.1)(pg@8.23.0)
+        version: 0.45.2(pg@8.23.0)
       eslint:
         specifier: 10.9.1
         version: 10.9.1(supports-color@7.2.0)
@@ -81,7 +81,7 @@ importers:
         version: 2.2.1
       drizzle-orm:
         specifier: 0.45.2
-        version: 0.45.2(@types/pg@8.23.1)(pg@8.23.0)
+        version: 0.45.2(pg@8.23.0)
       pg:
         specifier: 8.23.0
         version: 8.23.0
@@ -92,9 +92,6 @@ importers:
         specifier: 7.8.2
         version: 7.8.2
     devDependencies:
-      '@types/pg':
-        specifier: 8.23.1
-        version: 8.23.1
       typescript:
         specifier: 6.0.3
         version: 6.0.3
@@ -1112,9 +1109,6 @@ packages:
 
   '@types/node@26.4.1':
     resolution: {integrity: sha512-k97ENvZWtvA6yqz5/FS6a7duDgOPEeOQOc2iKS/nY6mX6qJUKtLnWzQS+Xj6tXweyj6ZcTAK2Qecetnvi9nCLA==}
-
-  '@types/pg@8.23.1':
-    resolution: {integrity: sha512-fKVHpikPdg4GKks3JuLEhvwSyvwzF23hnabPy6DD8ljVbC7+6J5dQzdv4arV6jqq57djnMgs1HKBxX4P8aBI3A==}
 
   '@typescript-eslint/eslint-plugin@8.69.0':
     resolution: {integrity: sha512-t5jQTKPIgVW1PE6dR6H6Qz5gm8zjMlX5/2gRaOGd9eO6V7J+tQc6iWKukEe7dY8u9HyYasQ0yfF0/FSSTEO2gA==}
@@ -2847,12 +2841,6 @@ snapshots:
     dependencies:
       undici-types: 8.3.0
 
-  '@types/pg@8.23.1':
-    dependencies:
-      '@types/node': 26.4.1
-      pg-protocol: 1.16.0
-      pg-types: 2.2.0
-
   '@typescript-eslint/eslint-plugin@8.69.0(@typescript-eslint/parser@8.69.0(eslint@10.9.1(supports-color@7.2.0))(supports-color@7.2.0)(typescript@6.0.3))(eslint@10.9.1(supports-color@7.2.0))(supports-color@7.2.0)(typescript@6.0.3)':
     dependencies:
       '@eslint-community/regexpp': 4.12.2
@@ -3101,9 +3089,8 @@ snapshots:
       esbuild: 0.25.12
       tsx: 4.23.13
 
-  drizzle-orm@0.45.2(@types/pg@8.23.1)(pg@8.23.0):
+  drizzle-orm@0.45.2(pg@8.23.0):
     optionalDependencies:
-      '@types/pg': 8.23.1
       pg: 8.23.0
 
   enhanced-resolve@5.24.5:
