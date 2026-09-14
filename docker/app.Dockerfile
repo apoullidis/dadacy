@@ -55,6 +55,22 @@
 # SIGKILL the app mid-request. That is exactly the class of failure DOCKER.md
 # §5 exists to catch, so it is not left to chance — the entrypoint installs the
 # handlers and `gate:app-images` asserts the exec form.
+#
+# =============================================================================
+# db/schema.ts (T-154, decisions.md OD-118)
+# =============================================================================
+# Every repository imports its tables from `db/schema.ts` (T-150 § contract §5),
+# by a relative path that must mean the same file in the toolbox and in the
+# image. So the file sits at /srv/kinvara/db/schema.ts in the `build` stage and
+# in `runtime`. It is COPIED, not built into the app: `core` has no emit step.
+# Only schema.ts is copied — never db/migrations or db/seed.
+#
+# Its own imports (`drizzle-orm`, `drizzle-orm/pg-core`) resolve through
+# /srv/kinvara/db/node_modules, which in `runtime` is a symlink to
+# apps/${APP}/node_modules. So the schema loads the SAME drizzle-orm instance
+# the app loads, and only if the app declares drizzle-orm itself. An app that
+# does not declare it gets ERR_MODULE_NOT_FOUND for drizzle-orm when it imports
+# the schema, which is the correct failure.
 
 ARG NODE_VERSION
 
@@ -99,6 +115,11 @@ RUN --mount=type=cache,id=kinvara-pnpm-store,target=/pnpm/store,sharing=locked \
 FROM deps AS build
 ARG APP
 RUN test -n "${APP}" || { echo "app.Dockerfile: --build-arg APP is required" >&2; exit 1; }
+# The generated schema, before the build runs, so a build that loads the
+# module graph can load it (T-154). Here it resolves drizzle-orm from this
+# stage's full install. Copied here and not in `deps`, so a schema change does
+# not invalidate the install layer.
+COPY db/schema.ts db/schema.ts
 RUN node -e "const p=require('./apps/${APP}/package.json'); process.exit(p.scripts&&p.scripts.build?0:1)" \
       && pnpm --filter "@kinvara/${APP}" build \
       || echo "app.Dockerfile: apps/${APP} declares no build script — nothing to build"
@@ -129,9 +150,7 @@ RUN find /srv/kinvara -name node_modules -type d -prune -exec rm -rf {} +
 # fix rather than a bigger prune command: the property is now "this stage never
 # saw a devDependency", not "this stage removed the ones it saw".
 #
-# The install is still cheap — it shares the pnpm store cache mount with `deps`
-# and, with no production dependency anywhere in the workspace today, resolves
-# to almost nothing.
+# The install is still cheap — it shares the pnpm store cache mount with `deps`.
 # -----------------------------------------------------------------------------
 FROM base AS prod-deps
 ARG APP
@@ -150,18 +169,16 @@ RUN --mount=type=cache,id=kinvara-pnpm-store,target=/pnpm/store,sharing=locked \
 # fails `svc up --verify --build` instead of producing a working image nobody
 # looks inside.
 #
-# It is DERIVED: every package.json in the workspace is read and every name in
-# its `devDependencies` must be absent from node_modules, both as a top-level
-# entry and as a virtual-store directory. There is no list here to keep in step
-# with package.json.
+# It is DERIVED from every package.json in the workspace and judged against
+# ONE app's runtime closure (T-154, OD-117): a devDependency name must be
+# absent from node_modules unless no manifest in @kinvara/${APP}'s closure
+# calls it dev AND a manifest in that closure declares it as a runtime
+# dependency. The rule, and what it does not catch, is in the script's header.
 #
 # What it catches: the regression above, immediately — reinstating `FROM deps`
-# puts turbo and typescript back and this fails. What it does NOT catch: a
-# package that is ONLY a transitive dependency of a devDependency and is named
-# in no package.json. Naming the direct ones is what makes their trees absent,
-# so in practice the two travel together, but the claim is the narrow one.
+# puts turbo and typescript back and this fails.
 COPY docker/app-runtime/assert-no-dev-deps.mjs /tmp/assert-no-dev-deps.mjs
-RUN node /tmp/assert-no-dev-deps.mjs /srv/kinvara && rm /tmp/assert-no-dev-deps.mjs
+RUN node /tmp/assert-no-dev-deps.mjs /srv/kinvara "${APP}" && rm /tmp/assert-no-dev-deps.mjs
 
 # -----------------------------------------------------------------------------
 # runtime — what actually ships. No pnpm, no corepack, no devDependencies, no
@@ -202,12 +219,19 @@ ENV NODE_ENV=production \
 #
 # Only ${APP}'s own directory is copied. The other four apps' source is not in
 # this image.
+#
+# db/schema.ts THIRD (T-154, see the header): the one file, and a
+# db/node_modules symlink into ${APP}'s own node_modules so the schema resolves
+# its packages through the app's declared closure. The symlink adds no package;
+# the guard below reads the virtual store it points into.
 COPY --from=prod-deps --chown=10001:10001 /srv/kinvara/node_modules ./node_modules
 COPY --from=prod-deps --chown=10001:10001 /srv/kinvara/package.json ./package.json
 COPY --from=prod-deps --chown=10001:10001 /srv/kinvara/packages ./packages
 COPY --from=prod-deps --chown=10001:10001 /srv/kinvara/apps/${APP} ./apps/${APP}
 COPY --from=build --chown=10001:10001 /srv/kinvara/packages ./packages
 COPY --from=build --chown=10001:10001 /srv/kinvara/apps/${APP} ./apps/${APP}
+COPY --from=build --chown=10001:10001 /srv/kinvara/db/schema.ts ./db/schema.ts
+RUN ln -s "../apps/${APP}/node_modules" /srv/kinvara/db/node_modules
 COPY --chown=10001:10001 docker/app-runtime/ ./app-runtime/
 
 # THE GUARD, RUN AGAIN — HERE, AFTER THE LAST COPY, IN THE STAGE THAT SHIPS.
@@ -223,7 +247,7 @@ COPY --chown=10001:10001 docker/app-runtime/ ./app-runtime/
 # below it would escape it, and `gate:app-images` fails a Dockerfile whose
 # target stage has a COPY after this line — the static check and this runtime
 # check guard each other's blind spot rather than sharing one.
-RUN node /srv/kinvara/app-runtime/assert-no-dev-deps.mjs /srv/kinvara
+RUN node /srv/kinvara/app-runtime/assert-no-dev-deps.mjs /srv/kinvara "${APP}"
 
 USER 10001:10001
 
