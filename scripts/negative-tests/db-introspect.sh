@@ -3,6 +3,14 @@
 # T-150 — K11–K17: the closed column-type map (I-MAP), pruning under the root tsconfig (I-TSC),
 # an unpruned file refused, and write-mode idempotence.
 #
+# PRECONDITION, declared (OD-106): every check and every regeneration below runs after `ANALYZE`.
+# drizzle-kit 0.31.10's pull output follows planner statistics: on a fresh project it renders one
+# ordering, and after `ANALYZE` another, each stable across projects (T-150 evidence, E-ORD3). The
+# committed db/schema.ts is the after-ANALYZE rendering. Without this precondition the controls
+# depend on autovacuum timing. It is a property of the harness, not of the check: the check itself
+# does not ANALYZE, and OD-106 stays open until it is fixed in the generator. K17 re-checks at the
+# end, after every plant and drop, so the precondition is attacked rather than assumed.
+#
 #   cd /home/alex/projects/nanny/app && ./scripts/svc run <ticket> -- bash scripts/negative-tests/db-introspect.sh
 #
 # Needs the ticket's `db` project and a clean, committed tree. The check itself migrates the
@@ -50,6 +58,17 @@ owned_in_public() {
 abort() {
   echo "ABORT: $1"
   exit 2
+}
+
+analyze() {
+  psql -X -q -v ON_ERROR_STOP=1 -c ANALYZE >/dev/null || abort "ANALYZE failed"
+}
+
+# write_schema: regenerate, ANALYZE the catalogue that now includes any planted migration, regenerate.
+write_schema() {
+  node scripts/db-introspect.ts --write >"$OUT.w" 2>&1 || { cat "$OUT.w"; abort "regeneration failed"; }
+  analyze
+  node scripts/db-introspect.ts --write >"$OUT.w" 2>&1 || { cat "$OUT.w"; abort "regeneration failed"; }
 }
 
 restore() {
@@ -136,6 +155,7 @@ judge() {
 
 check() {
   local id=$1 desc=$2 expect=$3 require=${4:-}
+  analyze
   node scripts/db-introspect.ts --check >"$OUT" 2>&1
   judge "$id" "$desc" "$expect" "$?" "$require"
   restore
@@ -157,7 +177,7 @@ echo "== (ii) a migration adding a table, with and without regeneration"
 plant_table
 check K03 "(ii) a migration adding a table, db/schema.ts not regenerated" I-DIFF "MIGRATE OK  up: $HIGHEST -> $NEXT"
 plant_table
-node scripts/db-introspect.ts --write >"$OUT.w" 2>&1 || { cat "$OUT.w"; abort "regeneration failed"; }
+write_schema
 grep -q 'pgTable("t138_plant"' "$SCHEMA" || abort "regeneration did not add t138_plant to $SCHEMA"
 check K04 "CONTROL (ii): the same migration with db/schema.ts regenerated" PASS 'byte-identical to a fresh introspection'
 
@@ -222,13 +242,20 @@ mutate "$RENDER" "for (const fixId of FIX_IDS) {" "for (const fixId of FIX_IDS.s
 check K14 "(T-150) pruning deleted (no fix applied): the rendering tsc would refuse is refused" I-TSC "TS6133 [0-9]+:[0-9]+ 'table' is declared but its value is never read"
 mutate "$SCHEMA" "}, () => [" "}, (table) => ["
 rehash
-check K15 "(T-150) the committed file unpruned (the parameter put back) with its digest recomputed: parity refuses it" I-DIFF "committed .*\\(table\\) => \\[.*, introspected .*\\(\\) => \\["
+# The plant is exactly the unpruned parameter plus the recomputed digest: two lines, nothing else.
+# (I-DIFF names line 3, the digest, as the first difference whatever else differs, so the message
+# cannot show the parameter; K00 green on this same database is what attributes the I-DIFF here.)
+[ "$(git diff --numstat -- "$SCHEMA" | cut -f1,2)" = "$(printf '2\t2')" ] || abort "the unpruned plant is not exactly two changed lines"
+git diff -U0 -- "$SCHEMA" | grep -q '^+}, (table) => \[$' || abort "the unpruned parameter did not land"
+check K15 "(T-150) the committed file unpruned (the parameter put back) with its digest recomputed: parity refuses it" I-DIFF
 
 echo "== T-150: idempotence"
 total=$((total + 1))
+analyze
 node scripts/db-introspect.ts --write >"$OUT" 2>&1
 e1=$?
 cp "$SCHEMA" "$OUT.s1"
+analyze
 node scripts/db-introspect.ts --write >"$OUT.2" 2>&1
 e2=$?
 cmp -s "$SCHEMA" "$OUT.s1"
@@ -240,6 +267,9 @@ if [ "$e1" -eq 0 ] && [ "$e2" -eq 0 ] && [ "$c" -eq 0 ] && [ "$g" -eq 0 ] && [ "
 printf '%-4s %s  %s\n       write 1 exit %s; write 2 exit %s; cmp(write 1, write 2) exit %s; git diff --quiet vs committed exit %s\n' "$v" K16 "(T-150) --write twice: both exit 0, byte-identical to each other and to the committed file" "$e1" "$e2" "$c" "$g"
 grep -E 'mapped column|pruned with|wrote|^GATE ' "$OUT" "$OUT.2" | sed 's/^/       /'
 restore
+
+echo "== control, again, after every plant and drop above"
+check K17 "CONTROL: the committed tree after the whole suite's plant/drop history (attacks the ANALYZE precondition)" PASS 'byte-identical to a fresh introspection'
 
 echo
 if [ "$bad" -eq 0 ]; then
