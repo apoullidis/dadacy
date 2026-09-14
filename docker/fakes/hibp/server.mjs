@@ -25,6 +25,12 @@
  *     CRLF separators with no trailing CRLF, uppercase suffixes, and the 400 /
  *     405 bodies, which the documentation does not state).
  *
+ * NOT THIS FILE'S ANSWERS: a request Node's HTTP parser rejects never reaches
+ * the handler below, so its answer is Node's — a bare 400 (malformed request
+ * line, raw non-ASCII bytes), 431 (oversized headers), 408 (unfinished
+ * request), a closed socket (CONNECT). They are listed, with the capture that
+ * measured them, in state/EP-1/T-139.md § Rework 1 › Published contract §4.
+ *
  * NOT IMPLEMENTED, and refused with 501 rather than silently ignored: NTLM
  * mode (`?mode=ntlm`) and response padding (`Add-Padding: true`). The real API
  * supports both. Ignoring them would hand a consumer a SHA-1, unpadded body it
@@ -104,9 +110,10 @@ const server = http.createServer((req, res) => {
   }
 
   // Exactly `/range/` followed by five characters, nothing after them — not a
-  // trailing slash, not a sixth character, not a full 40-character hash. The
-  // real API answers every other path with the same 400 (measured: `/range/`,
-  // `/range/21BD1/`, `/range/%2021BD`, `/nope`).
+  // trailing slash, not a sixth character, not a full 40-character hash. On the
+  // real API, T-139's host capture measured this 400 for `/range/`, `/range/21BD1/`,
+  // `/range/21BD`, `/range/21BD12` and a full 40-character hash (state/EP-1/T-139.md,
+  // capture §2). Other paths were not measured there, so this rule is the fake's own.
   const m = /^\/range\/([^/]*)$/.exec(path);
   if (!m || m[1].length !== 5) {
     send(res, 400, ERR_TYPE, MSG_FORMAT);
