@@ -40,7 +40,7 @@ import {
 import { assertPermitted, assertRefused, INT10_RAISE } from '../src/expect.ts';
 
 const SUITE = 'migrations-applied';
-const HIGHEST_COMMITTED = '0004';
+const HIGHEST_COMMITTED = '0005';
 const COMMITTED_DIR = path.join(REPO_ROOT, MIGRATIONS_DIR);
 const RECORD_SQL = `SELECT coalesce(shobj_description(oid, 'pg_database'), '(no comment)')
                       FROM pg_database WHERE datname = current_database()`;
@@ -100,6 +100,43 @@ const CREATED_BY: Readonly<
         // when the table is absent, so the reading still returns a value after the down step.
         title: 'table public.locale_registry exists',
         sql: `SELECT (to_regclass('public.locale_registry') IS NOT NULL)::text`,
+        holds: 'true',
+      },
+    ],
+  },
+  '0005': {
+    source: 'T-140',
+    // Each probe names one object 0005 creates, and each reading returns a value (not an
+    // error) once that object is gone: to_regclass and to_regtype return NULL for a missing name.
+    probes: [
+      {
+        title: 'table public.account exists',
+        sql: `SELECT (to_regclass('public.account') IS NOT NULL)::text`,
+        holds: 'true',
+      },
+      {
+        title: 'table public.account_role exists',
+        sql: `SELECT (to_regclass('public.account_role') IS NOT NULL)::text`,
+        holds: 'true',
+      },
+      {
+        title: 'partial unique index public.sod_finance_ts exists',
+        sql: `SELECT (to_regclass('public.sod_finance_ts') IS NOT NULL)::text`,
+        holds: 'true',
+      },
+      {
+        title: 'table public.app_session exists',
+        sql: `SELECT (to_regclass('public.app_session') IS NOT NULL)::text`,
+        holds: 'true',
+      },
+      {
+        title: 'enum type public.account_status exists',
+        sql: `SELECT (to_regtype('public.account_status') IS NOT NULL)::text`,
+        holds: 'true',
+      },
+      {
+        title: 'extension citext is installed',
+        sql: `SELECT (EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'citext'))::text`,
         holds: 'true',
       },
     ],
