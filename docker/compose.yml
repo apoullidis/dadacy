@@ -394,6 +394,10 @@ services:
       NODE_ENV: ${NODE_ENV:-development}
       DATABASE_URL: ${DATABASE_URL:-postgres://app:app_local_dev_only@postgres:5432/kinvara}
       VALKEY_URL: ${VALKEY_URL:-redis://valkey:6379}
+      # T-139: the HIBP range-API stand-in (profile `hibp`). Declared here
+      # because T-141's register route runs in this container and may not
+      # edit this file (T-017 § contract 8).
+      HIBP_API_BASE: ${HIBP_API_BASE:-http://hibp-fake:4100}
     mem_limit: 768m
     cpus: 1.0
     stop_grace_period: 30s # SIGTERM must drain in-flight requests (T-018)
