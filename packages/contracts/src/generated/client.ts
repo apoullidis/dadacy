@@ -18,7 +18,7 @@ export interface Problem {
   readonly type: string;
   readonly title: string;
   readonly status: number;
-  readonly code: "invalid_input" | "unauthenticated" | "policy_denied" | "not_found" | "state_transition_invalid" | "idempotency_key_reuse" | "slot_taken" | "email_in_use" | "precondition_failed" | "rate_below_floor" | "outside_staffed_hours" | "password_breached" | "sitter_review_hold" | "rate_limited" | "upstream_unavailable" | "internal_error";
+  readonly code: "invalid_input" | "unauthenticated" | "invalid_credentials" | "policy_denied" | "not_found" | "state_transition_invalid" | "idempotency_key_reuse" | "slot_taken" | "email_in_use" | "precondition_failed" | "rate_below_floor" | "outside_staffed_hours" | "password_breached" | "sitter_review_hold" | "rate_limited" | "upstream_unavailable" | "internal_error";
   readonly field?: string;
   readonly retryable: boolean;
   readonly [extension: string]: unknown;
@@ -39,6 +39,19 @@ export interface RegisterRequest {
 
 export interface RegisterResponse {
   readonly accountId: string;
+}
+
+export interface LoginRequest {
+  readonly email: string;
+  readonly password: string;
+}
+
+export interface LoginResponse {
+  readonly account: {
+    readonly id: string;
+  };
+  readonly roles: readonly ("parent" | "sitter" | "support" | "ts_operator" | "ts_senior" | "dsl" | "deputy_dsl" | "finance" | "compliance" | "engineer")[];
+  readonly stepUpRequired: boolean;
 }
 
 export interface ClientOptions {
@@ -63,6 +76,8 @@ export class ProblemResponseError extends Error {
 export interface KinvaraClient {
   readonly getPlatformFee: () => Promise<PlatformFee>;
   readonly registerAccount: (body: RegisterRequest) => Promise<RegisterResponse>;
+  readonly login: (body: LoginRequest) => Promise<LoginResponse>;
+  readonly logout: () => Promise<void>;
 }
 
 export function createClient(options: ClientOptions): KinvaraClient {
@@ -88,6 +103,13 @@ export function createClient(options: ClientOptions): KinvaraClient {
       const response = await doFetch('/v1/auth/register', 'POST', schemas.RegisterRequest.parse(body));
       return schemas.RegisterResponse.parse(await response.json()) as RegisterResponse;
     },
+    login: async (body: LoginRequest) => {
+      const response = await doFetch('/v1/auth/login', 'POST', schemas.LoginRequest.parse(body));
+      return schemas.LoginResponse.parse(await response.json()) as LoginResponse;
+    },
+    logout: async () => {
+      await doFetch('/v1/auth/logout', 'POST');
+    },
   };
 }
 
@@ -103,3 +125,9 @@ void _registerAccountCheck;
 type _registerAccountRequest = ReturnType<typeof schemas.RegisterRequest.parse> extends infer P ? P : never;
 const _registerAccountRequestCheck = null as unknown as _registerAccountRequest satisfies RegisterRequest;
 void _registerAccountRequestCheck;
+type _loginParsed = ReturnType<typeof schemas.LoginResponse.parse> extends infer P ? P : never;
+const _loginCheck = null as unknown as _loginParsed satisfies LoginResponse;
+void _loginCheck;
+type _loginRequest = ReturnType<typeof schemas.LoginRequest.parse> extends infer P ? P : never;
+const _loginRequestCheck = null as unknown as _loginRequest satisfies LoginRequest;
+void _loginRequestCheck;

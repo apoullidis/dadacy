@@ -68,7 +68,13 @@ const ASTRAL = '\u{1F600}';
  */
 const CORPUS: {
   name: string;
-  schema: 'PlatformFee' | 'Problem' | 'RegisterRequest' | 'RegisterResponse';
+  schema:
+    | 'PlatformFee'
+    | 'Problem'
+    | 'RegisterRequest'
+    | 'RegisterResponse'
+    | 'LoginRequest'
+    | 'LoginResponse';
   payload: unknown;
   valid: boolean;
 }[] = [
@@ -373,6 +379,97 @@ const CORPUS: {
     payload: { accountId: '01J9ZQ6Y3M8K2V5T7R4N0P1B2C', email: 'parent@example.cy' },
     valid: false,
   },
+
+  // T-026: SD §BE-4 line 1021 login. The request verdicts are register's rules, written by hand
+  // from SA §SEC-5; the response's role set is SD §DB-2 lines 1800–1801.
+  {
+    name: 'login: a well-formed body',
+    schema: 'LoginRequest',
+    payload: { email: 'parent@example.cy', password: 'correct-horse-battery' },
+    valid: true,
+  },
+  {
+    name: 'login: 11 ASCII + 1 astral character is 12 characters',
+    schema: 'LoginRequest',
+    payload: { email: 'parent@example.cy', password: `abcdefghijk${ASTRAL}` },
+    valid: true,
+  },
+  {
+    name: 'login: a 6-emoji password is 6 characters',
+    schema: 'LoginRequest',
+    payload: { email: 'parent@example.cy', password: ASTRAL.repeat(6) },
+    valid: false,
+  },
+  {
+    name: 'login: U+0000 in a 12-character password',
+    schema: 'LoginRequest',
+    payload: { email: 'parent@example.cy', password: 'abcdefghijk\u0000l' },
+    valid: false,
+  },
+  {
+    name: 'login: no password',
+    schema: 'LoginRequest',
+    payload: { email: 'parent@example.cy' },
+    valid: false,
+  },
+  {
+    name: 'login: an extra key',
+    schema: 'LoginRequest',
+    payload: { email: 'parent@example.cy', password: 'correct-horse-battery', role: 'parent' },
+    valid: false,
+  },
+  {
+    name: 'login: an email of 255 octets',
+    schema: 'LoginRequest',
+    payload: { email: `${'a'.repeat(244)}@example.cy`, password: 'correct-horse-battery' },
+    valid: false,
+  },
+  {
+    name: 'login response: a parent',
+    schema: 'LoginResponse',
+    payload: {
+      account: { id: '01J9ZQ6Y3M8K2V5T7R4N0P1B2C' },
+      roles: ['parent'],
+      stepUpRequired: true,
+    },
+    valid: true,
+  },
+  {
+    name: 'login response: no roles',
+    schema: 'LoginResponse',
+    payload: { account: { id: '01J9ZQ6Y3M8K2V5T7R4N0P1B2C' }, roles: [], stepUpRequired: false },
+    valid: true,
+  },
+  {
+    name: 'login response: a role outside SD DB-2',
+    schema: 'LoginResponse',
+    payload: {
+      account: { id: '01J9ZQ6Y3M8K2V5T7R4N0P1B2C' },
+      roles: ['admin'],
+      stepUpRequired: true,
+    },
+    valid: false,
+  },
+  {
+    name: 'login response: an email in account',
+    schema: 'LoginResponse',
+    payload: {
+      account: { id: '01J9ZQ6Y3M8K2V5T7R4N0P1B2C', email: 'parent@example.cy' },
+      roles: ['parent'],
+      stepUpRequired: true,
+    },
+    valid: false,
+  },
+  {
+    name: 'login response: stepUpRequired as a string',
+    schema: 'LoginResponse',
+    payload: {
+      account: { id: '01J9ZQ6Y3M8K2V5T7R4N0P1B2C' },
+      roles: ['parent'],
+      stepUpRequired: 'true',
+    },
+    valid: false,
+  },
 ];
 
 /** The Zod-side verdict, like for like with the document's. */
@@ -465,7 +562,7 @@ test('the document is OpenAPI 3.1 and declares exactly the operations OPERATIONS
   }
 });
 
-test('every operationId is unique and camelCase, and every response names a schema that exists', () => {
+test('every operationId is unique and camelCase, and every response names a schema that exists, except a 204, which names none', () => {
   const ids = OPERATIONS.map((o) => o.operationId);
   assert.equal(new Set(ids).size, ids.length, 'a duplicate operationId');
   const schemas = DOC.components?.schemas ?? {};
@@ -473,6 +570,15 @@ test('every operationId is unique and camelCase, and every response names a sche
     assert.match(op.operationId, /^[a-z][A-Za-z0-9]*$/, op.operationId);
     assert.match(op.path, /^\/v1\//, op.path);
     for (const r of op.responses) {
+      if (r.schema === undefined) {
+        // T-026: only a 204 may have no body; the generator refuses any other.
+        assert.equal(
+          r.status,
+          204,
+          `${op.operationId}: response ${String(r.status)} names no schema`,
+        );
+        continue;
+      }
       assert.ok(Object.hasOwn(schemas, r.schema), `${op.operationId}: no schema ${r.schema}`);
     }
   }
@@ -534,4 +640,46 @@ test('registerAccount is SD BE-4 POST /v1/auth/register with 201 RegisterRespons
   // SD §BE-4's two error codes are members of the published enum the document carries.
   assert.ok(ERROR_CODES.includes('email_in_use'));
   assert.ok(ERROR_CODES.includes('password_breached'));
+});
+
+test('login is SD BE-4 POST /v1/auth/login with 200 LoginResponse and Problem on 400, 401 and 500, and invalid_credentials is in the published enum', () => {
+  const op = OPERATIONS.find((o) => o.operationId === 'login');
+  assert.ok(op, 'no login operation');
+  assert.equal(op.method, 'post');
+  assert.equal(op.path, '/v1/auth/login');
+  assert.equal(op.request, 'LoginRequest');
+  assert.deepEqual(
+    op.responses.map((r) => [r.status, r.schema]),
+    [
+      [200, 'LoginResponse'],
+      [400, 'Problem'],
+      [401, 'Problem'],
+      [500, 'Problem'],
+    ],
+  );
+  assert.ok(ERROR_CODES.includes('invalid_credentials'));
+});
+
+test('logout is SD BE-4 POST /v1/auth/logout with no request body, a 204 the document declares with no content, and Problem on 500', () => {
+  const op = OPERATIONS.find((o) => o.operationId === 'logout');
+  assert.ok(op, 'no logout operation');
+  assert.equal(op.method, 'post');
+  assert.equal(op.path, '/v1/auth/logout');
+  assert.equal(op.request, undefined);
+  assert.deepEqual(
+    op.responses.map((r) => [r.status, r.schema]),
+    [
+      [204, undefined],
+      [500, 'Problem'],
+    ],
+  );
+  const paths = DOC['paths'];
+  assert.ok(isRecord(paths));
+  const byMethod: unknown = paths['/v1/auth/logout'];
+  assert.ok(isRecord(byMethod));
+  const operation: unknown = byMethod['post'];
+  assert.ok(isRecord(operation));
+  const responses: unknown = operation['responses'];
+  assert.ok(isRecord(responses));
+  assert.deepEqual(responses['204'], { description: op.responses[0]?.description });
 });

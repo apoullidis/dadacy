@@ -77,6 +77,16 @@ function componentSchema(name: string, schema: z.ZodType): Record<string, unknow
 function operationObject(op: Operation): Record<string, unknown> {
   const responses: Record<string, unknown> = {};
   for (const r of op.responses) {
+    // T-026: a response with no body names no schema and declares no `content`. Only a 204 may.
+    if (r.schema === undefined) {
+      if (r.status !== 204) {
+        throw new TypeError(
+          `${op.operationId}: response ${String(r.status)} names no schema; only a 204 may have no body`,
+        );
+      }
+      responses[String(r.status)] = { description: r.description };
+      continue;
+    }
     if (!Object.hasOwn(COMPONENT_SCHEMAS, r.schema)) {
       throw new TypeError(
         `${op.operationId}: response ${String(r.status)} names an unknown schema ${r.schema}`,
@@ -158,7 +168,11 @@ function tsType(node: unknown, indent: string): string {
   if (type === 'string') return 'string';
   if (type === 'boolean') return 'boolean';
   if (type === 'integer' || type === 'number') return 'number';
-  if (type === 'array') return `readonly ${tsType(node['items'], indent)}[]`;
+  if (type === 'array') {
+    // T-026: an item type that is a union (an enum) needs parentheses: `readonly (A | B)[]`.
+    const item = tsType(node['items'], indent);
+    return item.includes(' | ') ? `readonly (${item})[]` : `readonly ${item}[]`;
+  }
   if (type === 'object') {
     const properties = isRecord(node['properties']) ? node['properties'] : {};
     const required = new Set(
@@ -247,6 +261,8 @@ export function buildClient(doc: Record<string, unknown>): string {
       const okSchema = isRecord(okResponse)
         ? (() => {
             const content = okResponse['content'];
+            // T-026: a success with no content (a 204) makes the method resolve to `void`.
+            if (content === undefined) return undefined;
             if (!isRecord(content)) throw new TypeError(`${id}: response has no content`);
             const first = content[Object.keys(content)[0] ?? ''];
             if (!isRecord(first)) throw new TypeError(`${id}: response has no media type`);
@@ -274,16 +290,24 @@ export function buildClient(doc: Record<string, unknown>): string {
           ? `'${String(path)}', '${method.toUpperCase()}'`
           : `'${String(path)}', '${method.toUpperCase()}', schemas.${requestSchema}.parse(body)`;
 
-      methods.push(`  readonly ${id}: (${param}) => Promise<${okSchema}>;`);
-      impls.push(`    ${id}: async (${param}) => {`);
-      impls.push(`      const response = await doFetch(${fetchArgs});`);
-      impls.push(`      return schemas.${okSchema}.parse(await response.json()) as ${okSchema};`);
-      impls.push('    },');
-      checks.push(
-        `type _${id}Parsed = ReturnType<typeof schemas.${okSchema}.parse> extends infer P ? P : never;`,
-      );
-      checks.push(`const _${id}Check = null as unknown as _${id}Parsed satisfies ${okSchema};`);
-      checks.push(`void _${id}Check;`);
+      if (okSchema === undefined) {
+        // T-026: no body to parse. A non-2xx still throws inside `doFetch`.
+        methods.push(`  readonly ${id}: (${param}) => Promise<void>;`);
+        impls.push(`    ${id}: async (${param}) => {`);
+        impls.push(`      await doFetch(${fetchArgs});`);
+        impls.push('    },');
+      } else {
+        methods.push(`  readonly ${id}: (${param}) => Promise<${okSchema}>;`);
+        impls.push(`    ${id}: async (${param}) => {`);
+        impls.push(`      const response = await doFetch(${fetchArgs});`);
+        impls.push(`      return schemas.${okSchema}.parse(await response.json()) as ${okSchema};`);
+        impls.push('    },');
+        checks.push(
+          `type _${id}Parsed = ReturnType<typeof schemas.${okSchema}.parse> extends infer P ? P : never;`,
+        );
+        checks.push(`const _${id}Check = null as unknown as _${id}Parsed satisfies ${okSchema};`);
+        checks.push(`void _${id}Check;`);
+      }
       if (requestSchema !== undefined) {
         checks.push(
           `type _${id}Request = ReturnType<typeof schemas.${requestSchema}.parse> extends infer P ? P : never;`,

@@ -31,6 +31,11 @@
  * emits it as a required `application/json` `requestBody`, and the client
  * method takes it as its one argument.
  *
+ * T-026 ADDED `POST /v1/auth/login` and `POST /v1/auth/logout`. Logout is the
+ * first operation whose success has NO BODY: its 204 names no `schema`. Only a
+ * 204 may omit one; the generator emits it with no `content`, and the client
+ * method resolves to `void`.
+ *
  * ADDING AN ENDPOINT — the whole procedure:
  *   1. Write its Zod schemas here and add them to `COMPONENT_SCHEMAS` under
  *      the name they should have in `components/schemas`.
@@ -151,6 +156,46 @@ export const RegisterResponse = z.strictObject({
   accountId: z.string().regex(ULID_PATTERN),
 });
 
+/** SD §DB-2 lines 1800–1801: the `account_role.role` CHECK set, in SD's order (T-026). */
+export const ACCOUNT_ROLES = [
+  'parent',
+  'sitter',
+  'support',
+  'ts_operator',
+  'ts_senior',
+  'dsl',
+  'deputy_dsl',
+  'finance',
+  'compliance',
+  'engineer',
+] as const;
+
+/**
+ * SD §BE-4 line 1021 `POST /v1/auth/login` `{email, password}` (T-026). Strict.
+ *
+ * `email` and `password` carry EXACTLY register's rules (T-141 LIVE §6; CONTRACTS.md carried row
+ * `T-141` item 2): the same 254-octet `z.email()`, and the same 12-code-point pattern with no `Cc`
+ * character. A password register would refuse was never hashed, so login refuses it with the same
+ * 400 instead of verifying it. Nothing is trimmed or normalised. A 400 depends on the body alone,
+ * never on whether an account exists (SD §SEC-I7 line 3976).
+ */
+export const LoginRequest = z.strictObject({
+  email: z.email().max(EMAIL_MAX_OCTETS),
+  password: z.string().regex(PASSWORD_PATTERN),
+});
+
+/**
+ * SD §BE-4 line 1021: `200 {account, roles, stepUpRequired}` (T-026). SD lists no members for
+ * `account`, so it carries the id alone (a reading, decisions.md OD-131). `roles` are the account's
+ * unrevoked roles. `stepUpRequired` is `true` for a password login (OD-131). The session cookie
+ * travels in `Set-Cookie`, never in the body.
+ */
+export const LoginResponse = z.strictObject({
+  account: z.strictObject({ id: z.string().regex(ULID_PATTERN) }),
+  roles: z.array(z.enum(ACCOUNT_ROLES)),
+  stepUpRequired: z.boolean(),
+});
+
 /**
  * Everything that becomes a `components/schemas` entry, by the name it gets
  * there. The generator emits these and nothing else, so a schema that is not
@@ -161,12 +206,17 @@ export const COMPONENT_SCHEMAS: Readonly<Record<string, z.ZodType>> = {
   PlatformFee,
   RegisterRequest,
   RegisterResponse,
+  LoginRequest,
+  LoginResponse,
 };
 
 export interface OperationResponse {
   readonly status: number;
-  /** A key of COMPONENT_SCHEMAS. */
-  readonly schema: string;
+  /**
+   * A key of COMPONENT_SCHEMAS. Absent only for a response with no body, and
+   * only a 204 may have none (T-026; the generator refuses any other).
+   */
+  readonly schema?: string;
   readonly description: string;
 }
 
@@ -187,7 +237,7 @@ export interface Operation {
  * The operation table. `operationId` becomes the client's method name, so it
  * is camelCase and unique — asserted by `openapi.test.ts` ›
  * *every operationId is unique and camelCase, and every response names a
- * schema that exists*.
+ * schema that exists, except a 204, which names none*.
  */
 export const OPERATIONS: readonly Operation[] = [
   {
@@ -239,6 +289,58 @@ export const OPERATIONS: readonly Operation[] = [
         description:
           '`password_breached`: the HIBP range check found the password. ' +
           'HIBP unavailable fails OPEN (201), never 5xx (OE-22 G2).',
+      },
+      {
+        status: 500,
+        schema: 'Problem',
+        description: 'Internal error. Carries nothing from the request.',
+      },
+    ],
+  },
+  {
+    operationId: 'login',
+    method: 'post',
+    path: '/v1/auth/login',
+    summary:
+      'Log in with an email address and a password and start a session (SD §BE-4). ' +
+      'The session cookie `__Host-kv_session` is set on 200.',
+    request: 'LoginRequest',
+    responses: [
+      {
+        status: 200,
+        schema: 'LoginResponse',
+        description: 'Logged in, with `Set-Cookie: __Host-kv_session=…`.',
+      },
+      {
+        status: 400,
+        schema: 'Problem',
+        description: '`invalid_input`: a malformed body, or a password register would refuse.',
+      },
+      {
+        status: 401,
+        schema: 'Problem',
+        description:
+          '`invalid_credentials`, one body for every refusal: a wrong password, no such ' +
+          'account, an account with no password, an account that may not log in (SD §SEC-I7).',
+      },
+      {
+        status: 500,
+        schema: 'Problem',
+        description: 'Internal error. Carries nothing from the request.',
+      },
+    ],
+  },
+  {
+    operationId: 'logout',
+    method: 'post',
+    path: '/v1/auth/logout',
+    summary:
+      'Revoke the session the `__Host-kv_session` cookie names, server-side, and clear the ' +
+      'cookie (SD §BE-4).',
+    responses: [
+      {
+        status: 204,
+        description: 'Logged out, or no live session was named. No body.',
       },
       {
         status: 500,

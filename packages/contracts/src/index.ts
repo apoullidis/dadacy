@@ -41,9 +41,12 @@ export {
 } from './problem.ts';
 
 export {
+  ACCOUNT_ROLES,
   API_TITLE,
   API_VERSION,
   COMPONENT_SCHEMAS,
+  LoginRequest,
+  LoginResponse,
   OPERATIONS,
   PASSWORD_MIN_CHARACTERS,
   PlatformFee,
@@ -58,6 +61,8 @@ export {
   ProblemResponseError,
   type ClientOptions,
   type KinvaraClient,
+  type LoginRequest as LoginRequestBody,
+  type LoginResponse as LoginResponseBody,
   type Problem as ProblemBody,
   type PlatformFee as PlatformFeeBody,
   type RegisterRequest as RegisterRequestBody,

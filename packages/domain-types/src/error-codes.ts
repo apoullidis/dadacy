@@ -52,6 +52,8 @@
 export const ERROR_CODES = [
   'invalid_input',
   'unauthenticated',
+  // T-026: SD §BE-4 `POST /v1/auth/login` → 401, one uniform body for every refusal (SD §SEC-I7).
+  'invalid_credentials',
   'policy_denied',
   'not_found',
   'state_transition_invalid',

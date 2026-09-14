@@ -111,6 +111,85 @@
           }
         }
       }
+    },
+    "/v1/auth/login": {
+      "post": {
+        "operationId": "login",
+        "summary": "Log in with an email address and a password and start a session (SD §BE-4). The session cookie `__Host-kv_session` is set on 200.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Logged in, with `Set-Cookie: __Host-kv_session=…`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`invalid_input`: a malformed body, or a password register would refuse.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`invalid_credentials`, one body for every refusal: a wrong password, no such account, an account with no password, an account that may not log in (SD §SEC-I7).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error. Carries nothing from the request.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/logout": {
+      "post": {
+        "operationId": "logout",
+        "summary": "Revoke the session the `__Host-kv_session` cookie names, server-side, and clear the cookie (SD §BE-4).",
+        "responses": {
+          "204": {
+            "description": "Logged out, or no live session was named. No body."
+          },
+          "500": {
+            "description": "Internal error. Carries nothing from the request.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -136,6 +215,7 @@
             "enum": [
               "invalid_input",
               "unauthenticated",
+              "invalid_credentials",
               "policy_denied",
               "not_found",
               "state_transition_invalid",
@@ -248,6 +328,71 @@
         },
         "required": [
           "accountId"
+        ],
+        "additionalProperties": false
+      },
+      "LoginRequest": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "maxLength": 254,
+            "format": "email",
+            "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+          },
+          "password": {
+            "type": "string",
+            "pattern": "^[^\\p{Cc}]{12,}$"
+          }
+        },
+        "required": [
+          "email",
+          "password"
+        ],
+        "additionalProperties": false
+      },
+      "LoginResponse": {
+        "type": "object",
+        "properties": {
+          "account": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          },
+          "roles": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "parent",
+                "sitter",
+                "support",
+                "ts_operator",
+                "ts_senior",
+                "dsl",
+                "deputy_dsl",
+                "finance",
+                "compliance",
+                "engineer"
+              ]
+            }
+          },
+          "stepUpRequired": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "account",
+          "roles",
+          "stepUpRequired"
         ],
         "additionalProperties": false
       }
