@@ -31,7 +31,14 @@
  *   4a. [I-MAP] (T-150, OD-97) each `unknown("col")` drizzle-kit writes for a type it cannot parse
  *      is rewritten from a CLOSED map (`citext`, `bytea` -> customType). Any other type fails the
  *      run: `unknown(...)` is never written (scripts/gates/lib/schema-render.ts).
- *   4b. [I-TSC] (T-150, OD-93) TypeScript's own unused-identifier fixes are applied until a pass
+ *   4b. [I-ORDER] (T-152, OD-106, OD-108) drizzle-kit renders objects in the order its catalogue
+ *      queries return rows, and several of those queries have no ORDER BY, so the order follows
+ *      planner statistics and heap position rather than the schema. The rendering is put in a
+ *      canonical order: key column lists in the catalogue's own order (pg_constraint.conkey /
+ *      confkey, read in step 3b), table entries by kind and name, declarations by name, imports by
+ *      name (scripts/gates/lib/schema-order.ts). A shape it does not recognise fails the run. This
+ *      pipeline does not ANALYZE: statistics are not an input to the rendering.
+ *   4c. [I-TSC] (T-150, OD-93) TypeScript's own unused-identifier fixes are applied until a pass
  *      edits nothing, with the compiler options of the root tsconfig.json. Any diagnostic left in
  *      the rendering fails the run, so a file `tsc` would refuse at its first importer is neither
  *      written nor accepted.
@@ -40,7 +47,7 @@
  *      introspection that returns nothing while the catalogue holds a relation fails. When both
  *      are empty, the run says so on stdout (T-001 contract, gate rule 2) and does not fail: the
  *      committed migrations are then genuinely relation-free.
- *   6. write mode: db/schema.ts := the generated header + drizzle-kit's schema.ts after 4a and 4b.
+ *   6. write mode: db/schema.ts := the generated header + drizzle-kit's schema.ts after 4a, 4b, 4c.
  *      Both modes build that rendering the same way, so the parity check compares against it.
  *      check mode: [I-MISSING] db/schema.ts absent; [I-DIGEST] its header does not verify
  *      (scripts/gates/lib/schema-digest.ts); [I-DIFF] it differs from the fresh rendering.
@@ -55,6 +62,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { REPO_ROOT, bin, capture } from './gates/lib/run.ts';
 import { SCHEMA_REL, renderSchemaFile, verifySchemaFile } from './gates/lib/schema-digest.ts';
+import {
+  CONSTRAINT_KEYS_SQL,
+  canonicalOrder,
+  parseConstraintKeys,
+} from './gates/lib/schema-order.ts';
 import {
   TYPESCRIPT_VERSION,
   mapColumnTypes,
@@ -219,6 +231,20 @@ function main(): void {
   }
   if (failures.length > 0) done();
 
+  // 3b. key column order of every PRIMARY KEY, UNIQUE and FOREIGN KEY in public (T-152)
+  const keyRead = psql(CONSTRAINT_KEYS_SQL);
+  const parsedKeys = keyRead.ok
+    ? parseConstraintKeys(keyRead.out.trim())
+    : { ok: false as const, problem: keyRead.err.trim() };
+  if (!parsedKeys.ok) {
+    problem(
+      'I-ORDER',
+      `cannot read constraint key columns from the catalogue: ${parsedKeys.problem}`,
+    );
+    done();
+  }
+  const constraintKeys = parsedKeys.ok ? parsedKeys.keys : [];
+
   // 4. pull
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kinvara-introspect-'));
   const out = path.join(tmp, 'out');
@@ -262,13 +288,24 @@ function main(): void {
     `  mapped column type(s): ${mapping.ok && mapping.mapped.length > 0 ? mapping.mapped.join(', ') : 'none'}`,
   );
 
-  // 4b. prune unused identifiers with TypeScript's own fixes, under the root tsconfig (T-150, OD-93)
+  // 4b. canonical order, so the rendering is a function of the schema alone (T-152, OD-106, OD-108)
+  const ordered = canonicalOrder(mappedBody, constraintKeys);
+  if (!ordered.ok) {
+    for (const p of ordered.problems) problem('I-ORDER', p);
+    done();
+  }
+  const orderedBody = ordered.ok ? ordered.body : mappedBody;
+  console.log(
+    `  canonical order: ${ordered.ok ? `${String(ordered.declarations)} declaration(s), ${String(ordered.entries)} table entr(ies), ${String(ordered.keyLists)} key column list(s) from the catalogue; ${String(ordered.moved)} element(s) moved from drizzle-kit's order` : 'failed'}`,
+  );
+
+  // 4c. prune unused identifiers with TypeScript's own fixes, under the root tsconfig (T-150, OD-93)
   const root = readRootCompilerOptions(TSCONFIG_PATH);
   if (root.errors.length > 0) {
     for (const e of root.errors) problem('I-TSC', `tsconfig.json: ${e}`);
     done();
   }
-  const pruned = pruneUnused(mappedBody, SCHEMA_PATH, root.options);
+  const pruned = pruneUnused(orderedBody, SCHEMA_PATH, root.options);
   console.log(
     `  pruned with typescript ${TYPESCRIPT_VERSION}: ${String(pruned.edits)} edit(s) in ${String(pruned.passes)} pass(es); ${String(pruned.diagnostics.length)} diagnostic(s) left`,
   );

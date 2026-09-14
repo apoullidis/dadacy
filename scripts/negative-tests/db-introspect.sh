@@ -3,16 +3,13 @@
 # T-150 — K11–K17: the closed column-type map (I-MAP), pruning under the root tsconfig (I-TSC),
 # an unpruned file refused, and write-mode idempotence.
 #
-# PRECONDITION, declared (OD-106): every check and every regeneration below runs after `ANALYZE`.
-# drizzle-kit 0.31.10's pull output follows planner statistics: on a fresh project it renders one
-# ordering, and after `ANALYZE` another, each stable across projects (T-150 evidence, E-ORD3). The
-# committed db/schema.ts is the after-ANALYZE rendering. Without this precondition the controls
-# depend on autovacuum timing. It is a property of the harness, not of the check: the check itself
-# does not ANALYZE, and OD-106 stays open until it is fixed in the generator. K17 re-checks at the
-# end, after every plant and drop, so the precondition is attacked rather than assumed. The
-# statistics must describe the MIGRATED catalogue: ANALYZE on a database still at 0000, followed by
-# a check that migrates and pulls, renders the fresh ordering (measured, T-150 run 2 K00). So the
-# suite brings the database to the highest committed migration before its first case.
+# T-152 — K18–K25: the rendering is a function of the schema alone (OD-106, OD-108). NO case runs
+# ANALYZE as a precondition: T-150's declared precondition is removed, because the generator now puts
+# drizzle-kit's output in a canonical order (scripts/gates/lib/schema-order.ts). K18 attacks catalogue
+# history (a down/up that is asserted to have moved drizzle-kit's own table-list order), K19 and K20
+# attack statistics (ANALYZE and VACUUM ANALYZE, each asserted to have landed on pg_class), K21
+# deletes the canonical order and must go red, K22 plants composite keys whose column order only the
+# catalogue knows, and K23–K25 are the step's own I-ORDER refusals.
 #
 #   cd /home/alex/projects/nanny/app && ./scripts/svc run <ticket> -- bash scripts/negative-tests/db-introspect.sh
 #
@@ -45,6 +42,7 @@ DOWN=$M/${NEXT}_t138_plant.down.sql
 SCHEMA=db/schema.ts
 SCRIPT=scripts/db-introspect.ts
 RENDER=scripts/gates/lib/schema-render.ts
+ORDER=scripts/gates/lib/schema-order.ts
 OUT=$(mktemp)
 total=0
 bad=0
@@ -63,15 +61,20 @@ abort() {
   exit 2
 }
 
-analyze() {
-  psql -X -q -v ON_ERROR_STOP=1 -c ANALYZE >/dev/null || abort "ANALYZE failed"
-}
-
-# write_schema: regenerate, ANALYZE the catalogue that now includes any planted migration, regenerate.
+# write_schema: regenerate db/schema.ts once. No ANALYZE (T-152).
 write_schema() {
   node scripts/db-introspect.ts --write >"$OUT.w" 2>&1 || { cat "$OUT.w"; abort "regeneration failed"; }
-  analyze
-  node scripts/db-introspect.ts --write >"$OUT.w" 2>&1 || { cat "$OUT.w"; abort "regeneration failed"; }
+}
+
+# drizzle-kit 0.31.10's own table-list query (bin.cjs 17559-17575, schemaFilter public), names in the
+# order the server returns them. K18 uses it to assert that its history attack landed.
+table_list_order() {
+  psql -X -A -t -q -c "SELECT n.nspname AS table_schema, c.relname AS table_name, CASE WHEN c.relkind = 'r' THEN 'table' WHEN c.relkind = 'v' THEN 'view' WHEN c.relkind = 'm' THEN 'materialized_view' END AS type, c.relrowsecurity AS rls_enabled FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind IN ('r', 'v', 'm') AND n.nspname = 'public'" | cut -d'|' -f2 | tr '\n' ' '
+}
+
+# pg_class's last ANALYZE and last VACUUM, as the statistics collector reports them.
+stats_mark() {
+  psql -X -A -t -q -c "SELECT coalesce(last_analyze::text, 'never') || ' / ' || coalesce(last_vacuum::text, 'never') FROM pg_stat_all_tables WHERE relid = 'pg_class'::regclass"
 }
 
 restore() {
@@ -81,7 +84,7 @@ restore() {
   fi
   [ "$(record)" = "kinvara-migrate version=$HIGHEST" ] || abort "the record reads '$(record)', not $HIGHEST"
   rm -f "$M/${NEXT}_t138_plant.up.sql" "$M/${NEXT}_t138_plant.down.sql"
-  git checkout -q -- "$SCHEMA" "$SCRIPT" "$RENDER"
+  git checkout -q -- "$SCHEMA" "$SCRIPT" "$RENDER" "$ORDER"
   if [ -n "$(git status --porcelain)" ]; then
     git status --porcelain
     abort "the tree did not restore cleanly"
@@ -158,7 +161,6 @@ judge() {
 
 check() {
   local id=$1 desc=$2 expect=$3 require=${4:-}
-  analyze
   node scripts/db-introspect.ts --check >"$OUT" 2>&1
   judge "$id" "$desc" "$expect" "$?" "$require"
   restore
@@ -257,11 +259,9 @@ check K15 "(T-150) the committed file unpruned (the parameter put back) with its
 
 echo "== T-150: idempotence"
 total=$((total + 1))
-analyze
 node scripts/db-introspect.ts --write >"$OUT" 2>&1
 e1=$?
 cp "$SCHEMA" "$OUT.s1"
-analyze
 node scripts/db-introspect.ts --write >"$OUT.2" 2>&1
 e2=$?
 cmp -s "$SCHEMA" "$OUT.s1"
@@ -275,7 +275,72 @@ grep -E 'mapped column|pruned with|wrote|^GATE ' "$OUT" "$OUT.2" | sed 's/^/    
 restore
 
 echo "== control, again, after every plant and drop above"
-check K17 "CONTROL: the committed tree after the whole suite's plant/drop history (attacks the ANALYZE precondition)" PASS 'byte-identical to a fresh introspection'
+check K17 "CONTROL: the committed tree after the whole suite's plant/drop history, no ANALYZE anywhere in the suite" PASS 'byte-identical to a fresh introspection'
+
+echo "== T-152: the rendering is a function of the schema alone (OD-106, OD-108)"
+PREV=$(printf '%04d' $((10#$HIGHEST - 1)))
+PREV2=$(printf '%04d' $((10#$HIGHEST - 2)))
+before=$(table_list_order)
+after=$before
+perturbed=
+for to in "$PREV" "$PREV2"; do
+  { node scripts/db-migrate.ts down --to "$to" >"$OUT.p" 2>&1 && grep -q '^MIGRATE OK  down: ' "$OUT.p"; } || { cat "$OUT.p"; abort "db:migrate down --to $to failed"; }
+  { node scripts/db-migrate.ts up >"$OUT.p" 2>&1 && grep -q '^MIGRATE OK  up: ' "$OUT.p"; } || { cat "$OUT.p"; abort "db:migrate up after down --to $to failed"; }
+  after=$(table_list_order)
+  if [ "$after" != "$before" ]; then
+    perturbed=$to
+    break
+  fi
+done
+[ -n "$perturbed" ] || abort "neither down --to $PREV nor down --to $PREV2, then up, moved drizzle-kit's table-list order [$before]: the history attack did not land"
+echo "   history attack landed: down --to $perturbed, up; drizzle-kit's table list was [$before], is now [$after]"
+check K18 "(T-152) catalogue history moved drizzle-kit's own table order (asserted above), no ANALYZE: parity holds" PASS 'byte-identical to a fresh introspection'
+
+m0=$(stats_mark)
+psql -X -q -v ON_ERROR_STOP=1 -c ANALYZE >/dev/null || abort "ANALYZE failed"
+m1=$(stats_mark)
+{ [ "$m1" != "$m0" ] && [ "${m1%% / *}" != never ]; } || abort "ANALYZE did not land on pg_class (last analyze / vacuum '$m0' -> '$m1')"
+echo "   statistics attack landed: pg_class last analyze / vacuum '$m0' -> '$m1'"
+check K19 "(T-152) planner statistics changed by ANALYZE (asserted above): parity holds" PASS 'byte-identical to a fresh introspection'
+
+m0=$(stats_mark)
+psql -X -q -v ON_ERROR_STOP=1 -c "VACUUM ANALYZE" >/dev/null || abort "VACUUM ANALYZE failed"
+m1=$(stats_mark)
+{ [ "${m1#* / }" != "${m0#* / }" ] && [ "${m1#* / }" != never ]; } || abort "VACUUM ANALYZE did not land on pg_class (last analyze / vacuum '$m0' -> '$m1')"
+echo "   statistics attack landed: pg_class last analyze / vacuum '$m0' -> '$m1'"
+check K20 "(T-152) VACUUM ANALYZE (asserted above): parity holds" PASS 'byte-identical to a fresh introspection'
+
+mutate "$ORDER" "  let text = source;" "  let text = source;
+  if (text !== '') return { ok: true, body: text, declarations: 0, entries: 0, keyLists: 0, moved: 0 };"
+check K21 "(T-152) the canonical order deleted (drizzle-kit's order passes through): the committed file is refused" I-DIFF 'canonical order: 0 declaration\(s\), 0 table entr\(ies\), 0 key column list\(s\)'
+
+plant "$UP" "-- @phase: expand
+CREATE TABLE public.t152_parent (k2 text NOT NULL, k1 text NOT NULL, CONSTRAINT t152_parent_pkey PRIMARY KEY (k2, k1));
+CREATE TABLE public.t152_child (id bigint PRIMARY KEY, c1 text NOT NULL, c2 text NOT NULL, u_b text, u_a text,
+  CONSTRAINT t152_child_u_key UNIQUE (u_b, u_a),
+  CONSTRAINT t152_child_pair_fkey FOREIGN KEY (c2, c1) REFERENCES public.t152_parent (k2, k1));"
+plant "$DOWN" "DROP TABLE public.t152_child;
+DROP TABLE public.t152_parent;"
+write_schema
+node scripts/db-introspect.ts --check >"$OUT" 2>&1
+code=$?
+missing=0
+for line in 'primaryKey({ columns: [table.k2, table.k1], name: "t152_parent_pkey"})' 'unique("t152_child_u_key").on(table.uB, table.uA)' 'columns: [table.c2, table.c1],' 'foreignColumns: [t152Parent.k2, t152Parent.k1],'; do
+  if grep -qF -- "$line" "$SCHEMA"; then echo "key order as the catalogue: $line" >>"$OUT"; else echo "key order NOT as the catalogue, missing: $line" >>"$OUT"; missing=$((missing + 1)); fi
+done
+[ "$missing" -eq 0 ] && echo "ALL FOUR KEY LISTS IN CATALOGUE ORDER" >>"$OUT"
+judge K22 "(T-152) composite PK (k2, k1), UNIQUE (u_b, u_a), FK (c2, c1) -> (k2, k1): rendered in the catalogue's column order, and parity holds" PASS "$code" '^ALL FOUR KEY LISTS IN CATALOGUE ORDER$'
+grep -E '^key order' "$OUT" | sed 's/^/       /'
+restore
+
+mutate "$ORDER" "  ['check', 5]," "  ['t152_removed_check', 5],"
+check K23 "(T-152) an extra-config kind the order step does not know (check removed from its table): refused, never passed through" I-ORDER 'extra-config entry .*check\(.* is not a kind this step orders'
+
+mutate "$ORDER" "con.contype IN ('p', 'u', 'f')" "con.contype IN ('x')"
+check K24 "(T-152) the catalogue returns no key for a rendered constraint: refused" I-ORDER 'primaryKey "account_role_pkey" has no matching PRIMARY KEY constraint'
+
+mutate "$ORDER" "'columns', (SELECT json_agg(a.attname ORDER BY k.ord)" "'columns', (SELECT json_agg(a.attname || '_t152' ORDER BY k.ord)"
+check K25 "(T-152) the catalogue's key columns differ from the rendered list: refused" I-ORDER "account_role_pkey columns: the rendering lists columns \[account_id, role\] but the catalogue's key is \[account_id_t152, role_t152\]"
 
 echo
 if [ "$bad" -eq 0 ]; then
