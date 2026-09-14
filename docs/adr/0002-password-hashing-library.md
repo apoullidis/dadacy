@@ -1,6 +1,6 @@
 # ADR 0002 — The password-hashing library for account creation
 
-- **Status:** proposed. The in-image execution this decision depends on is not yet shown (§ Consequences).
+- **Status:** accepted, 2026-09-14. The in-image argon2id execution ran on `kinvara/core:dev` built from `5b001cc` (`state/EP-2/T-141.md` § Resumption, R1b).
 - **Date:** 2026-09-14
 - **Ticket:** T-141 (tech-lead)
 - **Refs:** SA §TS-7 (line 800: _"built on an audited open-source library (Better Auth or equivalent)"_; line 816: _"we implement no cryptographic primitives ourselves (argon2id, WebAuthn via `@simplewebauthn`, CSPRNG tokens from the library)"_); SA §SEC-5 (line 2203: _"argon2id (m=64MB, t=3, p=1); minimum 12 characters"_); SD §DB-2 (lines 1759–1821); SD §DH-1 (line 4318); `decisions.md` OD-51, OD-117; `state/EP-2/T-141.md`
@@ -40,7 +40,11 @@ Two repository constraints shape the choice, and each was measured on this branc
 
 ## Consequences
 
-- **The native binding in the shipped image is not yet shown.** Alpine selects the musl binary, and T-141 requires one argon2id execution inside the built `core` image. On `main` `59a7952` that image could not be built with any database dependency (`decisions.md` OD-117, closed by `T-154` at `8784aa5`). This ADR stays **proposed** until that execution runs on the resumed branch.
+- **The native binding works in the shipped image, measured once** (`state/EP-2/T-141.md` § Resumption, R1b). The image is `kinvara/core:dev` built from `5b001cc`: Node v24.20.0, linux-x64, musl, uid 10001.
+  - `@node-rs/argon2-linux-x64-musl` resolves, and the gnu binding is not installed.
+  - `apps/core/src/identity/password.ts`'s `hashPassword` returned `$argon2id$v=19$m=65536,t=3,p=1$…` (22-character salt, 43-character hash) in 150 ms.
+  - `verify` returned `true` for the password and `false` for another.
+  - On `main` `59a7952` this image could not be built at all (`decisions.md` OD-117, closed by `T-154` at `8784aa5`).
 - A bump of `@node-rs/argon2` is a dependency change under OD-51's release-age rule, with the in-image execution re-run.
 - The login ticket (`T-026`) verifies with the same library, and must keep the absent-account dummy verify at these same parameters (OE-22 G4/G5).
 
