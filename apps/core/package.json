@@ -3,6 +3,26 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "NestJS 11 / Fastify — the modular monolith API",
-  "//": "PLACEHOLDER (T-001). Topology only, per SD §DH-1 — no source, no dependencies, no scripts. The owning agent (tech-lead) adds src/, dependencies and the typecheck/lint/test/build scripts turbo.json already declares."
+  "description": "NestJS 11 / Fastify — the modular monolith API (SD §DH-1). HTTP scaffold + the single problem+json exception filter: T-135.",
+  "scripts": {
+    "start": "node src/main.ts",
+    "build": "node tools/build.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint . && prettier --check .",
+    "test:integration": "node tools/run-tests.ts"
+  },
+  "dependencies": {
+    "@kinvara/contracts": "workspace:*",
+    "@kinvara/domain-types": "workspace:*",
+    "@nestjs/common": "11.2.3",
+    "@nestjs/core": "11.2.3",
+    "@nestjs/platform-fastify": "11.2.3",
+    "reflect-metadata": "0.2.2",
+    "rxjs": "7.8.2"
+  },
+  "devDependencies": {
+    "typescript": "6.0.3",
+    "vite": "8.2.2",
+    "vitest": "5.0.0"
+  }
 }
