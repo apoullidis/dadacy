@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # T-138 — negative tests for db:introspect:check (scripts/db-introspect.ts).
+# T-150 — K11–K17: the closed column-type map (I-MAP), pruning under the root tsconfig (I-TSC),
+# an unpruned file refused, and write-mode idempotence.
 #
 #   cd /home/alex/projects/nanny/app && ./scripts/svc run <ticket> -- bash scripts/negative-tests/db-introspect.sh
 #
@@ -31,6 +33,7 @@ UP=$M/${NEXT}_t138_plant.up.sql
 DOWN=$M/${NEXT}_t138_plant.down.sql
 SCHEMA=db/schema.ts
 SCRIPT=scripts/db-introspect.ts
+RENDER=scripts/gates/lib/schema-render.ts
 OUT=$(mktemp)
 total=0
 bad=0
@@ -56,7 +59,7 @@ restore() {
   fi
   [ "$(record)" = "kinvara-migrate version=$HIGHEST" ] || abort "the record reads '$(record)', not $HIGHEST"
   rm -f "$M/${NEXT}_t138_plant.up.sql" "$M/${NEXT}_t138_plant.down.sql"
-  git checkout -q -- "$SCHEMA" "$SCRIPT"
+  git checkout -q -- "$SCHEMA" "$SCRIPT" "$RENDER"
   if [ -n "$(git status --porcelain)" ]; then
     git status --porcelain
     abort "the tree did not restore cleanly"
@@ -189,6 +192,54 @@ check K09 "a migration that fails to apply" I-MIGRATE
 mutate "$SCRIPT" "  // 1. migrations" "  throw new Error('t138 planted crash');
   // 1. migrations"
 check K10 "the script throws: a crash, told apart from a refusal" CRASH
+
+echo "== T-150: the closed column-type map (I-MAP)"
+plant "$UP" "-- @phase: expand
+CREATE TABLE public.t150_plant (id bigint PRIMARY KEY, doc tsvector);"
+plant "$DOWN" "DROP TABLE public.t150_plant;"
+check K11 "(T-150) a column type outside the closed map (tsvector) fails; unknown(...) is never accepted" I-MAP "column \"doc\" has database type 'tsvector'"
+plant "$UP" "-- @phase: expand
+CREATE TABLE public.t150_plant (id bigint PRIMARY KEY, doc tsvector);"
+plant "$DOWN" "DROP TABLE public.t150_plant;"
+node scripts/db-introspect.ts --write >"$OUT" 2>&1
+code=$?
+total=$((total + 1))
+w_banners=$(grep -cE '^GATE (PASS|FAIL|CRASH)  db:introspect($| — |: )' "$OUT")
+w_tags=$(grep -oE '^  - \[I-[A-Z]+\]' "$OUT" | sed -E 's/^  - \[(.*)\]$/\1/' | sort -u | tr '\n' ' ' | sed 's/ $//')
+if [ "$code" -eq 1 ] && [ "$w_banners" -eq 1 ] && [ "$w_tags" = "I-MAP" ] && git diff --quiet -- "$SCHEMA" && ! grep -q 'unknown(' "$SCHEMA"; then v=ok; else v=BAD; bad=$((bad + 1)); fi
+printf '%-4s %s  %s\n       exit %s; banners %s; expected I-MAP and db/schema.ts unchanged; reported %s; db/schema.ts %s\n' "$v" K11w "(T-150) the same plant in WRITE mode: refused, and db/schema.ts is not written" "$code" "$w_banners" "${w_tags:-none}" "$(git diff --quiet -- "$SCHEMA" && echo unchanged || echo CHANGED)"
+grep -E '^  - \[|^GATE ' "$OUT" | cut -c1-240 | sed 's/^/       /'
+restore
+plant "$UP" "-- @phase: expand
+CREATE TABLE public.t150_plant (id bigint PRIMARY KEY, tags citext[]);"
+plant "$DOWN" "DROP TABLE public.t150_plant;"
+check K12 "(T-150) citext[] is not citext: the map matches the exact type, so an array of a mapped type fails" I-MAP "column \"tags\" has database type 'citext\[\]'"
+mutate "$RENDER" "  ['bytea', " "  ['t150_removed_bytea', "
+check K13 "(T-150) the bytea entry deleted from the map: the committed app_session.token_hash is refused" I-MAP "column \"token_hash\" has database type 'bytea'"
+
+echo "== T-150: pruning under the root tsconfig (I-TSC), and an unpruned file"
+mutate "$RENDER" "for (const fixId of FIX_IDS) {" "for (const fixId of FIX_IDS.slice(0, 0)) {"
+check K14 "(T-150) pruning deleted (no fix applied): the rendering tsc would refuse is refused" I-TSC "TS6133 [0-9]+:[0-9]+ 'table' is declared but its value is never read"
+mutate "$SCHEMA" "}, () => [" "}, (table) => ["
+rehash
+check K15 "(T-150) the committed file unpruned (the parameter put back) with its digest recomputed: parity refuses it" I-DIFF "committed .*\\(table\\) => \\[.*, introspected .*\\(\\) => \\["
+
+echo "== T-150: idempotence"
+total=$((total + 1))
+node scripts/db-introspect.ts --write >"$OUT" 2>&1
+e1=$?
+cp "$SCHEMA" "$OUT.s1"
+node scripts/db-introspect.ts --write >"$OUT.2" 2>&1
+e2=$?
+cmp -s "$SCHEMA" "$OUT.s1"
+c=$?
+git diff --quiet -- "$SCHEMA"
+g=$?
+p1=$(grep -c 'pruned with typescript' "$OUT")
+if [ "$e1" -eq 0 ] && [ "$e2" -eq 0 ] && [ "$c" -eq 0 ] && [ "$g" -eq 0 ] && [ "$p1" -eq 1 ] && grep -qx 'GATE PASS  db:introspect' "$OUT.2"; then v=ok; else v=BAD; bad=$((bad + 1)); fi
+printf '%-4s %s  %s\n       write 1 exit %s; write 2 exit %s; cmp(write 1, write 2) exit %s; git diff --quiet vs committed exit %s\n' "$v" K16 "(T-150) --write twice: both exit 0, byte-identical to each other and to the committed file" "$e1" "$e2" "$c" "$g"
+grep -E 'mapped column|pruned with|wrote|^GATE ' "$OUT" "$OUT.2" | sed 's/^/       /'
+restore
 
 echo
 if [ "$bad" -eq 0 ]; then
