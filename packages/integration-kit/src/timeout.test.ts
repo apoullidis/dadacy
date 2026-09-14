@@ -74,6 +74,23 @@ test('a call whose every attempt times out settles as upstream_unavailable after
   assert.equal(clock.pending(), 0, 'no timer left armed');
 });
 
+test('the request-path worst case: six timed-out attempts and five near-maximal waits settle at 18195 ms and not before', async () => {
+  // 6 x 2000 ms of attempts + (199 + 399 + 799 + 1599 + 3199) ms of waits = 18195 ms. This is the
+  // latency an adapter on the request path inherits when its upstream never answers.
+  const clock = createManualClock();
+  const breaker = createCircuitBreaker({ clock });
+  const caller = createUpstreamCaller({ breaker, clock, random: () => 0.999_999 });
+  const t = hangingTransport();
+  const call = track(caller.call(t.send));
+
+  await clock.advance(18_194);
+  assert.equal(call.settled, false, 'still in its sixth attempt at 18194 ms');
+  await clock.advance(1);
+  assert.equal(call.settled, true, 'settled at 18195 ms');
+  assert.ok(call.error instanceof UpstreamCallFailedError);
+  assert.equal(call.error.attempts, 6);
+});
+
 test('a response before the timeout is returned, and its timer is cleared', async () => {
   const clock = createManualClock();
   const breaker = createCircuitBreaker({ clock });
