@@ -119,3 +119,57 @@ test('the client refuses an error body whose code is not a member of the closed 
     },
   );
 });
+
+// T-141: the first operation with a request body.
+const REGISTERED_ID = '01J9ZQ6Y3M8K2V5T7R4N0P1B2C';
+
+test('the generated client POSTs registerAccount as JSON and returns the parsed 201 body', async () => {
+  const sent: { url: string; init: RequestInit | undefined }[] = [];
+  const client = createClient({
+    baseUrl: BASE_URL,
+    fetch: (input, init) => {
+      sent.push({ url: String(input), init });
+      return Promise.resolve(
+        new Response(JSON.stringify({ accountId: REGISTERED_ID }), {
+          status: 201,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+    },
+  });
+  const body = {
+    email: 'parent@example.cy',
+    password: 'correct-horse-battery',
+    role: 'parent' as const,
+    tosVersion: 'tos-2026-09',
+    turnstileToken: 'turnstile-test-token',
+  };
+  const created = await client.registerAccount(body);
+  assert.equal(created.accountId, REGISTERED_ID);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0]?.url, `${BASE_URL}/v1/auth/register`);
+  assert.equal(sent[0]?.init?.method, 'POST');
+  assert.equal(new Headers(sent[0]?.init?.headers).get('content-type'), 'application/json');
+  assert.deepEqual(JSON.parse(String(sent[0]?.init?.body)), body);
+});
+
+test('the generated client refuses a register body its schema refuses, and sends nothing', async () => {
+  let calls = 0;
+  const client = createClient({
+    baseUrl: BASE_URL,
+    fetch: () => {
+      calls++;
+      return Promise.resolve(new Response('{}', { status: 201 }));
+    },
+  });
+  await assert.rejects(
+    client.registerAccount({
+      email: 'parent@example.cy',
+      password: 'elevenchars',
+      role: 'parent',
+      tosVersion: 'tos-2026-09',
+      turnstileToken: 'turnstile-test-token',
+    }),
+  );
+  assert.equal(calls, 0, 'the client sent a body its own schema refuses');
+});

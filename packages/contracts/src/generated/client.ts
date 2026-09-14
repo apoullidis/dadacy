@@ -18,7 +18,7 @@ export interface Problem {
   readonly type: string;
   readonly title: string;
   readonly status: number;
-  readonly code: "invalid_input" | "unauthenticated" | "policy_denied" | "not_found" | "state_transition_invalid" | "idempotency_key_reuse" | "slot_taken" | "precondition_failed" | "rate_below_floor" | "outside_staffed_hours" | "sitter_review_hold" | "rate_limited" | "upstream_unavailable" | "internal_error";
+  readonly code: "invalid_input" | "unauthenticated" | "policy_denied" | "not_found" | "state_transition_invalid" | "idempotency_key_reuse" | "slot_taken" | "email_in_use" | "precondition_failed" | "rate_below_floor" | "outside_staffed_hours" | "password_breached" | "sitter_review_hold" | "rate_limited" | "upstream_unavailable" | "internal_error";
   readonly field?: string;
   readonly retryable: boolean;
   readonly [extension: string]: unknown;
@@ -27,6 +27,18 @@ export interface Problem {
 export interface PlatformFee {
   readonly currency: "EUR";
   readonly amountMinor: string;
+}
+
+export interface RegisterRequest {
+  readonly email: string;
+  readonly password: string;
+  readonly role: "parent" | "sitter";
+  readonly tosVersion: string;
+  readonly turnstileToken: string;
+}
+
+export interface RegisterResponse {
+  readonly accountId: string;
 }
 
 export interface ClientOptions {
@@ -50,15 +62,18 @@ export class ProblemResponseError extends Error {
 
 export interface KinvaraClient {
   readonly getPlatformFee: () => Promise<PlatformFee>;
+  readonly registerAccount: (body: RegisterRequest) => Promise<RegisterResponse>;
 }
 
 export function createClient(options: ClientOptions): KinvaraClient {
-  const doFetch = async (path: string, method: string): Promise<Response> => {
+  const doFetch = async (path: string, method: string, body?: unknown): Promise<Response> => {
     const impl = options.fetch ?? globalThis.fetch;
-    const response = await impl(`${options.baseUrl}${path}`, {
-      method,
-      headers: { accept: 'application/json, application/problem+json' },
-    });
+    const accept = 'application/json, application/problem+json';
+    const init: RequestInit =
+      body === undefined
+        ? { method, headers: { accept } }
+        : { method, headers: { accept, 'content-type': 'application/json' }, body: JSON.stringify(body) };
+    const response = await impl(`${options.baseUrl}${path}`, init);
     if (!response.ok) {
       throw new ProblemResponseError(schemas.Problem.parse(await response.json()) as Problem);
     }
@@ -69,6 +84,10 @@ export function createClient(options: ClientOptions): KinvaraClient {
       const response = await doFetch('/v1/meta/platform-fee', 'GET');
       return schemas.PlatformFee.parse(await response.json()) as PlatformFee;
     },
+    registerAccount: async (body: RegisterRequest) => {
+      const response = await doFetch('/v1/auth/register', 'POST', schemas.RegisterRequest.parse(body));
+      return schemas.RegisterResponse.parse(await response.json()) as RegisterResponse;
+    },
   };
 }
 
@@ -78,3 +97,9 @@ export function createClient(options: ClientOptions): KinvaraClient {
 type _getPlatformFeeParsed = ReturnType<typeof schemas.PlatformFee.parse> extends infer P ? P : never;
 const _getPlatformFeeCheck = null as unknown as _getPlatformFeeParsed satisfies PlatformFee;
 void _getPlatformFeeCheck;
+type _registerAccountParsed = ReturnType<typeof schemas.RegisterResponse.parse> extends infer P ? P : never;
+const _registerAccountCheck = null as unknown as _registerAccountParsed satisfies RegisterResponse;
+void _registerAccountCheck;
+type _registerAccountRequest = ReturnType<typeof schemas.RegisterRequest.parse> extends infer P ? P : never;
+const _registerAccountRequestCheck = null as unknown as _registerAccountRequest satisfies RegisterRequest;
+void _registerAccountRequestCheck;

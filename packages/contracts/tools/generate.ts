@@ -88,7 +88,21 @@ function operationObject(op: Operation): Record<string, unknown> {
       content: { [mediaType]: { schema: { $ref: `#/components/schemas/${r.schema}` } } },
     };
   }
-  return { operationId: op.operationId, summary: op.summary, responses };
+  const out: Record<string, unknown> = { operationId: op.operationId, summary: op.summary };
+  // T-141: an operation that takes a body declares it as a REQUIRED JSON body. Inserted
+  // between `summary` and `responses`, so an operation without one renders exactly as
+  // it did before this key existed.
+  if (op.request !== undefined) {
+    if (!Object.hasOwn(COMPONENT_SCHEMAS, op.request)) {
+      throw new TypeError(`${op.operationId}: request names an unknown schema ${op.request}`);
+    }
+    out['requestBody'] = {
+      required: true,
+      content: { 'application/json': { schema: { $ref: `#/components/schemas/${op.request}` } } },
+    };
+  }
+  out['responses'] = responses;
+  return out;
 }
 
 export function buildOpenApi(): Record<string, unknown> {
@@ -240,11 +254,29 @@ export function buildClient(doc: Record<string, unknown>): string {
           })()
         : 'unknown';
 
-      methods.push(`  readonly ${id}: () => Promise<${okSchema}>;`);
-      impls.push(`    ${id}: async () => {`);
-      impls.push(
-        `      const response = await doFetch('${String(path)}', '${method.toUpperCase()}');`,
-      );
+      // T-141: an operation with a request body takes it as its one argument, read
+      // from the DOCUMENT's `requestBody`. The body is parsed by its Zod schema BEFORE
+      // the request is sent, so the client refuses a payload the contract refuses
+      // instead of sending it. An operation without one renders exactly as before.
+      const requestBody = op['requestBody'];
+      const requestSchema = isRecord(requestBody)
+        ? (() => {
+            const content = requestBody['content'];
+            if (!isRecord(content)) throw new TypeError(`${id}: request body has no content`);
+            const json = content['application/json'];
+            if (!isRecord(json)) throw new TypeError(`${id}: request body is not application/json`);
+            return tsType(json['schema'], '');
+          })()
+        : undefined;
+      const param = requestSchema === undefined ? '' : `body: ${requestSchema}`;
+      const fetchArgs =
+        requestSchema === undefined
+          ? `'${String(path)}', '${method.toUpperCase()}'`
+          : `'${String(path)}', '${method.toUpperCase()}', schemas.${requestSchema}.parse(body)`;
+
+      methods.push(`  readonly ${id}: (${param}) => Promise<${okSchema}>;`);
+      impls.push(`    ${id}: async (${param}) => {`);
+      impls.push(`      const response = await doFetch(${fetchArgs});`);
       impls.push(`      return schemas.${okSchema}.parse(await response.json()) as ${okSchema};`);
       impls.push('    },');
       checks.push(
@@ -252,6 +284,15 @@ export function buildClient(doc: Record<string, unknown>): string {
       );
       checks.push(`const _${id}Check = null as unknown as _${id}Parsed satisfies ${okSchema};`);
       checks.push(`void _${id}Check;`);
+      if (requestSchema !== undefined) {
+        checks.push(
+          `type _${id}Request = ReturnType<typeof schemas.${requestSchema}.parse> extends infer P ? P : never;`,
+        );
+        checks.push(
+          `const _${id}RequestCheck = null as unknown as _${id}Request satisfies ${requestSchema};`,
+        );
+        checks.push(`void _${id}RequestCheck;`);
+      }
     }
   }
 
@@ -260,12 +301,18 @@ export function buildClient(doc: Record<string, unknown>): string {
   out.push('}');
   out.push('');
   out.push('export function createClient(options: ClientOptions): KinvaraClient {');
-  out.push('  const doFetch = async (path: string, method: string): Promise<Response> => {');
+  out.push(
+    '  const doFetch = async (path: string, method: string, body?: unknown): Promise<Response> => {',
+  );
   out.push('    const impl = options.fetch ?? globalThis.fetch;');
-  out.push('    const response = await impl(`${options.baseUrl}${path}`, {');
-  out.push('      method,');
-  out.push("      headers: { accept: 'application/json, application/problem+json' },");
-  out.push('    });');
+  out.push("    const accept = 'application/json, application/problem+json';");
+  out.push('    const init: RequestInit =');
+  out.push('      body === undefined');
+  out.push('        ? { method, headers: { accept } }');
+  out.push(
+    "        : { method, headers: { accept, 'content-type': 'application/json' }, body: JSON.stringify(body) };",
+  );
+  out.push('    const response = await impl(`${options.baseUrl}${path}`, init);');
   out.push('    if (!response.ok) {');
   out.push(
     '      throw new ProblemResponseError(schemas.Problem.parse(await response.json()) as Problem);',

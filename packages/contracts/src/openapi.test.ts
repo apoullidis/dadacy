@@ -25,7 +25,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ERROR_CODES } from './error-codes.ts';
-import { OPERATIONS, PlatformFee } from './endpoints.ts';
+import { COMPONENT_SCHEMAS, OPERATIONS } from './endpoints.ts';
 import { TYPE_BASE, isWireProblem } from './problem.ts';
 import { validate, type SchemaRoot } from './json-schema-check.ts';
 
@@ -50,6 +50,17 @@ const VALID_PROBLEM = {
   retryable: false,
 };
 
+/** T-141. SD §BE-4's register body, well formed. */
+const VALID_REGISTER = {
+  email: 'parent@example.cy',
+  password: 'correct-horse-battery',
+  role: 'parent',
+  tosVersion: 'tos-2026-09',
+  turnstileToken: 'turnstile-test-token',
+};
+/** One code point outside the Basic Multilingual Plane: two UTF-16 units, one character. */
+const ASTRAL = '\u{1F600}';
+
 /**
  * Every case: a payload, the component it is checked against, and the verdict
  * BOTH readings must reach. The expected column is written by hand, so a case
@@ -57,7 +68,7 @@ const VALID_PROBLEM = {
  */
 const CORPUS: {
   name: string;
-  schema: 'PlatformFee' | 'Problem';
+  schema: 'PlatformFee' | 'Problem' | 'RegisterRequest' | 'RegisterResponse';
   payload: unknown;
   valid: boolean;
 }[] = [
@@ -185,11 +196,124 @@ const CORPUS: {
     payload: { type: VALID_PROBLEM.type, title: 'x', status: 404, code: 'not_found' },
     valid: false,
   },
+
+  // T-141: SD §BE-4 register. The verdicts are written by hand from SA §SEC-5 ("minimum 12
+  // characters, no composition rules") and SD §BE-4's shape.
+  {
+    name: 'register: a well-formed parent',
+    schema: 'RegisterRequest',
+    payload: VALID_REGISTER,
+    valid: true,
+  },
+  {
+    name: 'register: a sitter',
+    schema: 'RegisterRequest',
+    payload: { ...VALID_REGISTER, role: 'sitter' },
+    valid: true,
+  },
+  {
+    name: 'register: exactly 12 ASCII characters, no composition rule',
+    schema: 'RegisterRequest',
+    payload: { ...VALID_REGISTER, password: 'aaaaaaaaaaaa' },
+    valid: true,
+  },
+  {
+    name: 'register: 11 ASCII characters',
+    schema: 'RegisterRequest',
+    payload: { ...VALID_REGISTER, password: 'abcdefghijk' },
+    valid: false,
+  },
+  {
+    name: 'register: 12 Greek characters',
+    schema: 'RegisterRequest',
+    payload: { ...VALID_REGISTER, password: 'αβγδεζηθικλμ' },
+    valid: true,
+  },
+  {
+    name: 'register: 11 ASCII + 1 astral character is 12 characters',
+    schema: 'RegisterRequest',
+    payload: { ...VALID_REGISTER, password: `abcdefghijk${ASTRAL}` },
+    valid: true,
+  },
+  {
+    name: 'register: a 6-emoji password is 12 UTF-16 units but 6 characters',
+    schema: 'RegisterRequest',
+    payload: { ...VALID_REGISTER, password: ASTRAL.repeat(6) },
+    valid: false,
+  },
+  {
+    name: 'register: a numeric password',
+    schema: 'RegisterRequest',
+    payload: { ...VALID_REGISTER, password: 123456789012 },
+    valid: false,
+  },
+  {
+    name: 'register: role admin',
+    schema: 'RegisterRequest',
+    payload: { ...VALID_REGISTER, role: 'admin' },
+    valid: false,
+  },
+  {
+    name: 'register: no turnstileToken',
+    schema: 'RegisterRequest',
+    payload: {
+      email: VALID_REGISTER.email,
+      password: VALID_REGISTER.password,
+      role: VALID_REGISTER.role,
+      tosVersion: VALID_REGISTER.tosVersion,
+    },
+    valid: false,
+  },
+  {
+    name: 'register: an extra key',
+    schema: 'RegisterRequest',
+    payload: { ...VALID_REGISTER, locale: 'el' },
+    valid: false,
+  },
+  {
+    name: 'register: an address with no @',
+    schema: 'RegisterRequest',
+    payload: { ...VALID_REGISTER, email: 'parent.example.cy' },
+    valid: false,
+  },
+  {
+    name: 'register: an internationalised address',
+    schema: 'RegisterRequest',
+    payload: { ...VALID_REGISTER, email: 'μαρία@παράδειγμα.cy' },
+    valid: false,
+  },
+  {
+    name: 'register: an empty tosVersion',
+    schema: 'RegisterRequest',
+    payload: { ...VALID_REGISTER, tosVersion: '' },
+    valid: false,
+  },
+  {
+    name: 'register response: a ULID account id',
+    schema: 'RegisterResponse',
+    payload: { accountId: '01J9ZQ6Y3M8K2V5T7R4N0P1B2C' },
+    valid: true,
+  },
+  {
+    name: 'register response: a lower-case account id',
+    schema: 'RegisterResponse',
+    payload: { accountId: '01j9zq6y3m8k2v5t7r4n0p1b2c' },
+    valid: false,
+  },
+  {
+    name: 'register response: an extra key',
+    schema: 'RegisterResponse',
+    payload: { accountId: '01J9ZQ6Y3M8K2V5T7R4N0P1B2C', email: 'parent@example.cy' },
+    valid: false,
+  },
 ];
 
 /** The Zod-side verdict, like for like with the document's. */
 function zodAccepts(payload: unknown, schemaName: string): boolean {
-  return schemaName === 'Problem' ? isWireProblem(payload) : PlatformFee.safeParse(payload).success;
+  if (schemaName === 'Problem') return isWireProblem(payload);
+  const schema = COMPONENT_SCHEMAS[schemaName];
+  if (schema === undefined) throw new TypeError(`the corpus names no component ${schemaName}`);
+  return schema.safeParse(payload).success;
 }
 
 test('Zod and the generated document agree, payload by payload, on every case in the corpus', () => {
@@ -297,4 +421,50 @@ test('the validator refuses a schema keyword it does not model, rather than igno
   );
   // And the control: a schema it DOES model does not throw.
   assert.deepEqual(validate('x', { type: 'string' }, DOC), []);
+});
+
+test('an operation with a request body declares it as a required application/json $ref, and one without declares none', () => {
+  const paths = DOC['paths'];
+  assert.ok(isRecord(paths));
+  const schemas = DOC.components?.schemas ?? {};
+  let withBody = 0;
+  for (const op of OPERATIONS) {
+    const byMethod: unknown = paths[op.path];
+    assert.ok(isRecord(byMethod), op.path);
+    const operation: unknown = byMethod[op.method];
+    assert.ok(isRecord(operation), `${op.path} ${op.method}`);
+    const requestBody: unknown = operation['requestBody'];
+    if (op.request === undefined) {
+      assert.equal(requestBody, undefined, `${op.operationId} declares a body it does not take`);
+      continue;
+    }
+    withBody++;
+    assert.ok(Object.hasOwn(schemas, op.request), `${op.operationId}: no schema ${op.request}`);
+    assert.deepEqual(requestBody, {
+      required: true,
+      content: { 'application/json': { schema: { $ref: `#/components/schemas/${op.request}` } } },
+    });
+  }
+  assert.ok(withBody >= 1, 'no operation declares a request body');
+});
+
+test('registerAccount is SD BE-4 POST /v1/auth/register with 201 RegisterResponse and Problem on 400, 409, 422 and 500', () => {
+  const op = OPERATIONS.find((o) => o.operationId === 'registerAccount');
+  assert.ok(op, 'no registerAccount operation');
+  assert.equal(op.method, 'post');
+  assert.equal(op.path, '/v1/auth/register');
+  assert.equal(op.request, 'RegisterRequest');
+  assert.deepEqual(
+    op.responses.map((r) => [r.status, r.schema]),
+    [
+      [201, 'RegisterResponse'],
+      [400, 'Problem'],
+      [409, 'Problem'],
+      [422, 'Problem'],
+      [500, 'Problem'],
+    ],
+  );
+  // SD §BE-4's two error codes are members of the published enum the document carries.
+  assert.ok(ERROR_CODES.includes('email_in_use'));
+  assert.ok(ERROR_CODES.includes('password_breached'));
 });

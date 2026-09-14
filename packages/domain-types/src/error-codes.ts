@@ -57,9 +57,13 @@ export const ERROR_CODES = [
   'state_transition_invalid',
   'idempotency_key_reuse',
   'slot_taken',
+  // T-141: SD §BE-4 `POST /v1/auth/register` → 409. NOT enumeration-resistant (OE-22 G1).
+  'email_in_use',
   'precondition_failed',
   'rate_below_floor',
   'outside_staffed_hours',
+  // T-141: SD §BE-4 register (and password change) → 422, the HIBP range check found it.
+  'password_breached',
   'sitter_review_hold',
   'rate_limited',
   'upstream_unavailable',

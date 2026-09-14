@@ -43,6 +43,74 @@
           }
         }
       }
+    },
+    "/v1/auth/register": {
+      "post": {
+        "operationId": "registerAccount",
+        "summary": "Create a parent or sitter account with a password and start its session (SD §BE-4). The session cookie `__Host-kv_session` is set on 201.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created, with `Set-Cookie: __Host-kv_session=…`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegisterResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`invalid_input`: a malformed body, or a password under 12 characters.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`email_in_use`. NOT enumeration-resistant (decisions.md OE-22 G1).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`password_breached`: the HIBP range check found the password. HIBP unavailable fails OPEN (201), never 5xx (OE-22 G2).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error. Carries nothing from the request.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -73,9 +141,11 @@
               "state_transition_invalid",
               "idempotency_key_reuse",
               "slot_taken",
+              "email_in_use",
               "precondition_failed",
               "rate_below_floor",
               "outside_staffed_hours",
+              "password_breached",
               "sitter_review_hold",
               "rate_limited",
               "upstream_unavailable",
@@ -128,6 +198,56 @@
         "required": [
           "currency",
           "amountMinor"
+        ],
+        "additionalProperties": false
+      },
+      "RegisterRequest": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "format": "email",
+            "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+          },
+          "password": {
+            "type": "string",
+            "pattern": "^[\\s\\S]{12,}$"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "parent",
+              "sitter"
+            ]
+          },
+          "tosVersion": {
+            "type": "string",
+            "minLength": 1
+          },
+          "turnstileToken": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "email",
+          "password",
+          "role",
+          "tosVersion",
+          "turnstileToken"
+        ],
+        "additionalProperties": false
+      },
+      "RegisterResponse": {
+        "type": "object",
+        "properties": {
+          "accountId": {
+            "type": "string",
+            "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+          }
+        },
+        "required": [
+          "accountId"
         ],
         "additionalProperties": false
       }

@@ -45,7 +45,10 @@ export {
   API_VERSION,
   COMPONENT_SCHEMAS,
   OPERATIONS,
+  PASSWORD_MIN_CHARACTERS,
   PlatformFee,
+  RegisterRequest,
+  RegisterResponse,
   type Operation,
   type OperationResponse,
 } from './endpoints.ts';
@@ -57,6 +60,8 @@ export {
   type KinvaraClient,
   type Problem as ProblemBody,
   type PlatformFee as PlatformFeeBody,
+  type RegisterRequest as RegisterRequestBody,
+  type RegisterResponse as RegisterResponseBody,
 } from './generated/client.ts';
 
 /**
