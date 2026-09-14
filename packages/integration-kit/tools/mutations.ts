@@ -10,11 +10,21 @@
  * distinct outcome and none reads as another:
  *   - HARNESS ERROR: the find string does not occur exactly once, the written copy does not carry
  *     the replacement, the copy differs from the original in anything but it, Vitest wrote no
- *     report, or the CONTROL run (the unmutated copy) is not all green;
+ *     report, the CONTROL run (the unmutated copy) is not all green, or a mutant's `because` does
+ *     not name exactly its `red` tests;
  *   - NOT RED: the mutation landed and a named test still passed, or the run lost tests (a file
  *     that failed to load is a crash, not a refusal: every mutant must register the CONTROL's
- *     count of tests, file by file);
- *   - RED: exit non-zero, every named test present with status `failed`, and the count intact.
+ *     count of tests, file by file), or — for a mutant with `because` — a named test failed on
+ *     something other than its assertion;
+ *   - RED: exit non-zero, every named test present with status `failed`, the count intact, and,
+ *     with `because`, each named test's first failure line an `AssertionError` carrying that text.
+ *
+ * QR-A1 (T-142 QA): judged by status alone, a RUN-TIME crash inside the code under test scores
+ * RED, because the test catches the crash and fails on a later assertion. M1–M8 are judged by
+ * status alone, as they were at 52a665e (QA checked their failure shapes by hand). M9 onward
+ * carry `because`, so a crash cannot pass for their refusal. Every failed test's first failure
+ * line is printed under it, for every mutant.
+ *
  * Exit 0 only if the CONTROL passed and every mutant is RED.
  */
 import { spawnSync } from 'node:child_process';
@@ -40,6 +50,8 @@ interface Mutant {
   readonly find: string;
   readonly replace: string;
   readonly red: readonly string[];
+  /** Per named test: text its first failure line must carry (QR-A1). Keys must equal `red`. */
+  readonly because?: Readonly<Record<string, string>>;
 }
 
 const T = {
@@ -69,6 +81,33 @@ const T = {
   stopAtFive:
     'retries stop at five: a persistent 503 is attempted six times and then thrown as upstream_unavailable',
   retryPin: 'RETRY pins SD INT: caps of 200, 400, 800, 1600 and 3200 ms, at most 5 retries',
+  // Rework 1 (QR-F1, QR-F2, QR-A3).
+  reclose:
+    'a permit issued before the breaker last left closed is not counted after a probe re-closes it: 20 pre-open failures settled then leave it closed',
+  lateWhileOpen:
+    'pre-open failures settled while the breaker is open are not counted: they neither re-open it nor move the probe time',
+  recloseCaller:
+    'through the caller: 20 attempts in flight when the breaker opened, timing out at 45000 ms after a probe re-closed it, leave it closed',
+  nullProbe:
+    'a half-open probe whose transport resolves null or undefined is settled as failed: the call ends in upstream_unavailable, the breaker re-opens, and 30 s later a healthy call closes it',
+  clockThrows:
+    'every exit from an attempt settles its permit: a clock that throws while arming the probe attempt rejects that call and the probe is settled as failed',
+  hookThrows:
+    'a throwing onStateChange changes nothing: throwing on open, on half_open, on closed or on all three, every request sees the kit outcome and the breaker still opens, probes and closes',
+  probeBounded:
+    'an unsettled probe is bounded: 30000 ms after it was issued one new probe is admitted, and the stale probe late settle is ignored',
+  invalidResponse:
+    'a response that is not an object with a numeric status is invalid_status: each is retried, ends in upstream_unavailable after six attempts, and settles every permit once',
+  timeoutCeiling:
+    'a timeout above 2147483647 ms is refused when the caller is built, and 2147483647 is accepted',
+} as const;
+
+const B = {
+  reclose:
+    '20 pre-open failures settled after the re-close are not counted: the breaker stays closed',
+  lateWhileOpen: 'did not re-open it: the probe is still due at 30000 ms',
+  recloseCaller:
+    'the 20 timeouts of attempts admitted before the breaker opened are not counted: it stays closed',
 } as const;
 
 const MUTANTS: readonly Mutant[] = [
@@ -137,11 +176,113 @@ const MUTANTS: readonly Mutant[] = [
     replace: 'maxRetries: 4,',
     red: [T.stopAtFive, T.timeoutSix, T.retryPin],
   },
+  {
+    id: 'M9',
+    mechanism: 'QR-F1: the closed-period guard deleted (a pre-open permit is counted)',
+    file: 'src/breaker.ts',
+    find: '      if (periodOf.get(permit) !== closedPeriod) return;\n',
+    replace: '',
+    red: [T.reclose, T.lateWhileOpen, T.recloseCaller],
+    because: {
+      [T.reclose]: B.reclose,
+      [T.lateWhileOpen]: B.lateWhileOpen,
+      [T.recloseCaller]: B.recloseCaller,
+    },
+  },
+  {
+    id: 'M10',
+    mechanism: "QR-F1: the guard reverted to 52a665e's `state !== 'closed'`",
+    file: 'src/breaker.ts',
+    find: '      if (periodOf.get(permit) !== closedPeriod) return;\n',
+    replace: "      if (state !== 'closed') return;\n",
+    red: [T.reclose, T.recloseCaller],
+    because: { [T.reclose]: B.reclose, [T.recloseCaller]: B.recloseCaller },
+  },
+  {
+    id: 'M11',
+    mechanism: "QR-F2a: the response's status read directly again, as at 52a665e",
+    file: 'src/caller.ts',
+    find: 'const status = statusOf(outcome.response);',
+    replace: 'const { status } = outcome.response;',
+    red: [T.invalidResponse, T.nullProbe],
+    because: {
+      [T.invalidResponse]: 'null ends in UpstreamCallFailedError, not TypeError',
+      [T.nullProbe]: 'a null probe response ends in UpstreamCallFailedError, not TypeError',
+    },
+  },
+  {
+    id: 'M12',
+    mechanism: 'QR-F2a: an exception from a `status` getter no longer caught',
+    file: 'src/caller.ts',
+    find: '  try {\n    status = (response as { readonly status?: unknown }).status;\n  } catch {\n    return undefined;\n  }\n',
+    replace: '  status = (response as { readonly status?: unknown }).status;\n',
+    red: [T.invalidResponse],
+    because: {
+      [T.invalidResponse]:
+        'a status getter that throws ends in UpstreamCallFailedError, not TypeError: status getter',
+    },
+  },
+  {
+    id: 'M13',
+    mechanism: 'QR-F2a: the permit settle moved out of `finally` (an exception skips it)',
+    file: 'src/caller.ts',
+    find: '        } finally {\n          breaker.settle(permit, failed);\n        }\n',
+    replace:
+      '        } catch (error) {\n          throw error;\n        }\n        breaker.settle(permit, failed);\n',
+    red: [T.clockThrows],
+    because: {
+      [T.clockThrows]:
+        'the probe was settled as failed on the way out: the breaker re-opened instead of holding the probe',
+    },
+  },
+  {
+    id: 'M14',
+    mechanism: 'QR-F2b: the onStateChange isolation deleted (a throw escapes the transition)',
+    file: 'src/breaker.ts',
+    find: '    try {\n      hook?.(next);\n    } catch {',
+    replace: '    {\n      hook?.(next);\n    }\n    if (false) {',
+    red: [T.hookThrows],
+    because: {
+      [T.hookThrows]:
+        'hook throwing on open: the request that trips the breaker is refused as circuit_open, not with the hook error',
+    },
+  },
+  {
+    id: 'M15',
+    mechanism: 'QR-F2c: re-admission deleted (an unsettled probe holds the slot forever)',
+    file: 'src/breaker.ts',
+    find: '(probe === undefined || now - probeIssuedAt >= BREAKER.probeAfterMs)',
+    replace: 'probe === undefined',
+    red: [T.probeBounded],
+    because: {
+      [T.probeBounded]: 'a new probe is admitted 30000 ms after the unsettled probe was issued',
+    },
+  },
+  {
+    id: 'M16',
+    mechanism: "QR-F2c: a superseded probe's late settle treated as the current probe's",
+    file: 'src/breaker.ts',
+    find: '        if (permit !== probe) return;\n',
+    replace: '',
+    red: [T.probeBounded],
+    because: {
+      [T.probeBounded]: 'the stale probe late failure is ignored: the breaker did not re-open',
+    },
+  },
+  {
+    id: 'M17',
+    mechanism: 'QR-A3: the 2147483647 ms timeout ceiling deleted',
+    file: 'src/caller.ts',
+    find: ' || timeoutMs > MAX_TIMEOUT_MS',
+    replace: '',
+    red: [T.timeoutCeiling],
+    because: { [T.timeoutCeiling]: 'timeoutMs 2147483648 is refused' },
+  },
 ];
 
 interface FileResult {
   name: string;
-  assertionResults: { title: string; status: string }[];
+  assertionResults: { title: string; status: string; failureMessages?: string[] }[];
 }
 interface Report {
   numTotalTests: number;
@@ -212,6 +353,14 @@ function harnessError(message: string): never {
 const perFile = (r: Report): Map<string, number> =>
   new Map(r.testResults.map((f) => [basename(f.name), f.assertionResults.length]));
 
+for (const m of MUTANTS) {
+  if (m.because === undefined) continue;
+  const keys = JSON.stringify(Object.keys(m.because).sort());
+  if (keys !== JSON.stringify([...m.red].sort())) {
+    harnessError(`${m.id}: \`because\` must name exactly the tests in \`red\``);
+  }
+}
+
 const control = runCopy(undefined);
 if (control.report === undefined) harnessError('CONTROL: vitest wrote no report');
 if (control.status !== 0 || !control.report.success || control.report.numFailedTests !== 0) {
@@ -244,24 +393,41 @@ for (const m of MUTANTS) {
   const status = new Map(
     r.testResults.flatMap((f) => f.assertionResults.map((a) => [a.title, a.status])),
   );
+  const firstLine = new Map(
+    r.testResults.flatMap((f) =>
+      f.assertionResults.map((a) => [a.title, (a.failureMessages?.[0] ?? '').split('\n')[0] ?? '']),
+    ),
+  );
   for (const title of m.red) {
     const s = status.get(title);
-    if (s !== 'failed')
+    if (s !== 'failed') {
       problems.push(`named test ${s === undefined ? 'ABSENT' : s.toUpperCase()}: ${title}`);
+      continue;
+    }
+    const want = m.because?.[title];
+    const got = firstLine.get(title) ?? '';
+    if (want !== undefined && !(got.startsWith('AssertionError') && got.includes(want))) {
+      problems.push(
+        `named test failed, but not on its assertion ${JSON.stringify(want)}: ${title}`,
+      );
+    }
   }
   const failed = [...status].filter(([, s]) => s === 'failed').map(([t]) => t);
+  const judged = m.because === undefined ? 'status' : 'status + assertion text';
   if (problems.length === 0) {
     red++;
     console.log(
-      `RED      ${m.id}  ${m.mechanism}  (exit ${String(run.status)}; ${String(failed.length)} of ${String(r.numTotalTests)} failed)`,
+      `RED      ${m.id}  ${m.mechanism}  (exit ${String(run.status)}; ${String(failed.length)} of ${String(r.numTotalTests)} failed; judged by ${judged})`,
     );
   } else {
     console.log(
-      `NOT RED  ${m.id}  ${m.mechanism}  (exit ${String(run.status)}; ${String(failed.length)} of ${String(r.numTotalTests)} failed)`,
+      `NOT RED  ${m.id}  ${m.mechanism}  (exit ${String(run.status)}; ${String(failed.length)} of ${String(r.numTotalTests)} failed; judged by ${judged})`,
     );
     for (const p of problems) console.log(`           - ${p}`);
   }
-  for (const t of failed) console.log(`           failed: ${t}`);
+  for (const t of failed) {
+    console.log(`           failed: ${t}\n                   :: ${firstLine.get(t) ?? ''}`);
+  }
 }
 
 if (red !== MUTANTS.length) {

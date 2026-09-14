@@ -52,20 +52,31 @@ export interface UpstreamCallerOptions {
   readonly clock?: Clock;
   /** In [0, 1). Defaults to `Math.random`. */
   readonly random?: () => number;
-  /** Per attempt. Defaults to SD §INT's request-path 2 s; pass `TIMEOUT_MS.worker` in `worker`. */
+  /**
+   * Per attempt, an integer from 1 to 2147483647. Defaults to SD §INT's request-path 2 s; pass
+   * `TIMEOUT_MS.worker` in `worker`.
+   */
   readonly timeoutMs?: number;
 }
 
 export interface UpstreamCaller {
   /**
    * Resolves with the first response that is not a failure: any status from 100 to 599 other than
-   * 429 and 5xx, 4xx included and never retried. Rejects with `UpstreamCallFailedError` when the
-   * breaker refuses an attempt, or when the sixth attempt fails.
+   * 429 and 5xx, 4xx included and never retried. A response that is not an object whose `status`
+   * reads as an integer from 100 to 599 is a failure (`invalid_status`) and is retried.
+   *
+   * Rejects with `UpstreamCallFailedError` when the breaker refuses an attempt, or when the sixth
+   * attempt fails. Two programmer errors reject otherwise: `TypeError(RANDOM_REFUSED)` from a bad
+   * `random`, and whatever an injected `clock` throws. On every exit, each attempt's permit has
+   * been settled exactly once.
    */
   call<R extends UpstreamResponse>(send: Send<R>): Promise<R>;
 }
 
 export const RANDOM_REFUSED = 'integration-kit: random() must return a finite number in [0, 1)';
+
+/** Node's timer ceiling: a longer `setTimeout` delay is clamped to 1 ms and fires at once (QR-A3). */
+const MAX_TIMEOUT_MS = 2_147_483_647;
 
 /** SD §INT Retry row: "only on 5xx/timeout/429; never on 4xx". */
 export function isRetryableStatus(status: number): boolean {
@@ -77,12 +88,30 @@ type Outcome<R> =
   | { readonly kind: 'timeout' }
   | { readonly kind: 'transport_error' };
 
+/**
+ * The response's `status` if the response is a non-null object whose `status` reads as a number;
+ * otherwise `undefined`, which is `invalid_status`. It never throws: a `null`, `undefined` or
+ * primitive response, and a `status` getter that throws, are upstream failures (OD-113).
+ */
+function statusOf(response: unknown): number | undefined {
+  if (typeof response !== 'object' || response === null) return undefined;
+  let status: unknown;
+  try {
+    status = (response as { readonly status?: unknown }).status;
+  } catch {
+    return undefined;
+  }
+  return typeof status === 'number' ? status : undefined;
+}
+
 function failureOf<R extends UpstreamResponse>(
   outcome: Outcome<R>,
 ): UpstreamFailureReason | undefined {
   if (outcome.kind !== 'response') return outcome.kind;
-  const { status } = outcome.response;
-  if (!Number.isInteger(status) || status < 100 || status > 599) return 'invalid_status';
+  const status = statusOf(outcome.response);
+  if (status === undefined || !Number.isInteger(status) || status < 100 || status > 599) {
+    return 'invalid_status';
+  }
   if (!isRetryableStatus(status)) return undefined;
   return status === 429 ? 'rate_limited' : 'server_error';
 }
@@ -125,7 +154,7 @@ export function createUpstreamCaller(options: UpstreamCallerOptions): UpstreamCa
   const clock = options.clock ?? systemClock;
   const random = options.random ?? Math.random;
   const timeoutMs = options.timeoutMs ?? TIMEOUT_MS.requestPath;
-  if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) {
+  if (!Number.isInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_TIMEOUT_MS) {
     throw new TypeError('integration-kit: timeoutMs must be a positive integer');
   }
 
@@ -135,9 +164,18 @@ export function createUpstreamCaller(options: UpstreamCallerOptions): UpstreamCa
         const permit = breaker.acquire();
         if (permit === undefined) throw new UpstreamCallFailedError('circuit_open', made);
 
-        const outcome = await attempt(send, clock, timeoutMs);
-        const reason = failureOf(outcome);
-        breaker.settle(permit, reason !== undefined);
+        // Every exit from here settles the permit exactly once. An exception between acquire()
+        // and settle() would otherwise strand it, and a stranded probe refuses the provider (OD-113).
+        let failed = true;
+        let outcome: Outcome<R>;
+        let reason: UpstreamFailureReason | undefined;
+        try {
+          outcome = await attempt(send, clock, timeoutMs);
+          reason = failureOf(outcome);
+          failed = reason !== undefined;
+        } finally {
+          breaker.settle(permit, failed);
+        }
 
         if (reason === undefined && outcome.kind === 'response') return outcome.response;
         if (made >= RETRY.maxRetries) {
