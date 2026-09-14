@@ -3,6 +3,19 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "timeout, retry, breaker, webhook ingest, idempotency",
-  "//": "PLACEHOLDER (T-001). Topology only, per SD §DH-1 — no source, no dependencies, no scripts. The owning agent (tech-lead) adds src/, dependencies and the typecheck/lint/test/build scripts turbo.json already declares."
+  "description": "The request-path adapter behaviours of SD §INT: per-attempt timeout, retry with full jitter, circuit breaker (T-142, OE-22). Webhook ingest, idempotency, replay and reconciliation land with the first adapter that needs each.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./testing": "./src/testing.ts"
+  },
+  "scripts": {
+    "test": "node tools/run-tests.ts"
+  },
+  "dependencies": {
+    "@kinvara/domain-types": "workspace:*"
+  },
+  "devDependencies": {
+    "vite": "8.2.2",
+    "vitest": "5.0.0"
+  }
 }
