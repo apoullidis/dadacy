@@ -45,14 +45,17 @@ interface Mutant {
 const T = {
   no4xx:
     'no retry on a 4xx: 400, 401, 403, 404, 405, 409, 410, 412, 413 and 422 each come back after exactly one attempt',
-  retryable: 'isRetryableStatus is true for 429 and 500 to 599 and false for every other status from 100 to 499',
+  retryable:
+    'isRetryableStatus is true for 429 and 500 to 599 and false for every other status from 100 to 499',
   fourxxBreaker: 'a 4xx is a success for the breaker: 20 consecutive 404s leave it closed',
-  opens: 'the breaker opens at 50% failure over 20 calls: 10 failed of 20 opens it and the next call is refused',
+  opens:
+    'the breaker opens at 50% failure over 20 calls: 10 failed of 20 opens it and the next call is refused',
   refusesThroughCaller:
     'through the caller: an open breaker refuses the next call without reaching the transport, as upstream_unavailable with reason circuit_open',
   whileOpen:
     'while open every call is refused; at 30000 ms exactly one probe is admitted and a second call is still refused',
-  breakerPin: 'BREAKER pins SD INT: opens at 50% failure over 20 calls in 60000 ms, probe after 30000 ms',
+  breakerPin:
+    'BREAKER pins SD INT: opens at 50% failure over 20 calls in 60000 ms, probe after 30000 ms',
   timeout2s:
     'the request-path timeout is 2 s: an attempt still pending at 1999 ms is not aborted, and at 2000 ms it is',
   timeoutSix:
@@ -98,7 +101,8 @@ const MUTANTS: readonly Mutant[] = [
     mechanism: 'the refusal while open deleted: acquire admits every call',
     file: 'src/breaker.ts',
     find: '      return undefined;',
-    replace: '      const admitted: Permit = Object.freeze({ probe: false });\n      issued.add(admitted);\n      return admitted;',
+    replace:
+      '      const admitted: Permit = Object.freeze({ probe: false });\n      issued.add(admitted);\n      return admitted;',
     red: [T.opens, T.whileOpen, T.refusesThroughCaller],
   },
   {
@@ -161,7 +165,10 @@ function runCopy(mutant: Mutant | undefined): Run {
       const target = join(tmp, mutant.file);
       const original = readFileSync(target, 'utf8');
       const hits = original.split(mutant.find).length - 1;
-      if (hits !== 1) harnessError(`${mutant.id}: the find string occurs ${String(hits)} times in ${mutant.file}, not once`);
+      if (hits !== 1)
+        harnessError(
+          `${mutant.id}: the find string occurs ${String(hits)} times in ${mutant.file}, not once`,
+        );
       const mutated = original.replace(mutant.find, () => mutant.replace);
       writeFileSync(target, mutated);
       const readBack = readFileSync(target, 'utf8');
@@ -172,14 +179,21 @@ function runCopy(mutant: Mutant | undefined): Run {
       if (readBack.split(mutant.find).length - 1 !== 0 && !mutant.replace.includes(mutant.find)) {
         harnessError(`${mutant.id}: the find string is still present after the replacement`);
       }
-      console.log(`${mutant.id}: landed in ${mutant.file} (1 occurrence replaced; ${String(original.length)} -> ${String(readBack.length)} bytes)`);
+      console.log(
+        `${mutant.id}: landed in ${mutant.file} (1 occurrence replaced; ${String(original.length)} -> ${String(readBack.length)} bytes)`,
+      );
     }
 
     const reportPath = join(tmp, 'report.json');
     const run = spawnSync(
       join(PKG, 'node_modules', '.bin', 'vitest'),
       ['run', '--reporter=json', `--outputFile.json=${reportPath}`],
-      { cwd: tmp, encoding: 'utf8', env: { ...process.env, NO_COLOR: '1' }, maxBuffer: 64 * 1024 * 1024 },
+      {
+        cwd: tmp,
+        encoding: 'utf8',
+        env: { ...process.env, NO_COLOR: '1' },
+        maxBuffer: 64 * 1024 * 1024,
+      },
     );
     const report = existsSync(reportPath)
       ? (JSON.parse(readFileSync(reportPath, 'utf8')) as Report)
@@ -201,7 +215,9 @@ const perFile = (r: Report): Map<string, number> =>
 const control = runCopy(undefined);
 if (control.report === undefined) harnessError('CONTROL: vitest wrote no report');
 if (control.status !== 0 || !control.report.success || control.report.numFailedTests !== 0) {
-  harnessError(`CONTROL: the unmutated copy is not green (exit ${String(control.status)}, failed ${String(control.report.numFailedTests)})`);
+  harnessError(
+    `CONTROL: the unmutated copy is not green (exit ${String(control.status)}, failed ${String(control.report.numFailedTests)})`,
+  );
 }
 const controlFiles = perFile(control.report);
 console.log(
@@ -213,26 +229,36 @@ let red = 0;
 for (const m of MUTANTS) {
   const run = runCopy(m);
   const problems: string[] = [];
-  if (run.report === undefined) harnessError(`${m.id}: vitest wrote no report (exit ${String(run.status)})`);
+  if (run.report === undefined)
+    harnessError(`${m.id}: vitest wrote no report (exit ${String(run.status)})`);
   const r = run.report;
   if (run.status === 0) problems.push('vitest exited 0');
   const files = perFile(r);
   for (const [f, n] of controlFiles) {
     if (files.get(f) !== n) {
-      problems.push(`${f} registered ${String(files.get(f) ?? 0)} tests, CONTROL ${String(n)} (a crash, not a refusal)`);
+      problems.push(
+        `${f} registered ${String(files.get(f) ?? 0)} tests, CONTROL ${String(n)} (a crash, not a refusal)`,
+      );
     }
   }
-  const status = new Map(r.testResults.flatMap((f) => f.assertionResults.map((a) => [a.title, a.status])));
+  const status = new Map(
+    r.testResults.flatMap((f) => f.assertionResults.map((a) => [a.title, a.status])),
+  );
   for (const title of m.red) {
     const s = status.get(title);
-    if (s !== 'failed') problems.push(`named test ${s === undefined ? 'ABSENT' : s.toUpperCase()}: ${title}`);
+    if (s !== 'failed')
+      problems.push(`named test ${s === undefined ? 'ABSENT' : s.toUpperCase()}: ${title}`);
   }
   const failed = [...status].filter(([, s]) => s === 'failed').map(([t]) => t);
   if (problems.length === 0) {
     red++;
-    console.log(`RED      ${m.id}  ${m.mechanism}  (exit ${String(run.status)}; ${String(failed.length)} of ${String(r.numTotalTests)} failed)`);
+    console.log(
+      `RED      ${m.id}  ${m.mechanism}  (exit ${String(run.status)}; ${String(failed.length)} of ${String(r.numTotalTests)} failed)`,
+    );
   } else {
-    console.log(`NOT RED  ${m.id}  ${m.mechanism}  (exit ${String(run.status)}; ${String(failed.length)} of ${String(r.numTotalTests)} failed)`);
+    console.log(
+      `NOT RED  ${m.id}  ${m.mechanism}  (exit ${String(run.status)}; ${String(failed.length)} of ${String(r.numTotalTests)} failed)`,
+    );
     for (const p of problems) console.log(`           - ${p}`);
   }
   for (const t of failed) console.log(`           failed: ${t}`);
@@ -242,4 +268,6 @@ if (red !== MUTANTS.length) {
   console.error(`\nMUTATIONS FAIL  ${String(red)} of ${String(MUTANTS.length)} mutants red`);
   process.exit(1);
 }
-console.log(`\nMUTATIONS PASS  ${String(red)} of ${String(MUTANTS.length)} mutants red, CONTROL green`);
+console.log(
+  `\nMUTATIONS PASS  ${String(red)} of ${String(MUTANTS.length)} mutants red, CONTROL green`,
+);

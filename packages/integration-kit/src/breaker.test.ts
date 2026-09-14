@@ -61,7 +61,11 @@ test('outcomes older than 60 s do not count: 10 failures at 0 ms and 10 successe
   record(insideBreaker, 10, 10);
   await inside.advance(59_999);
   record(insideBreaker, 10, 0);
-  assert.equal(insideBreaker.state, 'open', 'CONTROL: the same outcomes 1 ms earlier are inside the window');
+  assert.equal(
+    insideBreaker.state,
+    'open',
+    'CONTROL: the same outcomes 1 ms earlier are inside the window',
+  );
 });
 
 test('while open every call is refused; at 30000 ms exactly one probe is admitted and a second call is still refused', async () => {
@@ -75,7 +79,11 @@ test('while open every call is refused; at 30000 ms exactly one probe is admitte
   assert.equal(breaker.state, 'half_open');
   const probe = breaker.acquire();
   assert.deepEqual(probe, { probe: true }, 'one probe at 30000 ms');
-  assert.equal(breaker.acquire(), undefined, 'a second call while the probe is in flight is refused');
+  assert.equal(
+    breaker.acquire(),
+    undefined,
+    'a second call while the probe is in flight is refused',
+  );
 });
 
 test('a successful probe closes the breaker with an empty window; a failed probe re-opens it for another 30 s', async () => {
@@ -98,7 +106,11 @@ test('a successful probe closes the breaker with an empty window; a failed probe
   breaker.settle(goodProbe, false);
   assert.equal(breaker.state, 'closed');
   record(breaker, 19, 19);
-  assert.equal(breaker.state, 'closed', 'the window restarted empty: 19 failures are below the volume');
+  assert.equal(
+    breaker.state,
+    'closed',
+    'the window restarted empty: 19 failures are below the volume',
+  );
   assert.deepEqual(changes, ['open', 'half_open', 'open', 'half_open', 'closed']);
 });
 
@@ -122,11 +134,17 @@ test('a permit settles exactly once, and only on the breaker that issued it', ()
   assert.throws(() => other.settle(permit, true), { name: 'TypeError', message: PERMIT_REFUSED });
   breaker.settle(permit, true);
   assert.throws(() => breaker.settle(permit, true), { name: 'TypeError', message: PERMIT_REFUSED });
-  assert.throws(() => breaker.settle({ probe: true }, false), { name: 'TypeError', message: PERMIT_REFUSED });
+  assert.throws(() => breaker.settle({ probe: true }, false), {
+    name: 'TypeError',
+    message: PERMIT_REFUSED,
+  });
 });
 
 test('BREAKER pins SD INT: opens at 50% failure over 20 calls in 60000 ms, probe after 30000 ms', () => {
-  assert.deepEqual({ ...BREAKER }, { failureRatio: 0.5, minimumCalls: 20, windowMs: 60000, probeAfterMs: 30000 });
+  assert.deepEqual(
+    { ...BREAKER },
+    { failureRatio: 0.5, minimumCalls: 20, windowMs: 60000, probeAfterMs: 30000 },
+  );
 });
 
 test('through the caller: an open breaker refuses the next call without reaching the transport, as upstream_unavailable with reason circuit_open', async () => {

@@ -40,7 +40,8 @@ export interface CircuitBreakerOptions {
   readonly onStateChange?: (state: BreakerState) => void;
 }
 
-export const PERMIT_REFUSED = 'CircuitBreaker: this permit was already settled or was not issued by this breaker';
+export const PERMIT_REFUSED =
+  'CircuitBreaker: this permit was already settled or was not issued by this breaker';
 
 export function createCircuitBreaker(options: CircuitBreakerOptions = {}): CircuitBreaker {
   const clock = options.clock ?? systemClock;
@@ -106,7 +107,10 @@ export function createCircuitBreaker(options: CircuitBreakerOptions = {}): Circu
       const from = now - BREAKER.windowMs;
       window = window.filter((o) => o.at > from);
       const failures = window.filter((o) => o.failed).length;
-      if (window.length >= BREAKER.minimumCalls && failures / window.length >= BREAKER.failureRatio) {
+      if (
+        window.length >= BREAKER.minimumCalls &&
+        failures / window.length >= BREAKER.failureRatio
+      ) {
         open(now);
       }
     },

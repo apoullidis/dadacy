@@ -77,7 +77,9 @@ type Outcome<R> =
   | { readonly kind: 'timeout' }
   | { readonly kind: 'transport_error' };
 
-function failureOf<R extends UpstreamResponse>(outcome: Outcome<R>): UpstreamFailureReason | undefined {
+function failureOf<R extends UpstreamResponse>(
+  outcome: Outcome<R>,
+): UpstreamFailureReason | undefined {
   if (outcome.kind !== 'response') return outcome.kind;
   const { status } = outcome.response;
   if (!Number.isInteger(status) || status < 100 || status > 599) return 'invalid_status';

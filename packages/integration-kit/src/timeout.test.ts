@@ -42,7 +42,11 @@ test('the request-path timeout is 2 s: an attempt still pending at 1999 ms is no
 
   await clock.advance(1);
   assert.equal(t.signals[0]?.aborted, true, 'timed out at 2000 ms');
-  assert.equal(t.signals.length, 2, 'the timeout is retryable: with a zero wait the second attempt starts at 2000 ms');
+  assert.equal(
+    t.signals.length,
+    2,
+    'the timeout is retryable: with a zero wait the second attempt starts at 2000 ms',
+  );
   assert.equal(call.settled, false);
 });
 
@@ -63,7 +67,10 @@ test('a call whose every attempt times out settles as upstream_unavailable after
   assert.equal(call.error.attempts, 6);
   assert.equal(call.error.code, 'upstream_unavailable');
   assert.equal(t.signals.length, 6);
-  assert.ok(t.signals.every((s) => s.aborted), 'every attempt was aborted');
+  assert.ok(
+    t.signals.every((s) => s.aborted),
+    'every attempt was aborted',
+  );
   assert.equal(clock.pending(), 0, 'no timer left armed');
 });
 
@@ -88,7 +95,12 @@ test('a response before the timeout is returned, and its timer is cleared', asyn
 test('a worker caller passing the 5 s timeout is not aborted at 4999 ms and is at 5000 ms', async () => {
   const clock = createManualClock();
   const breaker = createCircuitBreaker({ clock });
-  const caller = createUpstreamCaller({ breaker, clock, random: () => 0, timeoutMs: TIMEOUT_MS.worker });
+  const caller = createUpstreamCaller({
+    breaker,
+    clock,
+    random: () => 0,
+    timeoutMs: TIMEOUT_MS.worker,
+  });
   const t = hangingTransport();
   track(caller.call(t.send));
   await clock.advance(4999);
