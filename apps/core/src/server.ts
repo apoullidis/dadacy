@@ -7,14 +7,20 @@
  * §6): on SIGTERM stop accepting new connections, let in-flight requests
  * finish, exit 0 inside the 30 s `stop_grace_period`; a second signal exits 1.
  *
- * Nest's own `enableShutdownHooks()` is deliberately NOT used: after closing,
- * it re-raises the signal against its own process, so the process dies BY
- * SIGTERM (143) and the entrypoint reports 143, where the contract says 0.
+ * Nest's own `enableShutdownHooks()` is deliberately NOT used. A READING, not a
+ * measurement: `@nestjs/core` 11.2.3 `nest-application-context.js:213` calls
+ * `process.kill(process.pid, signal)` after closing, i.e. re-raises the signal
+ * against its own process, where the contract asks for exit 0.
+ *
+ * IN THE IMAGE THIS DRAIN DOES NOT RUN TODAY (decisions.md OD-100, measured in
+ * T-135 § E10/E11): `entrypoint.mjs` forwards SIGTERM to `node --run start`,
+ * which exits 143 without forwarding it, so this process is never signalled.
+ * The drain is proven in-process only (`test/filter.test.ts`).
  *
  * `/healthz` is the image HEALTHCHECK's route (`docker/app-runtime/
  * healthcheck.mjs` requires a 200 there), registered on the Fastify instance
  * rather than as a Nest controller: it is a runtime-contract route, not part
- * of the API document, and it can never reach the filter.
+ * of the API document, and its handler does not throw.
  */
 import 'reflect-metadata';
 import type { Type } from '@nestjs/common';

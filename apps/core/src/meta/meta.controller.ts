@@ -5,8 +5,10 @@
  * `packages/contracts`, the source the published document is generated from,
  * so the served route cannot drift from the document's path by an edit to
  * this file. The BODY is parsed by the contract's own Zod schema before it is
- * returned, so a response the document would refuse is a 500 (through the
- * filter), never a 200.
+ * returned, so a body that schema refuses throws a ZodError, which the filter
+ * answers as a non-domain 500. That refusal is NOT planted in any test; what is
+ * tested is that the served body validates against the committed document
+ * (`test/container.test.ts`).
  */
 import { Controller, Get } from '@nestjs/common';
 import {

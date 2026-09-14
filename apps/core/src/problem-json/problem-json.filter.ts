@@ -51,6 +51,8 @@
  * Problem — or whose `status` disagrees with the response status — is replaced
  * by the fixed 500. That check does not see a forged `title` (the wire schema
  * accepts any non-empty string there); T-023 OPEN (d) stands for `title`.
+ * This backstop is NOT planted in any test (no forged or redefined error is
+ * thrown through the filter); it is a reading of the code above, nothing more.
  */
 import {
   Catch,
