@@ -11,6 +11,14 @@
 # deletes the canonical order and must go red, K22 plants composite keys whose column order only the
 # catalogue knows, and K23–K25 are the step's own I-ORDER refusals.
 #
+# T-152 rework 1 — K26–K34: row-level security policies (OD-109, QA-F1). drizzle-kit keeps a policy's
+# using/withCheck only for the first pg_policies row of each table, so the generator renders every
+# pgPolicy from pg_policy (scripts/gates/lib/schema-policy.ts, I-POLICY). K26 is qa-verification's
+# two-policy table (db-introspect-policies-qa.sql) and K27 the attribute shapes
+# (db-introspect-policies-shapes.sql); each fixture's `-- expect:` lines must be in db/schema.ts. K26
+# runs FIRST, so on a fresh project its first write sees a catalogue nobody has ANALYZEd, and it is
+# then checked after ANALYZE and after a down/up. K28–K34 are the step's refusals.
+#
 #   cd /home/alex/projects/nanny/app && ./scripts/svc run <ticket> -- bash scripts/negative-tests/db-introspect.sh
 #
 # Needs the ticket's `db` project and a clean, committed tree. The check itself migrates the
@@ -43,6 +51,9 @@ SCHEMA=db/schema.ts
 SCRIPT=scripts/db-introspect.ts
 RENDER=scripts/gates/lib/schema-render.ts
 ORDER=scripts/gates/lib/schema-order.ts
+POLICY=scripts/gates/lib/schema-policy.ts
+QA_POLICIES=scripts/negative-tests/db-introspect-policies-qa.sql
+SHAPE_POLICIES=scripts/negative-tests/db-introspect-policies-shapes.sql
 OUT=$(mktemp)
 total=0
 bad=0
@@ -84,7 +95,7 @@ restore() {
   fi
   [ "$(record)" = "kinvara-migrate version=$HIGHEST" ] || abort "the record reads '$(record)', not $HIGHEST"
   rm -f "$M/${NEXT}_t138_plant.up.sql" "$M/${NEXT}_t138_plant.down.sql"
-  git checkout -q -- "$SCHEMA" "$SCRIPT" "$RENDER" "$ORDER"
+  git checkout -q -- "$SCHEMA" "$SCRIPT" "$RENDER" "$ORDER" "$POLICY"
   if [ -n "$(git status --porcelain)" ]; then
     git status --porcelain
     abort "the tree did not restore cleanly"
@@ -166,8 +177,57 @@ check() {
   restore
 }
 
+# policy_fixture <fixture>: plant a committed policy fixture as migration NEXT. The whole file is the
+# up file; its `-- down:` lines are the down file. plant() asserts both landed.
+policy_fixture() {
+  plant "$UP" "$(cat "$1")"
+  plant "$DOWN" "$(sed -nE 's/^-- down: //p' "$1")"
+  [ -s "$DOWN" ] && grep -q . "$DOWN" || abort "$1 has no -- down: line"
+}
+
+# policy_check <id> <description> <fixture> <counts regex>: run the check; the case is ok only if it
+# is a PASS, every `-- expect:` line of the fixture is in db/schema.ts, and the generator's policies
+# line matches <counts regex> (so a step that checked nothing, or restored nothing, is not ok).
+policy_check() {
+  local id=$1 desc=$2 fixture=$3 counts=$4 code n=0 miss=0 line
+  node scripts/db-introspect.ts --check >"$OUT" 2>&1
+  code=$?
+  while IFS= read -r line; do
+    n=$((n + 1))
+    if grep -qF -- "$line" "$SCHEMA"; then echo "policy as pg_policy has it: $line" >>"$OUT"; else echo "policy MISSING or different: $line" >>"$OUT"; miss=$((miss + 1)); fi
+  done < <(sed -nE 's/^-- expect: //p' "$fixture")
+  [ "$n" -gt 0 ] || abort "$fixture has no -- expect: line"
+  if [ "$miss" -eq 0 ] && grep -qE -- "^  policies: $counts" "$OUT"; then echo "ALL $n POLICIES AS PG_POLICY HAS THEM, COUNTS AS EXPECTED" >>"$OUT"; fi
+  judge "$id" "$desc" PASS "$code" '^ALL [0-9]+ POLICIES AS PG_POLICY HAS THEM, COUNTS AS EXPECTED$'
+  printf '       counts required: %s\n' "$counts"
+  grep -E '^  policies: |^policy ' "$OUT" | cut -c1-240 | sed 's/^/       /'
+}
+
 node scripts/db-migrate.ts up >"$OUT.m" 2>&1 || { cat "$OUT.m"; abort "db:migrate up failed before the first case"; }
 [ "$(record)" = "kinvara-migrate version=$HIGHEST" ] || abort "the record reads '$(record)' after db:migrate up, not $HIGHEST"
+
+echo "== T-152 rework 1: row-level security policies (OD-109). First, so that on a fresh project the first write sees a catalogue nobody has ANALYZEd"
+policy_fixture "$QA_POLICIES"
+echo "   pg_class last analyze / vacuum before the first write: '$(stats_mark)'"
+write_schema
+grep -E '^  policies: ' "$OUT.w" | sed 's/^/   first write: /'
+policy_check K26a "(T-152 r1) QA's two-policy table, written and checked with no ANALYZE: both expressions present" "$QA_POLICIES" '2 checked against pg_policy; 1 expression\(s\) drizzle-kit dropped restored; 1 entr\(ies\) rewritten from the catalogue$'
+m0=$(stats_mark)
+psql -X -q -v ON_ERROR_STOP=1 -c ANALYZE >/dev/null || abort "ANALYZE failed"
+m1=$(stats_mark)
+{ [ "$m1" != "$m0" ] && [ "${m1%% / *}" != never ]; } || abort "ANALYZE did not land on pg_class (last analyze / vacuum '$m0' -> '$m1')"
+echo "   statistics attack landed: pg_class last analyze / vacuum '$m0' -> '$m1'"
+policy_check K26b "(T-152 r1) the same file after ANALYZE (asserted above): parity holds, both expressions present" "$QA_POLICIES" '2 checked against pg_policy; 1 expression\(s\) drizzle-kit dropped restored; 1 entr\(ies\) rewritten from the catalogue$'
+{ node scripts/db-migrate.ts down --to "$HIGHEST" >"$OUT.p" 2>&1 && grep -q "^MIGRATE OK  down: $NEXT -> $HIGHEST" "$OUT.p"; } || { cat "$OUT.p"; abort "db:migrate down --to $HIGHEST failed"; }
+{ node scripts/db-migrate.ts up >"$OUT.p" 2>&1 && grep -q "^MIGRATE OK  up: $HIGHEST -> $NEXT" "$OUT.p"; } || { cat "$OUT.p"; abort "db:migrate up to $NEXT failed"; }
+echo "   history attack landed: down --to $HIGHEST, up to $NEXT"
+policy_check K26c "(T-152 r1) the same file after the policy migration's down/up: parity holds, both expressions present" "$QA_POLICIES" '2 checked against pg_policy; 1 expression\(s\) drizzle-kit dropped restored; 1 entr\(ies\) rewritten from the catalogue$'
+restore
+
+policy_fixture "$SHAPE_POLICIES"
+write_schema
+policy_check K27 "(T-152 r1) restrictive, FOR ALL TO PUBLIC, FOR DELETE, FOR UPDATE with both expressions and two roles: each as pg_policy has it" "$SHAPE_POLICIES" '4 checked against pg_policy; [1-9][0-9]* expression\(s\) drizzle-kit dropped restored; '
+restore
 
 echo "== control"
 check K00 "CONTROL: the committed tree, nothing planted" PASS 'byte-identical to a fresh introspection'
@@ -341,6 +401,38 @@ check K24 "(T-152) the catalogue returns no key for a rendered constraint: refus
 
 mutate "$ORDER" "'columns', (SELECT json_agg(a.attname ORDER BY k.ord)" "'columns', (SELECT json_agg(a.attname || '_t152' ORDER BY k.ord)"
 check K25 "(T-152) the catalogue's key columns differ from the rendered list: refused" I-ORDER "account_role_pkey columns: the rendering lists columns \[account_id, role\] but the catalogue's key is \[account_id_t152, role_t152\]"
+
+echo "== T-152 rework 1: the policy step's refusals (I-POLICY)"
+policy_fixture "$QA_POLICIES"
+mutate "$POLICY" "        if (have === undefined && want !== null) {" "        if (have === undefined && want === 't152 never') {"
+check K28 "(T-152 r1) restoring dropped expressions deleted: drizzle-kit's drop on QA's table is a disagreement with pg_policy, refused" I-POLICY 'table "qa_secure": pgPolicy .*: (using|withCheck) is absent but pg_policy has "\(owner_id = CURRENT_USER\)"'
+
+policy_fixture "$SHAPE_POLICIES"
+mutate "$POLICY" "'permissive', pol.polpermissive," "'permissive', NOT pol.polpermissive,"
+check K29 "(T-152 r1) permissive/restrictive: the catalogue reading inverted, refused" I-POLICY 'table "t152_ledger": pgPolicy .*: as "restrictive" but pg_policy has "permissive"'
+
+policy_fixture "$SHAPE_POLICIES"
+mutate "$POLICY" "json_agg(r.rolname ORDER BY r.rolname)" "json_agg(r.rolname ORDER BY r.rolname DESC)"
+check K30 "(T-152 r1) roles: the catalogue's role list in another order, refused" I-POLICY 'table "t152_ledger": pgPolicy .*: to \["app_admin_rw","app_rw"\] but pg_policy has \["app_rw","app_admin_rw"\]'
+
+policy_fixture "$SHAPE_POLICIES"
+mutate "$POLICY" "  ['w', 'update']," "  ['w', 'insert'],"
+check K31 "(T-152 r1) command: the catalogue's UPDATE read as INSERT, refused" I-POLICY 'pgPolicy .*: for "update" but pg_policy has "insert"'
+
+policy_fixture "$QA_POLICIES"
+mutate "$POLICY" "'name', pol.polname," "'name', pol.polname || '_t152',"
+check K32 "(T-152 r1) the catalogue's policy names differ: a rendered policy with no pg_policy row AND a pg_policy row not rendered, refused" I-POLICY 'pg_policy has policy "qa_secure_alpha_t152", which the rendering does not contain'
+
+mutate "$POLICY" "    FROM pg_policy pol" "    FROM pg_policy_t152 pol"
+check K33 "(T-152 r1) the policy query unreadable, committed tree: refused" I-POLICY 'cannot read row-level security policies from the catalogue'
+
+TICK='`'
+plant "$UP" "-- @phase: expand
+CREATE TABLE public.t152_tick (id integer PRIMARY KEY, note text NOT NULL);
+ALTER TABLE public.t152_tick ENABLE ROW LEVEL SECURITY;
+CREATE POLICY t152_tick_select ON public.t152_tick FOR SELECT TO app_rw USING (note <> '${TICK}');"
+plant "$DOWN" "DROP TABLE public.t152_tick;"
+check K34 "(T-152 r1) a policy expression containing a backtick cannot be written inside sql\`…\` byte for byte: refused" I-POLICY 'the expression .* cannot be written inside sql`…` byte for byte'
 
 echo
 if [ "$bad" -eq 0 ]; then

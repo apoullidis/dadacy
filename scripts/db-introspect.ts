@@ -31,14 +31,20 @@
  *   4a. [I-MAP] (T-150, OD-97) each `unknown("col")` drizzle-kit writes for a type it cannot parse
  *      is rewritten from a CLOSED map (`citext`, `bytea` -> customType). Any other type fails the
  *      run: `unknown(...)` is never written (scripts/gates/lib/schema-render.ts).
- *   4b. [I-ORDER] (T-152, OD-106, OD-108) drizzle-kit renders objects in the order its catalogue
+ *   4b. [I-POLICY] (T-152 rework 1, OD-109) drizzle-kit keeps a row-level security policy's
+ *      `using` and `withCheck` only for the first pg_policies row it receives per table, from a query
+ *      with no ORDER BY, so on a table with two or more policies the rendering is wrong and follows
+ *      the query plan. Every pgPolicy entry is checked against pg_policy (read in step 3c), its
+ *      dropped expressions restored, and it is rewritten from the catalogue row
+ *      (scripts/gates/lib/schema-policy.ts). A disagreement or a shape it does not know fails the run.
+ *   4c. [I-ORDER] (T-152, OD-106, OD-108) drizzle-kit renders objects in the order its catalogue
  *      queries return rows, and several of those queries have no ORDER BY, so the order follows
  *      planner statistics and heap position rather than the schema. The rendering is put in a
  *      canonical order: key column lists in the catalogue's own order (pg_constraint.conkey /
  *      confkey, read in step 3b), table entries by kind and name, declarations by name, imports by
  *      name (scripts/gates/lib/schema-order.ts). A shape it does not recognise fails the run. This
  *      pipeline does not ANALYZE: statistics are not an input to the rendering.
- *   4c. [I-TSC] (T-150, OD-93) TypeScript's own unused-identifier fixes are applied until a pass
+ *   4d. [I-TSC] (T-150, OD-93) TypeScript's own unused-identifier fixes are applied until a pass
  *      edits nothing, with the compiler options of the root tsconfig.json. Any diagnostic left in
  *      the rendering fails the run, so a file `tsc` would refuse at its first importer is neither
  *      written nor accepted.
@@ -47,7 +53,7 @@
  *      introspection that returns nothing while the catalogue holds a relation fails. When both
  *      are empty, the run says so on stdout (T-001 contract, gate rule 2) and does not fail: the
  *      committed migrations are then genuinely relation-free.
- *   6. write mode: db/schema.ts := the generated header + drizzle-kit's schema.ts after 4a, 4b, 4c.
+ *   6. write mode: db/schema.ts := the generated header + drizzle-kit's schema.ts after 4a-4d.
  *      Both modes build that rendering the same way, so the parity check compares against it.
  *      check mode: [I-MISSING] db/schema.ts absent; [I-DIGEST] its header does not verify
  *      (scripts/gates/lib/schema-digest.ts); [I-DIFF] it differs from the fresh rendering.
@@ -67,6 +73,7 @@ import {
   canonicalOrder,
   parseConstraintKeys,
 } from './gates/lib/schema-order.ts';
+import { POLICIES_SQL, canonicalPolicies, parsePolicies } from './gates/lib/schema-policy.ts';
 import {
   TYPESCRIPT_VERSION,
   mapColumnTypes,
@@ -245,6 +252,20 @@ function main(): void {
   }
   const constraintKeys = parsedKeys.ok ? parsedKeys.keys : [];
 
+  // 3c. every row-level security policy on a table in public, from pg_policy (T-152 rework 1, OD-109)
+  const policyRead = psql(POLICIES_SQL);
+  const parsedPolicies = policyRead.ok
+    ? parsePolicies(policyRead.out.trim())
+    : { ok: false as const, problem: policyRead.err.trim() };
+  if (!parsedPolicies.ok) {
+    problem(
+      'I-POLICY',
+      `cannot read row-level security policies from the catalogue: ${parsedPolicies.problem}`,
+    );
+    done();
+  }
+  const cataloguePolicies = parsedPolicies.ok ? parsedPolicies.policies : [];
+
   // 4. pull
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kinvara-introspect-'));
   const out = path.join(tmp, 'out');
@@ -288,18 +309,29 @@ function main(): void {
     `  mapped column type(s): ${mapping.ok && mapping.mapped.length > 0 ? mapping.mapped.join(', ') : 'none'}`,
   );
 
-  // 4b. canonical order, so the rendering is a function of the schema alone (T-152, OD-106, OD-108)
-  const ordered = canonicalOrder(mappedBody, constraintKeys);
+  // 4b. row-level security policies checked against and rendered from pg_policy (T-152 rework 1, OD-109)
+  const policed = canonicalPolicies(mappedBody, cataloguePolicies);
+  if (!policed.ok) {
+    for (const p of policed.problems) problem('I-POLICY', p);
+    done();
+  }
+  const policyBody = policed.ok ? policed.body : mappedBody;
+  console.log(
+    `  policies: ${policed.ok ? `${String(policed.policies)} checked against pg_policy; ${String(policed.restored)} expression(s) drizzle-kit dropped restored; ${String(policed.rewritten)} entr(ies) rewritten from the catalogue` : 'failed'}`,
+  );
+
+  // 4c. canonical order, so the rendering is a function of the schema alone (T-152, OD-106, OD-108)
+  const ordered = canonicalOrder(policyBody, constraintKeys);
   if (!ordered.ok) {
     for (const p of ordered.problems) problem('I-ORDER', p);
     done();
   }
-  const orderedBody = ordered.ok ? ordered.body : mappedBody;
+  const orderedBody = ordered.ok ? ordered.body : policyBody;
   console.log(
     `  canonical order: ${ordered.ok ? `${String(ordered.declarations)} declaration(s), ${String(ordered.entries)} table entr(ies), ${String(ordered.keyLists)} key column list(s) from the catalogue; ${String(ordered.moved)} element(s) moved from drizzle-kit's order` : 'failed'}`,
   );
 
-  // 4c. prune unused identifiers with TypeScript's own fixes, under the root tsconfig (T-150, OD-93)
+  // 4d. prune unused identifiers with TypeScript's own fixes, under the root tsconfig (T-150, OD-93)
   const root = readRootCompilerOptions(TSCONFIG_PATH);
   if (root.errors.length > 0) {
     for (const e of root.errors) problem('I-TSC', `tsconfig.json: ${e}`);
