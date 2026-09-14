@@ -1,30 +1,35 @@
 /**
- * Account creation and lookup against migration `0005`'s tables (`T-140` § Published contract),
- * as Drizzle parameterised queries (SD §DB-1 line 1755; §SEC-I2 line 3893, "No dynamic SQL"). No
- * SQL text appears in this file. Every function takes the caller's transaction, which
- * `Database.withAppRw` opens as `app_rw`.
+ * Account creation, login lookup and session reads and writes against migration `0005`'s tables
+ * (`T-140` § Published contract), as Drizzle parameterised queries (SD §DB-1 line 1755; §SEC-I2
+ * line 3893, "No dynamic SQL"). No SQL text is built from input here. Every function takes the
+ * caller's transaction, which `Database.withAppRw` opens as `app_rw`.
  *
  * THE TABLES are value imports from the generated `db/schema.ts` (T-150 § contract §5). A column
  * renamed there fails `pnpm -w typecheck` here.
- *
- * NOT IN ANY IMAGE ON `main` 59a7952 (decisions.md OD-118). The image does not carry `db/`, so this
- * import cannot load in the containerised `core` until that is fixed.
  *
  * THE EMAIL COMPARAND (decisions.md OD-98; T-140 TL-A8). `eq(account.emailCi, v)` sends an UNTYPED
  * parameter, which resolves to `citext`, so the comparison is case-insensitive and served by
  * `account_email_ci_key`. T-140's second approver measured this with pg 8.23.0 and drizzle-orm
  * 0.45.2 (TL-T D1). A `text`-typed comparand would compare case-sensitively. Held by
  * `test/identity.inprocess.test.ts` › *findAccountIdByEmail finds an address differing only in
- * case …*.
+ * case …* and, for login, `test/login.inprocess.test.ts` › *the login lookup compares …*.
  *
- * There is no `delete` and no write to `revokedAt` anywhere in this file (`T-140` § contract §5;
- * TL-A1).
+ * `revoked_at` (T-140 § contract §5; TL-A1: `app_rw` could UPDATE it back to NULL and the database
+ * would not refuse). There is no `delete` in this file. `revokedAt` is written in exactly one
+ * place, `revokeSessions`, only as `now()`, and only on rows where it IS NULL, so a revoked session
+ * is never moved and never revived through this module.
  */
-import { eq } from 'drizzle-orm';
-import { accountId, type AccountId, type SessionId, type Ulid } from '@kinvara/domain-types';
+import { and, asc, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
+import {
+  accountId,
+  sessionId,
+  type AccountId,
+  type SessionId,
+  type Ulid,
+} from '@kinvara/domain-types';
 import { account, accountRole, appSession } from '../../../../db/schema.ts';
 import type { Tx } from './database.ts';
-import { assertSessionDigest } from './session-token.ts';
+import { IDLE_TIMEOUT_SECONDS, assertSessionDigest } from './session-token.ts';
 
 /** `T-140` § contract §2: the unique index a second registration of an address hits. */
 export const ACCOUNT_EMAIL_UNIQUE = 'account_email_ci_key';
@@ -76,7 +81,7 @@ export async function insertSession(tx: Tx, session: NewSession): Promise<void> 
   });
 }
 
-/** For `T-026`'s login, and for T-141's OD-98 case. Case-insensitive through `citext`. */
+/** For T-141's OD-98 case. Case-insensitive through `citext`. */
 export async function findAccountIdByEmail(tx: Tx, email: string): Promise<AccountId | undefined> {
   const rows = await tx.select({ id: account.id }).from(account).where(eq(account.emailCi, email));
   const found = rows[0]?.id;
@@ -104,4 +109,100 @@ export function isUniqueViolation(thrown: unknown, constraint: string): boolean 
   } catch {
     return false;
   }
+}
+
+// ---- T-026: login and sessions ------------------------------------------------------------------
+
+export interface LoginCandidate {
+  readonly id: AccountId;
+  /** As stored: NULL for a passwordless account, and not checked here. */
+  readonly passwordHash: string | null;
+  readonly status: string;
+}
+
+/** Login's lookup: the same untyped `citext` comparand as `findAccountIdByEmail` (OD-98). */
+export async function findLoginCandidate(
+  tx: Tx,
+  email: string,
+): Promise<LoginCandidate | undefined> {
+  const rows = await tx
+    .select({ id: account.id, passwordHash: account.passwordHash, status: account.status })
+    .from(account)
+    .where(eq(account.emailCi, email));
+  const row = rows[0];
+  if (row === undefined) return undefined;
+  return { id: accountId(row.id, 'accountId'), passwordHash: row.passwordHash, status: row.status };
+}
+
+/** The account's roles whose `revoked_at` IS NULL, in code-point order. */
+export async function activeRoles(tx: Tx, owner: AccountId): Promise<string[]> {
+  const rows = await tx
+    .select({ role: accountRole.role })
+    .from(accountRole)
+    .where(and(eq(accountRole.accountId, owner), isNull(accountRole.revokedAt)))
+    .orderBy(asc(accountRole.role));
+  return rows.map((row) => row.role);
+}
+
+/**
+ * Logout: `revoked_at = now()` and `revoked_reason = reason` on every session whose digest is given
+ * and whose `revoked_at` IS NULL. Returns how many rows changed. A revoked session matches nothing.
+ */
+export async function revokeSessions(
+  tx: Tx,
+  digests: readonly Buffer[],
+  reason: 'logout',
+): Promise<number> {
+  if (digests.length === 0) return 0;
+  const rows = await tx
+    .update(appSession)
+    .set({ revokedAt: sql`now()`, revokedReason: reason })
+    .where(
+      and(
+        inArray(appSession.tokenHash, digests.map(assertSessionDigest)),
+        isNull(appSession.revokedAt),
+      ),
+    )
+    .returning({ id: appSession.id });
+  return rows.length;
+}
+
+export interface LiveSession {
+  readonly id: SessionId;
+  readonly accountId: AccountId;
+  readonly authMethod: string;
+  readonly stepUpUntil: string | null;
+}
+
+/**
+ * Resolve a session by its digest and slide it (SD line 1235). The database clock decides, in one
+ * statement. Refused, as `undefined`: no row; `revoked_at` set; `absolute_expires_at` not in the
+ * future; `last_seen_at` 30 minutes old or older. A live session's `last_seen_at` becomes now.
+ */
+export async function touchLiveSession(tx: Tx, digest: Buffer): Promise<LiveSession | undefined> {
+  const rows = await tx
+    .update(appSession)
+    .set({ lastSeenAt: sql`now()` })
+    .where(
+      and(
+        eq(appSession.tokenHash, assertSessionDigest(digest)),
+        isNull(appSession.revokedAt),
+        gt(appSession.absoluteExpiresAt, sql`now()`),
+        gt(appSession.lastSeenAt, sql`now() - make_interval(secs => ${IDLE_TIMEOUT_SECONDS})`),
+      ),
+    )
+    .returning({
+      id: appSession.id,
+      accountId: appSession.accountId,
+      authMethod: appSession.authMethod,
+      stepUpUntil: appSession.stepUpUntil,
+    });
+  const row = rows[0];
+  if (row === undefined) return undefined;
+  return {
+    id: sessionId(row.id, 'sessionId'),
+    accountId: accountId(row.accountId, 'accountId'),
+    authMethod: row.authMethod,
+    stepUpUntil: row.stepUpUntil,
+  };
 }
