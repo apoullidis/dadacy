@@ -12,9 +12,38 @@ import {
   RANDOM_REFUSED,
   RETRY,
   UpstreamCallFailedError,
+  type CircuitBreaker,
   type UpstreamResponse,
 } from './index.ts';
 import { createManualClock, track } from './testing.ts';
+
+/** Wrap a breaker, counting the permits the caller acquires and settles. */
+function counting(inner: CircuitBreaker): {
+  readonly breaker: CircuitBreaker;
+  readonly acquired: () => number;
+  readonly settled: () => number;
+} {
+  let acquired = 0;
+  let settled = 0;
+  return {
+    breaker: {
+      get state() {
+        return inner.state;
+      },
+      acquire: () => {
+        const permit = inner.acquire();
+        if (permit !== undefined) acquired++;
+        return permit;
+      },
+      settle: (permit, failed) => {
+        settled++;
+        inner.settle(permit, failed);
+      },
+    },
+    acquired: () => acquired,
+    settled: () => settled,
+  };
+}
 
 /** A transport answering each attempt from a script, recording the clock time of each attempt. */
 function scripted(
@@ -208,6 +237,48 @@ test('a status that is not an integer from 100 to 599 is a failure and retried, 
     assert.equal(t.at.length, 6, `status ${String(status)}`);
     assert.ok(call.error instanceof UpstreamCallFailedError);
     assert.equal(call.error.reason, 'invalid_status');
+  }
+});
+
+test('a response that is not an object with a numeric status is invalid_status: each is retried, ends in upstream_unavailable after six attempts, and settles every permit once', async () => {
+  // QA's B8b scenario (OD-113, ruling 2a): a raw TypeError at 52a665e, with the permit unsettled.
+  const hostile = {
+    get status(): number {
+      throw new TypeError('status getter');
+    },
+  };
+  const responses: readonly (readonly [string, unknown])[] = [
+    ['null', null],
+    ['undefined', undefined],
+    ['the number 200', 200],
+    ['the string ok', 'ok'],
+    ['true', true],
+    ['an empty object', {}],
+    ['a string status', { status: '200' }],
+    ['a null status', { status: null }],
+    ['a status getter that throws', hostile],
+  ];
+  for (const [label, response] of responses) {
+    const clock = createManualClock();
+    const c = counting(createCircuitBreaker({ clock }));
+    const caller = createUpstreamCaller({ breaker: c.breaker, clock, random: () => 0 });
+    let n = 0;
+    const call = track(
+      caller.call(async () => {
+        n++;
+        return response as UpstreamResponse;
+      }),
+    );
+    await clock.advance(DRAIN_MS);
+    assert.ok(
+      call.error instanceof UpstreamCallFailedError,
+      `${label} ends in UpstreamCallFailedError, not ${String(call.error)}`,
+    );
+    assert.equal(call.error.reason, 'invalid_status', label);
+    assert.equal(call.error.attempts, 6, label);
+    assert.equal(n, 6, `${label}: attempts`);
+    assert.equal(c.acquired(), 6, `${label}: permits acquired`);
+    assert.equal(c.settled(), 6, `${label}: every permit settled once`);
   }
 });
 

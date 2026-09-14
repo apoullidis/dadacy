@@ -140,3 +140,16 @@ test('a timeout that is not a positive integer is refused when the caller is bui
     });
   }
 });
+
+test('a timeout above 2147483647 ms is refused when the caller is built, and 2147483647 is accepted', () => {
+  // QR-A3: Node clamps a larger timer delay to 1 ms, so such a timeout would fire at once.
+  const breaker = createCircuitBreaker();
+  assert.doesNotThrow(() => createUpstreamCaller({ breaker, timeoutMs: 2_147_483_647 }));
+  for (const timeoutMs of [2_147_483_648, Number.MAX_SAFE_INTEGER]) {
+    assert.throws(
+      () => createUpstreamCaller({ breaker, timeoutMs }),
+      { name: 'TypeError', message: 'integration-kit: timeoutMs must be a positive integer' },
+      `timeoutMs ${String(timeoutMs)} is refused`,
+    );
+  }
+});
