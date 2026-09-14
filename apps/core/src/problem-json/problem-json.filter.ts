@@ -32,8 +32,17 @@
  *   (2) when it throws, the response is the FIXED 500 body below;
  *   (3) the caught error's message and stack are NEVER logged — only a fixed
  *       marker and `errorClass()`, which reads no property of the value.
- * Named tests: `test/filter.test.ts` › *(ii) …* for (1)(2), and *the captured
- * process output …* for (3).
+ * Named tests, at the width they were measured (T-135 evidence N3, N3b):
+ * `test/filter.test.ts` › *(ii) …* holds (2), and *the captured process output …*
+ * holds (3) and detects (1)'s removal — by its marker counts ONLY. With the wrap
+ * removed, the (ii) responses are STILL the fixed-500 body and the sentinel is
+ * STILL absent from the log: Nest hands a filter's own throw to Fastify's error
+ * handler, which runs this filter again on the thrown TypeError, a non-domain
+ * value `toProblem` answers without throwing. So on this stack the wrap is
+ * defence in depth; what it changes observably is the marker (`toProblemThrew`
+ * instead of `internalError`). Not attacked: a thrown value that makes the
+ * SECOND pass throw as well (T-023 G14's throwing `getPrototypeOf`, thrown as
+ * itself).
  *
  * ONE MORE BACKSTOP, beyond the obligation: `toProblem` emits a forged or
  * redefined error's `status`, `retryable` and `field` unvalidated (T-023 §6
