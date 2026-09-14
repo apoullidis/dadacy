@@ -1,7 +1,8 @@
 /**
  * Bootstrap and lifecycle. `main.ts` calls `startServer` with the root module;
  * `test/fixtures/fault-server.ts` calls it with a module that adds throwing
- * routes, so the filter and the drain under test are this code, not a copy.
+ * routes, so the filter, the process handlers and the drain under test are
+ * this code, not a copy.
  *
  * THE LIFECYCLE CONTRACT (`docker/app-runtime/entrypoint.mjs`, T-034 § contract
  * §6): on SIGTERM stop accepting new connections, let in-flight requests
@@ -15,7 +16,7 @@
  * IN THE IMAGE THIS DRAIN DOES NOT RUN TODAY (decisions.md OD-100, measured in
  * T-135 § E10/E11): `entrypoint.mjs` forwards SIGTERM to `node --run start`,
  * which exits 143 without forwarding it, so this process is never signalled.
- * The drain is proven in-process only (`test/filter.test.ts`).
+ * The drain is proven in-process only (`test/filter.test.ts`). OD-100 is T-151's.
  *
  * `/healthz` is the image HEALTHCHECK's route (`docker/app-runtime/
  * healthcheck.mjs` requires a 200 there), registered on the Fastify instance
@@ -39,11 +40,54 @@ const say = (line: string): void => {
   process.stderr.write(`[core] ${line}\n`);
 };
 
+/** Each process-level line is `[core] <marker> class=<errorClass>`, and nothing else. */
+export const PROCESS_MARKERS = Object.freeze({
+  unhandledRejection: 'process: an unhandled promise rejection; the process continues',
+  uncaughtException: 'process: an uncaught exception; exiting 1',
+});
+
+let processHandlersInstalled = false;
+
+/**
+ * QA-A1. Without these, Node prints a rejection's or an exception's message and
+ * stack to stderr — a request input, when a module rejects with one — and exits 1.
+ * Both handlers log a fixed marker and `errorClass()` only (PROTOCOL §9.2).
+ *
+ * THE EXIT CHOICE:
+ *   - an unhandled REJECTION does not exit: the promise is detached from any
+ *     request, and exiting would drop every in-flight request on the process
+ *     for a fire-and-forget bug (and in the image nothing drains, OD-100);
+ *   - an uncaught EXCEPTION exits 1 at once, without draining: after one,
+ *     Node's own guidance is that process state is undefined, so no further
+ *     request is served on it.
+ */
+export function installProcessHandlers(): void {
+  if (processHandlersInstalled) return;
+  processHandlersInstalled = true;
+  process.on('unhandledRejection', (reason: unknown) => {
+    say(`${PROCESS_MARKERS.unhandledRejection} class=${errorClass(reason)}`);
+  });
+  process.on('uncaughtException', (thrown: unknown) => {
+    say(`${PROCESS_MARKERS.uncaughtException} class=${errorClass(thrown)}`);
+    process.exit(1);
+  });
+}
+
 export async function createApp(module: Type): Promise<NestFastifyApplication> {
-  const app = await NestFactory.create<NestFastifyApplication>(module, new FastifyAdapter(), {
+  const filter = new ProblemJsonFilter();
+  // OD-102: without `frameworkErrors`, Fastify's router answers a path it cannot
+  // decode ITSELF, with the raw path in its body, before Nest or any filter runs.
+  // The parameters are `unknown`: the adapter's constructor type is a union, so they
+  // are not contextually typed, and `fastify` is not a direct dependency of this app.
+  const adapter = new FastifyAdapter({
+    frameworkErrors: (error: unknown, _request: unknown, reply: unknown) => {
+      filter.answerFrameworkError(error, reply);
+    },
+  });
+  const app = await NestFactory.create<NestFastifyApplication>(module, adapter, {
     abortOnError: false,
   });
-  app.useGlobalFilters(new ProblemJsonFilter());
+  app.useGlobalFilters(filter);
   app
     .getHttpAdapter()
     .getInstance()
@@ -101,6 +145,7 @@ export function installDrain(app: NestFastifyApplication): void {
 }
 
 export async function startServer(options: ServerOptions): Promise<NestFastifyApplication> {
+  installProcessHandlers();
   const app = await createApp(options.module);
   installDrain(app);
   await app.listen(options.port, options.host);

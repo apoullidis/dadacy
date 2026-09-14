@@ -5,21 +5,29 @@
  * `detail`/`instance`).
  *
  * It is registered once, globally, in `server.ts`, and it catches EVERYTHING
- * (`Catch()` with no argument). Nest 11 on Fastify routes three sources through
- * global filters, and this one answers all three (T-135 evidence):
- *   - a throw from a route handler;
+ * (`Catch()` with no argument). The routes into it, each a case in
+ * `test/filter.test.ts` (T-135 evidence and rework 1):
+ *   - a throw from a route handler, a guard, a pipe, or a Fastify hook;
  *   - an unmatched route: Nest throws `NotFoundException("Cannot GET <url>")`,
  *     whose MESSAGE IS THE REQUEST PATH;
  *   - a Fastify-level error (e.g. a malformed JSON body): Nest rethrows it as
  *     `HttpException(err.message, err.statusCode)`, whose message can quote
- *     the body.
+ *     the body;
+ *   - a throw inside a Nest MIDDLEWARE: on Fastify, Nest hands this filter the
+ *     RAW Node `ServerResponse`, not a Fastify reply (OD-103), so `#write`
+ *     answers on either;
+ *   - a request Fastify's ROUTER refuses before Nest sees it (an undecodable
+ *     path, OD-102): `server.ts` passes Fastify's `frameworkErrors` option,
+ *     which calls `answerFrameworkError` here.
  *
  * THE MAPPING, which is this module's contract:
  *   1. A `DomainError` goes to T-023's `toProblem(error, TYPE_BASE)`.
  *   2. An `HttpException` is framework-originated (modules throw DomainErrors,
- *      SD §DH-2), and its message is never read: 404 becomes `NotFoundError`,
- *      any other 4xx becomes `InvalidInputError` (400), and anything else goes
- *      to `toProblem` as a non-domain value (500).
+ *      SD §DH-2), and its message is never read. Its STATUS picks a domain
+ *      error from `FRAMEWORK_STATUS` where the closed set (T-022
+ *      `ERROR_CODES`) has a code for that status; any other 4xx becomes
+ *      `InvalidInputError` (400); anything else goes to `toProblem` as a
+ *      non-domain value (500).
  *   3. Anything else goes to `toProblem`, which answers the 500
  *      `internal_error` body carrying nothing from the value.
  *
@@ -40,9 +48,11 @@
  * handler, which runs this filter again on the thrown TypeError, a non-domain
  * value `toProblem` answers without throwing. So on this stack the wrap is
  * defence in depth; what it changes observably is the marker (`toProblemThrew`
- * instead of `internalError`). Not attacked: a thrown value that makes the
- * SECOND pass throw as well (T-023 G14's throwing `getPrototypeOf`, thrown as
- * itself).
+ * instead of `internalError`).
+ *
+ * THE MARKERS say what the MAPPING chose, not that a response was delivered:
+ * each is logged before `#write` runs (QA-A3). A failed write logs `writeFailed`
+ * as well.
  *
  * ONE MORE BACKSTOP, beyond the obligation: `toProblem` emits a forged or
  * redefined error's `status`, `retryable` and `field` unvalidated (T-023 §6
@@ -54,6 +64,7 @@
  * This backstop is NOT planted in any test (no forged or redefined error is
  * thrown through the filter); it is a reading of the code above, nothing more.
  */
+import { ServerResponse } from 'node:http';
 import {
   Catch,
   HttpException,
@@ -62,7 +73,16 @@ import {
   type ExceptionFilter,
 } from '@nestjs/common';
 import { TYPE_BASE, isWireProblem } from '@kinvara/contracts';
-import { InvalidInputError, NotFoundError, toProblem } from '@kinvara/domain-types';
+import {
+  InvalidInputError,
+  NotFoundError,
+  PolicyDeniedError,
+  PreconditionFailedError,
+  RateLimitedError,
+  UnauthenticatedError,
+  UpstreamUnavailableError,
+  toProblem,
+} from '@kinvara/domain-types';
 import { decorateClass } from '../nest-decorate.ts';
 import { errorClass } from './error-class.ts';
 
@@ -76,13 +96,40 @@ export const FIXED_500_BODY = Object.freeze({
 });
 const FIXED_500_JSON = JSON.stringify(FIXED_500_BODY);
 
+/** Written on a raw `ServerResponse`; the same value Fastify produces for a string payload. */
+const PROBLEM_CONTENT_TYPE = 'application/problem+json; charset=utf-8';
+
 /** Every line this filter logs starts with one of these, followed by ` class=<errorClass>`. */
 export const LOG_MARKERS = Object.freeze({
-  toProblemThrew: 'problem-json: toProblem threw; answered the fixed 500',
-  notWireProblem: 'problem-json: the mapped body is not a wire Problem; answered the fixed 500',
-  internalError: 'problem-json: a non-domain throw; answered 500 internal_error',
+  toProblemThrew: 'problem-json: toProblem threw; mapped to the fixed 500',
+  notWireProblem: 'problem-json: the mapped body is not a wire Problem; mapped to the fixed 500',
+  internalError: 'problem-json: a non-domain throw; mapped to 500 internal_error',
   writeFailed: 'problem-json: writing the response failed',
 });
+
+/**
+ * `PolicyDeniedError` requires a basis (T-023 §6). A framework 403 — what Nest throws
+ * for any guard answering `false` — carries no ReBAC basis, so this fixed literal
+ * stands in. It is kept on the error and never serialised by `toProblem`.
+ */
+export const FRAMEWORK_FORBIDDEN_BASIS = 'framework_forbidden';
+
+/**
+ * A framework status → the domain error whose closed code is THE code for that status
+ * (T-022 `ERROR_CODES`; T-023 § contract §6's table). Only statuses with exactly one
+ * such code are here. 409, 422 and 423 have only subclass codes (`slot_taken`,
+ * `rate_below_floor`, `sitter_review_hold`, …), and 405/406/408/410/413/414/415 and
+ * 502/504 have none, so none is invented: they fall to rule 2's 4xx/else branches.
+ */
+const FRAMEWORK_STATUS: ReadonlyMap<number, () => unknown> = new Map<number, () => unknown>([
+  [400, () => new InvalidInputError()],
+  [401, () => new UnauthenticatedError()],
+  [403, () => new PolicyDeniedError({ basis: FRAMEWORK_FORBIDDEN_BASIS })],
+  [404, () => new NotFoundError()],
+  [412, () => new PreconditionFailedError()],
+  [429, () => new RateLimitedError()],
+  [503, () => new UpstreamUnavailableError()],
+]);
 
 /** The part of Fastify's reply this filter uses. Structural, so `fastify` is not a dependency. */
 interface ReplyLike {
@@ -99,9 +146,25 @@ const logger = new Logger('ProblemJsonFilter');
 function fromFramework(exception: unknown): unknown {
   if (!(exception instanceof HttpException)) return exception;
   const status = exception.getStatus();
-  if (status === 404) return new NotFoundError();
+  const mapped = FRAMEWORK_STATUS.get(status);
+  if (mapped !== undefined) return mapped();
   if (status >= 400 && status < 500) return new InvalidInputError();
   return exception;
+}
+
+/** A Fastify router error's `statusCode`, or 500. Nothing else of the value is read. */
+function frameworkErrorStatus(error: unknown): number {
+  try {
+    if (typeof error === 'object' && error !== null && 'statusCode' in error) {
+      const status = error.statusCode;
+      if (typeof status === 'number' && Number.isInteger(status) && status >= 400 && status < 600) {
+        return status;
+      }
+    }
+  } catch {
+    // a getter that throws: fall through to 500
+  }
+  return 500;
 }
 
 export class ProblemJsonFilter implements ExceptionFilter {
@@ -112,6 +175,27 @@ export class ProblemJsonFilter implements ExceptionFilter {
   }
 
   catch(exception: unknown, host: ArgumentsHost): void {
+    let response: unknown;
+    try {
+      response = host.switchToHttp().getResponse();
+    } catch (thrown) {
+      this.#log(`${LOG_MARKERS.writeFailed} class=${errorClass(thrown)}`);
+      return;
+    }
+    this.answer(exception, response);
+  }
+
+  /**
+   * Fastify's `frameworkErrors` hook (`server.ts`): a request its router refused
+   * before any Nest handler ran. Only the error's status is used; its message
+   * quotes the raw path (OD-102) and is never read.
+   */
+  answerFrameworkError(error: unknown, reply: unknown): void {
+    this.answer(new HttpException('', frameworkErrorStatus(error)), reply);
+  }
+
+  /** Map `exception` and write it to `response`: a Fastify reply or a raw `ServerResponse`. */
+  answer(exception: unknown, response: unknown): void {
     let status = 500;
     let payload = FIXED_500_JSON;
     try {
@@ -133,12 +217,21 @@ export class ProblemJsonFilter implements ExceptionFilter {
       payload = FIXED_500_JSON;
       this.#log(`${LOG_MARKERS.toProblemThrew} class=${errorClass(thrown)}`);
     }
-    this.#write(host, status, payload);
+    this.#write(response, status, payload);
   }
 
-  #write(host: ArgumentsHost, status: number, payload: string): void {
+  #write(response: unknown, status: number, payload: string): void {
     try {
-      const reply = host.switchToHttp().getResponse<ReplyLike>();
+      if (response instanceof ServerResponse) {
+        // OD-103: a Nest middleware's throw arrives with the raw Node response.
+        if (response.headersSent || response.writableEnded) return;
+        response.statusCode = status;
+        response.setHeader('content-type', PROBLEM_CONTENT_TYPE);
+        response.setHeader('content-length', String(Buffer.byteLength(payload)));
+        response.end(payload);
+        return;
+      }
+      const reply = response as ReplyLike;
       if (reply.sent) return;
       reply.code(status).header('content-type', 'application/problem+json').send(payload);
     } catch (thrown) {
