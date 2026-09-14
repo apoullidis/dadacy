@@ -178,11 +178,7 @@ describe('0005 — constraint refusals (as the superuser, so no privilege is wha
   test("CONTROL — locale 'el', which locale_registry holds, is accepted", async () => {
     assertPermitted(
       "locale 'el'",
-      await asSuperuser(
-        'BEGIN',
-        insertAccount(ACCOUNT_B, PSEUDONYM_B, `locale='el'`),
-        'ROLLBACK',
-      ),
+      await asSuperuser('BEGIN', insertAccount(ACCOUNT_B, PSEUDONYM_B, `locale='el'`), 'ROLLBACK'),
     );
   });
 

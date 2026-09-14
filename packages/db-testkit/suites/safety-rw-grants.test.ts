@@ -79,7 +79,11 @@ describe('SD §DB-11 — app_safety_rw', () => {
   });
 
   test("SELECT on core's tables is REFUSED", async () => {
-    await db.sql({ commands: [`CREATE TABLE public.account (id char(26) PRIMARY KEY)`] });
+    // public.account is 0005's real table (T-140), no longer created here (decisions.md OD-96).
+    assert.equal(
+      await db.value(`SELECT (to_regclass('public.account') IS NOT NULL)::text`),
+      'true',
+    );
     assertRefused('SELECT account', await db.psql(asSafetyGw('SELECT * FROM public.account')), {
       message: 'permission denied for table account',
     });

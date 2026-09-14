@@ -2,11 +2,14 @@
  * The stand-in tables and login principals `T-020` Evidence §4 and §7 created
  * by hand, as a function a suite calls.
  *
- * These are stand-ins for tables that do not exist yet — `out_of_hours_report`
- * is `T-112`'s and `account` is `T-026`'s — created in the suite's own cluster
- * and never by a migration. They are here rather than in each suite because
- * three suites need the same ones, and a copy per suite is how two of them end
- * up asserting against different fixtures without anyone noticing.
+ * `out_of_hours_report` is a stand-in for a table that does not exist yet
+ * (`T-112`'s), created in the suite's own cluster and never by a migration.
+ * `account` is NOT a stand-in any more: migration `0005` (`T-140`) creates it,
+ * with its own `app_rw` grants, so the fixture seeds one row into the real
+ * table and every vendor refusal below runs against it (decisions.md OD-96).
+ * They are here rather than in each suite because three suites need the same
+ * ones, and a copy per suite is how two of them end up asserting against
+ * different fixtures without anyone noticing.
  *
  * Every `CREATE TABLE` and `GRANT` below fires `trg_int10_answering_service`.
  * That is deliberate and it is half the point of §4: the guard permits exactly
@@ -28,9 +31,10 @@ export const SAFETY_PROBE = 'safety_gw_probe';
 
 export const ACCOUNT_ID = '01J0000000000000000000000A';
 export const ACCOUNT_EMAIL = 'parent@example.test';
+const ACCOUNT_PSEUDONYM = '01J0000000000000000000000P';
 
 /**
- * `out_of_hours_report` + `account`, one seeded row, the INT-10 grants, and a
+ * `out_of_hours_report`, one row seeded into `0005`'s `account`, the INT-10 grants, and a
  * REAL LOGIN PRINCIPAL whose only membership is `answering_service`.
  *
  * The login principal is not a convenience. `T-020` Evidence §4 is explicit
@@ -50,13 +54,11 @@ export async function installInt10Fixtures(cluster: Cluster): Promise<void> {
          structured_report jsonb NOT NULL,
          caller_locale text NOT NULL,
          created_at timestamptz NOT NULL DEFAULT now())`,
-      `CREATE TABLE public.account (
-         id char(26) PRIMARY KEY,
-         email_ci text NOT NULL,
-         locale text NOT NULL)`,
-      `INSERT INTO public.account VALUES ('${ACCOUNT_ID}','${ACCOUNT_EMAIL}','el')`,
+      // 0005's account (T-140): app_rw's grants on it are the migration's, not the fixture's.
+      `INSERT INTO public.account (id, pseudonym, tos_version, email_ci, locale)
+         VALUES ('${ACCOUNT_ID}','${ACCOUNT_PSEUDONYM}','fixture-tos','${ACCOUNT_EMAIL}','el')`,
       `GRANT INSERT ON public.out_of_hours_report TO answering_service`,
-      `GRANT SELECT, INSERT, UPDATE, DELETE ON public.account, public.out_of_hours_report TO app_rw`,
+      `GRANT SELECT, INSERT, UPDATE, DELETE ON public.out_of_hours_report TO app_rw`,
       `CREATE ROLE ${AS_PROBE} LOGIN PASSWORD '${PROBE_PASSWORD}' IN ROLE answering_service`,
       // The guard lives in kinvara_guard since 0003 (T-143 § contract (rework 1) §1).
       `SELECT kinvara_guard.assert_answering_service_write_only()`,
