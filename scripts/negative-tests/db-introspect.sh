@@ -9,7 +9,10 @@
 # committed db/schema.ts is the after-ANALYZE rendering. Without this precondition the controls
 # depend on autovacuum timing. It is a property of the harness, not of the check: the check itself
 # does not ANALYZE, and OD-106 stays open until it is fixed in the generator. K17 re-checks at the
-# end, after every plant and drop, so the precondition is attacked rather than assumed.
+# end, after every plant and drop, so the precondition is attacked rather than assumed. The
+# statistics must describe the MIGRATED catalogue: ANALYZE on a database still at 0000, followed by
+# a check that migrates and pulls, renders the fresh ordering (measured, T-150 run 2 K00). So the
+# suite brings the database to the highest committed migration before its first case.
 #
 #   cd /home/alex/projects/nanny/app && ./scripts/svc run <ticket> -- bash scripts/negative-tests/db-introspect.sh
 #
@@ -160,6 +163,9 @@ check() {
   judge "$id" "$desc" "$expect" "$?" "$require"
   restore
 }
+
+node scripts/db-migrate.ts up >"$OUT.m" 2>&1 || { cat "$OUT.m"; abort "db:migrate up failed before the first case"; }
+[ "$(record)" = "kinvara-migrate version=$HIGHEST" ] || abort "the record reads '$(record)' after db:migrate up, not $HIGHEST"
 
 echo "== control"
 check K00 "CONTROL: the committed tree, nothing planted" PASS 'byte-identical to a fresh introspection'
