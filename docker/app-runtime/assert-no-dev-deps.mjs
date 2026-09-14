@@ -4,7 +4,15 @@
  * points straight at the cause, and again in `runtime` AFTER THE LAST COPY,
  * where it proves the property of the image that actually ships.
  *
- *   node assert-no-dev-deps.mjs <workspace root> <APP>
+ *   node assert-no-dev-deps.mjs <workspace> <APP> [<image>]
+ *
+ *   <workspace>  a WHOLE workspace tree: pnpm-lock.yaml plus every project's
+ *                package.json. The devDependency names, the runtime closure and
+ *                the exemptions are all read from here.
+ *   <APP>        the app the image is built for (apps/<APP>/package.json).
+ *   <image>      the tree whose node_modules is inspected. Defaults to
+ *                <workspace>. Every package.json under it must be byte-identical
+ *                to the workspace's file at the same relative path.
  *
  * Both runs are needed and the second is the load-bearing one. A guard that
  * runs only in `prod-deps` proves a property OF `prod-deps`: QA built the
@@ -31,9 +39,27 @@
  * build, and a regression turns `svc up --verify --build` red.
  *
  * =============================================================================
+ * WHY TWO TREES (T-154 rework 1, decisions.md OD-122)
+ * =============================================================================
+ * The runtime stage copies only apps/<APP>, so the image holds 15 of the
+ * workspace's 19 manifests. A guard that read its names from the image could
+ * not know a name another app declares as a devDependency: QA planted
+ * `esbuild` (dev only in apps/worker) into core's runtime stage and both runs
+ * passed. So the names always come from a whole workspace, and in the runtime
+ * stage that is `prod-deps`' tree, bind-mounted into the RUN (a mount is not a
+ * layer). Two refusals keep that honest:
+ *   - <workspace> must carry pnpm-lock.yaml, and every `importers:` entry in it
+ *     must have a package.json this run read. The image has no lockfile, so a
+ *     runtime run pointed back at the image alone is refused, not passed.
+ *   - every package.json in <image> must exist in <workspace> with identical
+ *     bytes, so the manifests judged are the manifests that ship.
+ * Both runs print the sha256 of the manifest set they judged.
+ *
+ * =============================================================================
  * THE RULE (T-154, amending T-018/T-034's "any devDependency named anywhere")
  * =============================================================================
- * Every package.json in the tree is read. Nothing here enumerates a package.
+ * Every package.json in the workspace tree is read. Nothing here enumerates a
+ * package.
  *
  *   CLOSURE  = apps/<APP>/package.json, plus every workspace manifest reached
  *              from it through a `workspace:` spec in `dependencies` or
@@ -43,7 +69,8 @@
  *              manifest IN the closure.
  *
  * A name some manifest declares under `devDependencies` is CHECKED — it must be
- * absent from node_modules, top level and virtual store — UNLESS BOTH hold:
+ * absent from the image's node_modules, top level and virtual store — UNLESS
+ * BOTH hold:
  *   (a) no manifest IN the closure declares it as a devDependency; and
  *   (b) some manifest IN the closure declares it as a runtime dependency.
  * Such a name is EXEMPT, and is printed as exempt on every run.
@@ -69,17 +96,21 @@
  *     named in no package.json.
  *   - a workspace package reached by a spec that is not `workspace:`; its
  *     manifest is not in the closure.
+ *   - anything put into the image AFTER the run (a COPY, or a RUN that copies).
  */
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-const root = process.argv[2] ?? '/srv/kinvara';
+const workspace = path.resolve(process.argv[2] ?? '/srv/kinvara');
 const app = process.argv[3] ?? '';
-const modules = path.join(root, 'node_modules');
+const image = path.resolve(process.argv[4] ?? workspace);
+const modules = path.join(image, 'node_modules');
 const refuse = (msg) => {
   console.error(`assert-no-dev-deps: ${msg} — refusing to pass`);
   process.exit(1);
 };
+const sha256 = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
 
 if (app === '') {
   refuse(
@@ -88,29 +119,92 @@ if (app === '') {
   );
 }
 
-/** Every package.json in the workspace, root included, ignoring node_modules. */
-const manifests = [];
-const walk = (dir, depth) => {
-  if (depth > 3) return;
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue;
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) walk(full, depth + 1);
-    else if (entry.name === 'package.json') manifests.push(full);
-  }
+/** Every package.json under `root`, root included, ignoring node_modules. */
+const manifestsUnder = (root) => {
+  const found = [];
+  const walk = (dir, depth) => {
+    if (depth > 3) return;
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue;
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full, depth + 1);
+      else if (entry.name === 'package.json') found.push(path.relative(root, full));
+    }
+  };
+  walk(root, 0);
+  return found.sort();
 };
-walk(root, 0);
 
-if (manifests.length === 0) refuse(`found no package.json under ${root}`);
+// --- the workspace: every manifest, and the lockfile's project list ----------
+const manifests = manifestsUnder(workspace);
+if (manifests.length === 0) refuse(`found no package.json under ${workspace}`);
 
-/** rel path -> parsed manifest */
+/** rel path -> raw bytes, and rel path -> parsed manifest */
+const bytes = new Map();
 const pkgs = new Map();
-for (const m of manifests) {
+for (const rel of manifests) {
+  const raw = fs.readFileSync(path.join(workspace, rel));
+  bytes.set(rel, raw);
   try {
-    pkgs.set(path.relative(root, m), JSON.parse(fs.readFileSync(m, 'utf8')));
+    pkgs.set(rel, JSON.parse(raw.toString('utf8')));
   } catch (e) {
-    refuse(`${m} is not parseable JSON: ${e.message}`);
+    refuse(`${path.join(workspace, rel)} is not parseable JSON: ${e.message}`);
   }
+}
+
+const lockPath = path.join(workspace, 'pnpm-lock.yaml');
+if (!fs.existsSync(lockPath)) {
+  refuse(
+    `${workspace} has no pnpm-lock.yaml, so it is not a whole workspace and this run cannot ` +
+      `know every manifest's devDependencies. The runtime stage copies only apps/<APP>: ` +
+      `pass the whole workspace as the first argument (app.Dockerfile mounts prod-deps' tree)`,
+  );
+}
+const importers = [];
+let inImporters = false;
+for (const line of fs.readFileSync(lockPath, 'utf8').split(/\r?\n/)) {
+  if (/^importers:\s*$/.test(line)) {
+    inImporters = true;
+    continue;
+  }
+  if (!inImporters) continue;
+  if (/^\S/.test(line)) break;
+  const m = /^ {2}(?:'([^']*)'|"([^"]*)"|([^\s'"][^:]*)):(?:\s*\{\})?\s*$/.exec(line);
+  if (m) importers.push(m[1] ?? m[2] ?? m[3]);
+}
+if (importers.length === 0) {
+  refuse(`${lockPath} lists no importers, so the workspace's projects cannot be checked`);
+}
+const unread = importers.filter((imp) => !pkgs.has(path.join(imp, 'package.json')));
+if (unread.length > 0) {
+  refuse(
+    `pnpm-lock.yaml lists ${String(unread.length)} project(s) whose package.json is not ` +
+      `under ${workspace}: ${unread.join(', ')}. Their devDependencies would go unread`,
+  );
+}
+
+const manifestSet = sha256(manifests.map((rel) => `${rel}\t${sha256(bytes.get(rel))}\n`).join(''));
+
+// --- the image's manifests must be the workspace's ---------------------------
+let imageNote = 'the workspace tree itself';
+if (image !== workspace) {
+  const inImage = manifestsUnder(image);
+  for (const rel of inImage) {
+    const ws = bytes.get(rel);
+    if (ws === undefined) {
+      refuse(
+        `${path.join(image, rel)} is in the image but not in the workspace at ${workspace}, ` +
+          `so the closure judged here is not the one that ships`,
+      );
+    }
+    if (!ws.equals(fs.readFileSync(path.join(image, rel)))) {
+      refuse(
+        `${path.join(image, rel)} differs from ${path.join(workspace, rel)}, ` +
+          `so the closure judged here is not the one that ships`,
+      );
+    }
+  }
+  imageNote = `${String(inImage.length)} manifest(s), each byte-identical to the workspace's`;
 }
 
 /** workspace package name -> rel path of its manifest */
@@ -120,7 +214,7 @@ for (const [rel, pkg] of pkgs) {
 }
 
 const appRel = path.join('apps', app, 'package.json');
-if (!pkgs.has(appRel)) refuse(`APP '${app}' has no ${appRel} under ${root}`);
+if (!pkgs.has(appRel)) refuse(`APP '${app}' has no ${appRel} under ${workspace}`);
 
 // --- the runtime closure ------------------------------------------------------
 const RUNTIME_FIELDS = ['dependencies', 'optionalDependencies'];
@@ -200,7 +294,13 @@ for (const [name, declaredIn] of checked) {
   }
 }
 
-console.log(`assert-no-dev-deps: APP=${app}; runtime closure: ${closure.join(', ')}`);
+console.log(`assert-no-dev-deps: APP=${app}; workspace=${workspace}; image=${image}`);
+console.log(
+  `assert-no-dev-deps: workspace: ${String(manifests.length)} manifest(s) read, covering all ` +
+    `${String(importers.length)} pnpm-lock.yaml importer(s); manifest set sha256:${manifestSet}`,
+);
+console.log(`assert-no-dev-deps: image: ${imageNote}`);
+console.log(`assert-no-dev-deps: runtime closure: ${closure.join(', ')}`);
 console.log(
   `assert-no-dev-deps: ${String(dev.size)} devDependency name(s) across ` +
     `${String(manifests.length)} manifest(s): ${String(checked.size)} checked, ` +

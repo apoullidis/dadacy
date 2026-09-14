@@ -169,8 +169,10 @@ RUN --mount=type=cache,id=kinvara-pnpm-store,target=/pnpm/store,sharing=locked \
 # fails `svc up --verify --build` instead of producing a working image nobody
 # looks inside.
 #
-# It is DERIVED from every package.json in the workspace and judged against
-# ONE app's runtime closure (T-154, OD-117): a devDependency name must be
+# It is DERIVED from every package.json in the workspace (this stage's copy of
+# apps/, packages/ and the root, checked against pnpm-lock.yaml's importers)
+# and judged against ONE app's runtime closure (T-154, OD-117): a devDependency
+# name must be
 # absent from node_modules unless no manifest in @kinvara/${APP}'s closure
 # calls it dev AND a manifest in that closure declares it as a runtime
 # dependency. The rule, and what it does not catch, is in the script's header.
@@ -246,8 +248,20 @@ COPY --chown=10001:10001 docker/app-runtime/ ./app-runtime/
 # So it runs last, over the tree that is actually in the image. Any COPY added
 # below it would escape it, and `gate:app-images` fails a Dockerfile whose
 # target stage has a COPY after this line — the static check and this runtime
-# check guard each other's blind spot rather than sharing one.
-RUN node /srv/kinvara/app-runtime/assert-no-dev-deps.mjs /srv/kinvara "${APP}"
+# check guard each other's blind spot rather than sharing one. That static check
+# reads COPY/ADD only: a RUN that copies files in after this line escapes both.
+#
+# WHERE THE NAMES COME FROM (T-154 rework 1, decisions.md OD-122). This stage
+# holds only apps/${APP}'s manifest, so the names another app declares as
+# devDependencies are not in it; QA planted `esbuild` (dev only in apps/worker)
+# here and this run passed. So the guard reads every manifest and the lockfile
+# from prod-deps' tree, BIND-MOUNTED for this one RUN, and inspects the
+# node_modules of /srv/kinvara. A bind mount is not a layer: it adds nothing to
+# the image. The guard refuses a workspace tree without pnpm-lock.yaml or
+# missing any importer's manifest, and refuses if any package.json in the image
+# differs from the one it judged. Both runs print the manifest set's sha256.
+RUN --mount=type=bind,from=prod-deps,source=/srv/kinvara,target=/run/kinvara-workspace \
+    node /srv/kinvara/app-runtime/assert-no-dev-deps.mjs /run/kinvara-workspace "${APP}" /srv/kinvara
 
 USER 10001:10001
 
