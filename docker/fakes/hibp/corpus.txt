@@ -1,0 +1,16 @@
+# hibp-fake seeded corpus — Ticket: T-139. Published in state/EP-1/T-139.md.
+#
+# <full SHA-1 of the UTF-8 password, 40 UPPERCASE hex>:<count>
+#
+# EVERY PASSWORD HERE IS SYNTHETIC. None is a real leaked password; each was
+# invented for this ticket and names it. Never add a real one.
+#
+#   kinvara-T139-synthetic-breached-01   breached, count 3
+#   kinvara-T139-synthetic-breached-02   breached, count 1
+#
+# Not in this file, and published alongside it:
+#   kinvara-T139-synthetic-clean-01            clean; prefix C6954 has no entries
+#   kinvara-T139-synthetic-clean-sibling-66358 clean; SAME prefix as breached-01
+#                                              (C8DBF), different suffix
+C8DBF9E79064DA54AB6D05F9B419054EE30C93A0:3
+B126B0F8F5DAE00434836783A01A6F200104BAFB:1

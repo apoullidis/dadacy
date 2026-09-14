@@ -58,6 +58,7 @@
 #   pay 128  = stripe-mock 128
 #   tel 128  = fake-telephony 128
 #   mail 64  = mailpit 64
+#   hibp 64  = hibp-fake 64
 #   otel 512 = otel-collector 192 + jaeger 320
 #   api 768  = core 768
 #   worker 512 = worker 512
@@ -316,6 +317,31 @@ services:
       - '8025' # web UI + assertion API
     mem_limit: 64m
     cpus: 0.25
+
+  # =========================================================================
+  # profile: hibp — hibp-fake (ours), T-139, stakeholder ruling OE-22
+  # The HIBP Pwned Passwords k-anonymity RANGE API stand-in. It answers only
+  # `GET /range/<5 hex>` over a small synthetic corpus and refuses anything
+  # wider than the real API accepts (PROTOCOL §9 item 11, DOCKER.md §8). No
+  # /healthz: the real API has none, so the healthcheck asks for a range.
+  # =========================================================================
+  hibp-fake:
+    image: kinvara/hibp-fake:dev
+    build:
+      context: ./fakes/hibp
+      dockerfile: Dockerfile
+    profiles: ['hibp']
+    labels:
+      io.kinvara.built-by: 'T-139'
+      io.kinvara.built-by-title: 'the HIBP range-API stand-in'
+    networks: [kinvara-int]
+    environment:
+      PORT: '4100'
+    expose:
+      - '4100'
+    mem_limit: 64m
+    cpus: 0.25
+    stop_grace_period: 5s
 
   # =========================================================================
   # profile: otel — collector + Jaeger (T-008 owns the collector config)

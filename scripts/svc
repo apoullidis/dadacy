@@ -107,7 +107,7 @@ INT_NETWORK_KEY="kinvara-int"
 # would thrash, and "only the services the ticket needs" would become
 # decorative. A ticket that seems to need eight services is a chaos or E2E
 # ticket and says so.
-ALL_PROFILES=(db cache aws pay tel mail otel api worker safety web admin)
+ALL_PROFILES=(db cache aws pay tel mail hibp otel api worker safety web admin)
 
 # shellcheck source=scripts/lib/toolbox.sh
 . "${SCRIPT_DIR}/lib/toolbox.sh"
@@ -140,7 +140,7 @@ usage: scripts/svc <command> [args...]
   nuke [--yes]         EVERY kinvara-* compose project. ORCHESTRATOR ONLY.
 
 profiles (DOCKER.md §3 — there is no `all` profile and none may be added):
-  db cache aws pay tel mail otel api worker safety web admin
+  db cache aws pay tel mail hibp otel api worker safety web admin
 
 overlays are flags, not profiles. They still require the profiles of the
 services they modify:
