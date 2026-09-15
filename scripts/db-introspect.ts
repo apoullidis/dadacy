@@ -47,8 +47,9 @@
  *      T-153 (OD-107): every `bigint(…{ mode: "number" })` drizzle-kit writes (a JS number, lossy above
  *      2^53) is rewritten to drizzle's `bigint` mode, with integer defaults as bigint literals; a bigint
  *      in any other shape fails. Each relation's bigint-mode columns must number exactly the catalogue's
- *      int8 columns (3d), and a geometry column whose catalogue type is not geometry(Point[,srid])[[]]
- *      fails: drizzle-orm reads only a 2D point from geometry and throws on every other shape.
+ *      int8 columns (3d), and a geometry column whose catalogue type is not a scalar
+ *      geometry(Point[,srid]) fails: drizzle-orm reads only a 2D point from geometry, throws on every
+ *      other shape, and cannot write an array of points.
  *   4b. [I-POLICY] (T-152 rework 1, OD-109) drizzle-kit keeps a row-level security policy's
  *      `using` and `withCheck` only for the first pg_policies row it receives per table, from a query
  *      with no ORDER BY, so on a table with two or more policies the rendering is wrong and follows

@@ -177,12 +177,13 @@ export function parseCatalogueColumns(
 }
 
 /**
- * Geometry admitted: a 2D point, with or without an SRID, or an array of them. drizzle-orm 0.45.2's
- * geometry reader (`parseEWKB`) returns `[x, y]` for a point and throws `Unsupported geometry type` for
- * every other geometry; a PointZ row is read as `[x, y]`, losing Z (all measured, T-153 phase M). The
- * geometry type name is matched exactly as `format_type` prints it.
+ * Geometry admitted: a scalar 2D point, with or without an SRID. drizzle-orm 0.45.2's geometry reader
+ * (`parseEWKB`) returns `[x, y]` for a point and throws `Unsupported geometry type` for every other
+ * geometry; a PointZ row is read as `[x, y]`, losing Z (measured, T-153 phase M). An ARRAY of points
+ * reads, but drizzle writes it as a malformed array literal that PostgreSQL refuses (measured, T-153
+ * phase A), so it does not round-trip and is refused too. Matched exactly as `format_type` prints it.
  */
-export const GEOMETRY_ADMITTED = /^geometry\(Point(?:,[0-9]+)?\)(?:\[\])?$/;
+export const GEOMETRY_ADMITTED = /^geometry\(Point(?:,[0-9]+)?\)$/;
 
 export interface CatalogueCheck {
   readonly problems: readonly string[];
@@ -207,7 +208,7 @@ export function checkCatalogueColumns(
     if (c.kind !== 'geometry') continue;
     if (!GEOMETRY_ADMITTED.test(c.type)) {
       problems.push(
-        `column ${JSON.stringify(c.relation)}.${JSON.stringify(c.column)} has database type '${c.type}': drizzle-orm reads only a 2D point from a geometry column (any other geometry row throws "Unsupported geometry type"; a PointZ row loses Z), so only geometry(Point[,srid]) and its array are admitted. A non-point geometry column needs a measured mapping in scripts/gates/lib/schema-render.ts in the same change set (T-153, OD-107)`,
+        `column ${JSON.stringify(c.relation)}.${JSON.stringify(c.column)} has database type '${c.type}': drizzle-orm reads only a 2D point from a geometry column (any other geometry row throws "Unsupported geometry type"; a PointZ row loses Z; an array of points cannot be written), so only a scalar geometry(Point[,srid]) is admitted. Any other geometry column needs a measured mapping in scripts/gates/lib/schema-render.ts in the same change set (T-153, OD-107)`,
       );
     } else {
       points += 1;
