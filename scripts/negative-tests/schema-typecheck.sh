@@ -41,9 +41,15 @@ abort() {
   exit 2
 }
 
+S09_GONE=
 restore() {
   rm -f "$BITE" "$C1" "$PRIV"
   git checkout -q -- "$SCHEMA" "$BASE" "$VALUE" "$TYPE" "$RENDER"
+  if [ -n "$S09_GONE" ]; then
+    # shellcheck disable=SC2086
+    git checkout -q -- $S09_GONE
+    S09_GONE=
+  fi
   if [ -n "$(git status --porcelain)" ]; then
     git status --porcelain
     abort "the tree did not restore cleanly"
@@ -188,7 +194,16 @@ echo "== rejected option C1: noUnusedParameters off alone"
 git show "$EMPTY_RENDERING:$SCHEMA" >"$SCHEMA"
 grep -q '^import { sql } from "drizzle-orm"$' "$SCHEMA" || abort "the $EMPTY_RENDERING rendering did not land"
 mutate "$BASE" '"noUnusedParameters": true,' '"noUnusedParameters": false,'
+# OD-146 (T-153): every other committed importer of db/schema.ts (e.g. apps/core's account repository,
+# merged after T-150) would meet T-138's empty rendering too and report TS2305 on its named imports, which
+# is not what C1 is about. Each is moved aside for this case only; restore() puts it back.
+S09_GONE=$(git grep -lE "from '(\.\./)+db/schema\.ts'" -- '*.ts' | grep -vxF -e "$VALUE" -e "$TYPE" | tr '\n' ' ')
 rm -f "$VALUE" "$TYPE"
+for f in $S09_GONE; do
+  rm -f "$f"
+  [ ! -e "$f" ] || abort "$f still exists"
+done
+printf '       importers of db/schema.ts moved aside for S09: %s\n' "${S09_GONE:-none}"
 plant "$C1" "import '../../../db/schema.ts';"
 E_PG=$(line_of "$SCHEMA" 'import { pgTable } from "drizzle-orm/pg-core"')
 E_SQL=$(line_of "$SCHEMA" 'import { sql } from "drizzle-orm"')
