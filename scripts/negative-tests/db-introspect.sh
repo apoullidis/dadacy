@@ -29,6 +29,13 @@
 # refusal) and the K36 plant goes I-SCOPE; K40 a public table beside the pgboss set with no
 # regeneration (I-DIFF only); K41 pgboss beside pgboss_x (I-SCOPE names pgboss_x only).
 #
+# T-145 rework 1 — K42–K49 (QR-F1, QR-A1, OD-140): the catalogue is read as one JSON array and names are
+# printed JSON-quoted with non-printable-ASCII escaped. Each case plants a schema main's trim/split text
+# read re-parsed: a leading space, NBSP, BOM, tab or newline before `pgboss`, `"pgboss|x"`,
+# `"pgboss|x|true"` and `"zz_other|x|true"`. The plant's nspname bytes are asserted against printf-derived
+# hex, the check must be exactly {I-SCOPE} naming it unambiguously, and then K42m–K49m restore main's
+# read (asserted landed) and show the same plant getting past I-SCOPE.
+#
 #   cd /home/alex/projects/nanny/app && ./scripts/svc run <ticket> -- bash scripts/negative-tests/db-introspect.sh
 #
 # Needs the ticket's `db` project and a clean, committed tree. The check itself migrates the
@@ -486,7 +493,7 @@ DROP SCHEMA $s;"
 # scope_refused <schema name as the catalogue has it>: one regex per planted relation, each an I-SCOPE line.
 scope_refused() {
   local r
-  for r in $PGBOSS_RELS; do printf '%s\n' "^  - \\[I-SCOPE\\] relation $1\\.$r is owned by no extension and is outside schema public"; done
+  for r in $PGBOSS_RELS; do printf '%s\n' "^  - \\[I-SCOPE\\] relation \"$1\"\\.\"$r\" is owned by no extension and is outside schema public"; done
 }
 
 # check_facts <id> <description> <expected tags> <regex>...: run the check; every regex must match a
@@ -537,9 +544,9 @@ fact() {
     echo "fact MISMATCH: $1: [$2] but expected [$3]" >>"$OUT.f"
   fi
 }
-want_admitted=$(for r in $PGBOSS_RELS; do echo "pgboss.$r"; done | sorted_words)
-cat_admitted=$(psql -X -A -t -q -c "SELECT n.nspname || '.' || c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind IN ('r','p','v','m','f') AND n.nspname = 'pgboss'" | sorted_words)
-gen_admitted=$(sed -nE 's/^  out of scope: [0-9]+ relation\(s\) in schema\(s\) pgboss admitted, not introspected and not counted \[(.*)\]$/\1/p' "$OUT" | sorted_words)
+want_admitted=$(for r in $PGBOSS_RELS; do echo "\"pgboss\".\"$r\""; done | sorted_words)
+cat_admitted=$(psql -X -A -t -q -c "SELECT '\"' || n.nspname || '\".\"' || c.relname || '\"' FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind IN ('r','p','v','m','f') AND n.nspname = 'pgboss'" | sorted_words)
+gen_admitted=$(sed -nE 's/^  out of scope: [0-9]+ relation\(s\) in schema\(s\) "pgboss" admitted, not introspected and not counted \[(.*)\]$/\1/p' "$OUT" | sorted_words)
 gen_owned=$(sed -nE 's/^  catalogue: .*; ([0-9]+) relation\(s\) owned by no extension in public$/\1/p' "$OUT")
 gen_intro=$(sed -nE 's/^  drizzle-kit [^:]+: ([0-9]+) relation\(s\) introspected from public$/\1/p' "$OUT")
 fact "the catalogue's relations in schema pgboss (psql, this run), as the plant names them" "$cat_admitted" "$want_admitted"
@@ -582,14 +589,14 @@ plant "$DOWN" "$(printf 'SET allow_system_table_mods = on;\n'; cat "$DOWN")"
 grep -qx 'SET allow_system_table_mods = on;' "$UP" || abort "allow_system_table_mods did not land in $UP"
 sed 's/^/   plant up:   /' "$UP"
 mapfile -t refused < <(scope_refused pg_boss)
-check_facts K37b "(T-145) (i) the same set in schema pg_boss (planted with allow_system_table_mods): every relation I-SCOPE, none admitted" I-SCOPE "MIGRATE OK  up: $HIGHEST -> $NEXT" "${refused[@]}" '^  out of scope: 0 relation\(s\)'
+check_facts K37b "(T-145) (i) pg_boss, planted only as a superuser with allow_system_table_mods (a migration cannot create it, K37b0): the name comparison does not take pg_boss for pgboss, every relation I-SCOPE" I-SCOPE "MIGRATE OK  up: $HIGHEST -> $NEXT" "${refused[@]}" '^  out of scope: 0 relation\(s\)'
 
 plant "$UP" "-- @phase: expand
 -- @run-as: bootstrap-superuser — T-145
 CREATE TABLE kinvara_guard.t145_plant (id bigint PRIMARY KEY);"
 plant "$DOWN" "DROP TABLE kinvara_guard.t145_plant;"
 sed 's/^/   plant up:   /' "$UP"
-check_facts K38 "(T-145) (ii) a relation in kinvara_guard: still I-SCOPE" I-SCOPE "MIGRATE OK  up: $HIGHEST -> $NEXT" '^  - \[I-SCOPE\] relation kinvara_guard\.t145_plant is owned by no extension' '^  out of scope: 0 relation\(s\)'
+check_facts K38 "(T-145) (ii) a relation in kinvara_guard: still I-SCOPE" I-SCOPE "MIGRATE OK  up: $HIGHEST -> $NEXT" '^  - \[I-SCOPE\] relation "kinvara_guard"\."t145_plant" is owned by no extension' '^  out of scope: 0 relation\(s\)'
 
 plant_jobschema pgboss
 mapfile -t refused < <(scope_refused pgboss)
@@ -598,19 +605,133 @@ git diff -U0 -- "$SCRIPT" | grep -E '^[-+][^-+]' | sed 's/^/   mutation:   /'
 check_facts K39a "(T-145) (iii) the rule deleted (OUT_OF_SCOPE_SCHEMAS emptied): the K36 control plant goes red" I-SCOPE "MIGRATE OK  up: $HIGHEST -> $NEXT" "${refused[@]}" '^  out of scope: 0 relation\(s\)'
 
 plant_jobschema pgboss
-mutate "$SCRIPT" "      r.schema !== INTROSPECTED_SCHEMA &&
-      !OUT_OF_SCOPE_SCHEMAS.includes(r.schema)," "      r.schema !== INTROSPECTED_SCHEMA,"
+mutate "$SCRIPT" "    (r) => !r.extensionMember && r.schema !== INTROSPECTED_SCHEMA && !admitted(r)," "    (r) => !r.extensionMember && r.schema !== INTROSPECTED_SCHEMA,"
 git diff -U0 -- "$SCRIPT" | grep -E '^[-+][^-+]' | sed 's/^/   mutation:   /'
 check_facts K39b "(T-145) (iii) the rule deleted (the exclusion clause removed from the I-SCOPE refusal): the K36 control plant goes red" I-SCOPE "MIGRATE OK  up: $HIGHEST -> $NEXT" "${refused[@]}"
 
 plant_jobschema pgboss "CREATE TABLE public.t145_plant (id bigint PRIMARY KEY);
 GRANT SELECT ON public.t145_plant TO app_rw;" "DROP TABLE public.t145_plant;"
-check_facts K40 "(T-145) (iv) a public table beside the pgboss set, db/schema.ts not regenerated: still I-DIFF, and only I-DIFF" I-DIFF "MIGRATE OK  up: $HIGHEST -> $NEXT" '^  out of scope: 4 relation\(s\) in schema\(s\) pgboss admitted' "^  catalogue: .*; $((OWNED + 1)) relation\\(s\\) owned by no extension in public\$" '!\[I-SCOPE\]'
+check_facts K40 "(T-145) (iv) a public table beside the pgboss set, db/schema.ts not regenerated: still I-DIFF, and only I-DIFF" I-DIFF "MIGRATE OK  up: $HIGHEST -> $NEXT" '^  out of scope: 4 relation\(s\) in schema\(s\) "pgboss" admitted' "^  catalogue: .*; $((OWNED + 1)) relation\\(s\\) owned by no extension in public\$" '!\[I-SCOPE\]'
 
 plant_jobschema pgboss "CREATE SCHEMA pgboss_x;
 CREATE TABLE pgboss_x.job (id bigint PRIMARY KEY);" "DROP TABLE pgboss_x.job;
 DROP SCHEMA pgboss_x;"
-check_facts K41 "(T-145) pgboss beside pgboss_x: admission is per relation, by schema name; I-SCOPE names pgboss_x.job and no pgboss relation" I-SCOPE "MIGRATE OK  up: $HIGHEST -> $NEXT" '^  - \[I-SCOPE\] relation pgboss_x\.job is owned by no extension' '!^  - \[I-SCOPE\] relation pgboss\.' '^  out of scope: 4 relation\(s\) in schema\(s\) pgboss admitted'
+check_facts K41 "(T-145) pgboss beside pgboss_x: admission is per relation, by schema name; I-SCOPE names pgboss_x.job and no pgboss relation" I-SCOPE "MIGRATE OK  up: $HIGHEST -> $NEXT" '^  - \[I-SCOPE\] relation "pgboss_x"\."job" is owned by no extension' '!^  - \[I-SCOPE\] relation "pgboss"\.' '^  out of scope: 4 relation\(s\) in schema\(s\) "pgboss" admitted'
+
+echo "== T-145 rework 1 (QR-F1, QR-A1, OD-140): schema names main's trim/split text read re-parsed. Each is I-SCOPE and named unambiguously; each gets past I-SCOPE again with that read restored"
+# The committed read (psql(CATALOGUE_SQL) + parseCatalogue) and, verbatim, main 94e6896's text read and
+# trim/split parse that the mutation puts back (the parse also derives schemaHex from the re-parsed field,
+# which is exactly what the defect compared).
+READ_NEW='  const cat = psql(CATALOGUE_SQL);'
+PARSE_NEW='  const parsed = parseCatalogue(cat.out);'
+READ_OLD=$(
+  cat <<'EOF'
+  const cat = psql(`
+    SELECT n.nspname || '|' || c.relname || '|' ||
+           (EXISTS (SELECT 1 FROM pg_depend d
+                     WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e'))::text
+      FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f')
+       AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+       AND n.nspname NOT LIKE 'pg\\_toast%'
+       AND n.nspname NOT LIKE 'pg\\_temp\\_%'
+     ORDER BY 1`);
+EOF
+)
+PARSE_OLD=$(
+  cat <<'EOF'
+  const parsed = {
+    ok: true as const,
+    rows: cat.out
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l !== '')
+      .map((l) => {
+        const [schema = '', name = '', ext = ''] = l.split('|');
+        return { schema, schemaHex: Buffer.from(schema, 'utf8').toString('hex'), name, extensionMember: ext === 'true' };
+      }),
+  };
+EOF
+)
+
+# restore_text_read: put main's read back, and assert both halves landed and the new read is gone.
+restore_text_read() {
+  mutate "$SCRIPT" "$READ_NEW" "$READ_OLD"
+  mutate "$SCRIPT" "$PARSE_NEW" "$PARSE_OLD"
+  { ! grep -qF 'psql(CATALOGUE_SQL)' "$SCRIPT" && ! grep -qF 'parseCatalogue(cat.out)' "$SCRIPT" && grep -qF "l.split('|')" "$SCRIPT" && grep -qF ".map((l) => l.trim())" "$SCRIPT" && grep -qF "SELECT n.nspname || '|' || c.relname || '|' ||" "$SCRIPT"; } || abort "main's trim/split read did not land in $SCRIPT"
+  git diff -U0 -- "$SCRIPT" | grep -E '^[-+][^-+]' | sed 's/^/   mutation:   /'
+}
+
+# facts_into <regex>...: one fact line per regex into $OUT.f (a leading ! = must NOT match $OUT); sets $miss.
+facts_into() {
+  local re
+  miss=0
+  for re in "$@"; do
+    if [ "${re#!}" != "$re" ]; then
+      if grep -qE -- "${re#!}" "$OUT"; then echo "fact MISMATCH (present, must be absent): ${re#!}" >>"$OUT.f"; miss=$((miss + 1)); else echo "fact ok (absent): ${re#!}" >>"$OUT.f"; fi
+    elif grep -qE -- "$re" "$OUT"; then
+      echo "fact ok (present): $re" >>"$OUT.f"
+    else
+      echo "fact MISMATCH (absent, must be present): $re" >>"$OUT.f"
+      miss=$((miss + 1))
+    fi
+  done
+}
+
+# landed_fact <wanted hex>: the plant's nspname bytes, read from pg_namespace, must be the bytes the case
+# derived with printf; adds to $miss.
+landed_fact() {
+  local got
+  got=$(psql -X -A -t -q -c "SELECT string_agg(encode(convert_to(n.nspname, 'UTF8'), 'hex'), ',') FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relname = 't145_t'")
+  if [ "$got" = "$1" ]; then echo "fact ok: plant landed, pg_namespace.nspname bytes [$got]" >>"$OUT.f"; else echo "fact MISMATCH: nspname bytes [$got], the plant intended [$1]" >>"$OUT.f"; miss=$((miss + 1)); fi
+}
+
+# shape_case <id> <schema as SQL> <schema bytes, printf %b> <the name as the check must print it, ERE>
+#            <fact the restored read must produce>...
+shape_case() {
+  local id=$1 ident=$2 bytes=$3 shown=$4 want code
+  shift 4
+  want=$(printf '%b' "$bytes" | od -An -tx1 | tr -d ' \n')
+  plant "$UP" "-- @phase: expand
+-- @run-as: bootstrap-superuser — T-145
+CREATE SCHEMA $ident;
+CREATE TABLE $ident.t145_t (id bigint PRIMARY KEY);"
+  plant "$DOWN" "DROP TABLE $ident.t145_t;
+DROP SCHEMA $ident;"
+  sed 's/^/   plant up:   /' "$UP"
+  node scripts/db-introspect.ts --check >"$OUT" 2>&1
+  code=$?
+  : >"$OUT.f"
+  facts_into "MIGRATE OK  up: $HIGHEST -> $NEXT" "^  - \\[I-SCOPE\\] relation $shown\\.\"t145_t\" is owned by no extension and is outside schema public" '^  out of scope: 0 relation\(s\)'
+  landed_fact "$want"
+  [ "$miss" -eq 0 ] && echo "ALL SHAPE FACTS HOLD" >>"$OUT.f"
+  cat "$OUT.f" >>"$OUT"
+  judge "$id" "(T-145 r1) schema $ident, bytes $want: I-SCOPE, named $shown, not admitted" I-SCOPE "$code" '^ALL SHAPE FACTS HOLD$'
+  grep -E '^fact ' "$OUT" | cut -c1-240 | sed 's/^/       /'
+  restore_text_read
+  node scripts/db-introspect.ts --check >"$OUT" 2>&1
+  code=$?
+  : >"$OUT.f"
+  facts_into "$@"
+  landed_fact "$want"
+  [ "$miss" -eq 0 ] && echo "ALL RESTORED-READ FACTS HOLD" >>"$OUT.f"
+  cat "$OUT.f" >>"$OUT"
+  judge "${id}m" "(T-145 r1) RED BEFORE: main's trim/split read restored (asserted above), the same plant gets past I-SCOPE" PASS "$code" '^ALL RESTORED-READ FACTS HOLD$'
+  grep -E '^fact |^  out of scope: ' "$OUT" | cut -c1-240 | sed 's/^/       /'
+  restore
+}
+
+ADMITTED_T='^  out of scope: 1 relation\(s\) in schema\(s\) "pgboss" admitted, not introspected and not counted \["pgboss"\."t145_t"\]$'
+shape_case K42 '" pgboss"' ' pgboss' '" pgboss"' "$ADMITTED_T"
+shape_case K43 'U&"\00A0pgboss"' '\xc2\xa0pgboss' '"\\u00a0pgboss"' "$ADMITTED_T"
+shape_case K44 'U&"\FEFFpgboss"' '\xef\xbb\xbfpgboss' '"\\ufeffpgboss"' "$ADMITTED_T"
+shape_case K45 'U&"\0009pgboss"' '\tpgboss' '"\\tpgboss"' "$ADMITTED_T"
+shape_case K46 'U&"\000Apgboss"' '\npgboss' '"\\npgboss"' "$ADMITTED_T"
+shape_case K47 '"pgboss|x"' 'pgboss|x' '"pgboss\|x"' '^  out of scope: 1 relation\(s\) in schema\(s\) "pgboss" admitted, not introspected and not counted \["pgboss"\."x"\]$'
+# QR-A1 (main's own defect): with the text read, "<any>|x|true" parses as an extension member, so the
+# relation is on no list at all: GATE PASS, out of scope 0, and its name nowhere in the output.
+shape_case K48 '"pgboss|x|true"' 'pgboss|x|true' '"pgboss\|x\|true"' '^  out of scope: 0 relation\(s\)' '!t145_t'
+shape_case K49 '"zz_other|x|true"' 'zz_other|x|true' '"zz_other\|x\|true"' '^  out of scope: 0 relation\(s\)' '!t145_t'
 
 echo
 if [ "$bad" -eq 0 ]; then
