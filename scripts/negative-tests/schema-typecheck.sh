@@ -9,6 +9,8 @@
 # it by the exit status AND the EXACT set of `<file>:<line> TS<code>` errors, so a crash, a no-op
 # and a refusal are three different outcomes. After each case the tree is restored and asserted
 # clean. The P cases call scripts/gates/lib/schema-render.ts directly (no database, no tsc run).
+# T-153 (OD-107): P05 maps drizzle-kit's real bigint rendering into drizzle's bigint mode (idempotently),
+# and P06 shows a number-mode bigint the rewrite does not recognise refused.
 set -uo pipefail
 cd "$(dirname "$0")/../.." || exit 2
 
@@ -256,6 +258,78 @@ const m = mapColumnTypes(raw);
 console.log(JSON.stringify(m));
 console.log(!m.ok && m.problems.length === 1 && m.problems[0].includes('unknown(') ? 'RESULT ok' : 'RESULT bad');"
 restore
+
+# T-153 (OD-107): drizzle-kit 0.31.10's bigint rendering, lines verbatim from a real pull (T-153 § Evidence,
+# phase M, plant A): an identity PK, DEFAULT 0, a sql default, a bigint[] default above 2^53, a bigserial,
+# and a view whose first column follows `{` on the hint's own line. <TAB> stands for the tab drizzle-kit writes.
+T153_RAW=$(
+  cat <<'EOF'
+import { pgTable, bigint, bigserial, pgView } from "drizzle-orm/pg-core"
+import { sql } from "drizzle-orm"
+
+export const t153Parent = pgTable("t153_parent", {
+<TAB>// You can use { mode: "bigint" } if numbers are exceeding js number limitations
+<TAB>id: bigint({ mode: "number" }).primaryKey().generatedAlwaysAsIdentity({ name: "t153_parent_id_seq", startWith: 1, increment: 1, minValue: 1, maxValue: 9223372036854775807, cache: 1 }),
+<TAB>note: text(),
+});
+
+export const t153Money = pgTable("t153_money", {
+<TAB>// You can use { mode: "bigint" } if numbers are exceeding js number limitations
+<TAB>zeroMinor: bigint("zero_minor", { mode: "number" }).default(0).notNull(),
+<TAB>// You can use { mode: "bigint" } if numbers are exceeding js number limitations
+<TAB>negDefault: bigint("neg_default", { mode: "number" }).default(sql`'-5'`),
+<TAB>// You can use { mode: "bigint" } if numbers are exceeding js number limitations
+<TAB>listDefault: bigint("list_default", { mode: "number" }).array().default([1, 9007199254740993]).notNull(),
+<TAB>serialId: bigserial("serial_id", { mode: "bigint" }).notNull(),
+});
+export const t153MoneyV = pgView("t153_money_v", {<TAB>// You can use { mode: "bigint" } if numbers are exceeding js number limitations
+<TAB>id: bigint({ mode: "number" }),
+<TAB>// You can use { mode: "bigint" } if numbers are exceeding js number limitations
+<TAB>amountMinor: bigint("amount_minor", { mode: "number" }),
+}).as(sql`SELECT id, amount_minor FROM t153_money`);
+EOF
+)
+# The lines the rewrite must produce (as T-153 § Evidence phase A's written db/schema.ts has them).
+T153_WANT=$(
+  cat <<'EOF'
+<TAB>id: bigint({ mode: "bigint" }).primaryKey().generatedAlwaysAsIdentity({ name: "t153_parent_id_seq", startWith: 1, increment: 1, minValue: 1, maxValue: 9223372036854775807, cache: 1 }),
+<TAB>zeroMinor: bigint("zero_minor", { mode: "bigint" }).default(0n).notNull(),
+<TAB>negDefault: bigint("neg_default", { mode: "bigint" }).default(sql`'-5'`),
+<TAB>listDefault: bigint("list_default", { mode: "bigint" }).array().default([1n, 9007199254740993n]).notNull(),
+<TAB>serialId: bigserial("serial_id", { mode: "bigint" }).notNull(),
+export const t153MoneyV = pgView("t153_money_v", {
+<TAB>id: bigint({ mode: "bigint" }),
+<TAB>amountMinor: bigint("amount_minor", { mode: "bigint" }),
+EOF
+)
+export T153_RAW T153_WANT
+pure P05 "(T-153) drizzle-kit's real bigint rendering: 6 number-mode columns in bigint mode, integer defaults as bigint literals, every hint gone (the view's inline one too), bigserial untouched; mapping again changes nothing" "$PRELUDE
+const tab = (s) => s.replaceAll('<TAB>', '\t');
+const m = mapColumnTypes(tab(process.env.T153_RAW));
+if (!m.ok) { console.log('refused', JSON.stringify(m.problems)); process.exit(4); }
+const lines = m.body.split('\n');
+const missing = tab(process.env.T153_WANT).split('\n').filter((w) => w !== '' && !lines.includes(w));
+const left = lines.filter((l) => l.includes('mode: \"number\"') || l.includes('You can use'));
+const again = mapColumnTypes(m.body);
+console.log('bigints', m.bigints, 'missing', JSON.stringify(missing), 'left', JSON.stringify(left), 'again identical', again.ok && again.body === m.body, 'again bigints', again.ok ? again.bigints : 'refused');
+console.log(m.bigints === 6 && missing.length === 0 && left.length === 0 && again.ok && again.body === m.body && again.bigints === 0 ? 'RESULT ok' : 'RESULT bad');"
+pure P06 "(T-153) a bigint in drizzle's number mode that the rewrite does not recognise is refused: no hint, an extra option, a hint before a non-bigint line" "$PRELUDE
+const tab = (s) => s.replaceAll('<TAB>', '\t');
+const head = 'import { pgTable, bigint, text } from \"drizzle-orm/pg-core\"\n\nexport const t = pgTable(\"t\", {\n';
+const hint = '<TAB>// You can use { mode: \"bigint\" } if numbers are exceeding js number limitations\n';
+const shapes = {
+  noHint: '<TAB>a: bigint(\"a\", { mode: \"number\" }),\n',
+  extraOption: hint + '<TAB>b: bigint(\"b\", { mode: \"number\", unsigned: true }),\n',
+  hintAlone: hint + '<TAB>c: text(\"c\"),\n',
+};
+let refused = 0;
+for (const [name, col] of Object.entries(shapes)) {
+  const m = mapColumnTypes(tab(head + col + '});\n'));
+  const ok = !m.ok && m.problems.length >= 1 && m.problems.every((p) => p.includes('bigint column in a shape this rendering does not recognise'));
+  console.log(name, ok ? 'refused' : 'NOT refused', JSON.stringify(m.ok ? m.body : m.problems));
+  if (ok) refused += 1;
+}
+console.log(refused === 3 ? 'RESULT ok' : 'RESULT bad');"
 
 echo
 if [ "$bad" -eq 0 ]; then
