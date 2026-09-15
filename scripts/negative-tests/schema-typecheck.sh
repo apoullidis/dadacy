@@ -41,15 +41,10 @@ abort() {
   exit 2
 }
 
-S09_GONE=
+C1_TSCONFIG=tsconfig.t153-s09-c1.json # OD-146: S09's program of C1 alone; restore() removes it
 restore() {
-  rm -f "$BITE" "$C1" "$PRIV"
+  rm -f "$BITE" "$C1" "$PRIV" "$C1_TSCONFIG"
   git checkout -q -- "$SCHEMA" "$BASE" "$VALUE" "$TYPE" "$RENDER"
-  if [ -n "$S09_GONE" ]; then
-    # shellcheck disable=SC2086
-    git checkout -q -- $S09_GONE
-    S09_GONE=
-  fi
   if [ -n "$(git status --porcelain)" ]; then
     git status --porcelain
     abort "the tree did not restore cleanly"
@@ -194,21 +189,18 @@ echo "== rejected option C1: noUnusedParameters off alone"
 git show "$EMPTY_RENDERING:$SCHEMA" >"$SCHEMA"
 grep -q '^import { sql } from "drizzle-orm"$' "$SCHEMA" || abort "the $EMPTY_RENDERING rendering did not land"
 mutate "$BASE" '"noUnusedParameters": true,' '"noUnusedParameters": false,'
-# OD-146 (T-153): every other committed importer of db/schema.ts (e.g. apps/core's account repository,
-# merged after T-150) would meet T-138's empty rendering too and report TS2305 on its named imports, which
-# is not what C1 is about. Each is moved aside for this case only; restore() puts it back.
-S09_GONE=$(git grep -lE "from '(\.\./)+db/schema\.ts'" -- '*.ts' | grep -vxF -e "$VALUE" -e "$TYPE" | tr '\n' ' ')
 rm -f "$VALUE" "$TYPE"
-for f in $S09_GONE; do
-  rm -f "$f"
-  [ ! -e "$f" ] || abort "$f still exists"
-done
-printf '       importers of db/schema.ts moved aside for S09: %s\n' "${S09_GONE:-none}"
 plant "$C1" "import '../../../db/schema.ts';"
+# OD-146 (T-153): C1 is judged on a program of C1 alone, the root tsconfig.json extended with only C1 in
+# `files` (the mutated tsconfig.base.json flags still apply through it). Every other committed importer of
+# db/schema.ts (apps/core's identity module, merged after T-150) meets T-138's empty rendering too and
+# reports errors of its own, which are not what C1 is about; moving one aside only cascades to its importers.
+plant "$C1_TSCONFIG" "{ \"extends\": \"./tsconfig.json\", \"include\": [], \"files\": [\"$C1\"] }"
+[ "$("$TSC" --listFilesOnly -p "$C1_TSCONFIG" 2>/dev/null | grep -cE "/($C1|$SCHEMA)\$")" -eq 2 ] || abort "the C1 program does not hold exactly $C1 and $SCHEMA"
 E_PG=$(line_of "$SCHEMA" 'import { pgTable } from "drizzle-orm/pg-core"')
 E_SQL=$(line_of "$SCHEMA" 'import { sql } from "drizzle-orm"')
-judge S09 "C1: real drizzle-kit output whose sql import nothing reads still fails noUnusedLocals with noUnusedParameters off" 2 "$SCHEMA:$E_PG TS6133
-$SCHEMA:$E_SQL TS6133" "$(typecheck)"
+judge S09 "C1: real drizzle-kit output whose sql import nothing reads still fails noUnusedLocals with noUnusedParameters off (a program of C1 alone, OD-146)" 2 "$SCHEMA:$E_PG TS6133
+$SCHEMA:$E_SQL TS6133" "$("$TSC" --noEmit -p "$C1_TSCONFIG" >"$OUT" 2>&1; echo $?)"
 restore
 
 echo "== rejected option C2: both unused-identifier flags off"
