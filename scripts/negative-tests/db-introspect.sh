@@ -19,6 +19,16 @@
 # runs FIRST, so on a fresh project its first write sees a catalogue nobody has ANALYZEd, and it is
 # then checked after ANALYZE and after a down/up. K28–K35 are the step's refusals.
 #
+# T-145 — K36–K41: schema `pgboss` (pg-boss's job schema, SD §DB-1 line 1751) is admitted as
+# deliberately out of scope, by exact name (QA-A4, OD-90). K36 is the control: a job-schema-shaped set
+# (an enum, a sequence, a plain table, a partitioned table with a partition, a view) planted in
+# `pgboss` gives GATE PASS, is absent from db/schema.ts in check AND write mode, and is not counted by
+# I-VACUOUS, each compared against the catalogue in the same run. K37a–c plant the same set in the
+# near-miss schemas `pgboss_x`, `pg_boss` and `"PgBoss"` (I-SCOPE); K38 a relation in `kinvara_guard`
+# (I-SCOPE); K39a/b delete the rule two ways (the list emptied; the exclusion clause removed from the
+# refusal) and the K36 plant goes I-SCOPE; K40 a public table beside the pgboss set with no
+# regeneration (I-DIFF only); K41 pgboss beside pgboss_x (I-SCOPE names pgboss_x only).
+#
 #   cd /home/alex/projects/nanny/app && ./scripts/svc run <ticket> -- bash scripts/negative-tests/db-introspect.sh
 #
 # Needs the ticket's `db` project and a clean, committed tree. The check itself migrates the
@@ -443,6 +453,144 @@ ALTER TABLE public.t152_tick ENABLE ROW LEVEL SECURITY;
 CREATE POLICY t152_tick_select ON public.t152_tick FOR SELECT TO app_rw USING (note <> '${TICK}');"
 plant "$DOWN" "DROP TABLE public.t152_tick;"
 check K35 "(T-152 r1) a policy expression containing a backtick breaks drizzle-kit's template: refused as an unknown shape, never written" I-POLICY 'table "t152_tick": pgPolicy .* this step does not know'
+
+echo "== T-145: schema pgboss admitted as deliberately out of scope (QA-A4, OD-90); every other schema outside public still I-SCOPE"
+# The relations plant_jobschema creates, named here from the plant's SQL, not read from any output.
+PGBOSS_RELS='j_t145 job t145_view version'
+
+# plant_jobschema <schema as SQL> [extra up SQL] [extra down SQL]: migration NEXT creating, in that
+# schema, an enum, a sequence, a plain table, a partitioned table with one partition, and a view. The
+# extra SQL is appended to the up file and put first in the down file. plant() asserts both landed.
+plant_jobschema() {
+  local s=$1 xup=${2:-} xdown=${3:-}
+  plant "$UP" "-- @phase: expand
+-- @run-as: bootstrap-superuser — T-145
+CREATE SCHEMA $s;
+CREATE TYPE $s.job_state AS ENUM ('created', 'completed');
+CREATE SEQUENCE $s.t145_seq;
+CREATE TABLE $s.version (version integer PRIMARY KEY);
+CREATE TABLE $s.job (id uuid NOT NULL, name text NOT NULL, state $s.job_state NOT NULL) PARTITION BY LIST (name);
+CREATE TABLE $s.j_t145 PARTITION OF $s.job FOR VALUES IN ('t145');
+CREATE VIEW $s.t145_view AS SELECT name FROM $s.job;${xup:+
+$xup}"
+  plant "$DOWN" "${xdown:+$xdown
+}DROP VIEW $s.t145_view;
+DROP TABLE $s.job;
+DROP TABLE $s.version;
+DROP SEQUENCE $s.t145_seq;
+DROP TYPE $s.job_state;
+DROP SCHEMA $s;"
+  sed 's/^/   plant up:   /' "$UP"
+}
+
+# scope_refused <schema name as the catalogue has it>: one regex per planted relation, each an I-SCOPE line.
+scope_refused() {
+  local r
+  for r in $PGBOSS_RELS; do printf '%s\n' "^  - \\[I-SCOPE\\] relation $1\\.$r is owned by no extension and is outside schema public"; done
+}
+
+# check_facts <id> <description> <expected tags> <regex>...: run the check; every regex must match a
+# line of the check's output, and a regex prefixed with ! must match none. Fact lines are collected
+# apart from the output, so no regex can match another fact's text. The case is ok only if the exit,
+# the banner, the exact tag set and every fact hold.
+check_facts() {
+  local id=$1 desc=$2 expect=$3 code n=0 miss=0 re
+  shift 3
+  node scripts/db-introspect.ts --check >"$OUT" 2>&1
+  code=$?
+  : >"$OUT.f"
+  for re in "$@"; do
+    n=$((n + 1))
+    if [ "${re#!}" != "$re" ]; then
+      if grep -qE -- "${re#!}" "$OUT"; then echo "fact MISMATCH (present, must be absent): ${re#!}" >>"$OUT.f"; miss=$((miss + 1)); else echo "fact ok (absent): ${re#!}" >>"$OUT.f"; fi
+    elif grep -qE -- "$re" "$OUT"; then
+      echo "fact ok (present): $re" >>"$OUT.f"
+    else
+      echo "fact MISMATCH (absent, must be present): $re" >>"$OUT.f"
+      miss=$((miss + 1))
+    fi
+  done
+  [ "$miss" -eq 0 ] && echo "ALL $n FACTS HOLD" >>"$OUT.f"
+  cat "$OUT.f" >>"$OUT"
+  judge "$id" "$desc" "$expect" "$code" '^ALL [0-9]+ FACTS HOLD$'
+  grep -E '^fact |^  out of scope: ' "$OUT" | cut -c1-240 | sed 's/^/       /'
+  restore
+}
+
+# sorted_words: newline- or comma-separated words -> one line, C-sorted, space-separated.
+sorted_words() {
+  tr ',' '\n' | sed -E 's/^ +//; s/ +$//' | grep -v '^$' | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//'
+}
+
+plant_jobschema pgboss
+node scripts/db-introspect.ts --check >"$OUT" 2>&1
+code=$?
+: >"$OUT.f"
+nf=0
+nok=0
+fact() {
+  nf=$((nf + 1))
+  if [ "$2" = "$3" ]; then
+    nok=$((nok + 1))
+    echo "fact ok: $1: [$2]" >>"$OUT.f"
+  else
+    echo "fact MISMATCH: $1: [$2] but expected [$3]" >>"$OUT.f"
+  fi
+}
+want_admitted=$(for r in $PGBOSS_RELS; do echo "pgboss.$r"; done | sorted_words)
+cat_admitted=$(psql -X -A -t -q -c "SELECT n.nspname || '.' || c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind IN ('r','p','v','m','f') AND n.nspname = 'pgboss'" | sorted_words)
+gen_admitted=$(sed -nE 's/^  out of scope: [0-9]+ relation\(s\) in schema\(s\) pgboss admitted, not introspected and not counted \[(.*)\]$/\1/p' "$OUT" | sorted_words)
+gen_owned=$(sed -nE 's/^  catalogue: .*; ([0-9]+) relation\(s\) owned by no extension in public$/\1/p' "$OUT")
+gen_intro=$(sed -nE 's/^  drizzle-kit [^:]+: ([0-9]+) relation\(s\) introspected from public$/\1/p' "$OUT")
+fact "the catalogue's relations in schema pgboss (psql, this run), as the plant names them" "$cat_admitted" "$want_admitted"
+fact "the generator's out-of-scope list, as the catalogue" "$gen_admitted" "$cat_admitted"
+fact "I-VACUOUS's catalogue side (owned by no extension in public), as psql counts public now" "$gen_owned" "$(owned_in_public)"
+fact "I-VACUOUS's catalogue side, as K00 counted before any pgboss plant" "$gen_owned" "$OWNED"
+fact "I-VACUOUS's rendering side (relations drizzle-kit introspected), as K00 counted" "$gen_intro" "$OWNED"
+fact "db/schema.ts lines naming pgboss or any planted object" "$(grep -cE 'pgboss|job_state|t145|"version"|"job"' "$SCHEMA")" 0
+node scripts/db-introspect.ts --write >"$OUT.w" 2>&1
+fact "write mode, pgboss set planted: exit" "$?" 0
+fact "write mode: git diff --quiet db/schema.ts against the committed file, exit" "$(git diff --quiet -- "$SCHEMA" && echo 0 || echo 1)" 0
+[ "$nok" -eq "$nf" ] && echo "ALL $nf CONTROL FACTS HOLD" >>"$OUT.f"
+cat "$OUT.f" >>"$OUT"
+judge K36 "(T-145) CONTROL: an enum, sequence, table, partitioned table + partition and view in schema pgboss: GATE PASS, absent from db/schema.ts (check and write), not counted by I-VACUOUS" PASS "$code" '^ALL [0-9]+ CONTROL FACTS HOLD$'
+grep -E '^fact |^  out of scope: |^  catalogue: |^  drizzle-kit [^:]+: ' "$OUT" | cut -c1-240 | sed 's/^/       /'
+restore
+
+for pair in 'K37a pgboss_x pgboss_x' 'K37b pg_boss pg_boss' 'K37c "PgBoss" PgBoss'; do
+  read -r kid ssql sname <<<"$pair"
+  plant_jobschema "$ssql"
+  mapfile -t refused < <(scope_refused "$sname")
+  check_facts "$kid" "(T-145) (i) the same set in near-miss schema $ssql: every relation I-SCOPE, none admitted" I-SCOPE "MIGRATE OK  up: $HIGHEST -> $NEXT" "${refused[@]}" '^  out of scope: 0 relation\(s\)'
+done
+
+plant "$UP" "-- @phase: expand
+-- @run-as: bootstrap-superuser — T-145
+CREATE TABLE kinvara_guard.t145_plant (id bigint PRIMARY KEY);"
+plant "$DOWN" "DROP TABLE kinvara_guard.t145_plant;"
+sed 's/^/   plant up:   /' "$UP"
+check_facts K38 "(T-145) (ii) a relation in kinvara_guard: still I-SCOPE" I-SCOPE "MIGRATE OK  up: $HIGHEST -> $NEXT" '^  - \[I-SCOPE\] relation kinvara_guard\.t145_plant is owned by no extension' '^  out of scope: 0 relation\(s\)'
+
+plant_jobschema pgboss
+mapfile -t refused < <(scope_refused pgboss)
+mutate "$SCRIPT" "const OUT_OF_SCOPE_SCHEMAS: readonly string[] = ['pgboss'];" "const OUT_OF_SCOPE_SCHEMAS: readonly string[] = [];"
+git diff -U0 -- "$SCRIPT" | grep -E '^[-+][^-+]' | sed 's/^/   mutation:   /'
+check_facts K39a "(T-145) (iii) the rule deleted (OUT_OF_SCOPE_SCHEMAS emptied): the K36 control plant goes red" I-SCOPE "MIGRATE OK  up: $HIGHEST -> $NEXT" "${refused[@]}" '^  out of scope: 0 relation\(s\)'
+
+plant_jobschema pgboss
+mutate "$SCRIPT" "      r.schema !== INTROSPECTED_SCHEMA &&
+      !OUT_OF_SCOPE_SCHEMAS.includes(r.schema)," "      r.schema !== INTROSPECTED_SCHEMA,"
+git diff -U0 -- "$SCRIPT" | grep -E '^[-+][^-+]' | sed 's/^/   mutation:   /'
+check_facts K39b "(T-145) (iii) the rule deleted (the exclusion clause removed from the I-SCOPE refusal): the K36 control plant goes red" I-SCOPE "MIGRATE OK  up: $HIGHEST -> $NEXT" "${refused[@]}"
+
+plant_jobschema pgboss "CREATE TABLE public.t145_plant (id bigint PRIMARY KEY);
+GRANT SELECT ON public.t145_plant TO app_rw;" "DROP TABLE public.t145_plant;"
+check_facts K40 "(T-145) (iv) a public table beside the pgboss set, db/schema.ts not regenerated: still I-DIFF, and only I-DIFF" I-DIFF "MIGRATE OK  up: $HIGHEST -> $NEXT" '^  out of scope: 4 relation\(s\) in schema\(s\) pgboss admitted' "^  catalogue: .*; $((OWNED + 1)) relation\\(s\\) owned by no extension in public\$" '!\[I-SCOPE\]'
+
+plant_jobschema pgboss "CREATE SCHEMA pgboss_x;
+CREATE TABLE pgboss_x.job (id bigint PRIMARY KEY);" "DROP TABLE pgboss_x.job;
+DROP SCHEMA pgboss_x;"
+check_facts K41 "(T-145) pgboss beside pgboss_x: admission is per relation, by schema name; I-SCOPE names pgboss_x.job and no pgboss relation" I-SCOPE "MIGRATE OK  up: $HIGHEST -> $NEXT" '^  - \[I-SCOPE\] relation pgboss_x\.job is owned by no extension' '!^  - \[I-SCOPE\] relation pgboss\.' '^  out of scope: 4 relation\(s\) in schema\(s\) pgboss admitted'
 
 echo
 if [ "$bad" -eq 0 ]; then
