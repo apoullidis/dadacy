@@ -24,6 +24,12 @@
  *      A relation no extension owns, outside schema `public`, fails: this pipeline introspects
  *      `public` only and must not silently omit a table. An extension member whose name is not a
  *      plain identifier fails too, because it becomes a glob below.
+ *      T-145 (QA-A4, OD-90): the ONE exception is a relation whose schema name is exactly `pgboss`
+ *      (pg-boss's own job schema, SD §DB-1 line 1751), compared as a whole string against
+ *      OUT_OF_SCOPE_SCHEMAS. It is admitted as deliberately out of scope: not refused, not pulled,
+ *      not counted by I-VACUOUS, and listed by name on the `out of scope:` line. `pgboss_x`,
+ *      `pg_boss`, `"PgBoss"` and every other schema outside `public` are still I-SCOPE. WHAT is
+ *      inside `pgboss` is not checked here (T-145 § contract, What is NOT claimed).
  *   4. [I-PULL] drizzle-kit pull, from a config file written to a temporary directory, with
  *      schemaFilter `public` and one `!<name>` tablesFilter per extension member. So extension
  *      internals (postgis, pg_partman, pg_stat_statements) are excluded by a catalogue rule,
@@ -82,6 +88,8 @@ import {
 } from './gates/lib/schema-render.ts';
 
 const INTROSPECTED_SCHEMA = 'public';
+// T-145: schemas whose relations are admitted as deliberately out of scope, by exact name.
+const OUT_OF_SCOPE_SCHEMAS: readonly string[] = ['pgboss'];
 const TSCONFIG_PATH = path.join(REPO_ROOT, 'tsconfig.json');
 const MIGRATIONS_DIR = path.join(REPO_ROOT, 'db', 'migrations');
 const SCHEMA_PATH = path.join(REPO_ROOT, SCHEMA_REL);
@@ -219,9 +227,20 @@ function main(): void {
     .filter((r) => !r.extensionMember && r.schema === INTROSPECTED_SCHEMA)
     .map((r) => r.name)
     .sort();
-  const elsewhere = rows.filter((r) => !r.extensionMember && r.schema !== INTROSPECTED_SCHEMA);
+  const outOfScope = rows.filter(
+    (r) => !r.extensionMember && OUT_OF_SCOPE_SCHEMAS.includes(r.schema),
+  );
+  const elsewhere = rows.filter(
+    (r) =>
+      !r.extensionMember &&
+      r.schema !== INTROSPECTED_SCHEMA &&
+      !OUT_OF_SCOPE_SCHEMAS.includes(r.schema),
+  );
   console.log(
     `  catalogue: ${String(rows.length)} relation(s); ${String(members.length)} extension member(s) in ${INTROSPECTED_SCHEMA} excluded; ${String(owned.length)} relation(s) owned by no extension in ${INTROSPECTED_SCHEMA}`,
+  );
+  console.log(
+    `  out of scope: ${String(outOfScope.length)} relation(s) in schema(s) ${OUT_OF_SCOPE_SCHEMAS.join(', ')} admitted, not introspected and not counted [${outOfScope.map((r) => `${r.schema}.${r.name}`).join(', ')}]`,
   );
   for (const r of elsewhere) {
     problem(
