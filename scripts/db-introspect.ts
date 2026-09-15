@@ -46,10 +46,7 @@
  *      run: `unknown(...)` is never written (scripts/gates/lib/schema-render.ts).
  *      T-153 (OD-107): every `bigint(…{ mode: "number" })` drizzle-kit writes (a JS number, lossy above
  *      2^53) is rewritten to drizzle's `bigint` mode, with integer defaults as bigint literals; a bigint
- *      in any other shape fails. Each relation's bigint-mode columns must number exactly the catalogue's
- *      int8 columns (3d), and a geometry column whose catalogue type is not a scalar
- *      geometry(Point[,srid]) fails: drizzle-orm reads only a 2D point from geometry, throws on every
- *      other shape, and cannot write an array of points.
+ *      in any other shape fails. The catalogue side of T-153 is step 5a.
  *   4b. [I-POLICY] (T-152 rework 1, OD-109) drizzle-kit keeps a row-level security policy's
  *      `using` and `withCheck` only for the first pg_policies row it receives per table, from a query
  *      with no ORDER BY, so on a table with two or more policies the rendering is wrong and follows
@@ -418,13 +415,6 @@ function main(): void {
   console.log(
     `  mapped column type(s): ${mapping.ok && mapping.mapped.length > 0 ? mapping.mapped.join(', ') : 'none'}`,
   );
-  // bigint mode counted against the catalogue's int8 columns; geometry admitted only as a 2D point (T-153)
-  const typed = checkCatalogueColumns(mappedBody, catalogueColumns);
-  console.log(
-    `  bigint: ${String(mapping.ok ? mapping.bigints : 0)} column(s) rewritten to drizzle's bigint mode; ${String(typed.bigintRendered)} in bigint mode against the catalogue's ${String(typed.int8)} int8 column(s); geometry: ${String(typed.points)} point column(s) admitted`,
-  );
-  for (const p of typed.problems) problem('I-MAP', p);
-  if (failures.length > 0) done();
 
   // 4b. row-level security policies checked against and rendered from pg_policy (T-152 rework 1, OD-109)
   const policed = canonicalPolicies(mappedBody, cataloguePolicies);
@@ -491,6 +481,15 @@ function main(): void {
       `  VACUOUS: 0 relations introspected, and the catalogue independently lists 0 relations owned by no extension in ${INTROSPECTED_SCHEMA} after migration ${String(highest)}. The parity below compares an empty schema.`,
     );
   }
+
+  // 5a. bigint mode counted against the catalogue's int8 columns; geometry admitted only as a scalar 2D
+  // point (T-153, OD-107). After anti-vacuity, so a pull that lost a relation is I-VACUOUS, not I-MAP.
+  const typed = checkCatalogueColumns(body, catalogueColumns);
+  console.log(
+    `  bigint: ${String(mapping.ok ? mapping.bigints : 0)} column(s) rewritten to drizzle's bigint mode; ${String(typed.bigintRendered)} in bigint mode against the catalogue's ${String(typed.int8)} int8 column(s); geometry: ${String(typed.points)} point column(s) admitted`,
+  );
+  for (const p of typed.problems) problem('I-MAP', p);
+  if (failures.length > 0) done();
 
   const fresh = renderSchemaFile(body, kitVersion);
 
