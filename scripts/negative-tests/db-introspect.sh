@@ -557,12 +557,32 @@ judge K36 "(T-145) CONTROL: an enum, sequence, table, partitioned table + partit
 grep -E '^fact |^  out of scope: |^  catalogue: |^  drizzle-kit [^:]+: ' "$OUT" | cut -c1-240 | sed 's/^/       /'
 restore
 
-for pair in 'K37a pgboss_x pgboss_x' 'K37b pg_boss pg_boss' 'K37c "PgBoss" PgBoss'; do
+for pair in 'K37a pgboss_x pgboss_x' 'K37c "PgBoss" PgBoss'; do
   read -r kid ssql sname <<<"$pair"
   plant_jobschema "$ssql"
   mapfile -t refused < <(scope_refused "$sname")
   check_facts "$kid" "(T-145) (i) the same set in near-miss schema $ssql: every relation I-SCOPE, none admitted" I-SCOPE "MIGRATE OK  up: $HIGHEST -> $NEXT" "${refused[@]}" '^  out of scope: 0 relation\(s\)'
 done
+
+# pg_boss: PostgreSQL itself refuses a schema whose name starts with pg_ (42939), so an ordinary
+# migration cannot create one (measured, suite run 1: the unmodified plant failed I-MIGRATE). K37b0
+# asserts that refusal; K37b then plants the same set with allow_system_table_mods on, so the scope
+# rule is still tested against a relation in pg_boss.
+total=$((total + 1))
+psql -X -q -v ON_ERROR_STOP=1 -v VERBOSITY=verbose -c "CREATE SCHEMA pg_boss" >"$OUT" 2>&1
+code=$?
+left=$(psql -X -A -t -q -c "SELECT count(*) FROM pg_namespace WHERE nspname = 'pg_boss'")
+if [ "$code" -ne 0 ] && grep -q '42939: unacceptable schema name "pg_boss"' "$OUT" && [ "$left" = 0 ]; then v=ok; else v=BAD; bad=$((bad + 1)); fi
+printf '%-4s %s  %s\n       psql exit %s; pg_namespace rows named pg_boss afterwards %s\n' "$v" K37b0 "(T-145) (i) CREATE SCHEMA pg_boss, as the superuser: the database refuses it, 42939, and nothing is created" "$code" "$left"
+grep -E '^ERROR|^DETAIL' "$OUT" | sed 's/^/       /'
+plant_jobschema pg_boss
+{ [ "$(sed -n 3p "$UP")" = "CREATE SCHEMA pg_boss;" ] && [ "$(sed -n '$p' "$DOWN")" = "DROP SCHEMA pg_boss;" ]; } || abort "the pg_boss plant is not in the expected form"
+plant "$UP" "$(sed '2a SET allow_system_table_mods = on;' "$UP")"
+plant "$DOWN" "$(printf 'SET allow_system_table_mods = on;\n'; cat "$DOWN")"
+grep -qx 'SET allow_system_table_mods = on;' "$UP" || abort "allow_system_table_mods did not land in $UP"
+sed 's/^/   plant up:   /' "$UP"
+mapfile -t refused < <(scope_refused pg_boss)
+check_facts K37b "(T-145) (i) the same set in schema pg_boss (planted with allow_system_table_mods): every relation I-SCOPE, none admitted" I-SCOPE "MIGRATE OK  up: $HIGHEST -> $NEXT" "${refused[@]}" '^  out of scope: 0 relation\(s\)'
 
 plant "$UP" "-- @phase: expand
 -- @run-as: bootstrap-superuser — T-145
