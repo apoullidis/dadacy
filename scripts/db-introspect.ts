@@ -25,11 +25,16 @@
  *      `public` only and must not silently omit a table. An extension member whose name is not a
  *      plain identifier fails too, because it becomes a glob below.
  *      T-145 (QA-A4, OD-90): the ONE exception is a relation whose schema name is exactly `pgboss`
- *      (pg-boss's own job schema, SD §DB-1 line 1751), compared as a whole string against
- *      OUT_OF_SCOPE_SCHEMAS. It is admitted as deliberately out of scope: not refused, not pulled,
- *      not counted by I-VACUOUS, and listed by name on the `out of scope:` line. `pgboss_x`,
- *      `pg_boss`, `"PgBoss"` and every other schema outside `public` are still I-SCOPE. WHAT is
- *      inside `pgboss` is not checked here (T-145 § contract, What is NOT claimed).
+ *      (pg-boss's own job schema, SD §DB-1 line 1751). It is admitted as deliberately out of scope:
+ *      not refused, not pulled, not counted by I-VACUOUS, and listed on the `out of scope:` line.
+ *      `pgboss_x`, `pg_boss`, `"PgBoss"` and every other schema outside `public` are still I-SCOPE.
+ *      WHAT is inside `pgboss` is not checked here (T-145 § contract, What is NOT claimed).
+ *      T-145 rework 1 (QR-F1, QR-A1, OD-140): the catalogue is read as ONE JSON array (json_agg),
+ *      parsed with JSON.parse, never as text lines that are trimmed and split on '|', so no schema
+ *      or relation name can be re-parsed into another (`" pgboss"`, a leading NBSP/BOM/tab/newline,
+ *      `"pgboss|x"`, `"<any>|x|true"`). Each row carries nspname's UTF-8 bytes as hex; a row whose
+ *      decoded name does not re-encode to those bytes fails I-SCOPE, and admission compares the hex
+ *      byte for byte. Every name printed is JSON-quoted with non-printable-ASCII escaped (showName).
  *   4. [I-PULL] drizzle-kit pull, from a config file written to a temporary directory, with
  *      schemaFilter `public` and one `!<name>` tablesFilter per extension member. So extension
  *      internals (postgis, pg_partman, pg_stat_statements) are excluded by a catalogue rule,
@@ -90,6 +95,85 @@ import {
 const INTROSPECTED_SCHEMA = 'public';
 // T-145: schemas whose relations are admitted as deliberately out of scope, by exact name.
 const OUT_OF_SCOPE_SCHEMAS: readonly string[] = ['pgboss'];
+// T-145 rework 1: the same names as UTF-8 bytes (hex), compared byte for byte with nspname's.
+const OUT_OF_SCOPE_HEX = OUT_OF_SCOPE_SCHEMAS.map((s) => Buffer.from(s, 'utf8').toString('hex'));
+
+// T-145 rework 1 (OD-140): every relation outside the system schemas, as one JSON array. No name
+// is ever concatenated into a delimited line, so none can be re-parsed.
+const CATALOGUE_SQL = `
+    SELECT coalesce(json_agg(json_build_object(
+             'schema', n.nspname,
+             'schemaHex', encode(convert_to(n.nspname, 'UTF8'), 'hex'),
+             'name', c.relname,
+             'extensionMember', EXISTS (SELECT 1 FROM pg_depend d
+                     WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e'))
+             ORDER BY n.nspname, c.relname), '[]'::json)
+      FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f')
+       AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+       AND n.nspname NOT LIKE 'pg\\_toast%'
+       AND n.nspname NOT LIKE 'pg\\_temp\\_%'`;
+
+type CatalogueRow = {
+  schema: string;
+  schemaHex: string;
+  name: string;
+  extensionMember: boolean;
+};
+
+/** A name as printed: JSON-quoted, and every character outside printable ASCII escaped as \uXXXX. */
+function showName(s: string): string {
+  return JSON.stringify(s).replace(
+    /[^\x20-\x7e]/g,
+    (ch) => `\\u${ch.charCodeAt(0).toString(16).padStart(4, '0')}`,
+  );
+}
+
+/** Parse CATALOGUE_SQL's output. No trim, no split: the whole output is one JSON value. */
+function parseCatalogue(
+  out: string,
+): { ok: true; rows: CatalogueRow[] } | { ok: false; problem: string } {
+  let value: unknown;
+  try {
+    value = JSON.parse(out);
+  } catch (e) {
+    return { ok: false, problem: `not JSON: ${e instanceof Error ? e.message : String(e)}` };
+  }
+  if (!Array.isArray(value)) return { ok: false, problem: 'not a JSON array' };
+  const rows: CatalogueRow[] = [];
+  for (const v of value as unknown[]) {
+    const r = (typeof v === 'object' && v !== null ? v : {}) as {
+      schema?: unknown;
+      schemaHex?: unknown;
+      name?: unknown;
+      extensionMember?: unknown;
+    };
+    if (
+      typeof r.schema !== 'string' ||
+      typeof r.schemaHex !== 'string' ||
+      typeof r.name !== 'string' ||
+      typeof r.extensionMember !== 'boolean'
+    ) {
+      return {
+        ok: false,
+        problem: `a row is not {schema, schemaHex, name, extensionMember}: ${snippet(JSON.stringify(v))}`,
+      };
+    }
+    if (Buffer.from(r.schema, 'utf8').toString('hex') !== r.schemaHex) {
+      return {
+        ok: false,
+        problem: `schema ${showName(r.schema)} does not re-encode to the catalogue's bytes ${r.schemaHex}`,
+      };
+    }
+    rows.push({
+      schema: r.schema,
+      schemaHex: r.schemaHex,
+      name: r.name,
+      extensionMember: r.extensionMember,
+    });
+  }
+  return { ok: true, rows };
+}
 const TSCONFIG_PATH = path.join(REPO_ROOT, 'tsconfig.json');
 const MIGRATIONS_DIR = path.join(REPO_ROOT, 'db', 'migrations');
 const SCHEMA_PATH = path.join(REPO_ROOT, SCHEMA_REL);
@@ -200,52 +284,37 @@ function main(): void {
   }
 
   // 3. catalogue
-  const cat = psql(`
-    SELECT n.nspname || '|' || c.relname || '|' ||
-           (EXISTS (SELECT 1 FROM pg_depend d
-                     WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e'))::text
-      FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-     WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f')
-       AND n.nspname NOT IN ('pg_catalog', 'information_schema')
-       AND n.nspname NOT LIKE 'pg\\_toast%'
-       AND n.nspname NOT LIKE 'pg\\_temp\\_%'
-     ORDER BY 1`);
+  const cat = psql(CATALOGUE_SQL);
   if (!cat.ok) {
     problem('I-SCOPE', `cannot read the catalogue: ${cat.err.trim()}`);
     done();
   }
-  const rows = cat.out
-    .split('\n')
-    .map((l) => l.trim())
-    .filter((l) => l !== '')
-    .map((l) => {
-      const [schema = '', name = '', ext = ''] = l.split('|');
-      return { schema, name, extensionMember: ext === 'true' };
-    });
+  const parsed = parseCatalogue(cat.out);
+  if (!parsed.ok) {
+    problem('I-SCOPE', `cannot parse the catalogue: ${parsed.problem}`);
+    done();
+  }
+  const rows = parsed.ok ? parsed.rows : [];
+  const admitted = (r: CatalogueRow): boolean => OUT_OF_SCOPE_HEX.includes(r.schemaHex);
   const members = rows.filter((r) => r.extensionMember && r.schema === INTROSPECTED_SCHEMA);
   const owned = rows
     .filter((r) => !r.extensionMember && r.schema === INTROSPECTED_SCHEMA)
     .map((r) => r.name)
     .sort();
-  const outOfScope = rows.filter(
-    (r) => !r.extensionMember && OUT_OF_SCOPE_SCHEMAS.includes(r.schema),
-  );
+  const outOfScope = rows.filter((r) => !r.extensionMember && admitted(r));
   const elsewhere = rows.filter(
-    (r) =>
-      !r.extensionMember &&
-      r.schema !== INTROSPECTED_SCHEMA &&
-      !OUT_OF_SCOPE_SCHEMAS.includes(r.schema),
+    (r) => !r.extensionMember && r.schema !== INTROSPECTED_SCHEMA && !admitted(r),
   );
   console.log(
     `  catalogue: ${String(rows.length)} relation(s); ${String(members.length)} extension member(s) in ${INTROSPECTED_SCHEMA} excluded; ${String(owned.length)} relation(s) owned by no extension in ${INTROSPECTED_SCHEMA}`,
   );
   console.log(
-    `  out of scope: ${String(outOfScope.length)} relation(s) in schema(s) ${OUT_OF_SCOPE_SCHEMAS.join(', ')} admitted, not introspected and not counted [${outOfScope.map((r) => `${r.schema}.${r.name}`).join(', ')}]`,
+    `  out of scope: ${String(outOfScope.length)} relation(s) in schema(s) ${OUT_OF_SCOPE_SCHEMAS.map(showName).join(', ')} admitted, not introspected and not counted [${outOfScope.map((r) => `${showName(r.schema)}.${showName(r.name)}`).join(', ')}]`,
   );
   for (const r of elsewhere) {
     problem(
       'I-SCOPE',
-      `relation ${r.schema}.${r.name} is owned by no extension and is outside schema ${INTROSPECTED_SCHEMA}, which is the only schema introspected; it would be silently absent from ${SCHEMA_REL}`,
+      `relation ${showName(r.schema)}.${showName(r.name)} is owned by no extension and is outside schema ${INTROSPECTED_SCHEMA}, which is the only schema introspected; it would be silently absent from ${SCHEMA_REL}`,
     );
   }
   for (const m of members) {
