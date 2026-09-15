@@ -39,9 +39,16 @@
  *      schemaFilter `public` and one `!<name>` tablesFilter per extension member. So extension
  *      internals (postgis, pg_partman, pg_stat_statements) are excluded by a catalogue rule,
  *      not by a list kept here.
+ *   3d. [I-MAP] (T-153, OD-107) every int8 and PostGIS geometry column in `public` (arrays included),
+ *      with `format_type`, read as one JSON array (COLUMN_TYPES_SQL). An unreadable read fails.
  *   4a. [I-MAP] (T-150, OD-97) each `unknown("col")` drizzle-kit writes for a type it cannot parse
  *      is rewritten from a CLOSED map (`citext`, `bytea` -> customType). Any other type fails the
  *      run: `unknown(...)` is never written (scripts/gates/lib/schema-render.ts).
+ *      T-153 (OD-107): every `bigint(…{ mode: "number" })` drizzle-kit writes (a JS number, lossy above
+ *      2^53) is rewritten to drizzle's `bigint` mode, with integer defaults as bigint literals; a bigint
+ *      in any other shape fails. Each relation's bigint-mode columns must number exactly the catalogue's
+ *      int8 columns (3d), and a geometry column whose catalogue type is not geometry(Point[,srid])[[]]
+ *      fails: drizzle-orm reads only a 2D point from geometry and throws on every other shape.
  *   4b. [I-POLICY] (T-152 rework 1, OD-109) drizzle-kit keeps a row-level security policy's
  *      `using` and `withCheck` only for the first pg_policies row it receives per table, from a query
  *      with no ORDER BY, so on a table with two or more policies the rendering is wrong and follows
@@ -86,8 +93,11 @@ import {
 } from './gates/lib/schema-order.ts';
 import { POLICIES_SQL, canonicalPolicies, parsePolicies } from './gates/lib/schema-policy.ts';
 import {
+  COLUMN_TYPES_SQL,
   TYPESCRIPT_VERSION,
+  checkCatalogueColumns,
   mapColumnTypes,
+  parseCatalogueColumns,
   pruneUnused,
   readRootCompilerOptions,
 } from './gates/lib/schema-render.ts';
@@ -354,6 +364,17 @@ function main(): void {
   }
   const cataloguePolicies = parsedPolicies.ok ? parsedPolicies.policies : [];
 
+  // 3d. every int8 and PostGIS geometry column in public, with its declared type (T-153, OD-107)
+  const typeRead = psql(COLUMN_TYPES_SQL);
+  const parsedTypes = typeRead.ok
+    ? parseCatalogueColumns(typeRead.out.trim())
+    : { ok: false as const, problem: typeRead.err.trim() };
+  if (!parsedTypes.ok) {
+    problem('I-MAP', `cannot read column types from the catalogue: ${parsedTypes.problem}`);
+    done();
+  }
+  const catalogueColumns = parsedTypes.ok ? parsedTypes.columns : [];
+
   // 4. pull
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kinvara-introspect-'));
   const out = path.join(tmp, 'out');
@@ -396,6 +417,13 @@ function main(): void {
   console.log(
     `  mapped column type(s): ${mapping.ok && mapping.mapped.length > 0 ? mapping.mapped.join(', ') : 'none'}`,
   );
+  // bigint mode counted against the catalogue's int8 columns; geometry admitted only as a 2D point (T-153)
+  const typed = checkCatalogueColumns(mappedBody, catalogueColumns);
+  console.log(
+    `  bigint: ${String(mapping.ok ? mapping.bigints : 0)} column(s) rewritten to drizzle's bigint mode; ${String(typed.bigintRendered)} in bigint mode against the catalogue's ${String(typed.int8)} int8 column(s); geometry: ${String(typed.points)} point column(s) admitted`,
+  );
+  for (const p of typed.problems) problem('I-MAP', p);
+  if (failures.length > 0) done();
 
   // 4b. row-level security policies checked against and rendered from pg_policy (T-152 rework 1, OD-109)
   const policed = canonicalPolicies(mappedBody, cataloguePolicies);
