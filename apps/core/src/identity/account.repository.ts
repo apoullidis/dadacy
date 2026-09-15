@@ -177,9 +177,16 @@ export interface LiveSession {
 /**
  * Resolve a session by its digest and slide it (SD line 1235). The database clock decides, in one
  * statement. Refused, as `undefined`: no row; `revoked_at` set; `absolute_expires_at` not in the
- * future; `last_seen_at` 30 minutes old or older. A live session's `last_seen_at` becomes now.
+ * future; `last_seen_at` 30 minutes old or older; the account's status not among `statuses` (rework 1,
+ * QR-A2: read at resolve time, so a suspension ends a session at its next resolve without revoking
+ * the row). A live session's `last_seen_at` becomes now.
  */
-export async function touchLiveSession(tx: Tx, digest: Buffer): Promise<LiveSession | undefined> {
+export async function touchLiveSession(
+  tx: Tx,
+  digest: Buffer,
+  statuses: readonly string[],
+): Promise<LiveSession | undefined> {
+  if (statuses.length === 0) return undefined;
   const rows = await tx
     .update(appSession)
     .set({ lastSeenAt: sql`now()` })
@@ -189,6 +196,10 @@ export async function touchLiveSession(tx: Tx, digest: Buffer): Promise<LiveSess
         isNull(appSession.revokedAt),
         gt(appSession.absoluteExpiresAt, sql`now()`),
         gt(appSession.lastSeenAt, sql`now() - make_interval(secs => ${IDLE_TIMEOUT_SECONDS})`),
+        sql`EXISTS (SELECT 1 FROM public.account a WHERE a.id = app_session.account_id AND a.status::text IN (${sql.join(
+          statuses.map((status) => sql`${status}`),
+          sql`, `,
+        )}))`,
       ),
     )
     .returning({

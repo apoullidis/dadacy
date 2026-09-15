@@ -13,10 +13,13 @@
  * RESOLVE is for routes that need the current session. No route calls it at T-026: it is published
  * for `T-027` and later tickets, and held by `test/login.inprocess.test.ts` only. It refuses a
  * header that names no, or more than one, distinct session value, and whatever `touchLiveSession`
- * refuses.
+ * refuses. That includes a session whose account status is not in `LOGIN_STATUSES`, checked AT
+ * RESOLVE TIME: suspending an account revokes no row, and its sessions stop resolving (rework 1,
+ * QR-A2).
  */
 import { revokeSessions, touchLiveSession, type LiveSession } from './account.repository.ts';
 import type { Database } from './database.ts';
+import { LOGIN_STATUSES } from './login.service.ts';
 import { digestSessionCookie, sessionCookieValues } from './session-token.ts';
 
 export type CookieHeader = string | readonly string[] | undefined;
@@ -40,6 +43,8 @@ export class SessionService {
     const values = sessionCookieValues(cookieHeader);
     const [only] = values;
     if (values.length !== 1 || only === undefined) return undefined;
-    return this.#db.withAppRw((tx) => touchLiveSession(tx, digestSessionCookie(only)));
+    return this.#db.withAppRw((tx) =>
+      touchLiveSession(tx, digestSessionCookie(only), [...LOGIN_STATUSES]),
+    );
   }
 }

@@ -16,7 +16,9 @@
  * no-store` travels with every response that sets or clears the cookie (SD line 4037; T-141 LIVE §4).
  *
  * LOGOUT answers 204 whether or not a live session was named, and clears the cookie with the
- * attributes it was set with. SD line 1029's "purges SW cache via response header" is NOT built: no
+ * attributes it was set with, whatever body or content type arrives: `IdentityModule` applies
+ * `ignoreRequestBody` to it, so no body reaches Fastify's parser (rework 1, QR-F1, OD-132). SD line
+ * 1029's "purges SW cache via response header" is NOT built: no
  * header is named anywhere in SD or SA (decisions.md OD-129).
  *
  * DECORATORS are function calls (OE-27; `src/nest-decorate.ts`).
@@ -45,7 +47,8 @@ function postPath(operationId: string): string {
 }
 
 const LOGIN_PATH = postPath('login');
-const LOGOUT_PATH = postPath('logout');
+/** Exported for `IdentityModule`, which applies `ignoreRequestBody` to this route (QR-F1). */
+export const LOGOUT_PATH = postPath('logout');
 
 const FIELD_NAMES: ReadonlySet<string> = new Set(['email', 'password']);
 

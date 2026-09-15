@@ -7,6 +7,8 @@
  *     lands here as well);
  *   - the account's `password_hash` is NULL: a passwordless registration (T-141);
  *   - the stored hash is not the PHC form `hashPassword` writes (`isStoredPasswordHash`);
+ *   - verifying the stored hash throws (rework 1, QR-A1: a hash of that form the library cannot use,
+ *     e.g. a non-canonical base64 salt). The dummy is then verified instead, once;
  *   - the password does not verify;
  *   - the account's status is not in `LOGIN_STATUSES`. That set is a READING (decisions.md OD-130).
  *
@@ -109,10 +111,21 @@ export class LoginService {
       candidate !== undefined && isStoredPasswordHash(candidate.passwordHash)
         ? candidate.passwordHash
         : undefined;
-    const verified = await this.#verify(stored ?? DUMMY_PASSWORD_HASH, password);
+    let target = stored;
+    let verified: boolean;
+    try {
+      verified = await this.#verify(target ?? DUMMY_PASSWORD_HASH, password);
+    } catch (thrown) {
+      // QR-A1: a stored hash of the admitted form that the library cannot use throws. QA measured
+      // the non-canonical-salt case costing no argon2 work. It is treated like an absent hash: the
+      // dummy is verified instead, once. A throw while verifying the dummy itself propagates.
+      if (target === undefined) throw thrown;
+      target = undefined;
+      verified = await this.#verify(DUMMY_PASSWORD_HASH, password);
+    }
     if (
       candidate === undefined ||
-      stored === undefined ||
+      target === undefined ||
       !verified ||
       !LOGIN_STATUSES.has(candidate.status)
     ) {

@@ -90,13 +90,15 @@ const toStderr: LogLine = (line) => {
 };
 
 /**
- * The argon2id verify login uses. The log line is written before the verify runs, so one line is
- * one verify. It carries no password, hash, salt, email or account id.
+ * The argon2id verify login uses. The log line is written AFTER the verify resolves, so one line is
+ * one completed verify, and a verify that throws writes none (T-026 rework 1, QR-A1). It carries no
+ * password, hash, salt, email or account id.
  */
 export function createPasswordVerifier(log: LogLine = toStderr): PasswordVerifier {
   return async (encoded, password) => {
     const parameters = PHC_PARAMETERS.exec(encoded)?.[1] ?? 'unparsed';
+    const verified = await verify(encoded, password);
     log(`${VERIFY_LOG} ${parameters}`);
-    return verify(encoded, password);
+    return verified;
   };
 }
