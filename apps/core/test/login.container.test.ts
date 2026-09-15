@@ -29,7 +29,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
-import { hash, type Algorithm } from '@node-rs/argon2';
+import { hash, verify, type Algorithm } from '@node-rs/argon2';
 import { validateAgainstDocument, type SchemaRoot } from '@kinvara/contracts';
 
 /** SA §SEC-5 line 2203. */
@@ -242,6 +242,43 @@ async function sessionsOf(owner: string): Promise<SessionRow[]> {
 
 function sha256(value: string): Buffer {
   return createHash('sha256').update(value, 'utf8').digest();
+}
+
+/**
+ * QR-A1: the same PHC string with its salt's last base64 character replaced by `B`, whose two low
+ * bits are non-zero, so the base64 is non-canonical. It keeps `isStoredPasswordHash`'s form.
+ */
+function nonCanonicalSalt(phc: string): string {
+  const parts = phc.split('$');
+  const salt = parts[4] ?? '';
+  assert.match(salt, /^[A-Za-z0-9+/]{21}[AQgw]$/, 'premise: a canonical 22-character salt');
+  parts[4] = `${salt.slice(0, 21)}B`;
+  return parts.join('$');
+}
+
+/**
+ * QR-F1 (OD-132): log in, then log out sending `body` as `contentType`. Logout must still answer 204,
+ * clear the cookie with no-store, and revoke the session server-side.
+ */
+async function assertLogoutRevokesWith(
+  name: string,
+  contentType: string,
+  body: string,
+): Promise<void> {
+  const a = await plant({ passwordHash: await correctHash() });
+  const cookieValue = cookieValueOf(await login(a.email, PASSWORD));
+  const out = await post('logout', body, {
+    cookie: `__Host-kv_session=${cookieValue}`,
+    'content-type': contentType,
+  });
+  assert.equal(out.status, 204, `${name}: ${String(out.status)} ${out.text}`);
+  assert.equal(out.text, '', name);
+  assert.deepEqual(out.setCookie, [CLEARED_COOKIE], `${name}: the cookie was not cleared`);
+  assert.equal(out.cacheControl, 'private, no-store', name);
+  const rows = await sessionsOf(a.id);
+  assert.equal(rows.length, 1, name);
+  assert.notEqual(rows[0]?.revokedAt, null, `${name}: the session survived logout`);
+  assert.equal(rows[0]?.revokedReason, 'logout', name);
 }
 
 function assertRefused(answer: Answer, name: string): void {
@@ -532,4 +569,40 @@ test('an account holding an operator role gets the 8-hour admin session and cook
     Math.abs((rows[0]?.ttlSeconds ?? 0) - EIGHT_HOURS_SECONDS) < 60,
     `TTL ${String(rows[0]?.ttlSeconds)} s`,
   );
+});
+
+test('logout with Content-Type application/json and an empty body still revokes the session, answers 204 and clears the cookie (QR-F1)', async () => {
+  await assertLogoutRevokesWith('application/json, empty body', 'application/json', '');
+});
+
+test('logout with Content-Type application/json and a malformed JSON body still revokes the session, answers 204 and clears the cookie (QR-F1)', async () => {
+  await assertLogoutRevokesWith('application/json, malformed', 'application/json', '{');
+});
+
+test('logout with Content-Type application/xml still revokes the session, answers 204 and clears the cookie (QR-F1)', async () => {
+  await assertLogoutRevokesWith('application/xml', 'application/xml', '<a/>');
+});
+
+test('logout with a JSON body over 1 MiB still revokes the session, answers 204 and clears the cookie (QR-F1)', async () => {
+  const body = JSON.stringify({ pad: 'x'.repeat(2 * 1024 * 1024) });
+  assert.ok(Buffer.byteLength(body, 'utf8') > 1024 * 1024, 'premise: the body is over 1 MiB');
+  await assertLogoutRevokesWith('application/json, 2 MiB', 'application/json', body);
+});
+
+test('a stored hash of the admitted form that the library cannot verify (a non-canonical base64 salt) answers the same 401 body as a wrong password, after the floor, not 500 (QR-A1)', async () => {
+  const good = await correctHash();
+  const bad = nonCanonicalSalt(good);
+  await assert.rejects(
+    verify(bad, PASSWORD),
+    'premise: @node-rs/argon2 cannot verify the planted hash',
+  );
+  const control = await plant({ passwordHash: good });
+  const wrong = await login(control.email, `${PASSWORD}-wrong`);
+  assertRefused(wrong, 'wrong password');
+  const a = await plant({ passwordHash: bad });
+  const answer = await login(a.email, PASSWORD);
+  assertRefused(answer, 'non-canonical salt');
+  assert.equal(answer.text, wrong.text, 'the body differs from a wrong password');
+  assert.ok(answer.ms >= FLOOR_MS, `answered after ${answer.ms.toFixed(1)} ms`);
+  assert.equal((await sessionsOf(a.id)).length, 0, 'a session was written');
 });

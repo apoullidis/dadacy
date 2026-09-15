@@ -17,7 +17,7 @@ import { afterAll, test } from 'vitest';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import pg from 'pg';
-import { hash, type Algorithm } from '@node-rs/argon2';
+import { hash, verify, type Algorithm } from '@node-rs/argon2';
 import { Database } from '../src/identity/database.ts';
 import { InvalidCredentialsError } from '../src/identity/errors.ts';
 import { newAccountId, newPseudonym, newSessionId } from '../src/identity/ids.ts';
@@ -100,25 +100,48 @@ async function plant(options: {
   return { id, email };
 }
 
+/**
+ * QR-A1: the same PHC string with its salt's last base64 character replaced by `B`, whose two low
+ * bits are non-zero, so the base64 is non-canonical. It keeps `isStoredPasswordHash`'s form.
+ */
+function nonCanonicalSalt(phc: string): string {
+  const parts = phc.split('$');
+  const salt = parts[4] ?? '';
+  assert.match(salt, /^[A-Za-z0-9+/]{21}[AQgw]$/, 'premise: a canonical 22-character salt');
+  parts[4] = `${salt.slice(0, 21)}B`;
+  return parts.join('$');
+}
+
 interface Counted {
+  /** The PHC strings of verifies that COMPLETED (resolved true or false). */
   readonly verified: string[];
+  /** The PHC strings of verifies that THREW. */
+  readonly threw: string[];
   readonly lines: string[];
   readonly verify: PasswordVerifier;
 }
 
-/** `src/`'s real verifier, wrapped to record every call and every log line. */
+/** `src/`'s real verifier, wrapped to record every completed verify, every throw and every log line. */
 function counting(): Counted {
   const verified: string[] = [];
+  const threw: string[] = [];
   const lines: string[] = [];
   const real = createPasswordVerifier((line) => {
     lines.push(line);
   });
   return {
     verified,
+    threw,
     lines,
-    verify: (encoded, password) => {
-      verified.push(encoded);
-      return real(encoded, password);
+    verify: async (encoded, password) => {
+      try {
+        const result = await real(encoded, password);
+        verified.push(encoded);
+        return result;
+      } catch (thrown) {
+        threw.push(encoded);
+        throw thrown;
+      }
     },
   };
 }
@@ -151,11 +174,14 @@ interface LoginPath {
   readonly outcome: Outcome;
   /** True where no stored hash may be verified, so the verify must be of a hash no account holds. */
   readonly dummy: boolean;
+  /** True where verifying the stored hash throws before the dummy is verified (QR-A1). */
+  readonly storedThrows?: boolean;
 }
 
 interface Fixtures {
   readonly storedHash: string;
   readonly belowParametersHash: string;
+  readonly nonCanonicalHash: string;
   readonly paths: readonly LoginPath[];
 }
 
@@ -175,9 +201,16 @@ function pathsOnce(): Promise<Fixtures> {
     const passwordless = await plant({ passwordHash: null });
     const suspended = await plant({ passwordHash: storedHash, status: 'suspended' });
     const below = await plant({ passwordHash: belowParametersHash });
+    const nonCanonicalHash = nonCanonicalSalt(storedHash);
+    await assert.rejects(
+      verify(nonCanonicalHash, PASSWORD),
+      'premise: @node-rs/argon2 cannot verify the non-canonical hash',
+    );
+    const nonCanonical = await plant({ passwordHash: nonCanonicalHash });
     return {
       storedHash,
       belowParametersHash,
+      nonCanonicalHash,
       paths: [
         {
           name: 'success',
@@ -221,14 +254,22 @@ function pathsOnce(): Promise<Fixtures> {
           outcome: 'invalid_credentials',
           dummy: true,
         },
+        {
+          name: 'stored hash with a non-canonical base64 salt (the library throws), right password',
+          email: nonCanonical.email,
+          password: PASSWORD,
+          outcome: 'invalid_credentials',
+          dummy: true,
+          storedThrows: true,
+        },
       ],
     };
   })();
   return fixtures;
 }
 
-test('exactly one argon2id verify per login on every path, at SA SEC-5 m=65536 t=3 p=1, and the absent, passwordless and below-parameter paths verify a hash no account holds', async () => {
-  const { paths, storedHash, belowParametersHash } = await pathsOnce();
+test('exactly one argon2id verify per login on every path, at SA SEC-5 m=65536 t=3 p=1, and the absent, passwordless, below-parameter and unverifiable-hash paths verify a hash no account holds', async () => {
+  const { paths, storedHash, belowParametersHash, nonCanonicalHash } = await pathsOnce();
   for (const path of paths) {
     const counted = counting();
     const { outcome } = await attempt(
@@ -237,6 +278,11 @@ test('exactly one argon2id verify per login on every path, at SA SEC-5 m=65536 t
       path.password,
     );
     assert.equal(outcome, path.outcome, path.name);
+    assert.deepEqual(
+      counted.threw,
+      path.storedThrows === true ? [nonCanonicalHash] : [],
+      `${path.name}: verifies that threw`,
+    );
     assert.equal(
       counted.verified.length,
       1,
@@ -253,6 +299,7 @@ test('exactly one argon2id verify per login on every path, at SA SEC-5 m=65536 t
     if (path.dummy) {
       assert.notEqual(encoded, storedHash, path.name);
       assert.notEqual(encoded, belowParametersHash, path.name);
+      assert.notEqual(encoded, nonCanonicalHash, path.name);
       const holders = await superuser().query<{ n: number }>(
         'SELECT count(*)::int AS n FROM public.account WHERE password_hash = $1',
         [encoded],
@@ -456,6 +503,44 @@ test('resolve refuses a revoked, an absolutely expired, an idle-expired, an unkn
   for (const [name, header] of headers) {
     assert.equal(await sessions.resolve(header), undefined, `${name} resolved`);
   }
+});
+
+test('resolve refuses a session whose account may no longer log in: a session issued while active stops resolving once the account is suspended, removed or erased, with no row revoked, and resolves again once active (QR-A2)', async () => {
+  const a = await plant({ passwordHash: null, status: 'active' });
+  const sessions = new SessionService(db);
+  const live = await plantSession(a.id, { expiresIn: '1 day', lastSeenAgo: '1 minute' });
+  assert.equal(
+    (await sessions.resolve(live.header))?.id,
+    live.id,
+    'premise: it resolves while active',
+  );
+
+  for (const status of ['suspended', 'removed', 'erased']) {
+    await superuser().query(
+      'UPDATE public.account SET status = $1::public.account_status WHERE id = $2',
+      [status, a.id],
+    );
+    const was = await sessionState(live.id);
+    assert.equal(
+      await sessions.resolve(live.header),
+      undefined,
+      `a session of a ${status} account resolved`,
+    );
+    const after = await sessionState(live.id);
+    assert.deepEqual(after, was, `${status}: refusing changed the row`);
+    assert.equal(
+      after.revokedAt,
+      null,
+      `${status}: the refusal revoked the row instead of refusing at resolve`,
+    );
+  }
+
+  await superuser().query("UPDATE public.account SET status = 'active' WHERE id = $1", [a.id]);
+  assert.equal(
+    (await sessions.resolve(live.header))?.id,
+    live.id,
+    'control: active again, it resolves',
+  );
 });
 
 test('logout revokes only a live session and never moves or clears revoked_at: a planted revoked session keeps its revoked_at, and a second logout changes nothing', async () => {
