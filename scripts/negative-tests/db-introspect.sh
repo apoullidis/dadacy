@@ -942,14 +942,22 @@ mutate "$PARTITION" "    const mine = policies" "    const mine = ([] as typeof 
 git diff -U0 -- "$PARTITION" | grep -E '^[-+][^-+]' | sed 's/^/   mutation:   /'
 check K68 "(T-165) the parent's policies not added (the partition carries none of them): T-152's pg_policy step now SEES the partitioned table and refuses it" I-POLICY 'table "t165_part": pg_policy has policy "t165_part_(zulu|omega)", which the rendering does not contain'
 
+# Measured (T-165 § Evidence M6): drizzle-kit spells `t165_x2y` as `t165X2Y`, because the `camelcase`
+# package it uses breaks a word at a digit-to-letter boundary, where this step would spell it
+# `t165X2y`. A PARENT of that shape is refused by name (K69) rather than exported under a guess; K70
+# deletes the agreement itself and shows the check that holds it.
 plant "$UP" "-- @phase: expand
-CREATE TABLE public.t165_part (id bigint NOT NULL, at timestamptz NOT NULL,
-  CONSTRAINT t165_part_pkey PRIMARY KEY (id, at)) PARTITION BY RANGE (at);
-CREATE TABLE public.t165_part_q1 PARTITION OF public.t165_part FOR VALUES FROM (TIMESTAMPTZ '2026-01-01Z') TO (TIMESTAMPTZ '2026-04-01Z');
-CREATE TABLE public.t165_x2y (id bigint PRIMARY KEY);"
-plant "$DOWN" "DROP TABLE public.t165_x2y;
-DROP TABLE public.t165_part;"
-check K69 "(T-165) a relation whose export name drizzle-kit spells t165X2Y and this step would spell t165X2y (a digit-to-letter boundary): the parent's export name is not derived on a guess" I-PART 'drizzle-kit exports relation "t165_x2y" as .t165X2Y., which this step would spell .t165X2y.'
+CREATE TABLE public.t165_x2y (id bigint NOT NULL, at timestamptz NOT NULL,
+  CONSTRAINT t165_x2y_pkey PRIMARY KEY (id, at)) PARTITION BY RANGE (at);
+CREATE TABLE public.t165_x2y_q1 PARTITION OF public.t165_x2y FOR VALUES FROM (TIMESTAMPTZ '2026-01-01Z') TO (TIMESTAMPTZ '2026-04-01Z');"
+plant "$DOWN" "DROP TABLE public.t165_x2y;"
+check K69 "(T-165) a partitioned table whose name has a digit-to-letter boundary, which drizzle-kit and this step spell differently: refused, never exported under a guess" I-PART 'is not named as .<letters><digits>'
+
+policy_fixture "$PART_FIXTURE"
+write_schema
+mutate "$PARTITION" "  const parts = relname.split('_');" "  const parts = \`\${relname}_t165\`.split('_');"
+git diff -U0 -- "$PARTITION" | grep -E '^[-+][^-+]' | sed 's/^/   mutation:   /'
+check K70 "(T-165) the export-name derivation changed: it is held against the names drizzle-kit itself wrote in the same rendering, so it is refused" I-PART 'drizzle-kit exports relation "account_role" as .accountRole., which this step would spell .accountRoleT165.'
 
 echo "== T-165 (OD-145): a relation in information_schema, pg_catalog or a pg_toast* schema"
 # Before this ticket the catalogue read excluded those schemas outright, so such a relation was on no
