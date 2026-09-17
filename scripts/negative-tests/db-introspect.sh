@@ -36,6 +36,21 @@
 # hex, the check must be exactly {I-SCOPE} naming it unambiguously, and then K42m–K49m restore main's
 # read (asserted landed) and show the same plant getting past I-SCOPE.
 #
+# T-165 — K50–K64 (OD-84): drizzle-kit lists relations with relkind IN ('r','v','m'), so a PARTITIONED
+# table is never rendered and each of its PARTITIONS is rendered as a plain table. The generator now
+# renders every partitioned table in public under its own name, from the first of its partitions in
+# public, with every constraint and index name mapped to the parent's by the catalogue and the
+# parent's policies added from pg_policy; the partitions leave the rendering and are on neither side
+# of I-VACUOUS (scripts/gates/lib/schema-partition.ts, [I-PART]). K50 is the control fixture
+# (db-introspect-partitioned.sql, whose `-- expect:`/`-- absent:` lines are written from the SQL),
+# K51–K54 are determinism and a partition attached after the file was written, K55–K61 the drifts and
+# shapes it refuses, K62–K63 the rule deleted two ways (I-VACUOUS, as before this ticket), K64 the
+# catalogue read.
+# T-165 — K65–K67 (OD-145): a relation in information_schema, pg_catalog or a pg_toast* schema reached
+# no check at all and the run passed. The catalogue read now also takes every relation of kind
+# r/p/v/m/f in those schemas whose oid is >= 16384, so it is I-SCOPE. Each case plants one as the
+# superuser (two need allow_system_table_mods) and is then re-run with main's schema filter restored.
+#
 #   cd /home/alex/projects/nanny/app && ./scripts/svc run <ticket> -- bash scripts/negative-tests/db-introspect.sh
 #
 # Needs the ticket's `db` project and a clean, committed tree. The check itself migrates the
@@ -69,8 +84,10 @@ SCRIPT=scripts/db-introspect.ts
 RENDER=scripts/gates/lib/schema-render.ts
 ORDER=scripts/gates/lib/schema-order.ts
 POLICY=scripts/gates/lib/schema-policy.ts
+PARTITION=scripts/gates/lib/schema-partition.ts
 QA_POLICIES=scripts/negative-tests/db-introspect-policies-qa.sql
 SHAPE_POLICIES=scripts/negative-tests/db-introspect-policies-shapes.sql
+PART_FIXTURE=scripts/negative-tests/db-introspect-partitioned.sql
 OUT=$(mktemp)
 total=0
 bad=0
@@ -112,7 +129,7 @@ restore() {
   fi
   [ "$(record)" = "kinvara-migrate version=$HIGHEST" ] || abort "the record reads '$(record)', not $HIGHEST"
   rm -f "$M/${NEXT}_t138_plant.up.sql" "$M/${NEXT}_t138_plant.down.sql"
-  git checkout -q -- "$SCHEMA" "$SCRIPT" "$RENDER" "$ORDER" "$POLICY"
+  git checkout -q -- "$SCHEMA" "$SCRIPT" "$RENDER" "$ORDER" "$POLICY" "$PARTITION"
   if [ -n "$(git status --porcelain)" ]; then
     git status --porcelain
     abort "the tree did not restore cleanly"
@@ -732,6 +749,222 @@ shape_case K47 '"pgboss|x"' 'pgboss|x' '"pgboss\|x"' '^  out of scope: 1 relatio
 # relation is on no list at all: GATE PASS, out of scope 0, and its name nowhere in the output.
 shape_case K48 '"pgboss|x|true"' 'pgboss|x|true' '"pgboss\|x\|true"' '^  out of scope: 0 relation\(s\)' '!t145_t'
 shape_case K49 '"zz_other|x|true"' 'zz_other|x|true' '"zz_other\|x\|true"' '^  out of scope: 0 relation\(s\)' '!t145_t'
+
+echo "== T-165 (OD-84): a partitioned table is rendered under its own name; its partitions are not"
+
+# part_expectations: every `-- expect:` line of the fixture must be in db/schema.ts (grep -F) and no
+# `-- absent:` line may appear anywhere in it. One fact line each, into $OUT.f; adds to $miss.
+part_expectations() {
+  local line
+  PART_N=0
+  while IFS= read -r line; do
+    PART_N=$((PART_N + 1))
+    if grep -qF -- "$line" "$SCHEMA"; then
+      echo "fact ok (db/schema.ts has it): $line" >>"$OUT.f"
+    else
+      echo "fact MISMATCH (db/schema.ts lacks it): $line" >>"$OUT.f"
+      miss=$((miss + 1))
+    fi
+  done < <(sed -nE 's/^-- expect: //p' "$PART_FIXTURE")
+  while IFS= read -r line; do
+    PART_N=$((PART_N + 1))
+    if grep -qF -- "$line" "$SCHEMA"; then
+      echo "fact MISMATCH (db/schema.ts names it): $line" >>"$OUT.f"
+      miss=$((miss + 1))
+    else
+      echo "fact ok (db/schema.ts does not name it): $line" >>"$OUT.f"
+    fi
+  done < <(sed -nE 's/^-- absent: //p' "$PART_FIXTURE")
+  [ "$PART_N" -gt 0 ] || abort "$PART_FIXTURE has no -- expect:/-- absent: line"
+}
+
+# part_check <id> <description> <regex fact>...: the check must PASS, every fixture expectation must
+# hold against the committed db/schema.ts, and every regex must match the check's output.
+part_check() {
+  local id=$1 desc=$2 code n
+  shift 2
+  n=$#
+  node scripts/db-introspect.ts --check >"$OUT" 2>&1
+  code=$?
+  : >"$OUT.f"
+  facts_into "$@"
+  part_expectations
+  [ "$miss" -eq 0 ] && echo "ALL $((n + PART_N)) PARTITION FACTS HOLD" >>"$OUT.f"
+  cat "$OUT.f" >>"$OUT"
+  judge "$id" "$desc" PASS "$code" '^ALL [0-9]+ PARTITION FACTS HOLD$'
+  grep -E '^fact |^  partitions: |^  catalogue: ' "$OUT" | cut -c1-240 | sed 's/^/       /'
+}
+
+PART_RENDERED="^  partitions: 1 partitioned table\(s\) rendered from a partition; [0-9]+ partition declaration\(s\) removed; [0-9]+ name\(s\) mapped to the parent's; 2 policy entr\(ies\) added from pg_policy; [0-9]+ export name\(s\) checked"
+PART_COUNTS="^  catalogue: .*; 2 partition\(s\) in public excluded \[\"t165_part_q1\", \"t165_part_q2\"\]; $((OWNED + 1)) relation\(s\) owned by no extension in public\$"
+PART_INTRO="^  drizzle-kit [^:]+: $((OWNED + 1)) relation\(s\) introspected from public\$"
+
+policy_fixture "$PART_FIXTURE"
+sed 's/^/   plant up:   /' "$UP" | head -30
+echo "   pg_class last analyze / vacuum before the first write: '$(stats_mark)'"
+write_schema
+part_check K50 "(T-165) CONTROL: a PARTITION BY RANGE parent with two partitions, regenerated, never ANALYZEd: the parent is rendered under its own name with the parent's key, index, check and policies; neither partition is in the file" \
+  "$PART_RENDERED" "$PART_COUNTS" "$PART_INTRO" 'byte-identical to a fresh introspection' '^  policies: 2 checked against pg_policy'
+
+m0=$(stats_mark)
+psql -X -q -v ON_ERROR_STOP=1 -c ANALYZE >/dev/null || abort "ANALYZE failed"
+m1=$(stats_mark)
+{ [ "$m1" != "$m0" ] && [ "${m1%% / *}" != never ]; } || abort "ANALYZE did not land on pg_class (last analyze / vacuum '$m0' -> '$m1')"
+echo "   statistics attack landed: pg_class last analyze / vacuum '$m0' -> '$m1'"
+part_check K51 "(T-165) the same file after ANALYZE (asserted above): byte-identical" "$PART_RENDERED" 'byte-identical to a fresh introspection'
+
+m0=$(stats_mark)
+psql -X -q -v ON_ERROR_STOP=1 -c "VACUUM ANALYZE" >/dev/null || abort "VACUUM ANALYZE failed"
+m1=$(stats_mark)
+{ [ "${m1#* / }" != "${m0#* / }" ] && [ "${m1#* / }" != never ]; } || abort "VACUUM ANALYZE did not land on pg_class (last analyze / vacuum '$m0' -> '$m1')"
+echo "   statistics attack landed: pg_class last analyze / vacuum '$m0' -> '$m1'"
+part_check K52 "(T-165) the same file after VACUUM ANALYZE (asserted above): byte-identical" "$PART_RENDERED" 'byte-identical to a fresh introspection'
+
+{ node scripts/db-migrate.ts down --to "$HIGHEST" >"$OUT.p" 2>&1 && grep -q "^MIGRATE OK  down: $NEXT -> $HIGHEST" "$OUT.p"; } || { cat "$OUT.p"; abort "db:migrate down --to $HIGHEST failed"; }
+{ node scripts/db-migrate.ts up >"$OUT.p" 2>&1 && grep -q "^MIGRATE OK  up: $HIGHEST -> $NEXT" "$OUT.p"; } || { cat "$OUT.p"; abort "db:migrate up to $NEXT failed"; }
+echo "   history attack landed: down --to $HIGHEST, up to $NEXT"
+part_check K53 "(T-165) the same file after the partition migration's down/up: byte-identical" "$PART_RENDERED" 'byte-identical to a fresh introspection'
+
+psql -X -q -v ON_ERROR_STOP=1 -c "CREATE TABLE public.t165_part_a0 PARTITION OF public.t165_part FOR VALUES FROM (TIMESTAMPTZ '2025-01-01Z') TO (TIMESTAMPTZ '2026-01-01Z')" >/dev/null || abort "attaching a third partition failed"
+attached=$(psql -X -A -t -q -c "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relispartition AND c.relname LIKE 't165\_part\_%'")
+[ "$attached" = 3 ] || abort "the third partition did not land (partitions in public: $attached)"
+echo "   attach attack landed: t165_part_a0 sorts BEFORE t165_part_q1, so it is now the template; partitions in public: $attached"
+part_check K54 "(T-165) a third partition attached after db/schema.ts was written, sorting first so the template changes: the file is unchanged and the check still passes" \
+  '^  partitions: 1 partitioned table\(s\) rendered from a partition; 2 partition declaration\(s\) removed' 'byte-identical to a fresh introspection' '"t165_part_a0"'
+restore
+
+policy_fixture "$PART_FIXTURE"
+write_schema
+psql -X -q -v ON_ERROR_STOP=1 -c "ALTER TABLE public.t165_part ADD COLUMN drifted text" >/dev/null || abort "the parent drift failed"
+psql -X -A -t -q -c "SELECT count(*) FROM pg_attribute WHERE attrelid = 'public.t165_part_q1'::regclass AND attname = 'drifted'" | grep -qx 1 || abort "the parent's new column did not reach its partition"
+check K55 "(T-165) the parent gains a column, which every partition gains too, and db/schema.ts is not regenerated: I-DIFF" I-DIFF 'db/schema.ts differs from a fresh introspection'
+
+policy_fixture "$PART_FIXTURE"
+write_schema
+psql -X -q -v ON_ERROR_STOP=1 -c "CREATE INDEX t165_part_q1_own_idx ON public.t165_part_q1 (note)" >/dev/null || abort "the partition-only index failed"
+check K56 "(T-165) an index created on a partition alone, which the parent does not have: refused, never rendered as the parent's" I-PART 'renders "t165_part_q1_own_idx", which is its own and has no counterpart on the parent'
+
+plant "$UP" "-- @phase: expand
+CREATE TABLE public.t165_part (id bigint NOT NULL, at timestamptz NOT NULL,
+  CONSTRAINT t165_part_pkey PRIMARY KEY (id, at)) PARTITION BY RANGE (at);
+CREATE TABLE public.t165_part_q1 (at timestamptz NOT NULL, id bigint NOT NULL);
+ALTER TABLE public.t165_part ATTACH PARTITION public.t165_part_q1 FOR VALUES FROM (TIMESTAMPTZ '2026-01-01Z') TO (TIMESTAMPTZ '2026-04-01Z');"
+plant "$DOWN" "DROP TABLE public.t165_part;"
+check K57 "(T-165) a partition ATTACHed with the parent's columns in another order: its rendering is not the parent's, refused" I-PART 'does not have the parent.s columns in the parent.s order'
+
+plant "$UP" "-- @phase: expand
+CREATE TABLE public.t165_part (id bigint NOT NULL, at timestamptz NOT NULL, k text NOT NULL,
+  CONSTRAINT t165_part_pkey PRIMARY KEY (id, at, k)) PARTITION BY RANGE (at);
+CREATE TABLE public.t165_part_q1 PARTITION OF public.t165_part FOR VALUES FROM (TIMESTAMPTZ '2026-01-01Z') TO (TIMESTAMPTZ '2026-04-01Z') PARTITION BY LIST (k);
+CREATE TABLE public.t165_part_q1_k PARTITION OF public.t165_part_q1 FOR VALUES IN ('k1');"
+plant "$DOWN" "DROP TABLE public.t165_part;"
+check K58 "(T-165) a sub-partitioned table (a partition that is itself partitioned): refused" I-PART 'is itself partitioned: a sub-partitioned table is not represented'
+
+plant "$UP" "-- @phase: expand
+-- @run-as: bootstrap-superuser — T-165
+CREATE TABLE public.t165_part (id bigint NOT NULL, at timestamptz NOT NULL,
+  CONSTRAINT t165_part_pkey PRIMARY KEY (id, at)) PARTITION BY RANGE (at);
+CREATE TABLE pgboss.t165_part_pb PARTITION OF public.t165_part FOR VALUES FROM (TIMESTAMPTZ '2026-01-01Z') TO (TIMESTAMPTZ '2026-04-01Z');"
+plant "$DOWN" "DROP TABLE public.t165_part;"
+check K59 "(T-165) a partitioned table in public whose only partition is in admitted schema pgboss: refused, not rendered from a relation drizzle-kit never pulled" I-PART 'has no partition in schema public'
+
+plant "$UP" "-- @phase: expand
+CREATE TABLE public.t165_part (id bigint GENERATED ALWAYS AS IDENTITY, at timestamptz NOT NULL,
+  CONSTRAINT t165_part_pkey PRIMARY KEY (id, at)) PARTITION BY RANGE (at);
+CREATE TABLE public.t165_part_q1 PARTITION OF public.t165_part FOR VALUES FROM (TIMESTAMPTZ '2026-01-01Z') TO (TIMESTAMPTZ '2026-04-01Z');"
+plant "$DOWN" "DROP TABLE public.t165_part;"
+check K60 "(T-165) a partitioned table with an identity column, which drizzle-kit renders on a partition as name: \"null\", startWith: null: refused" I-PART 'has an identity column'
+
+plant "$UP" "-- @phase: expand
+CREATE TABLE public.t165_part (id bigint NOT NULL, at timestamptz NOT NULL,
+  CONSTRAINT t165_part_pkey PRIMARY KEY (id, at)) PARTITION BY RANGE (at);
+CREATE TABLE public.t165_part_q1 PARTITION OF public.t165_part FOR VALUES FROM (TIMESTAMPTZ '2026-01-01Z') TO (TIMESTAMPTZ '2026-04-01Z');
+CREATE TABLE public.t165_ref (id bigint PRIMARY KEY, r_id bigint NOT NULL, r_at timestamptz NOT NULL,
+  CONSTRAINT t165_ref_fkey FOREIGN KEY (r_id, r_at) REFERENCES public.t165_part (id, at));"
+plant "$DOWN" "DROP TABLE public.t165_ref;
+DROP TABLE public.t165_part;"
+check K61 "(T-165) a foreign key from a public table INTO the partitioned table, which PostgreSQL clones once per partition: refused" I-PART "renders \"t165_ref_fkey_1\", PostgreSQL's per-partition clone"
+
+policy_fixture "$PART_FIXTURE"
+write_schema
+mutate "$PARTITION" "  const decls = declarations(sf);" "  const decls = declarations(sf);
+  if (source !== '')
+    return { ok: true, body: source, parents: 0, removed: 0, mapped: 0, policies: 0, names: 0 };"
+git diff -U0 -- "$PARTITION" | grep -E '^[-+][^-+]' | sed 's/^/   mutation:   /'
+check K62 "(T-165) the rule deleted (the step made a pass-through): the regenerated file is refused and the parent is unrendered, as before this ticket" I-VACUOUS 'I-VACUOUS. drizzle-kit wrote .*t165_part_q1.*but the catalogue lists .*t165_part,'
+
+policy_fixture "$PART_FIXTURE"
+write_schema
+mutate "$SCRIPT" "    .filter((r) => !r.extensionMember && r.schema === INTROSPECTED_SCHEMA && !r.partition)" "    .filter((r) => !r.extensionMember && r.schema === INTROSPECTED_SCHEMA)"
+git diff -U0 -- "$SCRIPT" | grep -E '^[-+][^-+]' | sed 's/^/   mutation:   /'
+check K63 "(T-165) the other half deleted (partitions counted by I-VACUOUS again): the regenerated file is refused" I-VACUOUS 'but the catalogue lists .*t165_part_q1, t165_part_q2'
+
+mutate "$PARTITION" "      FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace" "      FROM pg_class_t165 c JOIN pg_namespace n ON n.oid = c.relnamespace"
+check K64 "(T-165) the partitioned-table query unreadable, committed tree: refused, never treated as no partitioned table" I-PART 'cannot read the partitioned tables from the catalogue'
+
+echo "== T-165 (OD-145): a relation in information_schema, pg_catalog or a pg_toast* schema"
+# Before this ticket the catalogue read excluded those schemas outright, so such a relation was on no
+# list at all: GATE PASS, no I-SCOPE, absent from db/schema.ts. system_case plants one, requires
+# I-SCOPE naming it, then restores main's schema filter (asserted landed) and requires GATE PASS with
+# the relation named nowhere in the output.
+SCHEMA_FILTER_NEW=$(
+  cat <<'EOF'
+       AND ((n.nspname NOT IN ('pg_catalog', 'information_schema')
+             AND n.nspname NOT LIKE 'pg\\_toast%'
+             AND n.nspname NOT LIKE 'pg\\_temp\\_%')
+         OR (c.oid >= 16384
+             AND n.nspname NOT LIKE 'pg\\_temp\\_%'
+             AND n.nspname NOT LIKE 'pg\\_toast\\_temp\\_%'))`;
+EOF
+)
+SCHEMA_FILTER_OLD=$(
+  cat <<'EOF'
+       AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+       AND n.nspname NOT LIKE 'pg\\_toast%'
+       AND n.nspname NOT LIKE 'pg\\_temp\\_%'`;
+EOF
+)
+
+# system_case <id> <schema> <extra SQL before the CREATE TABLE> <extra down SQL>
+system_case() {
+  local id=$1 schema=$2 pre=$3 post=$4 code oid
+  plant "$UP" "-- @phase: expand
+-- @run-as: bootstrap-superuser — T-165
+${pre}CREATE TABLE $schema.t165_sys (id bigint PRIMARY KEY);"
+  plant "$DOWN" "DROP TABLE $schema.t165_sys;${post:+
+$post}"
+  sed 's/^/   plant up:   /' "$UP"
+  node scripts/db-introspect.ts --check >"$OUT" 2>&1
+  code=$?
+  : >"$OUT.f"
+  facts_into "MIGRATE OK  up: $HIGHEST -> $NEXT" "^  - \\[I-SCOPE\\] relation \"$schema\"\\.\"t165_sys\" is owned by no extension and is outside schema public"
+  oid=$(psql -X -A -t -q -c "SELECT c.oid || ' ' || (c.oid >= 16384)::text FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = '$schema' AND c.relname = 't165_sys'")
+  if [ "${oid##* }" = true ]; then echo "fact ok: the plant landed in $schema as a user relation, pg_class.oid $oid" >>"$OUT.f"; else echo "fact MISMATCH: pg_class says [$oid] for $schema.t165_sys" >>"$OUT.f"; miss=$((miss + 1)); fi
+  [ "$miss" -eq 0 ] && echo "ALL SYSTEM-SCHEMA FACTS HOLD" >>"$OUT.f"
+  cat "$OUT.f" >>"$OUT"
+  judge "$id" "(T-165 OD-145) a table in $schema: I-SCOPE, named" I-SCOPE "$code" '^ALL SYSTEM-SCHEMA FACTS HOLD$'
+  grep -E '^fact ' "$OUT" | cut -c1-240 | sed 's/^/       /'
+  mutate "$SCRIPT" "$SCHEMA_FILTER_NEW" "$SCHEMA_FILTER_OLD"
+  grep -qF "AND n.nspname NOT LIKE 'pg\\\\_toast%'" "$SCRIPT" || abort "main's schema filter did not land in $SCRIPT"
+  grep -qF 'c.oid >= 16384' "$SCRIPT" && abort "the widened read is still in $SCRIPT"
+  git diff -U0 -- "$SCRIPT" | grep -E '^[-+][^-+]' | sed 's/^/   mutation:   /'
+  node scripts/db-introspect.ts --check >"$OUT" 2>&1
+  code=$?
+  : >"$OUT.f"
+  facts_into '!t165_sys' "^  out of scope: 0 relation\\(s\\)" 'byte-identical to a fresh introspection'
+  [ "$miss" -eq 0 ] && echo "ALL RESTORED-FILTER FACTS HOLD" >>"$OUT.f"
+  cat "$OUT.f" >>"$OUT"
+  judge "${id}m" "(T-165 OD-145) RED BEFORE: main's schema filter restored (asserted above), the same plant reaches no check at all" PASS "$code" '^ALL RESTORED-FILTER FACTS HOLD$'
+  grep -E '^fact ' "$OUT" | cut -c1-240 | sed 's/^/       /'
+  restore
+}
+
+system_case K65 information_schema '' ''
+system_case K66 pg_catalog 'SET allow_system_table_mods = on;
+' ''
+system_case K67 pg_toastq 'SET allow_system_table_mods = on;
+CREATE SCHEMA pg_toastq;
+' 'DROP SCHEMA pg_toastq;'
 
 echo
 if [ "$bad" -eq 0 ]; then

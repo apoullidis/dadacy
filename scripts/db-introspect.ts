@@ -19,11 +19,14 @@
  *      migration in db/migrations. The run is judged by its exit status and its single banner
  *      together (T-136 § contract §2). So this check changes the database it is pointed at.
  *   2. [I-RECORD] the database's migration record must read the highest up file's number.
- *   3. [I-SCOPE] the catalogue: every relation (r, p, v, m, f) outside pg_catalog,
- *      information_schema and pg_toast, and whether an extension owns it (pg_depend deptype 'e').
- *      A relation no extension owns, outside schema `public`, fails: this pipeline introspects
- *      `public` only and must not silently omit a table. An extension member whose name is not a
- *      plain identifier fails too, because it becomes a glob below.
+ *   3. [I-SCOPE] the catalogue: every relation (r, p, v, m, f) outside the system schemas, PLUS
+ *      every relation of those kinds INSIDE pg_catalog, information_schema or a pg_toast* schema
+ *      whose oid is >= 16384 — a relation somebody created there, which nothing in this build may
+ *      (T-165, OD-145; before it, such a relation reached no check at all and the run passed). Each
+ *      row carries whether an extension owns it (pg_depend deptype 'e') and whether it is a
+ *      partition (relispartition). A relation no extension owns, outside schema `public`, fails:
+ *      this pipeline introspects `public` only and must not silently omit a table. An extension
+ *      member whose name is not a plain identifier fails too, because it becomes a glob below.
  *      T-145 (QA-A4, OD-90): the ONE exception is a relation whose schema name is exactly `pgboss`
  *      (pg-boss's own job schema, SD §DB-1 line 1751). It is admitted as deliberately out of scope:
  *      not refused, not pulled, not counted by I-VACUOUS, and listed on the `out of scope:` line.
@@ -42,29 +45,39 @@
  *   4a. [I-MAP] (T-150, OD-97) each `unknown("col")` drizzle-kit writes for a type it cannot parse
  *      is rewritten from a CLOSED map (`citext`, `bytea` -> customType). Any other type fails the
  *      run: `unknown(...)` is never written (scripts/gates/lib/schema-render.ts).
- *   4b. [I-POLICY] (T-152 rework 1, OD-109) drizzle-kit keeps a row-level security policy's
+ *   4b. [I-PART] (T-165, OD-84) drizzle-kit lists relations with `relkind IN ('r', 'v', 'm')`, so a
+ *      PARTITIONED TABLE is never rendered and each of its PARTITIONS is rendered as a plain table
+ *      of its own. Every partitioned table in `public` is rendered under its own name from the
+ *      first of its partitions in `public` in byte order, with every name mapped to the parent's by
+ *      the catalogue and the parent's policies added from pg_policy; its partitions leave the
+ *      rendering and are on neither side of I-VACUOUS (scripts/gates/lib/schema-partition.ts). A
+ *      shape it cannot check — a sub-partitioned table, a parent with no partition in `public`, a
+ *      partition whose columns are not the parent's, an identity column, a name with no counterpart
+ *      on the parent — fails the run.
+ *   4c. [I-POLICY] (T-152 rework 1, OD-109) drizzle-kit keeps a row-level security policy's
  *      `using` and `withCheck` only for the first pg_policies row it receives per table, from a query
  *      with no ORDER BY, so on a table with two or more policies the rendering is wrong and follows
  *      the query plan. Every pgPolicy entry is checked against pg_policy (read in step 3c), its
  *      dropped expressions restored, and it is rewritten from the catalogue row
  *      (scripts/gates/lib/schema-policy.ts). A disagreement or a shape it does not know fails the run.
- *   4c. [I-ORDER] (T-152, OD-106, OD-108) drizzle-kit renders objects in the order its catalogue
+ *   4d. [I-ORDER] (T-152, OD-106, OD-108) drizzle-kit renders objects in the order its catalogue
  *      queries return rows, and several of those queries have no ORDER BY, so the order follows
  *      planner statistics and heap position rather than the schema. The rendering is put in a
  *      canonical order: key column lists in the catalogue's own order (pg_constraint.conkey /
  *      confkey, read in step 3b), table entries by kind and name, declarations by name, imports by
  *      name (scripts/gates/lib/schema-order.ts). A shape it does not recognise fails the run. This
  *      pipeline does not ANALYZE: statistics are not an input to the rendering.
- *   4d. [I-TSC] (T-150, OD-93) TypeScript's own unused-identifier fixes are applied until a pass
+ *   4e. [I-TSC] (T-150, OD-93) TypeScript's own unused-identifier fixes are applied until a pass
  *      edits nothing, with the compiler options of the root tsconfig.json. Any diagnostic left in
  *      the rendering fails the run, so a file `tsc` would refuse at its first importer is neither
  *      written nor accepted.
  *   5. [I-VACUOUS] anti-vacuity, anchored OUTSIDE drizzle-kit: the relation names in the rendering
- *      must equal the names the catalogue lists as owned by no extension in `public`. An
+ *      must equal the names the catalogue lists as owned by no extension in `public`, partitions
+ *      excluded (step 4b renders their parent instead). An
  *      introspection that returns nothing while the catalogue holds a relation fails. When both
  *      are empty, the run says so on stdout (T-001 contract, gate rule 2) and does not fail: the
  *      committed migrations are then genuinely relation-free.
- *   6. write mode: db/schema.ts := the generated header + drizzle-kit's schema.ts after 4a-4d.
+ *   6. write mode: db/schema.ts := the generated header + drizzle-kit's schema.ts after 4a-4e.
  *      Both modes build that rendering the same way, so the parity check compares against it.
  *      check mode: [I-MISSING] db/schema.ts absent; [I-DIGEST] its header does not verify
  *      (scripts/gates/lib/schema-digest.ts); [I-DIFF] it differs from the fresh rendering.
@@ -84,6 +97,11 @@ import {
   canonicalOrder,
   parseConstraintKeys,
 } from './gates/lib/schema-order.ts';
+import {
+  PARTITIONS_SQL,
+  canonicalPartitions,
+  parsePartitions,
+} from './gates/lib/schema-partition.ts';
 import { POLICIES_SQL, canonicalPolicies, parsePolicies } from './gates/lib/schema-policy.ts';
 import {
   TYPESCRIPT_VERSION,
@@ -105,19 +123,24 @@ const CATALOGUE_SQL = `
              'schema', n.nspname,
              'schemaHex', encode(convert_to(n.nspname, 'UTF8'), 'hex'),
              'name', c.relname,
+             'partition', c.relispartition,
              'extensionMember', EXISTS (SELECT 1 FROM pg_depend d
                      WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e'))
              ORDER BY n.nspname, c.relname), '[]'::json)
       FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
      WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f')
-       AND n.nspname NOT IN ('pg_catalog', 'information_schema')
-       AND n.nspname NOT LIKE 'pg\\_toast%'
-       AND n.nspname NOT LIKE 'pg\\_temp\\_%'`;
+       AND ((n.nspname NOT IN ('pg_catalog', 'information_schema')
+             AND n.nspname NOT LIKE 'pg\\_toast%'
+             AND n.nspname NOT LIKE 'pg\\_temp\\_%')
+         OR (c.oid >= 16384
+             AND n.nspname NOT LIKE 'pg\\_temp\\_%'
+             AND n.nspname NOT LIKE 'pg\\_toast\\_temp\\_%'))`;
 
 type CatalogueRow = {
   schema: string;
   schemaHex: string;
   name: string;
+  partition: boolean;
   extensionMember: boolean;
 };
 
@@ -146,17 +169,19 @@ function parseCatalogue(
       schema?: unknown;
       schemaHex?: unknown;
       name?: unknown;
+      partition?: unknown;
       extensionMember?: unknown;
     };
     if (
       typeof r.schema !== 'string' ||
       typeof r.schemaHex !== 'string' ||
       typeof r.name !== 'string' ||
+      typeof r.partition !== 'boolean' ||
       typeof r.extensionMember !== 'boolean'
     ) {
       return {
         ok: false,
-        problem: `a row is not {schema, schemaHex, name, extensionMember}: ${snippet(JSON.stringify(v))}`,
+        problem: `a row is not {schema, schemaHex, name, partition, extensionMember}: ${snippet(JSON.stringify(v))}`,
       };
     }
     if (Buffer.from(r.schema, 'utf8').toString('hex') !== r.schemaHex) {
@@ -169,6 +194,7 @@ function parseCatalogue(
       schema: r.schema,
       schemaHex: r.schemaHex,
       name: r.name,
+      partition: r.partition,
       extensionMember: r.extensionMember,
     });
   }
@@ -297,8 +323,13 @@ function main(): void {
   const rows = parsed.ok ? parsed.rows : [];
   const admitted = (r: CatalogueRow): boolean => OUT_OF_SCOPE_HEX.includes(r.schemaHex);
   const members = rows.filter((r) => r.extensionMember && r.schema === INTROSPECTED_SCHEMA);
+  // T-165 (OD-84): a partition is not rendered — the partitioned table it belongs to is, under its
+  // own name — so it is on neither side of I-VACUOUS. The parent is on both.
+  const partitions = rows.filter(
+    (r) => !r.extensionMember && r.schema === INTROSPECTED_SCHEMA && r.partition,
+  );
   const owned = rows
-    .filter((r) => !r.extensionMember && r.schema === INTROSPECTED_SCHEMA)
+    .filter((r) => !r.extensionMember && r.schema === INTROSPECTED_SCHEMA && !r.partition)
     .map((r) => r.name)
     .sort();
   const outOfScope = rows.filter((r) => !r.extensionMember && admitted(r));
@@ -306,7 +337,7 @@ function main(): void {
     (r) => !r.extensionMember && r.schema !== INTROSPECTED_SCHEMA && !admitted(r),
   );
   console.log(
-    `  catalogue: ${String(rows.length)} relation(s); ${String(members.length)} extension member(s) in ${INTROSPECTED_SCHEMA} excluded; ${String(owned.length)} relation(s) owned by no extension in ${INTROSPECTED_SCHEMA}`,
+    `  catalogue: ${String(rows.length)} relation(s); ${String(members.length)} extension member(s) in ${INTROSPECTED_SCHEMA} excluded; ${String(partitions.length)} partition(s) in ${INTROSPECTED_SCHEMA} excluded [${partitions.map((r) => showName(r.name)).join(', ')}]; ${String(owned.length)} relation(s) owned by no extension in ${INTROSPECTED_SCHEMA}`,
   );
   console.log(
     `  out of scope: ${String(outOfScope.length)} relation(s) in schema(s) ${OUT_OF_SCOPE_SCHEMAS.map(showName).join(', ')} admitted, not introspected and not counted [${outOfScope.map((r) => `${showName(r.schema)}.${showName(r.name)}`).join(', ')}]`,
@@ -354,6 +385,23 @@ function main(): void {
   }
   const cataloguePolicies = parsedPolicies.ok ? parsedPolicies.policies : [];
 
+  // 3d. every partitioned table in public, its partitions, and the constraint and index names that
+  // map a partition's rendering onto the parent's (T-165, OD-84)
+  const partitionRead = psql(PARTITIONS_SQL);
+  const parsedPartitions = partitionRead.ok
+    ? parsePartitions(partitionRead.out.trim())
+    : { ok: false as const, problem: partitionRead.err.trim() };
+  if (!parsedPartitions.ok) {
+    problem(
+      'I-PART',
+      `cannot read the partitioned tables from the catalogue: ${parsedPartitions.problem}`,
+    );
+    done();
+  }
+  const cataloguePartitions = parsedPartitions.ok
+    ? parsedPartitions.catalogue
+    : { parents: [], clones: [] };
+
   // 4. pull
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kinvara-introspect-'));
   const out = path.join(tmp, 'out');
@@ -397,18 +445,30 @@ function main(): void {
     `  mapped column type(s): ${mapping.ok && mapping.mapped.length > 0 ? mapping.mapped.join(', ') : 'none'}`,
   );
 
-  // 4b. row-level security policies checked against and rendered from pg_policy (T-152 rework 1, OD-109)
-  const policed = canonicalPolicies(mappedBody, cataloguePolicies);
+  // 4b. every partitioned table in public rendered under its own name, from one of its partitions;
+  // the partitions themselves leave the rendering (T-165, OD-84)
+  const parted = canonicalPartitions(mappedBody, cataloguePartitions, cataloguePolicies);
+  if (!parted.ok) {
+    for (const p of parted.problems) problem('I-PART', p);
+    done();
+  }
+  const partitionedBody = parted.ok ? parted.body : mappedBody;
+  console.log(
+    `  partitions: ${parted.ok ? `${String(parted.parents)} partitioned table(s) rendered from a partition; ${String(parted.removed)} partition declaration(s) removed; ${String(parted.mapped)} name(s) mapped to the parent's; ${String(parted.policies)} policy entr(ies) added from pg_policy; ${String(parted.names)} export name(s) checked against drizzle-kit's` : 'failed'}`,
+  );
+
+  // 4c. row-level security policies checked against and rendered from pg_policy (T-152 rework 1, OD-109)
+  const policed = canonicalPolicies(partitionedBody, cataloguePolicies);
   if (!policed.ok) {
     for (const p of policed.problems) problem('I-POLICY', p);
     done();
   }
-  const policyBody = policed.ok ? policed.body : mappedBody;
+  const policyBody = policed.ok ? policed.body : partitionedBody;
   console.log(
     `  policies: ${policed.ok ? `${String(policed.policies)} checked against pg_policy; ${String(policed.restored)} expression(s) drizzle-kit dropped restored; ${String(policed.rewritten)} entr(ies) rewritten from the catalogue` : 'failed'}`,
   );
 
-  // 4c. canonical order, so the rendering is a function of the schema alone (T-152, OD-106, OD-108)
+  // 4d. canonical order, so the rendering is a function of the schema alone (T-152, OD-106, OD-108)
   const ordered = canonicalOrder(policyBody, constraintKeys);
   if (!ordered.ok) {
     for (const p of ordered.problems) problem('I-ORDER', p);
@@ -419,7 +479,7 @@ function main(): void {
     `  canonical order: ${ordered.ok ? `${String(ordered.declarations)} declaration(s), ${String(ordered.entries)} table entr(ies), ${String(ordered.keyLists)} key column list(s) from the catalogue; ${String(ordered.moved)} element(s) moved from drizzle-kit's order` : 'failed'}`,
   );
 
-  // 4d. prune unused identifiers with TypeScript's own fixes, under the root tsconfig (T-150, OD-93)
+  // 4e. prune unused identifiers with TypeScript's own fixes, under the root tsconfig (T-150, OD-93)
   const root = readRootCompilerOptions(TSCONFIG_PATH);
   if (root.errors.length > 0) {
     for (const e of root.errors) problem('I-TSC', `tsconfig.json: ${e}`);
