@@ -634,7 +634,7 @@ plant_jobschema pgboss
 mapfile -t refused < <(scope_refused pgboss)
 mutate "$SCRIPT" "const OUT_OF_SCOPE_SCHEMAS: readonly string[] = ['pgboss'];" "const OUT_OF_SCOPE_SCHEMAS: readonly string[] = [];"
 git diff -U0 -- "$SCRIPT" | grep -E '^[-+][^-+]' | sed 's/^/   mutation:   /'
-check_facts K39a "(T-145) (iii) the rule deleted (OUT_OF_SCOPE_SCHEMAS emptied): the K36 control plant goes red" I-SCOPE "MIGRATE OK  up: $HIGHEST -> $NEXT" "${refused[@]}" "^  out of scope: $ADMITTED_BASE relation\(s\)"
+check_facts K39a "(T-145) (iii) the rule deleted (OUT_OF_SCOPE_SCHEMAS emptied): the K36 control plant goes red, and 0006's own pgboss relations with it" I-SCOPE "MIGRATE OK  up: $HIGHEST -> $NEXT" "${refused[@]}" '^  out of scope: 0 relation\(s\)' '^  - \[I-SCOPE\] relation "pgboss"\."job_common"'
 
 plant_jobschema pgboss
 mutate "$SCRIPT" "    (r) => !r.extensionMember && r.schema !== INTROSPECTED_SCHEMA && !admitted(r)," "    (r) => !r.extensionMember && r.schema !== INTROSPECTED_SCHEMA,"
@@ -761,7 +761,8 @@ shape_case K45 'U&"\0009pgboss"' '\tpgboss' '"\\tpgboss"' "$ADMITTED_T"
 shape_case K46 'U&"\000Apgboss"' '\npgboss' '"\\npgboss"' "$ADMITTED_T"
 shape_case K47 '"pgboss|x"' 'pgboss|x' '"pgboss\|x"' "^  out of scope: $((ADMITTED_BASE + 1)) relation\(s\) in schema\(s\) \"pgboss\" admitted, not introspected and not counted \[.*\"pgboss\"\.\"x\".*\]$"
 # QR-A1 (main's own defect): with the text read, "<any>|x|true" parses as an extension member, so the
-# relation is on no list at all: GATE PASS, out of scope 0, and its name nowhere in the output.
+# relation is on no list at all: GATE PASS, only 0006's own pgboss relations admitted, and its name
+# nowhere in the output.
 shape_case K48 '"pgboss|x|true"' 'pgboss|x|true' '"pgboss\|x\|true"' "^  out of scope: $ADMITTED_BASE relation\(s\)" '!t145_t'
 shape_case K49 '"zz_other|x|true"' 'zz_other|x|true' '"zz_other\|x\|true"' "^  out of scope: $ADMITTED_BASE relation\(s\)" '!t145_t'
 
@@ -906,7 +907,7 @@ mutate "$PARTITION" "  const decls = declarations(sf);" "  const decls = declara
   if (source !== '')
     return { ok: true, body: source, parents: 0, removed: 0, mapped: 0, policies: 0, names: 0 };"
 git diff -U0 -- "$PARTITION" | grep -E '^[-+][^-+]' | sed 's/^/   mutation:   /'
-check K62 "(T-165) the rule deleted (the step made a pass-through): the regenerated file is refused and the parent is unrendered, as before this ticket" I-VACUOUS 'I-VACUOUS. drizzle-kit wrote .*t165_part_q1.*but the catalogue lists .*t165_part,'
+check K62 "(T-165) the rule deleted (the step made a pass-through): the regenerated file is refused and the parent is unrendered, as before this ticket" I-VACUOUS 'I-VACUOUS. drizzle-kit wrote .*t165_part_q1, t165_part_q2\] but the catalogue lists .*t165_part\]'
 
 policy_fixture "$PART_FIXTURE"
 write_schema
@@ -966,7 +967,7 @@ $post}"
   node scripts/db-introspect.ts --check >"$OUT" 2>&1
   code=$?
   : >"$OUT.f"
-  facts_into '!t165_sys' "^  out of scope: 0 relation\\(s\\)" 'byte-identical to a fresh introspection'
+  facts_into '!t165_sys' "^  out of scope: $ADMITTED_BASE relation\\(s\\)" 'byte-identical to a fresh introspection'
   [ "$miss" -eq 0 ] && echo "ALL RESTORED-FILTER FACTS HOLD" >>"$OUT.f"
   cat "$OUT.f" >>"$OUT"
   judge "${id}m" "(T-165 OD-145) RED BEFORE: main's schema filter restored (asserted above), the same plant reaches no check at all" PASS "$code" '^ALL RESTORED-FILTER FACTS HOLD$'
