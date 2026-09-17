@@ -511,6 +511,11 @@ $VFN
 CREATE TABLE public.t167_real (id int);"
 check CV15 "a real top-level CREATE TABLE with no grant beside a marked body" R-TABLE-GRANT
 
+plant "$UP" "-- @vendor-sql: public.t167_vendor — OD-150; T-167
+$VFN"
+plant "$DOWN" "-- the down file of a planted migration"
+check CV16 "R-PHASE's own marker clause: a correct @vendor-sql marker does not stand in for -- @phase" R-PHASE
+
 echo "-- the marker reaches no other rule"
 pair expand "-- @vendor-sql: public.t167_vendor — OD-150; T-167
 CREATE FUNCTION public.t167_vendor() RETURNS void LANGUAGE plpgsql AS \$fn\$
