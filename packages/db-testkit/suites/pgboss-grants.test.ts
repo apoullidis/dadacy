@@ -24,11 +24,7 @@ import {
   PROBE_PASSWORD,
   type Cluster,
 } from '../src/index.ts';
-import {
-  assertPermitted,
-  assertRefused,
-  SQLSTATE_INSUFFICIENT_PRIVILEGE,
-} from '../src/expect.ts';
+import { assertPermitted, assertRefused, SQLSTATE_INSUFFICIENT_PRIVILEGE } from '../src/expect.ts';
 
 const SUITE = 'pgboss-grants';
 const RW_PROBE = 't146_rw_probe';
@@ -107,7 +103,7 @@ describe('T-146 — what 0006 created', () => {
   test('both partitioned parents are partitioned, and job_common is the DEFAULT partition', async () => {
     assert.equal(
       await db.value(
-        `SELECT coalesce(string_agg(c.relname || '=' || p.partstrat, ',' ORDER BY c.relname), '(none)')
+        `SELECT coalesce(string_agg(c.relname || '=' || p.partstrat::text, ',' ORDER BY c.relname), '(none)')
            FROM pg_partitioned_table p JOIN pg_class c ON c.oid = p.partrelid
            JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'pgboss'`,
       ),
@@ -143,7 +139,7 @@ describe('T-146 — app_rw: the control, so every refusal below means something'
         password: PROBE_PASSWORD,
         stopOnError: true,
         commands: [
-          `SELECT pgboss.create_queue('t146.control', '{}'::jsonb)`,
+          `SELECT pgboss.create_queue('t146.control', '{"policy":"standard"}'::jsonb)`,
           `INSERT INTO pgboss.job_common (name, data) VALUES ('t146.control', '{"a":1}'::jsonb)`,
         ],
       }),
@@ -206,7 +202,9 @@ describe('T-146 — the refusals, each with SQLSTATE 42501', () => {
     assertRefused(
       'app_rw SELECT pgboss.job_table_run(...)',
       await db.psql({
-        ...asRw(`SELECT pgboss.job_table_run('ALTER TABLE pgboss.job ADD COLUMN t146 int', 'job_common')`),
+        ...asRw(
+          `SELECT pgboss.job_table_run('ALTER TABLE pgboss.job ADD COLUMN t146 int', 'job_common')`,
+        ),
         verbose: true,
       }),
       {
