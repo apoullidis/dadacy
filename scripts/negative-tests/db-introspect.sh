@@ -936,6 +936,21 @@ check K63 "(T-165) the other half deleted (partitions counted by I-VACUOUS again
 mutate "$PARTITION" "      FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace" "      FROM pg_class_t165 c JOIN pg_namespace n ON n.oid = c.relnamespace"
 check K64 "(T-165) the partitioned-table query unreadable, committed tree: refused, never treated as no partitioned table" I-PART 'cannot read the partitioned tables from the catalogue'
 
+policy_fixture "$PART_FIXTURE"
+write_schema
+mutate "$PARTITION" "    const mine = policies" "    const mine = ([] as typeof policies)"
+git diff -U0 -- "$PARTITION" | grep -E '^[-+][^-+]' | sed 's/^/   mutation:   /'
+check K68 "(T-165) the parent's policies not added (the partition carries none of them): T-152's pg_policy step now SEES the partitioned table and refuses it" I-POLICY 'table "t165_part": pg_policy has policy "t165_part_(zulu|omega)", which the rendering does not contain'
+
+plant "$UP" "-- @phase: expand
+CREATE TABLE public.t165_part (id bigint NOT NULL, at timestamptz NOT NULL,
+  CONSTRAINT t165_part_pkey PRIMARY KEY (id, at)) PARTITION BY RANGE (at);
+CREATE TABLE public.t165_part_q1 PARTITION OF public.t165_part FOR VALUES FROM (TIMESTAMPTZ '2026-01-01Z') TO (TIMESTAMPTZ '2026-04-01Z');
+CREATE TABLE public.t165_x2y (id bigint PRIMARY KEY);"
+plant "$DOWN" "DROP TABLE public.t165_x2y;
+DROP TABLE public.t165_part;"
+check K69 "(T-165) a relation whose export name drizzle-kit spells t165X2Y and this step would spell t165X2y (a digit-to-letter boundary): the parent's export name is not derived on a guess" I-PART 'drizzle-kit exports relation "t165_x2y" as .t165X2Y., which this step would spell .t165X2y.'
+
 echo "== T-165 (OD-145): a relation in information_schema, pg_catalog or a pg_toast* schema"
 # Before this ticket the catalogue read excluded those schemas outright, so such a relation was on no
 # list at all: GATE PASS, no I-SCOPE, absent from db/schema.ts. system_case plants one, requires
