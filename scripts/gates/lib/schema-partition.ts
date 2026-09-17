@@ -22,7 +22,7 @@
  *      `pg_policy` (T-152's `renderPolicy`), because a partition carries none of the parent's.
  *   3. Every other partition of that parent in `public` is removed from the rendering.
  * Everything it cannot check is a problem, and it never passes a partitioned family through
- * silently: a sub-partitioned table, a parent with no partition in `public`, a partition whose
+ * silently: a sub-partitioned table, a partition outside `public`, a parent with no partition, a partition whose
  * column shape is not the parent's, an identity column (drizzle-kit renders a partition's as
  * `name: "null", startWith: null`, measured), a name in the template with no counterpart on the
  * parent, an export name this step and drizzle-kit would spell differently, and PostgreSQL's
@@ -423,13 +423,22 @@ export function canonicalPartitions(
       );
       continue;
     }
-    const local = parent.partitions.filter((p) => p.schema === 'public');
+    // A partition outside `public` in a schema I-SCOPE admits (T-145: `pgboss`) would otherwise be
+    // a partition of an application table that no check sees. A partition in any other schema is
+    // I-SCOPE and the run has already stopped.
+    const outside = parent.partitions.filter((p) => p.schema !== 'public');
+    if (outside.length > 0) {
+      problems.push(
+        `${where}: partition ${outside.map((p) => `"${p.schema}"."${p.name}"`).join(', ')} is not in schema public, and a partition of a table in public is part of that table, not an admitted relation of its own`,
+      );
+      continue;
+    }
+    const local = parent.partitions;
     const templates = [...local].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
     const template = templates[0];
     if (template === undefined) {
-      const elsewhere = parent.partitions.map((p) => `"${p.schema}"."${p.name}"`).join(', ');
       problems.push(
-        `${where} has no partition in schema public, so drizzle-kit renders nothing this step could take its columns from (partitions: ${elsewhere === '' ? 'none' : elsewhere})`,
+        `${where} has no partition, so drizzle-kit renders nothing this step could take its columns from`,
       );
       continue;
     }

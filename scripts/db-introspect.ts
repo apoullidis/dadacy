@@ -51,9 +51,9 @@
  *      first of its partitions in `public` in byte order, with every name mapped to the parent's by
  *      the catalogue and the parent's policies added from pg_policy; its partitions leave the
  *      rendering and are on neither side of I-VACUOUS (scripts/gates/lib/schema-partition.ts). A
- *      shape it cannot check — a sub-partitioned table, a parent with no partition in `public`, a
- *      partition whose columns are not the parent's, an identity column, a name with no counterpart
- *      on the parent — fails the run.
+ *      shape it cannot check — a sub-partitioned table, a partition outside `public` (including one
+ *      in a schema I-SCOPE admits), a parent with no partition, a partition whose columns are not
+ *      the parent's, an identity column, a name with no counterpart on the parent — fails the run.
  *   4c. [I-POLICY] (T-152 rework 1, OD-109) drizzle-kit keeps a row-level security policy's
  *      `using` and `withCheck` only for the first pg_policies row it receives per table, from a query
  *      with no ORDER BY, so on a table with two or more policies the rendering is wrong and follows

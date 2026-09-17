@@ -880,9 +880,27 @@ plant "$UP" "-- @phase: expand
 -- @run-as: bootstrap-superuser — T-165
 CREATE TABLE public.t165_part (id bigint NOT NULL, at timestamptz NOT NULL,
   CONSTRAINT t165_part_pkey PRIMARY KEY (id, at)) PARTITION BY RANGE (at);
-CREATE TABLE pgboss.t165_part_pb PARTITION OF public.t165_part FOR VALUES FROM (TIMESTAMPTZ '2026-01-01Z') TO (TIMESTAMPTZ '2026-04-01Z');"
+CREATE TABLE public.t165_part_q1 PARTITION OF public.t165_part FOR VALUES FROM (TIMESTAMPTZ '2026-01-01Z') TO (TIMESTAMPTZ '2026-04-01Z');
+CREATE TABLE pgboss.t165_part_pb PARTITION OF public.t165_part FOR VALUES FROM (TIMESTAMPTZ '2026-04-01Z') TO (TIMESTAMPTZ '2026-07-01Z');"
 plant "$DOWN" "DROP TABLE public.t165_part;"
-check K59 "(T-165) a partitioned table in public whose only partition is in admitted schema pgboss: refused, not rendered from a relation drizzle-kit never pulled" I-PART 'has no partition in schema public'
+check K59 "(T-165) a partition of a public partitioned table planted in ADMITTED schema pgboss beside a public one (T-145 LIVE contract §4's route, which OD-84 would otherwise open): refused" I-PART 'is not in schema public, and a partition of a table in public is part of that table'
+
+plant "$UP" "-- @phase: expand
+CREATE TABLE public.t165_part (id bigint NOT NULL, at timestamptz NOT NULL,
+  CONSTRAINT t165_part_pkey PRIMARY KEY (id, at)) PARTITION BY RANGE (at);"
+plant "$DOWN" "DROP TABLE public.t165_part;"
+check K59b "(T-165) a partitioned table with no partition at all, which drizzle-kit renders nothing for: refused" I-PART 'has no partition, so drizzle-kit renders nothing'
+
+plant "$UP" "-- @phase: expand
+-- @run-as: bootstrap-superuser — T-165
+CREATE SCHEMA t165_other;
+CREATE TABLE public.t165_part (id bigint NOT NULL, at timestamptz NOT NULL,
+  CONSTRAINT t165_part_pkey PRIMARY KEY (id, at)) PARTITION BY RANGE (at);
+CREATE TABLE public.t165_part_q1 PARTITION OF public.t165_part FOR VALUES FROM (TIMESTAMPTZ '2026-01-01Z') TO (TIMESTAMPTZ '2026-04-01Z');
+CREATE TABLE t165_other.t165_part_ot PARTITION OF public.t165_part FOR VALUES FROM (TIMESTAMPTZ '2026-04-01Z') TO (TIMESTAMPTZ '2026-07-01Z');"
+plant "$DOWN" "DROP TABLE public.t165_part;
+DROP SCHEMA t165_other;"
+check K59c "(T-165) the same partition in a schema nothing admits: the scope rule reaches it first" I-SCOPE '^  - \[I-SCOPE\] relation "t165_other"\."t165_part_ot" is owned by no extension'
 
 plant "$UP" "-- @phase: expand
 CREATE TABLE public.t165_part (id bigint GENERATED ALWAYS AS IDENTITY, at timestamptz NOT NULL,
