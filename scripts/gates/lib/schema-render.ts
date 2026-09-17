@@ -424,10 +424,34 @@ export function checkCatalogueColumns(
     }
   }
 
+  const int8 = matchInt8Columns(body, columns);
+  problems.push(...int8.problems);
+  return {
+    problems,
+    int8: int8.int8,
+    matched: int8.matched,
+    relations: int8.relations,
+    points,
+  };
+}
+
+export interface Int8Match {
+  readonly problems: readonly string[];
+  readonly int8: number;
+  readonly matched: number;
+  readonly relations: number;
+}
+
+/**
+ * T-153 rework 1 (OD-147, OD-148): every catalogue int8 column matched against the PARSED rendering,
+ * keyed by relation name and database column name. See checkCatalogueColumns above.
+ */
+export function matchInt8Columns(body: string, columns: readonly CatalogueColumn[]): Int8Match {
+  const problems: string[] = [];
   const parsed = parseRendering(body);
   problems.push(...parsed.problems);
   const int8Columns = columns.filter((c) => c.kind === 'int8');
-  const wanted = new Set(int8Columns.map((c) => `${c.relation} ${c.column}`));
+  const wanted = new Set(int8Columns.map((c) => JSON.stringify([c.relation, c.column])));
   let matched = 0;
   for (const c of int8Columns) {
     const rel = parsed.relations.get(c.relation);
@@ -468,13 +492,13 @@ export function checkCatalogueColumns(
   for (const rel of parsed.relations.values()) {
     for (const col of rel.columns.values()) {
       if (!BIGINT_BUILDERS.has(col.builder)) continue;
-      if (wanted.has(`${rel.name} ${col.name}`)) continue;
+      if (wanted.has(JSON.stringify([rel.name, col.name]))) continue;
       problems.push(
         `the rendering of ${JSON.stringify(rel.name)} builds column ${JSON.stringify(col.name)} on line ${String(col.line)} with drizzle's ${JSON.stringify(col.builder)}, but the catalogue does not list that column as int8: ${JSON.stringify(col.text)} (T-153, OD-148)`,
       );
     }
   }
-  return { problems, int8: int8Columns.length, matched, relations: parsed.relations.size, points };
+  return { problems, int8: int8Columns.length, matched, relations: parsed.relations.size };
 }
 
 export type MapResult =

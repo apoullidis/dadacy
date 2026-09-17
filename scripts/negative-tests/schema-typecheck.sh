@@ -10,7 +10,14 @@
 # and a refusal are three different outcomes. After each case the tree is restored and asserted
 # clean. The P cases call scripts/gates/lib/schema-render.ts directly (no database, no tsc run).
 # T-153 (OD-107): P05 maps drizzle-kit's real bigint rendering into drizzle's bigint mode (idempotently),
-# and P06 shows a number-mode bigint the rewrite does not recognise refused.
+# and P06 shows the hint the rewrite could not consume refused — and a text DEFAULT equal to that
+# sentence NOT refused (QR-A2).
+# T-153 rework 1 (OD-147, OD-148): P07/P08/P09 call the PER-COLUMN catalogue match directly, on the
+# three families qa-verification got past the old count and the old line-local regex: the four
+# number-mode formatting shapes (P07), a lossy column beside a spurious bigint-mode column that cancels
+# under a count (P08), and its C10 construction, a lossy column beside a text DEFAULT holding the text
+# of a bigint-mode call (P09). P07m/P08m/P09m are the same three with the old regex and the old count
+# put back by a mutation asserted landed: each then gets through.
 set -uo pipefail
 cd "$(dirname "$0")/../.." || exit 2
 
@@ -36,15 +43,33 @@ OUT=$(mktemp)
 total=0
 bad=0
 
+C1_TSCONFIG=tsconfig.t153-s09-c1.json # OD-146: S09's program of C1 alone; restore() removes it
+
+# undo: put every file a case may have planted or mutated back. Called by restore() AND by abort(),
+# because every case mutates the working tree and an abort is an exit path like any other.
+undo() {
+  rm -f "$BITE" "$C1" "$PRIV" "$C1_TSCONFIG"
+  git checkout -q -- "$SCHEMA" "$BASE" "$VALUE" "$TYPE" "$RENDER"
+}
+
+# T-153 rework 1 (QR-A5): abort() RESTORES THE WORKING TREE before exiting. It used to exit straight
+# out, so an abort reached inside a mutated case — S09's own `the C1 program does not hold exactly`
+# among them — left db/schema.ts, tsconfig.base.json and the committed importers mutated for whatever
+# ran next. The guard stops the recursion when restore()'s own assertion is what aborted.
+ABORTING=0
 abort() {
   echo "ABORT: $1"
+  if [ "$ABORTING" -eq 0 ]; then
+    ABORTING=1
+    undo
+    echo "ABORT: working tree restored; git status --porcelain follows ($(git status --porcelain | grep -c .) line(s)):"
+    git status --porcelain
+  fi
   exit 2
 }
 
-C1_TSCONFIG=tsconfig.t153-s09-c1.json # OD-146: S09's program of C1 alone; restore() removes it
 restore() {
-  rm -f "$BITE" "$C1" "$PRIV" "$C1_TSCONFIG"
-  git checkout -q -- "$SCHEMA" "$BASE" "$VALUE" "$TYPE" "$RENDER"
+  undo
   if [ -n "$(git status --porcelain)" ]; then
     git status --porcelain
     abort "the tree did not restore cleanly"
@@ -233,11 +258,13 @@ pure() {
 }
 PRELUDE='
 import fs from "node:fs"; import path from "node:path"; import { execFileSync } from "node:child_process";
-import { mapColumnTypes, pruneUnused, readRootCompilerOptions } from "./scripts/gates/lib/schema-render.ts";
+import { mapColumnTypes, checkCatalogueColumns, parseRendering, pruneUnused, readRootCompilerOptions } from "./scripts/gates/lib/schema-render.ts";
 const SCHEMA_PATH = path.resolve("db/schema.ts");
 const { options, errors } = readRootCompilerOptions(path.resolve("tsconfig.json"));
 if (errors.length) { console.log("tsconfig errors", errors); process.exit(3); }
 const bodyOf = (text) => text.split("\n").slice(3).join("\n");
+// one COLUMN_TYPES_SQL row, as db-introspect.ts reads it from the catalogue.
+const col = (relation, column, type, dims) => ({ relation, column, type, attndims: dims, dims, kind: "int8" });
 '
 pure P01 "the deleteImports half: T-138's empty rendering has both imports removed and no diagnostic left" "$PRELUDE
 const raw = bodyOf(execFileSync('git', ['show', '$EMPTY_RENDERING:db/schema.ts'], { encoding: 'utf8' }));
@@ -320,23 +347,152 @@ const left = lines.filter((l) => l.includes('mode: \"number\"') || l.includes('Y
 const again = mapColumnTypes(m.body);
 console.log('bigints', m.bigints, 'missing', JSON.stringify(missing), 'left', JSON.stringify(left), 'again identical', again.ok && again.body === m.body, 'again bigints', again.ok ? again.bigints : 'refused');
 console.log(m.bigints === 6 && missing.length === 0 && left.length === 0 && again.ok && again.body === m.body && again.bigints === 0 ? 'RESULT ok' : 'RESULT bad');"
-pure P06 "(T-153) a bigint in drizzle's number mode that the rewrite does not recognise is refused: no hint, an extra option, a hint before a non-bigint line" "$PRELUDE
+pure P06 "(T-153 r1) a bigint the rewrite does not recognise: the hint it could not consume is refused by mapColumnTypes (and only OUTSIDE a string literal, so a text DEFAULT equal to the hint sentence is NOT refused — QR-A2)" "$PRELUDE
 const tab = (s) => s.replaceAll('<TAB>', '\t');
 const head = 'import { pgTable, bigint, text } from \"drizzle-orm/pg-core\"\n\nexport const t = pgTable(\"t\", {\n';
 const hint = '<TAB>// You can use { mode: \"bigint\" } if numbers are exceeding js number limitations\n';
-const shapes = {
-  noHint: '<TAB>a: bigint(\"a\", { mode: \"number\" }),\n',
+const refuse = {
   extraOption: hint + '<TAB>b: bigint(\"b\", { mode: \"number\", unsigned: true }),\n',
   hintAlone: hint + '<TAB>c: text(\"c\"),\n',
 };
-let refused = 0;
-for (const [name, col] of Object.entries(shapes)) {
-  const m = mapColumnTypes(tab(head + col + '});\n'));
-  const ok = !m.ok && m.problems.length >= 1 && m.problems.every((p) => p.includes('bigint column in a shape this rendering does not recognise'));
-  console.log(name, ok ? 'refused' : 'NOT refused', JSON.stringify(m.ok ? m.body : m.problems));
-  if (ok) refused += 1;
+const admit = {
+  hintAsATextDefault: '<TAB>n: text().default(\"// You can use { mode: \\\\\"bigint\\\\\" } if numbers are exceeding js number limitations\"),\n',
+};
+let ok = 0;
+for (const [name, c] of Object.entries(refuse)) {
+  const m = mapColumnTypes(tab(head + c + '});\n'));
+  const good = !m.ok && m.problems.length === 1 && m.problems[0].includes(\"still carries drizzle-kit's bigint hint comment\");
+  console.log(name, good ? 'refused' : 'NOT refused', JSON.stringify(m.ok ? m.body : m.problems));
+  if (good) ok += 1;
 }
-console.log(refused === 3 ? 'RESULT ok' : 'RESULT bad');"
+for (const [name, c] of Object.entries(admit)) {
+  const m = mapColumnTypes(tab(head + c + '});\n'));
+  console.log(name, m.ok ? 'admitted (the hint is only a string literal)' : 'REFUSED', JSON.stringify(m.ok ? m.body : m.problems));
+  if (m.ok) ok += 1;
+}
+console.log(ok === 3 ? 'RESULT ok' : 'RESULT bad');"
+
+# T-153 rework 1 (OD-148, QR-F2): four bigint-in-number-mode shapes drizzle-kit 0.31.10 does not write,
+# which qa-verification measured passing the old line-local text guard (PURE.out). The per-column
+# catalogue match reads the PARSED TypeScript, so none of them is a shape at all — each is a bigint
+# column in "number" mode and each is refused by name.
+T153_SHAPES=$(
+  cat <<'EOF'
+{
+  "optionsObjectSplitOverTwoLines": "import { pgTable, bigint } from \"drizzle-orm/pg-core\"\n\nexport const t = pgTable(\"t\", {\n\ta: bigint(\"a\", {\n\t\tmode: \"number\"\n\t}),\n});\n",
+  "callSplitBeforeItsOptions":     "import { pgTable, bigint } from \"drizzle-orm/pg-core\"\n\nexport const t = pgTable(\"t\", {\n\ta: bigint(\n\t\t\"a\",\n\t\t{ mode: \"number\" },\n\t),\n});\n",
+  "singleQuotedMode":              "import { pgTable, bigint } from \"drizzle-orm/pg-core\"\n\nexport const t = pgTable(\"t\", {\n\ta: bigint(\"a\", { mode: 'number' }),\n});\n",
+  "noSpaceAfterTheColon":          "import { pgTable, bigint } from \"drizzle-orm/pg-core\"\n\nexport const t = pgTable(\"t\", {\n\ta: bigint(\"a\", {mode:\"number\"}),\n});\n"
+}
+EOF
+)
+# One relation, one catalogue int8 column `a`, rendered lossy beside a spurious bigint-mode column the
+# catalogue does not list as int8: under a COUNT the two cancel (1 rendered against 1 int8).
+T153_CANCEL='import { pgTable, bigint } from "drizzle-orm/pg-core"
+
+export const t = pgTable("t", {
+	a: bigint("a", { mode: "number" }),
+	b: bigint("b", { mode: "bigint" }),
+});
+'
+# qa-verification's C10 construction: a lossy bigint beside a TEXT column whose DEFAULT is the text of a
+# bigint-mode call. Under a regex COUNT over the relation's text the literal is counted as a column.
+T153_TEXTDEFAULT='import { pgTable, bigint, text } from "drizzle-orm/pg-core"
+
+export const t = pgTable("t", {
+	amount: bigint({mode:"number"}),
+	note: text().default('"'"'bigint("q", { mode: "bigint" })'"'"'),
+});
+'
+export T153_SHAPES T153_CANCEL T153_TEXTDEFAULT
+
+# MUTATION 1, "restore the regex": the mode judgement becomes the old LINE-LOCAL NUMBER_MODE_CALL test
+# over the column's own source line, which is what qa-verification got past.
+T153_REGEX_MUTATION=$(
+  cat <<'EOF'
+    const T153_NUMBER_MODE_CALL = /\bbig(?:int|serial)\((?:"[^"\n]*", )?\{[^}\n]*\bmode: "number"/;
+    if (got.mode !== 'bigint' && T153_NUMBER_MODE_CALL.test(body.split('\n')[got.line - 1] ?? '')) {
+EOF
+)
+# MUTATION 2, "restore the count": the per-column match becomes the original per-relation COUNT of
+# bigint-mode calls in the relation's rendering TEXT (T-153 cycle 0, OD-147/OD-148).
+T153_COUNT_MUTATION=$(
+  cat <<'EOF'
+  const int8 = ((): Int8Match => {
+    const BIGINT_MODE_CALL = /\bbig(?:int|serial)\((?:"[^"\n]*", )?\{ mode: "bigint" \}\)/g;
+    const out: string[] = [];
+    const starts = [...body.matchAll(/^export const [\w$]+ = /gm)];
+    const rendered = new Map<string, number>();
+    starts.forEach((m, i) => {
+      const text = body.slice(m.index, starts[i + 1]?.index ?? body.length);
+      const rel = /^export const [\w$]+ = pg(?:Table|View|MaterializedView)\("([^"]+)"/.exec(text)?.[1];
+      if (rel === undefined) return;
+      rendered.set(rel, (rendered.get(rel) ?? 0) + [...text.matchAll(BIGINT_MODE_CALL)].length);
+    });
+    const cat = new Map<string, string[]>();
+    for (const c of columns) {
+      if (c.kind !== 'int8') continue;
+      cat.set(c.relation, [...(cat.get(c.relation) ?? []), c.column]);
+    }
+    let n = 0;
+    let g = 0;
+    for (const rel of [...new Set([...rendered.keys(), ...cat.keys()])].sort()) {
+      const want = cat.get(rel) ?? [];
+      const have = rendered.get(rel) ?? 0;
+      n += want.length;
+      g += have;
+      if (have !== want.length)
+        out.push(`relation ${JSON.stringify(rel)}: the catalogue has ${String(want.length)} int8 column(s) [${want.join(', ')}] but the rendering has ${String(have)} bigint column(s) in drizzle's bigint mode (T-153, OD-107)`);
+    }
+    return { problems: out, int8: n, matched: g, relations: rendered.size };
+  })();
+EOF
+)
+SHAPES_JS="$PRELUDE
+const shapes = JSON.parse(process.env.T153_SHAPES);
+const cat = [col('t', 'a', 'bigint', 0)];
+let refused = 0;
+for (const [name, text] of Object.entries(shapes)) {
+  const r = checkCatalogueColumns(text, cat);
+  const mode = parseRendering(text).relations.get('t').columns.get('a').mode;
+  const good = r.problems.length === 1 && r.problems[0].includes('int8 column \"t\".\"a\"') && r.problems[0].includes('mode, so it would reach importers as a JS number');
+  console.log(name, 'parsed mode', JSON.stringify(mode), good ? 'REFUSED' : 'NOT refused', JSON.stringify(r.problems));
+  if (good) refused += 1;
+}
+console.log('refused', refused, 'of', Object.keys(shapes).length);"
+pure P07 "(T-153 r1) the four number-mode shapes drizzle-kit does not write (options over two lines, the call split before its options, single quotes, no space after the colon): each parsed as mode \"number\" and refused per column" "$SHAPES_JS
+console.log(refused === 4 ? 'RESULT ok' : 'RESULT bad');"
+mutate "$RENDER" "    if (got.mode !== 'bigint') {" "$T153_REGEX_MUTATION"
+git diff -U0 -- "$RENDER" | grep -E '^[-+][^-+]' | sed 's/^/       mutation:   /'
+pure P07m "(T-153 r1) RED BEFORE: with the old line-local number-mode REGEX restored, all four shapes get past the guard again" "$SHAPES_JS
+console.log(refused === 0 ? 'RESULT ok' : 'RESULT bad');"
+restore
+
+CANCEL_JS="$PRELUDE
+const cat = [col('t', 'a', 'bigint', 0)];
+const r = checkCatalogueColumns(process.env.T153_CANCEL, cat);
+console.log('problems', JSON.stringify(r.problems));
+const lossy = r.problems.some((p) => p.includes('int8 column \"t\".\"a\"') && p.includes('\"number\" mode'));
+const spurious = r.problems.some((p) => p.includes('builds column \"b\"') && p.includes('the catalogue does not list that column as int8'));
+console.log('lossy column named', lossy, 'spurious bigint column named', spurious, 'problems', r.problems.length);"
+pure P08 "(T-153 r1) a lossy int8 column beside a spurious bigint-mode column the catalogue does not list as int8 — the pair that CANCELS under a count: both named, per column" "$CANCEL_JS
+console.log(lossy && spurious && r.problems.length === 2 ? 'RESULT ok' : 'RESULT bad');"
+TEXTDEFAULT_JS="$PRELUDE
+const cat = [col('t', 'amount', 'bigint', 0)];
+const r = checkCatalogueColumns(process.env.T153_TEXTDEFAULT, cat);
+console.log('problems', JSON.stringify(r.problems));
+const named = r.problems.some((p) => p.includes('int8 column \"t\".\"amount\"') && p.includes('\"number\" mode'));
+console.log('the lossy column is named', named, 'problems', r.problems.length);"
+pure P09 "(T-153 r1) qa-verification's C10: a lossy bigint beside a TEXT column whose DEFAULT is the text of a bigint-mode call — the text default no longer affects the judgement" "$TEXTDEFAULT_JS
+console.log(named && r.problems.length === 1 ? 'RESULT ok' : 'RESULT bad');"
+mutate "$RENDER" "  const int8 = matchInt8Columns(body, columns);" "$T153_COUNT_MUTATION"
+grep -qF 'const BIGINT_MODE_CALL = /\bbig(?:int|serial)\(' "$RENDER" || abort "the count mutation did not land in $RENDER"
+git diff --numstat -- "$RENDER" | sed 's/^/       mutation landed, numstat (added removed file): /'
+pure P08m "(T-153 r1) RED BEFORE: with the per-relation COUNT restored, the lossy column and the spurious bigint-mode column cancel and nothing is reported" "$CANCEL_JS
+console.log(r.problems.length === 0 ? 'RESULT ok' : 'RESULT bad');"
+pure P09m "(T-153 r1) RED BEFORE: with the per-relation COUNT restored, the text DEFAULT is counted as a bigint column and the lossy one is not reported" "$TEXTDEFAULT_JS
+console.log(r.problems.length === 0 ? 'RESULT ok' : 'RESULT bad');"
+restore
 
 echo
 if [ "$bad" -eq 0 ]; then
