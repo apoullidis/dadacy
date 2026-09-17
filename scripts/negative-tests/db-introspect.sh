@@ -46,6 +46,13 @@
 # plant every other geometry shape and a Point[] (I-MAP, check and write mode); K57 deletes the rule (RED
 # BEFORE: the plant passes and a polygon select throws).
 #
+# T-153 rework 1 — K58-K62 (OD-147, OD-148): the per-relation COUNT is replaced by a PER-COLUMN match
+# against the catalogue, over the rendering parsed as TypeScript. K58/K59 plant a VIEW and a
+# MATERIALIZED VIEW over a bigint[] column, which drizzle-kit renders with no `.array()`; K60 is the
+# RED BEFORE with the count restored (they pass, and drizzle's read of each throws). K61/K62 are the
+# false refusals the old text-shaped mechanisms produced on drizzle-kit's own output — a text DEFAULT
+# holding a bigint-mode call, and one equal to the hint sentence - each with its own RED BEFORE.
+#
 #   cd /home/alex/projects/nanny/app && ./scripts/svc run <ticket> -- bash scripts/negative-tests/db-introspect.sh
 #
 # Needs the ticket's `db` project and a clean, committed tree. The check itself migrates the
@@ -839,7 +846,7 @@ bigint_facts() {
       fact "db/schema.ts lines containing [$line]" "$(grep -cF -- "$line" "$SCHEMA")" 1
     done
     fact "db/schema.ts lines in number mode or with drizzle-kit's bigint hint" "$(grep -cE 'mode: "number"|You can use \{ mode: "bigint" \}' "$SCHEMA")" 0
-    fact "the generator's bigint line (10 int8 columns, from the plant's SQL)" "$(grep -cE "^  bigint: 10 column\\(s\\) rewritten to drizzle's bigint mode; 10 in bigint mode against the catalogue's 10 int8 column\\(s\\)" "$OUT")" 1
+    fact "the generator's bigint line (10 int8 columns, from the plant's SQL, each matched per column)" "$(grep -cE "^  bigint: 10 column\\(s\\) rewritten to drizzle's bigint mode; 10 of the catalogue's 10 int8 column\\(s\\) matched per column against [0-9]+ parsed relation\\(s\\)" "$OUT")" 1
     for line in 'READ id bigint 1' 'READ amountMinor bigint 9007199254740993' 'READ int8Spelled bigint -9223372036854775808' \
       'READ minorList bigint 1,bigint 9007199254740993' 'READ maybeMinor null' 'READ view amountMinor bigint 9007199254740993' \
       'WRITE database text amount_minor 9007199254740995 minor_list {9007199254740995,-9223372036854775807}'; do
@@ -876,20 +883,22 @@ restore
 
 plant_bigint
 mutate "$RENDER" "    BIGINT_NUMBER_COLUMN," "    /\$^()()()()()/g,"
-check K51 "(T-153) the bigint-mode rewrite deleted: drizzle-kit's number mode is refused by the text guard, nothing written" I-MAP "rendering line [0-9]+ has a bigint column in a shape this rendering does not recognise, so it would reach importers as a JS number"
+check K51 "(T-153) the bigint-mode rewrite deleted: the hint it did not consume is refused, nothing written" I-MAP "rendering line [0-9]+ still carries drizzle-kit's bigint hint comment after the bigint-mode rewrite"
 
 T153_NOOP="  if (body !== '') return { ok: true, body, columns: 0 };"
+# T-153 rework 1: the per-column catalogue match turned off, for K53's RED BEFORE.
+T153_MATCH_OFF="  const int8 = { problems: [] as string[], int8: 0, matched: 0, relations: 0 };"
 plant_bigint
 mutate "$RENDER" "export function mapBigintColumns(body: string): BigintResult {" "export function mapBigintColumns(body: string): BigintResult {
 $T153_NOOP"
 grep -qxF -- "$T153_NOOP" "$RENDER" || abort "the mapBigintColumns no-op did not land"
-check K52 "(T-153) the rewrite AND its text guard deleted: the catalogue's int8 count still refuses the number-mode rendering" I-MAP "relation \"t153_money\": the catalogue has 7 int8 column\\(s\\) \\[id, parent_id, amount_minor, maybe_minor, zero_minor, minor_list, int8_spelled\\] but the rendering has 0 bigint column\\(s\\) in drizzle's bigint mode"
+check K52 "(T-153 r1) the rewrite AND its leftover-hint check deleted: the per-column catalogue match still refuses the number-mode rendering, naming the column" I-MAP "int8 column \"t153_money\"\\.\"amount_minor\" \\(bigint\\) is rendered on line [0-9]+ in drizzle's \"number\" mode, so it would reach importers as a JS number"
 
 plant_bigint
 mutate "$RENDER" "export function mapBigintColumns(body: string): BigintResult {" "export function mapBigintColumns(body: string): BigintResult {
 $T153_NOOP"
-node scripts/negative-tests/mutate.mjs "$RENDER" "    if (c.kind !== 'int8') continue;" "    if (c.kind !== 'int8' || c.kind === 'int8') continue;" || abort "mutation anchor missing in $RENDER"
-{ grep -qxF -- "$T153_NOOP" "$RENDER" && grep -qF "c.kind === 'int8') continue;" "$RENDER"; } || abort "the T-153 mapping was not fully reverted in $RENDER"
+node scripts/negative-tests/mutate.mjs "$RENDER" "  const int8 = matchInt8Columns(body, columns);" "$T153_MATCH_OFF" || abort "mutation anchor missing in $RENDER"
+{ grep -qxF -- "$T153_NOOP" "$RENDER" && grep -qxF -- "$T153_MATCH_OFF" "$RENDER"; } || abort "the T-153 mapping was not fully reverted in $RENDER"
 git diff -U0 -- "$RENDER" | grep -E '^[-+][^-+]' | sed 's/^/   mutation:   /'
 node scripts/db-introspect.ts --write >"$OUT.w" 2>&1
 wcode=$?
@@ -1021,6 +1030,173 @@ cat "$OUT.f" >>"$OUT"
 judge K57 "(T-153) RED BEFORE: the geometry rule deleted (asserted above): the same plant passes, and a polygon select throws while PointZ loses Z" PASS "$code" '^ALL [0-9]+ RED-BEFORE FACTS HOLD$'
 grep -E '^fact |^driver: ' "$OUT" | cut -c1-240 | sed 's/^/       /'
 restore
+
+# ---------------------------------------------------------------------------------------------
+# T-153 rework 1 — K58–K62 (OD-147, OD-148). The per-relation COUNT is replaced by a PER-COLUMN
+# match against the catalogue, over the rendering parsed as TypeScript. K58/K59 are the route it
+# closes: drizzle-kit 0.31.10 renders a VIEW's and a MATERIALIZED VIEW's int8[] column with NO
+# `.array()`, which a count cannot see. K60 is the RED BEFORE for both, with the count restored by
+# a mutation asserted landed: the run passes, the columns are written scalar, and drizzle's read of
+# each THROWS. K61/K62 are the false refusals the count and the line-local hint scan produced on
+# drizzle-kit's own output: a text DEFAULT holding a bigint-mode call, and one equal to the hint
+# sentence. Each has its own RED BEFORE with the old mechanism restored.
+
+# MUTATION: the original per-relation COUNT of bigint-mode calls in the relation's rendering TEXT.
+T153_COUNT_MUTATION=$(
+  cat <<'EOF'
+  const int8 = ((): Int8Match => {
+    const BIGINT_MODE_CALL = /\bbig(?:int|serial)\((?:"[^"\n]*", )?\{ mode: "bigint" \}\)/g;
+    const out: string[] = [];
+    const starts = [...body.matchAll(/^export const [\w$]+ = /gm)];
+    const rendered = new Map<string, number>();
+    starts.forEach((m, i) => {
+      const text = body.slice(m.index, starts[i + 1]?.index ?? body.length);
+      const rel = /^export const [\w$]+ = pg(?:Table|View|MaterializedView)\("([^"]+)"/.exec(text)?.[1];
+      if (rel === undefined) return;
+      rendered.set(rel, (rendered.get(rel) ?? 0) + [...text.matchAll(BIGINT_MODE_CALL)].length);
+    });
+    const cat = new Map<string, string[]>();
+    for (const c of columns) {
+      if (c.kind !== 'int8') continue;
+      cat.set(c.relation, [...(cat.get(c.relation) ?? []), c.column]);
+    }
+    let n = 0;
+    let g = 0;
+    for (const rel of [...new Set([...rendered.keys(), ...cat.keys()])].sort()) {
+      const want = cat.get(rel) ?? [];
+      const have = rendered.get(rel) ?? 0;
+      n += want.length;
+      g += have;
+      if (have !== want.length)
+        out.push(`relation ${JSON.stringify(rel)}: the catalogue has ${String(want.length)} int8 column(s) [${want.join(', ')}] but the rendering has ${String(have)} bigint column(s) in drizzle's bigint mode (T-153, OD-107)`);
+    }
+    return { problems: out, int8: n, matched: g, relations: rendered.size };
+  })();
+EOF
+)
+count_mutation() {
+  mutate "$RENDER" "  const int8 = matchInt8Columns(body, columns);" "$T153_COUNT_MUTATION"
+  grep -qF 'const BIGINT_MODE_CALL = /\bbig(?:int|serial)\(' "$RENDER" || abort "the count mutation did not land in $RENDER"
+  git diff --numstat -- "$RENDER" | sed 's/^/   count mutation landed (added removed file): /'
+}
+
+# The array plant: an int8[] and a text[] control, in a table, a view and a materialized view.
+# <rels> picks which of the two derived relations the plant creates.
+plant_arrays() {
+  local v='' d=''
+  case "$1" in
+    view) v="CREATE VIEW public.t153_arr_v AS SELECT id, amounts, labels FROM public.t153_arr;"; d="DROP VIEW public.t153_arr_v;" ;;
+    matview) v="CREATE MATERIALIZED VIEW public.t153_arr_mv AS SELECT id, amounts, labels FROM public.t153_arr;"; d="DROP MATERIALIZED VIEW public.t153_arr_mv;" ;;
+    both) v="CREATE VIEW public.t153_arr_v AS SELECT id, amounts, labels FROM public.t153_arr;
+CREATE MATERIALIZED VIEW public.t153_arr_mv AS SELECT id, amounts, labels FROM public.t153_arr;"; d="DROP MATERIALIZED VIEW public.t153_arr_mv;
+DROP VIEW public.t153_arr_v;" ;;
+  esac
+  plant "$UP" "-- @phase: expand
+CREATE TABLE public.t153_arr (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  amounts bigint[] NOT NULL,
+  labels text[] NOT NULL);
+$v"
+  plant "$DOWN" "$d
+DROP TABLE public.t153_arr;"
+}
+
+plant_arrays view
+check_facts K58 "(T-153 r1) a VIEW over a bigint[] column: drizzle-kit renders it with no .array(), and the per-column match refuses it by name (OD-147)" I-MAP \
+  '^  - \[I-MAP\] int8 column "t153_arr_v"\."amounts" is an array of 1 dimension\(s\) in the catalogue \(bigint\[\], attndims 0\) but the rendering on line [0-9]+ carries 0 \.array\(\) call\(s\)' \
+  '!^  - \[I-MAP\] int8 column "t153_arr"\.' \
+  '^  bigint: [0-9]+ column\(s\) rewritten to drizzle.s bigint mode; 3 of the catalogue.s 4 int8 column\(s\) matched per column'
+
+plant_arrays matview
+check_facts K59 "(T-153 r1) a MATERIALIZED VIEW over a bigint[] column: the same, refused by name (OD-147)" I-MAP \
+  '^  - \[I-MAP\] int8 column "t153_arr_mv"\."amounts" is an array of 1 dimension\(s\) in the catalogue \(bigint\[\], attndims 0\) but the rendering on line [0-9]+ carries 0 \.array\(\) call\(s\)' \
+  '!^  - \[I-MAP\] int8 column "t153_arr"\.' \
+  '^  bigint: [0-9]+ column\(s\) rewritten to drizzle.s bigint mode; 3 of the catalogue.s 4 int8 column\(s\) matched per column'
+
+# The RED BEFORE probe: read each array column through drizzle and the db/schema.ts just written.
+T153_ARR_ROUNDTRIP=$(
+  cat <<'EOF'
+import pg from "pg";
+import { drizzle } from "drizzle-orm/node-postgres";
+import { t153Arr, t153ArrV, t153ArrMv } from "./db/schema.ts";
+const pool = new pg.Pool();
+const db = drizzle(pool);
+await pool.query("INSERT INTO t153_arr (amounts, labels) VALUES ('{9007199254740993,-9223372036854775808}', '{alpha,beta}')");
+await pool.query("REFRESH MATERIALIZED VIEW t153_arr_mv");
+const show = (v) => (Array.isArray(v) ? `[${v.map(show).join(", ")}]` : `${typeof v} ${String(v)}`);
+for (const [label, rel, key] of [["table amounts", t153Arr, "amounts"], ["view amounts", t153ArrV, "amounts"], ["matview amounts", t153ArrMv, "amounts"], ["table labels", t153Arr, "labels"], ["view labels", t153ArrV, "labels"]]) {
+  try {
+    const rows = await db.select({ v: rel[key] }).from(rel);
+    console.log(`READ ${label} ${show(rows[0].v)}`);
+  } catch (e) {
+    console.log(`READ ${label} THREW ${e.constructor.name}: ${e.message}`);
+  }
+}
+await pool.end();
+EOF
+)
+plant_arrays both
+count_mutation
+node scripts/db-introspect.ts --write >"$OUT.w" 2>&1
+wcode=$?
+node scripts/db-introspect.ts --check >"$OUT" 2>&1
+code=$?
+: >"$OUT.f"
+nf=0
+nok=0
+fact "write with the per-relation COUNT restored: exit" "$wcode" 0
+fact "db/schema.ts: the TABLE's bigint[] keeps .array()" "$(grep -cF 'amounts: bigint({ mode: "bigint" }).array()' "$SCHEMA")" 1
+fact "db/schema.ts: lines rendering a bigint[] of a view or matview WITHOUT .array()" "$(grep -cxF '	amounts: bigint({ mode: "bigint" }),' "$SCHEMA")" 2
+fact "the count balances, so nothing is reported" "$(grep -cE "^  bigint: [0-9]+ column\(s\) rewritten to drizzle's bigint mode; 6 of the catalogue's 6 int8 column\(s\)" "$OUT")" 1
+node --input-type=module -e "$T153_ARR_ROUNDTRIP" >"$OUT.rt" 2>&1
+fact "driver: the TABLE's bigint[] reads exactly" "$(grep -cxF 'READ table amounts [bigint 9007199254740993, bigint -9223372036854775808]' "$OUT.rt")" 1
+fact "driver: the VIEW's bigint[] read THREW" "$(grep -c '^READ view amounts THREW SyntaxError' "$OUT.rt")" 1
+fact "driver: the MATERIALIZED VIEW's bigint[] read THREW" "$(grep -c '^READ matview amounts THREW SyntaxError' "$OUT.rt")" 1
+fact "driver: the text[] control, the TABLE's (drizzle-kit renders it .array())" "$(grep -cxF 'READ table labels [string alpha, string beta]' "$OUT.rt")" 1
+fact "driver: the text[] control, the VIEW's — rendered scalar by drizzle-kit, read as one string, SILENTLY (OD-149, not this rule's subject)" "$(grep -cxF 'READ view labels string {alpha,beta}' "$OUT.rt")" 1
+sed 's/^/driver: /' "$OUT.rt" >>"$OUT.f"
+[ "$nok" -eq "$nf" ] && echo "ALL $nf RED-BEFORE FACTS HOLD" >>"$OUT.f"
+cat "$OUT.f" >>"$OUT"
+judge K60 "(T-153 r1) RED BEFORE: with the per-relation COUNT restored (asserted above), the view's and matview's bigint[] pass as scalar and drizzle's read of each THROWS (OD-147)" PASS "$code" '^ALL [0-9]+ RED-BEFORE FACTS HOLD$'
+grep -E '^fact |^driver: READ |^  bigint: ' "$OUT" | cut -c1-240 | sed 's/^/       /'
+restore
+
+# K61/K62: two text DEFAULTs on drizzle-kit's own output that the OLD text-shaped mechanisms refused.
+plant "$UP" "-- @phase: expand
+CREATE TABLE public.t153_counttext (
+  amount bigint NOT NULL,
+  note text NOT NULL DEFAULT 'bigint(\"q\", { mode: \"bigint\" })');"
+plant "$DOWN" "DROP TABLE public.t153_counttext;"
+write_schema
+check_facts K61 "(T-153 r1) a text column whose DEFAULT is the TEXT of a bigint-mode call, beside a real bigint: the default no longer affects the judgement (OD-148)" PASS \
+  '^  bigint: 1 column\(s\) rewritten to drizzle.s bigint mode; 1 of the catalogue.s 1 int8 column\(s\) matched per column'
+plant "$UP" "-- @phase: expand
+CREATE TABLE public.t153_counttext (
+  amount bigint NOT NULL,
+  note text NOT NULL DEFAULT 'bigint(\"q\", { mode: \"bigint\" })');"
+plant "$DOWN" "DROP TABLE public.t153_counttext;"
+count_mutation
+check K61r "(T-153 r1) RED BEFORE: with the per-relation COUNT restored (asserted above), the same text DEFAULT is counted as a bigint column and the relation is falsely refused" I-MAP \
+  'relation "t153_counttext": the catalogue has 1 int8 column\(s\) \[amount\] but the rendering has 2 bigint column\(s\)'
+
+T153_HINT='// You can use { mode: "bigint" } if numbers are exceeding js number limitations'
+plant "$UP" "-- @phase: expand
+CREATE TABLE public.t153_hinttext (
+  amount bigint NOT NULL,
+  note text NOT NULL DEFAULT '$T153_HINT');"
+plant "$DOWN" "DROP TABLE public.t153_hinttext;"
+write_schema
+check_facts K62 "(T-153 r1) a text column whose DEFAULT is drizzle-kit's hint sentence: admitted, because the leftover-hint scan skips string literals (QR-A2)" PASS \
+  '^  bigint: 1 column\(s\) rewritten to drizzle.s bigint mode; 1 of the catalogue.s 1 int8 column\(s\) matched per column'
+plant "$UP" "-- @phase: expand
+CREATE TABLE public.t153_hinttext (
+  amount bigint NOT NULL,
+  note text NOT NULL DEFAULT '$T153_HINT');"
+plant "$DOWN" "DROP TABLE public.t153_hinttext;"
+mutate "$RENDER" "    if (ranges.some(([a, b]) => i >= a && i < b)) continue;" "    if (ranges.length === -1) continue;"
+git diff -U0 -- "$RENDER" | grep -E '^[-+][^-+]' | sed 's/^/   mutation:   /'
+check K62r "(T-153 r1) RED BEFORE: with the string-literal filter removed (asserted above), the hint sentence inside the text DEFAULT is falsely refused" I-MAP \
+  "rendering line [0-9]+ still carries drizzle-kit's bigint hint comment"
 
 echo
 if [ "$bad" -eq 0 ]; then
