@@ -6,6 +6,28 @@
 --   has_database_privilege(...,'CREATE') is false, and `SET ROLE app_ddl; CREATE SCHEMA ...`
 --   is refused "permission denied for database kinvara" and does not land)
 --
+-- @vendor-sql: pgboss.create_queue — OD-150; T-167; T-146 (pg-boss's own queue-creation function)
+-- @vendor-sql: pgboss.delete_queue — OD-150; T-167; T-146 (pg-boss's own queue-deletion function)
+-- @vendor-sql: DO#1 — OD-150; T-167; T-146 (pg-boss's own queue_stats partition provisioner)
+--
+-- WHAT THOSE THREE MARKERS DECLARE, AND WHAT WAS REVIEWED. `gate:migration-lint` reads function
+-- bodies and dynamic-SQL strings at any depth (T-031 § contract §4, case A09), so the vendor
+-- strings inside pg-boss's own plpgsql bodies were read as statements this file executes. They
+-- are not: this file installs three bodies and calls none of them. That is OD-150, and T-167's
+-- R-VENDOR-SQL marker is the ruling that admits them. One marker per body, in this header and
+-- never inside the vendor block, so that the property below — the body is pg-boss's own output
+-- byte for byte — survives. What each body holds, and why it is unreachable here:
+--   * `pgboss.create_queue` builds a per-queue partition table with format() — reachable ONLY for
+--     a queue created with `partition: true`, which needs CREATE on schema `pgboss`. No role has
+--     it (§ Q2c attack A: refused 42501, catalogue unchanged).
+--   * `pgboss.delete_queue` removes a partitioned queue's own table with format(). Same gate:
+--     only a partitioned queue reaches that branch, and this file never calls the function.
+--   * `DO#1` is the ONE DO block in this file (pg-boss's queue_stats partition provisioner). It
+--     runs at apply time, as the bootstrap superuser, and creates exactly the two dated
+--     partitions named below; at run time the same code path needs `persistQueueStats: true` and
+--     CREATE, and is refused 42501 (§ Q2c attack B2).
+-- The reviewer checks T-167 § contract §4 asks for are answered in `state/EP-2/T-146.md`.
+--
 -- Ticket:  T-146 (tech-lead). Schema `pgboss` and pg-boss 12.26.4's tables, created by a
 --          migration so that pg-boss never performs DDL at install time.
 -- Spec:    SD §DB-1 line 1751 (one logical schema "plus `pgboss` for the job tables"; the
