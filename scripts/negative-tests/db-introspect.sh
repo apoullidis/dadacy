@@ -487,8 +487,10 @@ PGBOSS_RELS='t145_job t145_job_p t145_version t145_view'
 # extra SQL is appended to the up file and put first in the down file. plant() asserts both landed.
 # Schema `pgboss` exists on main (0006), so it is neither created nor dropped for that one name.
 plant_jobschema() {
-  local s=$1 xup=${2:-} xdown=${3:-} mk="CREATE SCHEMA $s;
-" rm="
+  local s=$1 xup=${2:-} xdown=${3:-} mk rm
+  mk="CREATE SCHEMA $s;
+"
+  rm="
 DROP SCHEMA $s;"
   if [ "$s" = pgboss ]; then
     mk=''
