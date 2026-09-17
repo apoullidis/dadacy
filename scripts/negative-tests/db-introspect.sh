@@ -480,30 +480,35 @@ check K35 "(T-152 r1) a policy expression containing a backtick breaks drizzle-k
 
 echo "== T-145: schema pgboss admitted as deliberately out of scope (QA-A4, OD-90); every other schema outside public still I-SCOPE"
 # The relations plant_jobschema creates, named here from the plant's SQL, not read from any output.
-PGBOSS_RELS='j_t145 job t145_view version'
+PGBOSS_RELS='t145_job t145_job_p t145_version t145_view'
 
 # plant_jobschema <schema as SQL> [extra up SQL] [extra down SQL]: migration NEXT creating, in that
 # schema, an enum, a sequence, a plain table, a partitioned table with one partition, and a view. The
 # extra SQL is appended to the up file and put first in the down file. plant() asserts both landed.
+# Schema `pgboss` exists on main (0006), so it is neither created nor dropped for that one name.
 plant_jobschema() {
-  local s=$1 xup=${2:-} xdown=${3:-}
+  local s=$1 xup=${2:-} xdown=${3:-} mk="CREATE SCHEMA $s;
+" rm="
+DROP SCHEMA $s;"
+  if [ "$s" = pgboss ]; then
+    mk=''
+    rm=''
+  fi
   plant "$UP" "-- @phase: expand
 -- @run-as: bootstrap-superuser — T-145
-CREATE SCHEMA $s;
-CREATE TYPE $s.job_state AS ENUM ('created', 'completed');
+${mk}CREATE TYPE $s.t145_job_state AS ENUM ('created', 'completed');
 CREATE SEQUENCE $s.t145_seq;
-CREATE TABLE $s.version (version integer PRIMARY KEY);
-CREATE TABLE $s.job (id uuid NOT NULL, name text NOT NULL, state $s.job_state NOT NULL) PARTITION BY LIST (name);
-CREATE TABLE $s.j_t145 PARTITION OF $s.job FOR VALUES IN ('t145');
-CREATE VIEW $s.t145_view AS SELECT name FROM $s.job;${xup:+
+CREATE TABLE $s.t145_version (version integer PRIMARY KEY);
+CREATE TABLE $s.t145_job (id uuid NOT NULL, name text NOT NULL, state $s.t145_job_state NOT NULL) PARTITION BY LIST (name);
+CREATE TABLE $s.t145_job_p PARTITION OF $s.t145_job FOR VALUES IN ('t145');
+CREATE VIEW $s.t145_view AS SELECT name FROM $s.t145_job;${xup:+
 $xup}"
   plant "$DOWN" "${xdown:+$xdown
 }DROP VIEW $s.t145_view;
-DROP TABLE $s.job;
-DROP TABLE $s.version;
+DROP TABLE $s.t145_job;
+DROP TABLE $s.t145_version;
 DROP SEQUENCE $s.t145_seq;
-DROP TYPE $s.job_state;
-DROP SCHEMA $s;"
+DROP TYPE $s.t145_job_state;${rm}"
   sed 's/^/   plant up:   /' "$UP"
 }
 
@@ -546,6 +551,14 @@ sorted_words() {
   tr ',' '\n' | sed -E 's/^ +//; s/ +$//' | grep -v '^$' | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//'
 }
 
+# T-165 (OD-154): T-146's 0006 now CREATEs schema pgboss with twelve relations of its own, so these
+# plants ADD to it instead of creating it, under names 0006 does not use, and every admitted count
+# below is the catalogue's own count before the plant plus what the plant adds. Read here, once,
+# from psql — never from the generator's output.
+ADMITTED_BASE_LIST=$(psql -X -A -t -q -c "SELECT '\"' || n.nspname || '\".\"' || c.relname || '\"' FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind IN ('r','p','v','m','f') AND n.nspname = 'pgboss'" | sorted_words)
+ADMITTED_BASE=$(psql -X -A -t -q -c "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind IN ('r','p','v','m','f') AND n.nspname = 'pgboss'")
+echo "   schema pgboss holds $ADMITTED_BASE relation(s) before any plant (0006, T-146): [$ADMITTED_BASE_LIST]"
+
 plant_jobschema pgboss
 node scripts/db-introspect.ts --check >"$OUT" 2>&1
 code=$?
@@ -561,7 +574,7 @@ fact() {
     echo "fact MISMATCH: $1: [$2] but expected [$3]" >>"$OUT.f"
   fi
 }
-want_admitted=$(for r in $PGBOSS_RELS; do echo "\"pgboss\".\"$r\""; done | sorted_words)
+want_admitted=$({ for r in $PGBOSS_RELS; do echo "\"pgboss\".\"$r\""; done; printf '%s\n' $ADMITTED_BASE_LIST; } | sorted_words)
 cat_admitted=$(psql -X -A -t -q -c "SELECT '\"' || n.nspname || '\".\"' || c.relname || '\"' FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind IN ('r','p','v','m','f') AND n.nspname = 'pgboss'" | sorted_words)
 gen_admitted=$(sed -nE 's/^  out of scope: [0-9]+ relation\(s\) in schema\(s\) "pgboss" admitted, not introspected and not counted \[(.*)\]$/\1/p' "$OUT" | sorted_words)
 gen_owned=$(sed -nE 's/^  catalogue: .*; ([0-9]+) relation\(s\) owned by no extension in public$/\1/p' "$OUT")
@@ -585,7 +598,7 @@ for pair in 'K37a pgboss_x pgboss_x' 'K37c "PgBoss" PgBoss'; do
   read -r kid ssql sname <<<"$pair"
   plant_jobschema "$ssql"
   mapfile -t refused < <(scope_refused "$sname")
-  check_facts "$kid" "(T-145) (i) the same set in near-miss schema $ssql: every relation I-SCOPE, none admitted" I-SCOPE "MIGRATE OK  up: $HIGHEST -> $NEXT" "${refused[@]}" '^  out of scope: 0 relation\(s\)'
+  check_facts "$kid" "(T-145) (i) the same set in near-miss schema $ssql: every relation I-SCOPE, none admitted" I-SCOPE "MIGRATE OK  up: $HIGHEST -> $NEXT" "${refused[@]}" "^  out of scope: $ADMITTED_BASE relation\(s\)"
 done
 
 # pg_boss: PostgreSQL itself refuses a schema whose name starts with pg_ (42939), so an ordinary
@@ -606,20 +619,20 @@ plant "$DOWN" "$(printf 'SET allow_system_table_mods = on;\n'; cat "$DOWN")"
 grep -qx 'SET allow_system_table_mods = on;' "$UP" || abort "allow_system_table_mods did not land in $UP"
 sed 's/^/   plant up:   /' "$UP"
 mapfile -t refused < <(scope_refused pg_boss)
-check_facts K37b "(T-145) (i) pg_boss, planted only as a superuser with allow_system_table_mods (a migration cannot create it, K37b0): the name comparison does not take pg_boss for pgboss, every relation I-SCOPE" I-SCOPE "MIGRATE OK  up: $HIGHEST -> $NEXT" "${refused[@]}" '^  out of scope: 0 relation\(s\)'
+check_facts K37b "(T-145) (i) pg_boss, planted only as a superuser with allow_system_table_mods (a migration cannot create it, K37b0): the name comparison does not take pg_boss for pgboss, every relation I-SCOPE" I-SCOPE "MIGRATE OK  up: $HIGHEST -> $NEXT" "${refused[@]}" "^  out of scope: $ADMITTED_BASE relation\(s\)"
 
 plant "$UP" "-- @phase: expand
 -- @run-as: bootstrap-superuser — T-145
 CREATE TABLE kinvara_guard.t145_plant (id bigint PRIMARY KEY);"
 plant "$DOWN" "DROP TABLE kinvara_guard.t145_plant;"
 sed 's/^/   plant up:   /' "$UP"
-check_facts K38 "(T-145) (ii) a relation in kinvara_guard: still I-SCOPE" I-SCOPE "MIGRATE OK  up: $HIGHEST -> $NEXT" '^  - \[I-SCOPE\] relation "kinvara_guard"\."t145_plant" is owned by no extension' '^  out of scope: 0 relation\(s\)'
+check_facts K38 "(T-145) (ii) a relation in kinvara_guard: still I-SCOPE" I-SCOPE "MIGRATE OK  up: $HIGHEST -> $NEXT" '^  - \[I-SCOPE\] relation "kinvara_guard"\."t145_plant" is owned by no extension' "^  out of scope: $ADMITTED_BASE relation\(s\)"
 
 plant_jobschema pgboss
 mapfile -t refused < <(scope_refused pgboss)
 mutate "$SCRIPT" "const OUT_OF_SCOPE_SCHEMAS: readonly string[] = ['pgboss'];" "const OUT_OF_SCOPE_SCHEMAS: readonly string[] = [];"
 git diff -U0 -- "$SCRIPT" | grep -E '^[-+][^-+]' | sed 's/^/   mutation:   /'
-check_facts K39a "(T-145) (iii) the rule deleted (OUT_OF_SCOPE_SCHEMAS emptied): the K36 control plant goes red" I-SCOPE "MIGRATE OK  up: $HIGHEST -> $NEXT" "${refused[@]}" '^  out of scope: 0 relation\(s\)'
+check_facts K39a "(T-145) (iii) the rule deleted (OUT_OF_SCOPE_SCHEMAS emptied): the K36 control plant goes red" I-SCOPE "MIGRATE OK  up: $HIGHEST -> $NEXT" "${refused[@]}" "^  out of scope: $ADMITTED_BASE relation\(s\)"
 
 plant_jobschema pgboss
 mutate "$SCRIPT" "    (r) => !r.extensionMember && r.schema !== INTROSPECTED_SCHEMA && !admitted(r)," "    (r) => !r.extensionMember && r.schema !== INTROSPECTED_SCHEMA,"
@@ -628,12 +641,12 @@ check_facts K39b "(T-145) (iii) the rule deleted (the exclusion clause removed f
 
 plant_jobschema pgboss "CREATE TABLE public.t145_plant (id bigint PRIMARY KEY);
 GRANT SELECT ON public.t145_plant TO app_rw;" "DROP TABLE public.t145_plant;"
-check_facts K40 "(T-145) (iv) a public table beside the pgboss set, db/schema.ts not regenerated: still I-DIFF, and only I-DIFF" I-DIFF "MIGRATE OK  up: $HIGHEST -> $NEXT" '^  out of scope: 4 relation\(s\) in schema\(s\) "pgboss" admitted' "^  catalogue: .*; $((OWNED + 1)) relation\\(s\\) owned by no extension in public\$" '!\[I-SCOPE\]'
+check_facts K40 "(T-145) (iv) a public table beside the pgboss set, db/schema.ts not regenerated: still I-DIFF, and only I-DIFF" I-DIFF "MIGRATE OK  up: $HIGHEST -> $NEXT" "^  out of scope: $((ADMITTED_BASE + 4)) relation\(s\) in schema\(s\) \"pgboss\" admitted" "^  catalogue: .*; $((OWNED + 1)) relation\\(s\\) owned by no extension in public\$" '!\[I-SCOPE\]'
 
 plant_jobschema pgboss "CREATE SCHEMA pgboss_x;
 CREATE TABLE pgboss_x.job (id bigint PRIMARY KEY);" "DROP TABLE pgboss_x.job;
 DROP SCHEMA pgboss_x;"
-check_facts K41 "(T-145) pgboss beside pgboss_x: admission is per relation, by schema name; I-SCOPE names pgboss_x.job and no pgboss relation" I-SCOPE "MIGRATE OK  up: $HIGHEST -> $NEXT" '^  - \[I-SCOPE\] relation "pgboss_x"\."job" is owned by no extension' '!^  - \[I-SCOPE\] relation "pgboss"\.' '^  out of scope: 4 relation\(s\) in schema\(s\) "pgboss" admitted'
+check_facts K41 "(T-145) pgboss beside pgboss_x: admission is per relation, by schema name; I-SCOPE names pgboss_x.job and no pgboss relation" I-SCOPE "MIGRATE OK  up: $HIGHEST -> $NEXT" '^  - \[I-SCOPE\] relation "pgboss_x"\."job" is owned by no extension' '!^  - \[I-SCOPE\] relation "pgboss"\.' "^  out of scope: $((ADMITTED_BASE + 4)) relation\(s\) in schema\(s\) \"pgboss\" admitted"
 
 echo "== T-145 rework 1 (QR-F1, QR-A1, OD-140): schema names main's trim/split text read re-parsed. Each is I-SCOPE and named unambiguously; each gets past I-SCOPE again with that read restored"
 # The committed read (psql(CATALOGUE_SQL) + parseCatalogue) and, verbatim, main 94e6896's text read and
@@ -719,7 +732,7 @@ DROP SCHEMA $ident;"
   node scripts/db-introspect.ts --check >"$OUT" 2>&1
   code=$?
   : >"$OUT.f"
-  facts_into "MIGRATE OK  up: $HIGHEST -> $NEXT" "^  - \\[I-SCOPE\\] relation $shown\\.\"t145_t\" is owned by no extension and is outside schema public" '^  out of scope: 0 relation\(s\)'
+  facts_into "MIGRATE OK  up: $HIGHEST -> $NEXT" "^  - \\[I-SCOPE\\] relation $shown\\.\"t145_t\" is owned by no extension and is outside schema public" "^  out of scope: $ADMITTED_BASE relation\(s\)"
   landed_fact "$want"
   [ "$miss" -eq 0 ] && echo "ALL SHAPE FACTS HOLD" >>"$OUT.f"
   cat "$OUT.f" >>"$OUT"
@@ -738,17 +751,17 @@ DROP SCHEMA $ident;"
   restore
 }
 
-ADMITTED_T='^  out of scope: 1 relation\(s\) in schema\(s\) "pgboss" admitted, not introspected and not counted \["pgboss"\."t145_t"\]$'
+ADMITTED_T="^  out of scope: $((ADMITTED_BASE + 1)) relation\(s\) in schema\(s\) \"pgboss\" admitted, not introspected and not counted \[.*\"pgboss\"\.\"t145_t\".*\]$"
 shape_case K42 '" pgboss"' ' pgboss' '" pgboss"' "$ADMITTED_T"
 shape_case K43 'U&"\00A0pgboss"' '\xc2\xa0pgboss' '"\\u00a0pgboss"' "$ADMITTED_T"
 shape_case K44 'U&"\FEFFpgboss"' '\xef\xbb\xbfpgboss' '"\\ufeffpgboss"' "$ADMITTED_T"
 shape_case K45 'U&"\0009pgboss"' '\tpgboss' '"\\tpgboss"' "$ADMITTED_T"
 shape_case K46 'U&"\000Apgboss"' '\npgboss' '"\\npgboss"' "$ADMITTED_T"
-shape_case K47 '"pgboss|x"' 'pgboss|x' '"pgboss\|x"' '^  out of scope: 1 relation\(s\) in schema\(s\) "pgboss" admitted, not introspected and not counted \["pgboss"\."x"\]$'
+shape_case K47 '"pgboss|x"' 'pgboss|x' '"pgboss\|x"' "^  out of scope: $((ADMITTED_BASE + 1)) relation\(s\) in schema\(s\) \"pgboss\" admitted, not introspected and not counted \[.*\"pgboss\"\.\"x\".*\]$"
 # QR-A1 (main's own defect): with the text read, "<any>|x|true" parses as an extension member, so the
 # relation is on no list at all: GATE PASS, out of scope 0, and its name nowhere in the output.
-shape_case K48 '"pgboss|x|true"' 'pgboss|x|true' '"pgboss\|x\|true"' '^  out of scope: 0 relation\(s\)' '!t145_t'
-shape_case K49 '"zz_other|x|true"' 'zz_other|x|true' '"zz_other\|x\|true"' '^  out of scope: 0 relation\(s\)' '!t145_t'
+shape_case K48 '"pgboss|x|true"' 'pgboss|x|true' '"pgboss\|x\|true"' "^  out of scope: $ADMITTED_BASE relation\(s\)" '!t145_t'
+shape_case K49 '"zz_other|x|true"' 'zz_other|x|true' '"zz_other\|x\|true"' "^  out of scope: $ADMITTED_BASE relation\(s\)" '!t145_t'
 
 echo "== T-165 (OD-84): a partitioned table is rendered under its own name; its partitions are not"
 
@@ -826,7 +839,7 @@ echo "   history attack landed: down --to $HIGHEST, up to $NEXT"
 part_check K53 "(T-165) the same file after the partition migration's down/up: byte-identical" "$PART_RENDERED" 'byte-identical to a fresh introspection'
 
 psql -X -q -v ON_ERROR_STOP=1 -c "CREATE TABLE public.t165_part_a0 PARTITION OF public.t165_part FOR VALUES FROM (TIMESTAMPTZ '2025-01-01Z') TO (TIMESTAMPTZ '2026-01-01Z')" >/dev/null || abort "attaching a third partition failed"
-attached=$(psql -X -A -t -q -c "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relispartition AND c.relname LIKE 't165\_part\_%'")
+attached=$(psql -X -A -t -q -c "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relispartition AND c.relkind IN ('r','p') AND c.relname LIKE 't165\_part\_%'")
 [ "$attached" = 3 ] || abort "the third partition did not land (partitions in public: $attached)"
 echo "   attach attack landed: t165_part_a0 sorts BEFORE t165_part_q1, so it is now the template; partitions in public: $attached"
 part_check K54 "(T-165) a third partition attached after db/schema.ts was written, sorting first so the template changes: the file is unchanged and the check still passes" \
