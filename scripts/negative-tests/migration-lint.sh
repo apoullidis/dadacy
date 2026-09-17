@@ -556,32 +556,32 @@ check CV25 "R-CASCADE: a DROP … CASCADE inside the marked body" R-CASCADE
 echo "-- the marker's own form and placement"
 pair expand "-- @vendor-sql: public.t167_vendor
 $VFN"
-check CV30 "the marker cites no ticket or decision" R-VENDOR-SQL R-PHASE
+check CV30 "the marker cites no ticket or decision" "R-VENDOR-SQL R-PHASE"
 pair expand "-- @vendor-sql: public.t167_missing — OD-150; T-167
 $VFN"
-check CV31 "the marker names a function this file does not define" R-VENDOR-SQL R-PHASE
+check CV31 "the marker names a function this file does not define" "R-VENDOR-SQL R-PHASE"
 pair expand "-- @vendor-sql public.t167_vendor — OD-150; T-167
 $VFN"
-check CV32 "the marker has no colon" R-VENDOR-SQL R-PHASE
+check CV32 "the marker has no colon" "R-VENDOR-SQL R-PHASE"
 pair expand "-- @vendor-sql:
 $VFN"
-check CV33 "the marker names nothing" R-VENDOR-SQL R-PHASE
+check CV33 "the marker names nothing" "R-VENDOR-SQL R-PHASE"
 pair expand "SELECT 1;
 -- @vendor-sql: public.t167_vendor — OD-150; T-167
 $VFN"
-check CV34 "the marker as a -- line after the first statement" R-VENDOR-SQL R-PHASE
+check CV34 "the marker as a -- line after the first statement" "R-VENDOR-SQL R-PHASE"
 pair expand "SELECT '
 -- @vendor-sql: public.t167_vendor — OD-150; T-167
 ';
 $VFN"
-check CV35 "the marker on a line inside a string literal" R-VENDOR-SQL R-PHASE
+check CV35 "the marker on a line inside a string literal" "R-VENDOR-SQL R-PHASE"
 pair expand "CREATE FUNCTION public.t167_vendor(tbl text) RETURNS void LANGUAGE plpgsql AS \$fn\$
 BEGIN
 -- @vendor-sql: public.t167_vendor — OD-150; T-167
   EXECUTE format('DROP TABLE IF EXISTS public.%I', tbl);
 END;
 \$fn\$;"
-check CV36 "the marker inside the very body it names" R-VENDOR-SQL R-PHASE
+check CV36 "the marker inside the very body it names" "R-VENDOR-SQL R-PHASE"
 pair expand "-- @vendor-sql: public.t167_vendor — OD-150; T-167
 -- @vendor-sql: public.t167_vendor — OD-150; T-167
 $VFN"
@@ -593,13 +593,13 @@ BEGIN
   EXECUTE format('DROP TABLE IF EXISTS public.%I', tbl);
 END;
 \$fn2\$;"
-check CV38 "the marker names an overloaded function; the gate does not read argument types" R-VENDOR-SQL R-PHASE
+check CV38 "the marker names an overloaded function; the gate does not read argument types" "R-VENDOR-SQL R-PHASE"
 pair expand "SELECT 1; -- @vendor-sql: public.t167_vendor — OD-150; T-167
 $VFN"
-check CV39 "a @vendor-sql comment trailing a statement, which is not a whole -- line" R-VENDOR-SQL R-PHASE
+check CV39 "a @vendor-sql comment trailing a statement, which is not a whole -- line" "R-VENDOR-SQL R-PHASE"
 pair expand "/* @vendor-sql: public.t167_vendor — OD-150; T-167 */
 $VFN"
-check CV3A "a @vendor-sql block comment" R-VENDOR-SQL R-PHASE
+check CV3A "a @vendor-sql block comment" "R-VENDOR-SQL R-PHASE"
 plant "$UP" "-- @phase: expand
 -- @vendor-sql: public.t167_vendor — OD-150; T-167
 $VFN"
