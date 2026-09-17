@@ -83,17 +83,6 @@
  *                        contract §6). Also refused (QA-F2): `CREATE ROLE|USER|GROUP` naming
  *                        it, `ALTER ROLE|USER|GROUP answering_service`, `OWNER TO
  *                        answering_service`, and `REASSIGN OWNED … TO answering_service`.
- *   [R-VENDOR-SQL]       (T-167, OD-150) a `-- @vendor-sql: <body> — <reference>` marker is a `--`
- *                        comment in the HEADER of an up file, names a body that up file defines
- *                        exactly once, and cites a ticket or decision. It exempts THAT BODY, and
- *                        nothing else, from R-PHASE's contract-statement list and R-TABLE-GRANT,
- *                        because a migration that installs a vendor's plpgsql executes none of the
- *                        DDL inside it. It exempts no other rule, no other body and nothing at file
- *                        level, and it does not stop the gate READING bodies (T-031 § contract §4,
- *                        case A09). LIKE R-PROTECTED, THIS GATE CANNOT VERIFY THAT A REVIEW
- *                        HAPPENED: PROTOCOL §3's two-approval review of `db/migrations` is the
- *                        control, and every accepted marker is printed with the count of problems
- *                        it suppressed so that one suppressing nothing is visible.
  *   [R-TABLE-GRANT]      every CREATE TABLE in an up file is followed in the same file by a
  *                        GRANT on that table. There are no default privileges, so a table with
  *                        no grant is a table nobody can use (`T-020` contract §4/§6).
@@ -241,24 +230,6 @@ const REFERENCE = /\b(?:T-\d{3}|OE-\d+|OD-\d+|EV-\d+|SQ-\d+)\b/;
 const RUNNER_MARKER_LINE = /^[ \t]*--[ \t]*@(?:run-as|no-transaction|phase)\b/;
 const RUN_AS_LINE = /^[ \t]*--[ \t]*@run-as\b/;
 const RUN_AS_FORM = /^[ \t]*--[ \t]*@run-as:[ \t]*bootstrap-superuser(?![A-Za-z0-9_-])(.*)$/;
-
-/**
- * The reviewed vendor-SQL marker (R-VENDOR-SQL, T-167, OD-150).
- *
- * `-- @vendor-sql: <body> — <reference>` in the HEADER of an up file exempts the body it names,
- * AND NOTHING ELSE, from R-PHASE's contract-statement list and from R-TABLE-GRANT. It exists
- * because a migration that installs a vendor's plpgsql performs no DDL by installing it: the
- * `DROP TABLE` and `CREATE TABLE` the gate reads are `format()` format strings inside function
- * bodies, which the gate reads deliberately (T-031 § contract §4, case A09) and which this
- * marker does not stop it reading — it stops those two rules ACTING on what they read, inside
- * one named body.
- *
- * The marker line is read LINE BY LINE over the file text, like `-- @run-as`, not through the
- * lexer, so a line that looks like a marker inside a string or a body is read as one and
- * refused for its placement rather than quietly ignored.
- */
-const VENDOR_SQL_LINE = /^[ \t]*--[ \t]*@vendor-sql\b/;
-const VENDOR_SQL_FORM = /^[ \t]*--[ \t]*@vendor-sql:[ \t]*([^\s—]+)[ \t]*(.*)$/;
 
 /**
  * Statements that move a migration off the role the runner set (R-ROLE-SWITCH, T-031). The
@@ -510,69 +481,19 @@ function norm(s: string): string {
  * which removes the comments inside a function body; if that lex fails, the body is split
  * raw instead.
  */
-export interface FragmentRead {
-  /** The normalised statement fragments, exactly as every content rule reads them. */
-  readonly texts: string[];
-  /**
-   * Parallel to `texts`: for each fragment, the designators of the vendor bodies enclosing it,
-   * outermost first, or `[]` at the top level of the file. R-VENDOR-SQL is the only reader.
-   */
-  readonly bodies: string[][];
-  /** Every body designator in the file, in source order. A repeat is an overload (T-167). */
-  readonly bodyList: string[];
-}
-
-/**
- * A body's designator (T-167), taken from the statement text that precedes it:
- *   - `CREATE [OR REPLACE] FUNCTION|PROCEDURE <name>` -> `<name>` exactly as the file spells it,
- *     normalised (upper case, quotes dropped by the lexer, whitespace collapsed);
- *   - an anonymous `DO` block -> `DO#<n>`, the nth body of a `DO` in the file, counted in source
- *     order at any depth from 1. An anonymous block has no name, and the ordinal is the only
- *     handle that survives a comment edit and stops surviving when a `DO` is added or removed —
- *     which is exactly when the review the marker records has to happen again.
- */
-const FUNCTION_BODY_HEAD = /\bCREATE (?:OR REPLACE )?(?:FUNCTION|PROCEDURE) ([A-Z0-9_$.]+)/;
-const DO_BODY_HEAD = /(?:^|\s)DO(?: LANGUAGE [A-Z0-9_$]+)?$/;
-
-interface BodyCtx {
-  doCount: number;
-  readonly bodyList: string[];
-}
-
-export function readFragments(
-  segments: readonly Segment[],
-  chain: readonly string[] = [],
-  ctx: BodyCtx = { doCount: 0, bodyList: [] },
-  depth = 0,
-): FragmentRead {
-  const texts: string[] = [];
-  const bodies: string[][] = [];
+export function fragments(segments: readonly Segment[], depth = 0): string[] {
+  const out: string[] = [];
   let cur = '';
-  const emit = (t: string, c: readonly string[]): void => {
-    if (t === '') return;
-    texts.push(t);
-    bodies.push([...c]);
-  };
   const push = (): void => {
-    emit(norm(cur), chain);
+    const t = norm(cur);
+    if (t !== '') out.push(t);
     cur = '';
   };
-  const raw = (s: string, c: readonly string[]): void => {
-    for (const part of s.split(';')) emit(norm(part), c);
-  };
-  /** The chain for a body about to be descended into: `chain`, plus this body if it has a name. */
-  const descend = (): readonly string[] => {
-    const t = norm(cur);
-    const fn = FUNCTION_BODY_HEAD.exec(t);
-    let id: string | null = null;
-    if (fn !== null) id = fn[1] ?? null;
-    else if (DO_BODY_HEAD.test(t)) {
-      ctx.doCount += 1;
-      id = `DO#${String(ctx.doCount)}`;
+  const raw = (s: string): void => {
+    for (const part of s.split(';')) {
+      const t = norm(part);
+      if (t !== '') out.push(t);
     }
-    if (id === null || id === '') return chain;
-    ctx.bodyList.push(id);
-    return [...chain, id];
   };
   for (const s of segments) {
     if (s.kind === 'code') {
@@ -585,27 +506,17 @@ export function readFragments(
     } else if (s.kind === 'line-comment' || s.kind === 'block-comment') {
       cur += ' ';
     } else if (s.kind === 'string') {
-      const inside = descend();
       cur += ' ';
-      raw(s.body.replace(/''/g, "'"), inside);
+      raw(s.body.replace(/''/g, "'"));
     } else {
-      const inside = descend();
       cur += ' ';
       const inner = depth < 8 ? lex(s.body) : null;
-      if (inner !== null && inner.error === null) {
-        const r = readFragments(inner.segments, inside, ctx, depth + 1);
-        texts.push(...r.texts);
-        bodies.push(...r.bodies);
-      } else raw(s.body, inside);
+      if (inner !== null && inner.error === null) out.push(...fragments(inner.segments, depth + 1));
+      else raw(s.body);
     }
   }
   push();
-  return { texts, bodies, bodyList: ctx.bodyList };
-}
-
-/** The fragments alone. One reading: this is `readFragments().texts` and nothing else. */
-export function fragments(segments: readonly Segment[]): string[] {
-  return readFragments(segments).texts;
+  return out;
 }
 
 function commentText(segments: readonly Segment[]): string[] {
@@ -1014,28 +925,11 @@ let protectedMentions = 0;
 let baselinePinned = 0;
 let runAsLinesRead = 0;
 let roleSwitchFilesRead = 0;
-let vendorLinesRead = 0;
-
-/**
- * The review record (T-167). One row per ACCEPTED `-- @vendor-sql` marker, printed on every run
- * — `gate:pr` included — so that a marker which suppresses nothing is visible rather than silent
- * (PROTOCOL §5.1: if the check did nothing, it says so). No separate registry file: a registry
- * derived from the same source as the thing it records cannot disagree with it.
- */
-interface VendorExemption {
-  readonly rel: string;
-  readonly body: string;
-  readonly line: number;
-  readonly suppressed: string[];
-}
-const vendorExemptions: VendorExemption[] = [];
 
 for (const m of migrations) {
   if (m.lexed.error !== null) continue;
   const segs = m.lexed.segments;
   const comments = commentText(segs);
-  /** Body designator -> the marker line that named it, for the markers this file declares. */
-  const vendorDeclared = new Map<string, number>();
 
   // R-RUN-AS (T-031). Every file, the baseline included: the runner reads LINES (T-136 § contract §7).
   {
@@ -1101,87 +995,6 @@ for (const m of migrations) {
     }
   }
 
-  // R-VENDOR-SQL (T-167, OD-150), part 1: the marker lines themselves — placement and form.
-  // Read for EVERY file, the baseline and the down files included, so that a marker which could
-  // not possibly do anything is refused rather than left standing as a claim a reviewer would
-  // read. Part 2, below, resolves the names against the bodies the file actually defines.
-  {
-    const lines = m.text.split('\n');
-    const headerEnd = headerEndLine(segs);
-    const commentLines = new Set(segs.filter((s) => s.kind === 'line-comment').map((s) => s.line));
-    lines.forEach((line, k) => {
-      if (!VENDOR_SQL_LINE.test(line)) return;
-      const at = k + 1;
-      vendorLinesRead += 1;
-      const where = `${m.rel}:${String(at)}`;
-      if (at >= headerEnd || !commentLines.has(at)) {
-        problem(
-          'R-VENDOR-SQL',
-          where,
-          `a -- @vendor-sql marker that is not a -- comment in the file header (before the first statement, outside every string, dollar-quoted body and block comment). The marker names the body it exempts, so it may not sit inside one: a reviewer reads the whole exemption list at the top of the file, and the vendor SQL below it stays byte-identical to what the vendor emitted: ${snippet(line.trim())}`,
-        );
-        return;
-      }
-      if (m.dir === 'down') {
-        problem(
-          'R-VENDOR-SQL',
-          where,
-          'a -- @vendor-sql marker in a down file; R-PHASE and R-TABLE-GRANT read up files only, so this marker exempts nothing and states a review that nothing checks',
-        );
-        return;
-      }
-      if (BASELINE.has(m.name)) {
-        problem(
-          'R-VENDOR-SQL',
-          where,
-          'a -- @vendor-sql marker in the pinned 0001 baseline, whose content rules are not read at all (R-BASELINE); the marker exempts nothing',
-        );
-        return;
-      }
-      // `.` does not match `\r`, so a CRLF line is matched without it (as R-RUN-AS does).
-      const form = VENDOR_SQL_FORM.exec(line.replace(/\r$/, ''));
-      if (form === null) {
-        problem(
-          'R-VENDOR-SQL',
-          where,
-          `not of the form \`-- @vendor-sql: <function> — <reference>\`: ${snippet(line.trim())}`,
-        );
-        return;
-      }
-      const body = norm(form[1] ?? '');
-      if (!REFERENCE.test(form[2] ?? '')) {
-        problem(
-          'R-VENDOR-SQL',
-          where,
-          `the -- @vendor-sql marker for ${body} cites no ticket or decision (T-NNN, OE-n, OD-n, EV-n, SQ-n) on its own line; an exemption with no reference records no review`,
-        );
-        return;
-      }
-      if (vendorDeclared.has(body)) {
-        problem(
-          'R-VENDOR-SQL',
-          where,
-          `a second -- @vendor-sql marker for ${body}; line ${String(vendorDeclared.get(body) ?? 0)} already names it, and the list of markers is the list of bodies a reviewer must read`,
-        );
-        return;
-      }
-      vendorDeclared.set(body, at);
-    });
-    for (const s of segs) {
-      if (s.kind !== 'line-comment' && s.kind !== 'block-comment') continue;
-      s.body.split('\n').forEach((b, k) => {
-        if (!/^\s*@vendor-sql\b/.test(b)) return;
-        const at = s.line + k;
-        if (s.kind === 'line-comment' && VENDOR_SQL_LINE.test(lines[at - 1] ?? '')) return; // read above
-        problem(
-          'R-VENDOR-SQL',
-          `${m.rel}:${String(at)}`,
-          `a comment beginning @vendor-sql that this gate does not read as a marker (it reads only a whole -- line in the header), so it exempts nothing: ${snippet(b.trim())}`,
-        );
-      });
-    }
-  }
-
   // R-STRUCT pairs, and R-PHASE.
   const phases = new Set<string>();
   for (const c of comments) {
@@ -1221,52 +1034,7 @@ for (const m of migrations) {
     continue; // the content rules do not read the baseline — see BASELINE
   }
 
-  const read = readFragments(segs);
-  const frags = read.texts;
-
-  // R-VENDOR-SQL (T-167, OD-150), part 2: resolve each declared marker against the bodies this
-  // file defines. `exempt` is consulted at exactly two places — R-PHASE's contract-statement scan
-  // and R-TABLE-GRANT — so no other rule can be reached through this marker.
-  const exempt = new Set<string>();
-  const suppressedBy = new Map<string, string[]>();
-  for (const [body, at] of vendorDeclared) {
-    const defined = read.bodyList.filter((b) => b === body).length;
-    if (defined === 0) {
-      problem(
-        'R-VENDOR-SQL',
-        `${m.rel}:${String(at)}`,
-        `the -- @vendor-sql marker names ${body}, which this file does not define. The bodies it defines are: ${read.bodyList.length === 0 ? '(none)' : [...new Set(read.bodyList)].join(', ')}. Name a function exactly as its CREATE statement spells it, or an anonymous DO block as DO#<n>`,
-      );
-      continue;
-    }
-    if (defined > 1) {
-      problem(
-        'R-VENDOR-SQL',
-        `${m.rel}:${String(at)}`,
-        `the -- @vendor-sql marker names ${body}, which this file defines ${String(defined)} times; this gate does not read argument types, so it cannot tell which body was reviewed, and exempting both would exempt a body nobody named`,
-      );
-      continue;
-    }
-    exempt.add(body);
-    suppressedBy.set(body, []);
-  }
-  /** Fragment `i` sits inside an exempted body. */
-  const exemptAt = (i: number, tag: string): boolean => {
-    const hit = (read.bodies[i] ?? []).find((b) => exempt.has(b));
-    if (hit === undefined) return false;
-    suppressedBy.get(hit)?.push(tag);
-    return true;
-  };
-  for (const [body, at] of vendorDeclared) {
-    if (exempt.has(body)) {
-      vendorExemptions.push({
-        rel: m.rel,
-        body,
-        line: at,
-        suppressed: suppressedBy.get(body) ?? [],
-      });
-    }
-  }
+  const frags = fragments(segs);
 
   // R-ROLE-SWITCH (T-031).
   roleSwitchFilesRead += 1;
@@ -1298,10 +1066,9 @@ for (const m of migrations) {
 
   // R-PHASE: contract statements outside a contract migration.
   if (m.dir === 'up' && phaseOf.has(m.name) && phaseOf.get(m.name) !== 'contract') {
-    frags.forEach((f, i) => {
+    for (const f of frags) {
       for (const [re, label] of CONTRACT_STATEMENTS) {
         if (re.test(f)) {
-          if (exemptAt(i, 'R-PHASE')) continue;
           problem(
             'R-PHASE',
             m.rel,
@@ -1309,7 +1076,7 @@ for (const m of migrations) {
           );
         }
       }
-    });
+    }
   }
 
   // R-CONTRACT-PURE: expand statements inside a contract migration (QA-F1).
@@ -1517,23 +1284,22 @@ for (const m of migrations) {
 
   // R-TABLE-GRANT.
   if (m.dir === 'up') {
-    frags.forEach((f, i) => {
+    for (const f of frags) {
       const c =
         /\bCREATE (?:(?:GLOBAL |LOCAL )?(?:TEMP|TEMPORARY) |UNLOGGED )?TABLE (?:IF NOT EXISTS )?([A-Z0-9_$.]+)/.exec(
           f,
         );
-      if (c === null || /\bCREATE (?:GLOBAL |LOCAL )?TEMP/.test(f)) return;
+      if (c === null || /\bCREATE (?:GLOBAL |LOCAL )?TEMP/.test(f)) continue;
       tablesRead += 1;
       const name = bareName(c[1] ?? '');
       if (!grantedTables.has(name)) {
-        if (exemptAt(i, 'R-TABLE-GRANT')) return;
         problem(
           'R-TABLE-GRANT',
           m.rel,
           `CREATE TABLE ${name} with no GRANT on it in this file; there are no default privileges, so nobody can use it (T-020 contract §4)`,
         );
       }
-    });
+    }
   }
 }
 
@@ -1678,15 +1444,6 @@ console.log(
 console.log(
   `  files searched for role switches: ${String(roleSwitchFilesRead)}; lines the runner reads as -- @run-as: ${String(runAsLinesRead)}`,
 );
-console.log(
-  `  -- @vendor-sql marker lines read: ${String(vendorLinesRead)}; bodies exempted: ${String(vendorExemptions.length)}; R-PHASE/R-TABLE-GRANT problems they suppressed: ${String(vendorExemptions.reduce((n, v) => n + v.suppressed.length, 0))}`,
-);
-for (const v of vendorExemptions) {
-  const tags = v.suppressed.length === 0 ? 'nothing' : [...v.suppressed].sort().join(', ');
-  console.log(
-    `    vendor-sql: ${v.rel}:${String(v.line)} exempts body ${v.body} — suppressed ${tags}`,
-  );
-}
 console.log(
   `  commits in merge-base..HEAD: ${String(commitsRead)}; of them changing ${MIGRATIONS_REL}/, Ticket trailer read with git's parser: ${String(migrationCommits)}`,
 );
