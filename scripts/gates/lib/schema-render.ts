@@ -19,8 +19,12 @@
  *      definition is emitted for each type actually used. ANY other TODO type, or any `unknown(`
  *      left over, is a problem: the generator never writes `unknown(...)`.
  *      T-153 (OD-107): first, mapBigintColumns puts every int8 column in drizzle's bigint mode. The
- *      caller then holds the rendering against the catalogue with checkCatalogueColumns: bigint-mode
- *      columns per relation = int8 columns, and geometry only as a 2D point.
+ *      caller then holds the rendering against the catalogue with checkCatalogueColumns.
+ *      T-153 rework 1 (OD-147, OD-148): that hold is a PER-COLUMN match, keyed by relation and
+ *      column name, over the rendering PARSED AS TYPESCRIPT (parseRendering, the same compiler API
+ *      the I-TSC step uses) — never a per-relation count and never a regex over the text. A count
+ *      cannot see that a view's int8[] column was rendered without `.array()` (OD-147), and a regex
+ *      over the text counts a `bigint(` that is only the content of a string literal (OD-148).
  *   2. pruneUnused: TypeScript's own `unusedIdentifier_delete` and `unusedIdentifier_deleteImports`
  *      combined fixes, repeated until a pass makes no edit, over a virtual file at db/schema.ts's
  *      real path, with the compiler options read from the root tsconfig.json (not a copy). Then
@@ -56,20 +60,44 @@ const PG_CORE_IMPORT = /^import \{ ([^}\n]*) \} from "drizzle-orm\/pg-core"$/m;
  * becomes `<key>: bigint(["<col>", ]{ mode: "bigint" })…`, the hint is dropped, and an integer default
  * drizzle-kit wrote as a number literal on that line (`.default(0)`, `.default([1, 9007199254740993])`)
  * gets bigint literals (`0n`), whose digits are drizzle-kit's text of the catalogue default, never a JS
- * number. A hint or a `mode: "number"` bigint/bigserial call left in any other shape is a problem.
- * `bigserial` is already rendered in bigint mode and is left alone.
+ * number. `bigserial` is already rendered in bigint mode and is left alone.
+ *
+ * T-153 rework 1 (OD-148): this is a REWRITE of drizzle-kit 0.31.10's exact spelling, and nothing
+ * else. It is NOT the safeguard — a bigint column in any other shape, any other spelling, any other
+ * formatting, is caught by the per-column catalogue match below (checkCatalogueColumns), which reads
+ * the parsed TypeScript and not this text. The only thing this step judges is its own completeness:
+ * a copy of drizzle-kit's hint comment it did not consume, OUTSIDE any string literal (so a text
+ * column whose DEFAULT is that sentence is no longer falsely refused — QR-A2).
  */
 const BIGINT_HINT =
   '// You can use { mode: "bigint" } if numbers are exceeding js number limitations';
 const BIGINT_NUMBER_COLUMN =
   /([ \t]*)\/\/ You can use \{ mode: "bigint" \} if numbers are exceeding js number limitations\n([ \t]*)([^\n]*?): bigint\(((?:"[^"\n]*", )?)\{ mode: "number" \}\)([^\n]*)/g;
-const NUMBER_MODE_CALL = /\bbig(?:int|serial)\((?:"[^"\n]*", )?\{[^}\n]*\bmode: "number"/;
-/** A bigint or bigserial column call in drizzle's bigint mode, as counted against the catalogue. */
-export const BIGINT_MODE_CALL = /\bbig(?:int|serial)\((?:"[^"\n]*", )?\{ mode: "bigint" \}\)/g;
 
 export type BigintResult =
   | { readonly ok: true; readonly body: string; readonly columns: number }
   | { readonly ok: false; readonly problems: readonly string[] };
+
+/** The character ranges of every string and template literal in `text`, as TypeScript parses it. */
+function literalRanges(text: string): ReadonlyArray<readonly [number, number]> {
+  const sf = ts.createSourceFile(
+    'rendering.ts',
+    text,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const ranges: Array<readonly [number, number]> = [];
+  const visit = (n: ts.Node): void => {
+    if (ts.isStringLiteralLike(n) || ts.isTemplateExpression(n)) {
+      ranges.push([n.getStart(sf), n.getEnd()]);
+      return;
+    }
+    n.forEachChild(visit);
+  };
+  sf.forEachChild(visit);
+  return ranges;
+}
 
 export function mapBigintColumns(body: string): BigintResult {
   let columns = 0;
@@ -98,14 +126,17 @@ export function mapBigintColumns(body: string): BigintResult {
       return `${atLineStart ? '' : '\n'}${lead}${key}: bigint(${name}{ mode: "bigint" })${bigRest}`;
     },
   );
-  const problems = out
-    .split('\n')
-    .map((l, i) => ({ l, n: i + 1 }))
-    .filter(({ l }) => l.includes(BIGINT_HINT) || NUMBER_MODE_CALL.test(l))
-    .map(
-      ({ l, n }) =>
-        `rendering line ${String(n)} has a bigint column in a shape this rendering does not recognise, so it would reach importers as a JS number, lossy above 2^53 (T-153): ${JSON.stringify(l.trim().slice(0, 120))}`,
+  const ranges = literalRanges(out);
+  const problems: string[] = [];
+  for (let i = out.indexOf(BIGINT_HINT); i !== -1; i = out.indexOf(BIGINT_HINT, i + 1)) {
+    if (ranges.some(([a, b]) => i >= a && i < b)) continue;
+    const line = out.slice(0, i).split('\n').length;
+    problems.push(
+      `rendering line ${String(line)} still carries drizzle-kit's bigint hint comment after the bigint-mode rewrite, so the rewrite did not recognise the column it belongs to (T-153): ${JSON.stringify(
+        (out.split('\n')[line - 1] ?? '').trim().slice(0, 120),
+      )}`,
     );
+  }
   if (problems.length > 0) return { ok: false, problems };
   return { ok: true, body: out, columns };
 }
@@ -115,12 +146,20 @@ export function mapBigintColumns(body: string): BigintResult {
  * no extension) whose type, or whose array element type, is int8 or PostGIS's geometry, with
  * `format_type`. Read by db-introspect.ts outside drizzle-kit, so neither rule below trusts
  * drizzle-kit's text.
+ *
+ * T-153 rework 1 (OD-147): also the column's ARRAY DIMENSIONS, because the per-column match compares
+ * them with the rendered `.array()` depth. `pg_attribute.attndims` alone is not enough: it is 0 for a
+ * VIEW column of an array type (measured, T-153 rework 1), which is exactly the case OD-147 is about.
+ * So array-ness is decided by the type's own `typcategory = 'A'` and attndims only supplies the
+ * dimension, floored at 1. Both are reported, so a disagreement is visible rather than assumed.
  */
 export const COLUMN_TYPES_SQL = `
     SELECT coalesce(json_agg(json_build_object(
              'relation', c.relname,
              'column', a.attname,
              'type', format_type(a.atttypid, a.atttypmod),
+             'attndims', a.attndims,
+             'dims', CASE WHEN t.typcategory = 'A' THEN greatest(a.attndims, 1) ELSE 0 END,
              'kind', CASE WHEN et.oid = 'pg_catalog.int8'::regtype THEN 'int8' ELSE 'geometry' END)
              ORDER BY c.relname, a.attnum), '[]'::json)
       FROM pg_attribute a
@@ -143,6 +182,10 @@ export interface CatalogueColumn {
   readonly relation: string;
   readonly column: string;
   readonly type: string;
+  /** pg_attribute.attndims, as the catalogue holds it (0 on a view column of an array type). */
+  readonly attndims: number;
+  /** Array dimensions the rendering must express with `.array()`: 0 for a scalar. */
+  readonly dims: number;
   readonly kind: 'int8' | 'geometry';
 }
 
@@ -159,19 +202,21 @@ export function parseCatalogueColumns(
   const columns: CatalogueColumn[] = [];
   for (const v of value as unknown[]) {
     const r = (typeof v === 'object' && v !== null ? v : {}) as Record<string, unknown>;
-    const { relation, column, type, kind } = r;
+    const { relation, column, type, attndims, dims, kind } = r;
     if (
       typeof relation !== 'string' ||
       typeof column !== 'string' ||
       typeof type !== 'string' ||
+      typeof attndims !== 'number' ||
+      typeof dims !== 'number' ||
       (kind !== 'int8' && kind !== 'geometry')
     ) {
       return {
         ok: false,
-        problem: `a row is not {relation, column, type, kind}: ${JSON.stringify(v)}`,
+        problem: `a row is not {relation, column, type, attndims, dims, kind}: ${JSON.stringify(v)}`,
       };
     }
-    columns.push({ relation, column, type, kind });
+    columns.push({ relation, column, type, attndims, dims, kind });
   }
   return { ok: true, columns };
 }
@@ -185,18 +230,182 @@ export function parseCatalogueColumns(
  */
 export const GEOMETRY_ADMITTED = /^geometry\(Point(?:,[0-9]+)?\)$/;
 
+/**
+ * T-153 rework 1 (OD-147, OD-148): the rendering, PARSED. One rendered column builder call, as the
+ * TypeScript parser sees it — never as text, so no line break, quoting or spacing changes what it is,
+ * and the content of a string literal is never mistaken for a call.
+ */
+export interface RenderedColumn {
+  /** The object-literal key drizzle-kit wrote (its camelCase name). */
+  readonly key: string;
+  /** The DATABASE column name: the builder's first string argument, or the key when it has none. */
+  readonly name: string;
+  /** The identifier the call chain bottoms out in: `bigint`, `bigserial`, `text`, `geometry`, … */
+  readonly builder: string;
+  /** The `mode` option's string value, if the builder was given one. */
+  readonly mode: string | undefined;
+  /** How many `.array()` calls the chain carries. */
+  readonly arrayDepth: number;
+  readonly line: number;
+  readonly text: string;
+}
+
+export interface RenderedRelation {
+  readonly name: string;
+  readonly kind: string;
+  readonly columns: ReadonlyMap<string, RenderedColumn>;
+  /** Entries in the column object this parse could not read as `<key>: <builder>(…)…`. */
+  readonly unparsed: readonly string[];
+}
+
+const RELATION_BUILDERS: ReadonlySet<string> = new Set(['pgTable', 'pgView', 'pgMaterializedView']);
+
+/** The innermost call whose callee is a plain identifier, and the method names on top of it. */
+function unwrapChain(expr: ts.Node): { base: ts.CallExpression | undefined; methods: string[] } {
+  const methods: string[] = [];
+  let e: ts.Node = expr;
+  for (;;) {
+    if (ts.isCallExpression(e)) {
+      if (ts.isIdentifier(e.expression)) return { base: e, methods };
+      if (ts.isPropertyAccessExpression(e.expression)) {
+        methods.push(e.expression.name.text);
+        e = e.expression.expression;
+        continue;
+      }
+      return { base: undefined, methods };
+    }
+    if (ts.isPropertyAccessExpression(e) || ts.isParenthesizedExpression(e)) {
+      e = e.expression;
+      continue;
+    }
+    return { base: undefined, methods };
+  }
+}
+
+function propertyName(n: ts.PropertyName): string | undefined {
+  if (ts.isIdentifier(n)) return n.text;
+  if (ts.isStringLiteralLike(n)) return n.text;
+  return undefined;
+}
+
+export function parseRendering(body: string): {
+  relations: ReadonlyMap<string, RenderedRelation>;
+  problems: readonly string[];
+} {
+  const sf = ts.createSourceFile(
+    'rendering.ts',
+    body,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const relations = new Map<string, RenderedRelation>();
+  const problems: string[] = [];
+  const lineOf = (n: ts.Node): number =>
+    ts.getLineAndCharacterOfPosition(sf, n.getStart(sf)).line + 1;
+  for (const st of sf.statements) {
+    if (!ts.isVariableStatement(st)) continue;
+    for (const d of st.declarationList.declarations) {
+      if (d.initializer === undefined) continue;
+      const { base } = unwrapChain(d.initializer);
+      if (base === undefined || !ts.isIdentifier(base.expression)) continue;
+      const kind = base.expression.text;
+      if (!RELATION_BUILDERS.has(kind)) continue;
+      const nameArg = base.arguments[0];
+      const colsArg = base.arguments[1];
+      if (nameArg === undefined || !ts.isStringLiteralLike(nameArg)) {
+        problems.push(
+          `the rendering has a ${kind}(…) on line ${String(lineOf(base))} whose first argument is not a string relation name, so its columns cannot be held against the catalogue (T-153)`,
+        );
+        continue;
+      }
+      if (colsArg === undefined || !ts.isObjectLiteralExpression(colsArg)) {
+        problems.push(
+          `the rendering's ${kind}(${JSON.stringify(nameArg.text)}, …) on line ${String(lineOf(base))} has no column object literal, so its columns cannot be held against the catalogue (T-153)`,
+        );
+        continue;
+      }
+      const columns = new Map<string, RenderedColumn>();
+      const unparsed: string[] = [];
+      for (const p of colsArg.properties) {
+        if (!ts.isPropertyAssignment(p)) {
+          unparsed.push(p.getText(sf).trim().slice(0, 120));
+          continue;
+        }
+        const key = propertyName(p.name);
+        const { base: cb, methods } = unwrapChain(p.initializer);
+        if (key === undefined || cb === undefined || !ts.isIdentifier(cb.expression)) {
+          unparsed.push(p.getText(sf).trim().slice(0, 120));
+          continue;
+        }
+        const first = cb.arguments[0];
+        const name = first !== undefined && ts.isStringLiteralLike(first) ? first.text : key;
+        let mode: string | undefined;
+        for (const a of cb.arguments) {
+          if (!ts.isObjectLiteralExpression(a)) continue;
+          for (const op of a.properties) {
+            if (!ts.isPropertyAssignment(op)) continue;
+            if (propertyName(op.name) !== 'mode') continue;
+            if (ts.isStringLiteralLike(op.initializer)) mode = op.initializer.text;
+          }
+        }
+        const col: RenderedColumn = {
+          key,
+          name,
+          builder: cb.expression.text,
+          mode,
+          arrayDepth: methods.filter((m) => m === 'array').length,
+          line: lineOf(p),
+          text: p.getText(sf).replace(/\s+/g, ' ').trim().slice(0, 160),
+        };
+        if (columns.has(name)) {
+          problems.push(
+            `the rendering of ${JSON.stringify(nameArg.text)} has two columns for database column ${JSON.stringify(name)} (lines ${String(columns.get(name)?.line ?? 0)} and ${String(col.line)}) (T-153)`,
+          );
+        }
+        columns.set(name, col);
+      }
+      if (relations.has(nameArg.text)) {
+        problems.push(
+          `the rendering declares relation ${JSON.stringify(nameArg.text)} twice (T-153)`,
+        );
+      }
+      relations.set(nameArg.text, { name: nameArg.text, kind, columns, unparsed });
+    }
+  }
+  return { relations, problems };
+}
+
 export interface CatalogueCheck {
   readonly problems: readonly string[];
+  /** Catalogue int8 columns in `public`. */
   readonly int8: number;
-  readonly bigintRendered: number;
+  /** Of those, how many matched a rendered column exactly. */
+  readonly matched: number;
+  readonly relations: number;
   readonly points: number;
 }
 
+const BIGINT_BUILDERS: ReadonlySet<string> = new Set(['bigint', 'bigserial']);
+const WANT = 'bigint({ mode: "bigint" })';
+
+function expected(dims: number): string {
+  return dims === 0 ? WANT : `${WANT}${'.array()'.repeat(dims)}`;
+}
+
 /**
- * T-153: (1) every geometry column must be GEOMETRY_ADMITTED, else a problem naming it; (2) for each
- * relation, the number of bigint/bigserial calls in drizzle's bigint mode in its rendering must equal the
- * catalogue's int8 columns in it. A relation's rendering runs from its `export const … = pgTable|pgView|
- * pgMaterializedView("<name>"` line to the next `export const`.
+ * T-153 rework 1: the two catalogue rules, both per column and both decided from the catalogue.
+ *
+ *  1. GEOMETRY. Every geometry column must be GEOMETRY_ADMITTED (a scalar 2D point), else a problem
+ *     naming it and its `format_type`.
+ *  2. INT8, MATCHED PER COLUMN (OD-147, OD-148), keyed by relation name and DATABASE column name:
+ *     - every catalogue int8 column must be present in the rendering of its relation, built by
+ *       `bigint`/`bigserial`, in `mode: "bigint"`, with exactly as many `.array()` calls as the
+ *       catalogue's array dimensions. Absent, or any of those wrong, is a problem naming the column;
+ *     - conversely, every rendered `bigint`/`bigserial` column must BE a catalogue int8 column, so a
+ *       lossy column and a spurious bigint-mode column in the same relation cannot cancel out.
+ *   Nothing here counts, and nothing here reads the rendering as text: `body` is parsed, so a string
+ *   literal containing `bigint(` is a string literal, and a call split over lines is still the call.
  */
 export function checkCatalogueColumns(
   body: string,
@@ -214,35 +423,58 @@ export function checkCatalogueColumns(
       points += 1;
     }
   }
-  const starts = [...body.matchAll(/^export const [\w$]+ = /gm)];
-  const rendered = new Map<string, number>();
-  starts.forEach((m, i) => {
-    const text = body.slice(m.index, starts[i + 1]?.index ?? body.length);
-    const rel = /^export const [\w$]+ = pg(?:Table|View|MaterializedView)\("([^"]+)"/.exec(
-      text,
-    )?.[1];
-    if (rel === undefined) return;
-    rendered.set(rel, (rendered.get(rel) ?? 0) + [...text.matchAll(BIGINT_MODE_CALL)].length);
-  });
-  const catalogue = new Map<string, string[]>();
-  for (const c of columns) {
-    if (c.kind !== 'int8') continue;
-    catalogue.set(c.relation, [...(catalogue.get(c.relation) ?? []), c.column]);
-  }
-  let int8 = 0;
-  let bigintRendered = 0;
-  for (const rel of [...new Set([...rendered.keys(), ...catalogue.keys()])].sort()) {
-    const want = catalogue.get(rel) ?? [];
-    const got = rendered.get(rel) ?? 0;
-    int8 += want.length;
-    bigintRendered += got;
-    if (got !== want.length) {
+
+  const parsed = parseRendering(body);
+  problems.push(...parsed.problems);
+  const int8Columns = columns.filter((c) => c.kind === 'int8');
+  const wanted = new Set(int8Columns.map((c) => `${c.relation} ${c.column}`));
+  let matched = 0;
+  for (const c of int8Columns) {
+    const rel = parsed.relations.get(c.relation);
+    const where = `${JSON.stringify(c.relation)}.${JSON.stringify(c.column)}`;
+    if (rel === undefined) {
       problems.push(
-        `relation ${JSON.stringify(rel)}: the catalogue has ${String(want.length)} int8 column(s) [${want.join(', ')}] but the rendering has ${String(got)} bigint column(s) in drizzle's bigint mode (T-153, OD-107)`,
+        `the catalogue has int8 column ${where} but the rendering declares no relation ${JSON.stringify(c.relation)}, so that column would be absent from db/schema.ts (T-153, OD-147)`,
+      );
+      continue;
+    }
+    const got = rel.columns.get(c.column);
+    if (got === undefined) {
+      problems.push(
+        `the catalogue has int8 column ${where} (${c.type}) but the rendering of that ${rel.kind} has no column for it [rendered: ${[...rel.columns.keys()].map((k) => JSON.stringify(k)).join(', ')}${rel.unparsed.length > 0 ? `; unparsed entries: ${rel.unparsed.map((u) => JSON.stringify(u)).join(', ')}` : ''}] (T-153, OD-147)`,
+      );
+      continue;
+    }
+    if (!BIGINT_BUILDERS.has(got.builder)) {
+      problems.push(
+        `int8 column ${where} (${c.type}) is rendered on line ${String(got.line)} by drizzle's ${JSON.stringify(got.builder)}, not bigint/bigserial, so it would not reach importers as a JS bigint: expected ${expected(c.dims)}, got ${JSON.stringify(got.text)} (T-153, OD-147)`,
+      );
+      continue;
+    }
+    if (got.mode !== 'bigint') {
+      problems.push(
+        `int8 column ${where} (${c.type}) is rendered on line ${String(got.line)} in drizzle's ${got.mode === undefined ? 'default (no mode option)' : `"${got.mode}"`} mode, so it would reach importers as a JS number, lossy above 2^53: expected ${expected(c.dims)}, got ${JSON.stringify(got.text)} (T-153, OD-107)`,
+      );
+      continue;
+    }
+    if (got.arrayDepth !== c.dims) {
+      problems.push(
+        `int8 column ${where} is ${c.dims === 0 ? 'a scalar' : `an array of ${String(c.dims)} dimension(s)`} in the catalogue (${c.type}, attndims ${String(c.attndims)}) but the rendering on line ${String(got.line)} carries ${String(got.arrayDepth)} .array() call(s), so drizzle would read it with the wrong reader: expected ${expected(c.dims)}, got ${JSON.stringify(got.text)} (T-153, OD-147)`,
+      );
+      continue;
+    }
+    matched += 1;
+  }
+  for (const rel of parsed.relations.values()) {
+    for (const col of rel.columns.values()) {
+      if (!BIGINT_BUILDERS.has(col.builder)) continue;
+      if (wanted.has(`${rel.name} ${col.name}`)) continue;
+      problems.push(
+        `the rendering of ${JSON.stringify(rel.name)} builds column ${JSON.stringify(col.name)} on line ${String(col.line)} with drizzle's ${JSON.stringify(col.builder)}, but the catalogue does not list that column as int8: ${JSON.stringify(col.text)} (T-153, OD-148)`,
       );
     }
   }
-  return { problems, int8, bigintRendered, points };
+  return { problems, int8: int8Columns.length, matched, relations: parsed.relations.size, points };
 }
 
 export type MapResult =
