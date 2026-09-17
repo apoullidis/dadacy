@@ -909,6 +909,12 @@ CREATE TABLE public.t165_part_q1 PARTITION OF public.t165_part FOR VALUES FROM (
 plant "$DOWN" "DROP TABLE public.t165_part;"
 check K60 "(T-165) a partitioned table with an identity column, which drizzle-kit renders on a partition as name: \"null\", startWith: null: refused" I-PART 'has an identity column'
 
+policy_fixture "$PART_FIXTURE"
+write_schema
+psql -X -q -v ON_ERROR_STOP=1 -c "CREATE INDEX t165_part_only_idx ON ONLY public.t165_part (note)" >/dev/null || abort "the ON ONLY index failed"
+psql -X -A -t -q -c "SELECT count(*) FROM pg_index i JOIN pg_class ci ON ci.oid = i.indexrelid WHERE ci.relname = 't165_part_only_idx'" | grep -qx 1 || abort "the ON ONLY index did not land"
+check K71 "(T-165) an index the PARENT has that no partition has (CREATE INDEX ... ON ONLY), which would otherwise be silently absent from the rendering: refused" I-PART 'it owns "t165_part_only_idx", which partition "t165_part_q1" has no counterpart for'
+
 plant "$UP" "-- @phase: expand
 CREATE TABLE public.t165_part (id bigint NOT NULL, at timestamptz NOT NULL,
   CONSTRAINT t165_part_pkey PRIMARY KEY (id, at)) PARTITION BY RANGE (at);

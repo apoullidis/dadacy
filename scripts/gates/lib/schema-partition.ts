@@ -25,8 +25,9 @@
  * silently: a sub-partitioned table, a partition outside `public`, a parent with no partition, a partition whose
  * column shape is not the parent's, an identity column (drizzle-kit renders a partition's as
  * `name: "null", startWith: null`, measured), a name in the template with no counterpart on the
- * parent, an export name this step and drizzle-kit would spell differently, and PostgreSQL's
- * per-partition clone of a foreign key on a table that is not itself a partition.
+ * parent, a constraint or index the parent has and the template partition does not, an export name
+ * this step and drizzle-kit would spell differently, and PostgreSQL's per-partition clone of a
+ * foreign key on a table that is not itself a partition.
  */
 import ts from 'typescript';
 import { type CataloguePolicy, renderPolicy } from './schema-policy.ts';
@@ -51,6 +52,8 @@ export interface CatalogueParent {
   readonly columns: string;
   /** the parent has a column PostgreSQL generates as an identity */
   readonly identity: boolean;
+  /** every constraint and index name the PARENT owns; each must be a partition's counterpart */
+  readonly ownNames: readonly string[];
   readonly partitions: readonly CataloguePartition[];
 }
 
@@ -113,6 +116,12 @@ export const PARTITIONS_SQL = `
          'identity', EXISTS (SELECT 1 FROM pg_attribute a
                               WHERE a.attrelid = p.oid AND a.attnum > 0 AND NOT a.attisdropped
                                 AND a.attidentity <> ''),
+         'ownNames', (SELECT coalesce(json_agg(DISTINCT o.name), '[]'::json) FROM (
+                        SELECT con.conname AS name FROM pg_constraint con
+                         WHERE con.conrelid = p.oid AND con.contype <> 'n'
+                        UNION ALL
+                        SELECT ci.relname FROM pg_index i JOIN pg_class ci ON ci.oid = i.indexrelid
+                         WHERE i.indrelid = p.oid) o),
          'partitions', (SELECT coalesce(json_agg(json_build_object(
               'schema', cn.nspname,
               'name', ch.relname,
@@ -209,17 +218,19 @@ export function parsePartitions(
     const isPartition: unknown = Reflect.get(r, 'isPartition');
     const columns: unknown = Reflect.get(r, 'columns');
     const identity: unknown = Reflect.get(r, 'identity');
+    const ownNames: unknown = Reflect.get(r, 'ownNames');
     const rawPartitions: unknown = Reflect.get(r, 'partitions');
     if (
       typeof name !== 'string' ||
       typeof isPartition !== 'boolean' ||
       typeof identity !== 'boolean' ||
       !Array.isArray(columns) ||
+      !(Array.isArray(ownNames) && ownNames.every((n) => typeof n === 'string')) ||
       !Array.isArray(rawPartitions)
     ) {
       return {
         ok: false,
-        problem: `a parent is not {name, isPartition, columns, identity, partitions}`,
+        problem: `a parent is not {name, isPartition, columns, identity, ownNames, partitions}`,
       };
     }
     const partitions: CataloguePartition[] = [];
@@ -252,7 +263,14 @@ export function parsePartitions(
         names,
       });
     }
-    parents.push({ name, isPartition, columns: JSON.stringify(columns), identity, partitions });
+    parents.push({
+      name,
+      isPartition,
+      columns: JSON.stringify(columns),
+      identity,
+      ownNames: ownNames as string[],
+      partitions,
+    });
   }
   const clones: CatalogueClone[] = [];
   for (const row of rawClones) {
@@ -453,6 +471,16 @@ export function canonicalPartitions(
       if (p.columns !== parent.columns) {
         problems.push(
           `${where}: partition "${p.name}" does not have the parent's columns in the parent's order (name, type, NOT NULL, identity, generated and default, by attnum), so its rendering is not the parent's`,
+        );
+      }
+    }
+    // Every constraint and index the PARENT owns must be one the template partition has too, or it
+    // would be absent from the rendering: `CREATE INDEX … ON ONLY <parent>` creates exactly that.
+    const counterparts = new Set(template.names.map((n) => n.to).filter((t) => t !== null));
+    for (const own of parent.ownNames) {
+      if (!counterparts.has(own)) {
+        problems.push(
+          `${where}: it owns "${own}", which partition "${template.name}" has no counterpart for, so it would be absent from the rendering (a \`CREATE INDEX … ON ONLY\` is one way to get there)`,
         );
       }
     }
