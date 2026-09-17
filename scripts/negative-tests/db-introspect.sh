@@ -49,7 +49,9 @@
 # T-153 rework 1 — K58-K62 (OD-147, OD-148): the per-relation COUNT is replaced by a PER-COLUMN match
 # against the catalogue, over the rendering parsed as TypeScript. K58/K59 plant a VIEW and a
 # MATERIALIZED VIEW over a bigint[] column, which drizzle-kit renders with no `.array()`; K60 is the
-# RED BEFORE with the count restored (they pass, and drizzle's read of each throws). K61/K62 are the
+# RED BEFORE with the count restored (they pass, and drizzle's read of each throws) - while the text[]
+# control in the same view keeps its .array() and reads correctly, so the loss is drizzle-kit's bigint
+# path, measured, not a general view-array defect. K61/K62 are the
 # false refusals the old text-shaped mechanisms produced on drizzle-kit's own output — a text DEFAULT
 # holding a bigint-mode call, and one equal to the hint sentence - each with its own RED BEFORE.
 #
@@ -887,7 +889,7 @@ check K51 "(T-153) the bigint-mode rewrite deleted: the hint it did not consume 
 
 T153_NOOP="  if (body !== '') return { ok: true, body, columns: 0 };"
 # T-153 rework 1: the per-column catalogue match turned off, for K53's RED BEFORE.
-T153_MATCH_OFF="  const int8 = { problems: [] as string[], int8: 0, matched: 0, relations: 0 };"
+T153_MATCH_OFF="  const int8 = { problems: [] as string[], int8: body.length * 0, matched: 0, relations: 0 };"
 plant_bigint
 mutate "$RENDER" "export function mapBigintColumns(body: string): BigintResult {" "export function mapBigintColumns(body: string): BigintResult {
 $T153_NOOP"
@@ -1153,7 +1155,7 @@ fact "driver: the TABLE's bigint[] reads exactly" "$(grep -cxF 'READ table amoun
 fact "driver: the VIEW's bigint[] read THREW" "$(grep -c '^READ view amounts THREW SyntaxError' "$OUT.rt")" 1
 fact "driver: the MATERIALIZED VIEW's bigint[] read THREW" "$(grep -c '^READ matview amounts THREW SyntaxError' "$OUT.rt")" 1
 fact "driver: the text[] control, the TABLE's (drizzle-kit renders it .array())" "$(grep -cxF 'READ table labels [string alpha, string beta]' "$OUT.rt")" 1
-fact "driver: the text[] control, the VIEW's — rendered scalar by drizzle-kit, read as one string, SILENTLY (OD-149, not this rule's subject)" "$(grep -cxF 'READ view labels string {alpha,beta}' "$OUT.rt")" 1
+fact "driver: the text[] control IN THE SAME VIEW keeps .array() and reads correctly, so the lost .array() is specific to drizzle-kit's bigint rendering" "$(grep -cxF 'READ view labels [string alpha, string beta]' "$OUT.rt")" 1
 sed 's/^/driver: /' "$OUT.rt" >>"$OUT.f"
 [ "$nok" -eq "$nf" ] && echo "ALL $nf RED-BEFORE FACTS HOLD" >>"$OUT.f"
 cat "$OUT.f" >>"$OUT"
