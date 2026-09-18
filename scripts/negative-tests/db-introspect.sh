@@ -220,6 +220,22 @@ judge() {
   grep -E '^  - \[|^GATE |VACUOUS:|byte-identical|db:migrate up:' "$OUT" | cut -c1-240 | sed 's/^/       /'
 }
 
+# facts_into <regex>...: one fact line per regex into $OUT.f (a leading ! = must NOT match $OUT); sets $miss.
+facts_into() {
+  local re
+  miss=0
+  for re in "$@"; do
+    if [ "${re#!}" != "$re" ]; then
+      if grep -qE -- "${re#!}" "$OUT"; then echo "fact MISMATCH (present, must be absent): ${re#!}" >>"$OUT.f"; miss=$((miss + 1)); else echo "fact ok (absent): ${re#!}" >>"$OUT.f"; fi
+    elif grep -qE -- "$re" "$OUT"; then
+      echo "fact ok (present): $re" >>"$OUT.f"
+    else
+      echo "fact MISMATCH (absent, must be present): $re" >>"$OUT.f"
+      miss=$((miss + 1))
+    fi
+  done
+}
+
 check() {
   local id=$1 desc=$2 expect=$3 require=${4:-}
   node scripts/db-introspect.ts --check >"$OUT" 2>&1
@@ -823,22 +839,6 @@ restore_text_read() {
   mutate "$SCRIPT" "$PARSE_NEW" "$PARSE_OLD"
   { ! grep -qF 'psql(CATALOGUE_SQL)' "$SCRIPT" && ! grep -qF 'parseCatalogue(cat.out)' "$SCRIPT" && grep -qF "l.split('|')" "$SCRIPT" && grep -qF ".map((l) => l.trim())" "$SCRIPT" && grep -qF "SELECT n.nspname || '|' || c.relname || '|' ||" "$SCRIPT"; } || abort "main's trim/split read did not land in $SCRIPT"
   git diff -U0 -- "$SCRIPT" | grep -E '^[-+][^-+]' | sed 's/^/   mutation:   /'
-}
-
-# facts_into <regex>...: one fact line per regex into $OUT.f (a leading ! = must NOT match $OUT); sets $miss.
-facts_into() {
-  local re
-  miss=0
-  for re in "$@"; do
-    if [ "${re#!}" != "$re" ]; then
-      if grep -qE -- "${re#!}" "$OUT"; then echo "fact MISMATCH (present, must be absent): ${re#!}" >>"$OUT.f"; miss=$((miss + 1)); else echo "fact ok (absent): ${re#!}" >>"$OUT.f"; fi
-    elif grep -qE -- "$re" "$OUT"; then
-      echo "fact ok (present): $re" >>"$OUT.f"
-    else
-      echo "fact MISMATCH (absent, must be present): $re" >>"$OUT.f"
-      miss=$((miss + 1))
-    fi
-  done
 }
 
 # landed_fact <wanted hex>: the plant's nspname bytes, read from pg_namespace, must be the bytes the case
