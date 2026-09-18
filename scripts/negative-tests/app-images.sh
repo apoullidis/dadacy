@@ -116,10 +116,14 @@ tree_check() {
   return 1
 }
 trap 'restore; rm -rf "$BK"' EXIT
-# An interrupt must leave the tree as it found it too. Without these, a SIGINT
-# that arrives while `mut` is rewriting a tracked file leaves it mutated, and a
-# plant left on disk (bash defers the EXIT trap to the end of the foreground
-# child, but a signal that kills the shell outright runs nothing at all).
+# An interrupt must leave the tree as it found it too, and MEASURED (T-156 § H):
+# on this bash the EXIT trap above ALREADY runs when the shell dies of SIGINT or
+# SIGTERM, so with these two lines deleted the tree still comes back clean. What
+# these add is therefore NOT the restore — it is that an interrupted run SAYS it
+# was interrupted instead of ending in silence three lines into a case, and that
+# the restore does not depend on bash's EXIT-on-signal behaviour staying what it
+# is. The bound, also measured: SIGKILL restores nothing (H4 leaves
+# apps/core/package.json mutated), and no trap can change that.
 trap 'echo; echo "INTERRUPTED (SIGINT) — restoring the working tree"; restore; rm -rf "$BK"; trap - EXIT; exit 130' INT
 trap 'echo; echo "TERMINATED (SIGTERM) — restoring the working tree"; restore; rm -rf "$BK"; trap - EXIT; exit 143' TERM
 
