@@ -535,7 +535,7 @@ export function canonicalPartitions(
         checked += 1;
         if (n.to !== null) continue;
         problems.push(
-          `${where}: partition "${p.name}" has its own ${n.kind} "${n.from}", which the parent has no counterpart for${n.kind === 'policy' ? ' (PostgreSQL clones no policy to a partition, so a policy row on one is always the partition's own)' : ''}; only the parent is rendered, so it would be in the catalogue and in no reading of db/schema.ts`,
+          `${where}: partition "${p.name}" has its own ${n.kind} "${n.from}", which the parent has no counterpart for${n.kind === 'policy' ? ' (PostgreSQL clones no policy to a partition, so a policy row on one is always its own)' : ''}; only the parent is rendered, so it would be in the catalogue and in no reading of db/schema.ts`,
         );
       }
     }
