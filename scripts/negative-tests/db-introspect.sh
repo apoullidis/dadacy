@@ -1090,6 +1090,14 @@ TEMPLATE_ONLY_FROM="    for (const p of local) {
       for (const n of p.names) {"
 TEMPLATE_ONLY_TO="    for (const p of local.filter((q) => q.name === template.name)) {
       for (const n of p.names) {"
+# The second mutation: the partition read stops reading pg_policy at all, which is what the step did
+# before this rework. It is used for the TEMPLATE policy case, where template-only checking would
+# still catch the offender — there the pre-rework answer was the incidental [I-POLICY], and showing
+# it is what proves the two shapes did NOT answer alike before.
+NO_POLICY_READ_FROM="                              FROM pg_policy pol
+                             WHERE pol.polrelid = ch.oid) m))"
+NO_POLICY_READ_TO="                              FROM pg_policy pol
+                             WHERE false AND pol.polrelid = ch.oid) m))"
 
 # write_judge <id> <desc> <expected exit> <expected tag set or 'none'> <name that must be absent from db/schema.ts>
 write_judge() {
@@ -1127,6 +1135,7 @@ $2}"
 # partlocal_case <id> <desc> <extra up> <extra down> <assert SQL> <expected> <I-PART regex> <mutated exit> <mutated tags> <absent name>
 partlocal_case() {
   local id=$1 desc=$2 xup=$3 xdown=$4 asql=$5 awant=$6 re=$7 mcode=$8 mtags=$9 absent=${10} got
+  local mkind=${11:-template-only}
   plant_two_partitions "$xup" "$xdown"
   sed 's/^/   plant up:   /' "$UP"
   node scripts/db-migrate.ts up >"$OUT.p" 2>&1 || { cat "$OUT.p"; abort "$id: the plant did not apply"; }
@@ -1135,9 +1144,13 @@ partlocal_case() {
   echo "   plant landed, read from the catalogue: [$got]"
   node scripts/db-introspect.ts --check >"$OUT" 2>&1
   judge "$id" "$desc" I-PART "$?" "$re"
-  mutate "$PARTITION" "$TEMPLATE_ONLY_FROM" "$TEMPLATE_ONLY_TO"
+  if [ "$mkind" = no-policy-read ]; then
+    mutate "$PARTITION" "$NO_POLICY_READ_FROM" "$NO_POLICY_READ_TO"
+  else
+    mutate "$PARTITION" "$TEMPLATE_ONLY_FROM" "$TEMPLATE_ONLY_TO"
+  fi
   git diff -U0 -- "$PARTITION" | grep -E '^[-+][^-+]' | sed 's/^/   mutation:   /'
-  write_judge "${id}m" "(T-165 r1) RED BEFORE: template-only checking restored (asserted above), the same plant is written with the object nowhere in db/schema.ts" "$mcode" "$mtags" "$absent"
+  write_judge "${id}m" "(T-165 r1) RED BEFORE: the $mkind reading restored (asserted above), which is what the step did before this rework" "$mcode" "$mtags" "$absent"
   restore
 }
 
@@ -1157,7 +1170,7 @@ CREATE POLICY t165_part_q1_only ON public.t165_part_q1 FOR SELECT TO app_rw USIN
   "SELECT c.relname || '/' || pol.polname FROM pg_policy pol JOIN pg_class c ON c.oid = pol.polrelid" \
   "t165_part_q1/t165_part_q1_only" \
   'partition "t165_part_q1" has its own policy "t165_part_q1_only", which the parent has no counterpart for' \
-  1 I-POLICY t165_part_q1_only
+  1 I-POLICY t165_part_q1_only no-policy-read
 
 partlocal_case K74 "(T-165 r1, OD-156) an INDEX on the non-template partition (QA's DRIFT 2): refused" \
   "CREATE INDEX t165_part_q2_local_idx ON public.t165_part_q2 (note);" \
