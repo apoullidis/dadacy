@@ -41,7 +41,8 @@ cp "$VERIFY" "$BK/verify"; cp "$CHAOS" "$BK/chaos"; cp "$BASE" "$BK/base"; cp "$
 #     mode now stops the suite instead of being executed by it;
 #   * run_case re-reads `git status --porcelain` after every restore and names
 #     the case that leaked, and the footer judges the whole run against the
-#     tree as it was at startup.
+#     tree as it was at startup — for any path git REPORTS. It is not a
+#     backstop for a path git ignores; see the bound on the PLANTED rule below.
 #
 # Why not `git stash`: it would sweep up the uncommitted work of whoever is
 # running the suite and put it back through an index this script does not own —
@@ -57,6 +58,29 @@ cp "$VERIFY" "$BK/verify"; cp "$CHAOS" "$BK/chaos"; cp "$BASE" "$BK/base"; cp "$
 # IF YOU ADD A CASE THAT CREATES A FILE, add its path here. If the suite then
 # refuses to start because the path is tracked, your case is planting over
 # committed source — fix the case, never this list.
+#
+# AND THE BOUND ON THAT RULE — READ IT BEFORE YOU DECIDE A PATH IS TOO BORING TO
+# LIST (T-156 rework 1; decisions.md OD-159, found by qa-verification by planting
+# one). THE TREE CHECK BELOW DOES NOT BACK THIS LIST UP OVER THE WHOLE
+# NAMESPACE. It is `git status --porcelain`, so it is blind to exactly what git
+# is blind to: a path matched by .gitignore, and an empty directory. Measured —
+# a case planting `apps/core/dist/qa-leak.txt` (.gitignore line 9, `dist/`) and
+# an empty `apps/qa-empty-dir` left the suite printing WORKING TREE UNCHANGED
+# and ALL 136 CASES BEHAVED AS EXPECTED, exit 0, with both still on disk.
+# So for a path git IGNORES, PLANTED is the ONLY instrument, and leaving one out
+# leaks SILENTLY: no case is named, nothing is printed, the exit status does not
+# move. These are the directories where that bites, and they are the ones a
+# Docker-shaped suite is likeliest to write into:
+#
+#     node_modules/   dist/   build/   out/   .next/   .turbo/
+#     coverage/       .cache/  .pnpm-store/   .env*
+#
+# A path git REPORTS is still backstopped: create one outside PLANTED and the
+# tree check names your case and exits non-zero. And the DELETION half is
+# unaffected either way — a TRACKED file that is deleted, truncated or modified
+# always appears in porcelain whatever .gitignore says, which is why OD-119
+# itself stays covered. Do not reach for `git status --ignored` to close this:
+# it would pull node_modules/ and the Trivy cache into 136 per-case comparisons.
 PLANTED=(
   apps/qa-newapp
   apps/qa-attack
@@ -105,7 +129,9 @@ restore() {
 }
 # `tree_check` is the per-case half of the OD-119 fix: "did nothing", "restored"
 # and "left something behind" are three distinguishable outcomes, and the third
-# names the case (PROTOCOL §5.1).
+# names the case (PROTOCOL §5.1). Its blind spot is git's: a plant under an
+# ignored path, or an empty directory, reads here as "restored" (OD-159 — the
+# bound on the PLANTED rule above).
 tree_check() {
   local now; now="$(git status --porcelain)"
   [[ "$now" == "$TREE_PREV" ]] && return 0
