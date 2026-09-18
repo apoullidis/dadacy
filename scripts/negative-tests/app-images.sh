@@ -18,20 +18,110 @@ DF=docker/app.Dockerfile
 BK="$(mktemp -d)"
 PGDF=docker/postgres.Dockerfile
 cp "$VERIFY" "$BK/verify"; cp "$CHAOS" "$BK/chaos"; cp "$BASE" "$BK/base"; cp "$DEV" "$BK/dev"; cp "$DF" "$BK/df"; cp "$PGDF" "$BK/pgdf"; cp scripts/svc "$BK/svc"; cp apps/core/package.json "$BK/corepkg"; cp apps/safety-gw/package.json "$BK/sgwpkg"
+
+# T-156 (decisions.md OD-119) — WHAT THIS SUITE MAY DELETE, AND THE PROOF THAT
+# IT MAY.
+#
+# restore() used to end in a hard-coded `rm -rf apps/core/src apps/qa-newapp
+# docker/next.Dockerfile docker/rogue.Dockerfile` (plus two more lines like it).
+# That list was written when `apps/core` was a placeholder and cases 21-22
+# planted a `src/` into it. `T-135` then COMMITTED `apps/core/src/**`, and from
+# that day every exit of this suite deleted 23 tracked files, 2044 lines of
+# `core`, and any `git add -A` afterwards committed the deletion. The deletion
+# was silent: nothing in the suite ever looked at the tree it had just edited.
+#
+# THE MECHANISM, and why this one:
+#   * tracked files a case MUTATES are still restored from the $BK temp copy
+#     above — unchanged, and it was never the broken half;
+#   * files a case CREATES are enumerated in PLANTED below, and restore() removes
+#     those and nothing else;
+#   * PLANTED is checked against git ONCE, before the first case runs, and the
+#     suite REFUSES TO START if any entry is tracked. That is the structural
+#     part: OD-119 is precisely a PLANTED path becoming tracked, so the failure
+#     mode now stops the suite instead of being executed by it;
+#   * run_case re-reads `git status --porcelain` after every restore and names
+#     the case that leaked, and the footer judges the whole run against the
+#     tree as it was at startup.
+#
+# Why not `git stash`: it would sweep up the uncommitted work of whoever is
+# running the suite and put it back through an index this script does not own —
+# a worse version of the same hazard — and it cannot be done per case (136
+# stashes). Why not a worktree: the gate reads `node_modules` and the real
+# compose/Dockerfile set, so a second worktree needs its own install and the
+# suite would then judge a tree that is not the one on disk, which is the one
+# thing a negative suite must not do. A temp copy plus an enumerated plant list
+# leaves the suite reading the real working tree, costs one `git ls-files` at
+# startup, and is the only variant in which "restore exactly what was planted"
+# is written down rather than inferred.
+#
+# IF YOU ADD A CASE THAT CREATES A FILE, add its path here. If the suite then
+# refuses to start because the path is tracked, your case is planting over
+# committed source — fix the case, never this list.
+PLANTED=(
+  apps/qa-newapp
+  apps/qa-attack
+  apps/qa-x
+  apps/safety-gw/package.json.t037
+  docker/next.Dockerfile
+  docker/rogue.Dockerfile
+  docker/rogue-single.Dockerfile
+  docker/rogue-two-stage.Dockerfile
+  docker/compose.extra.yml
+  docker/chaos-extra.yml
+  docker/zz-thing.yaml
+  docker/compose.yml.t130
+  docker/compose.yml.t131
+  infra/compose.rogue.yml
+)
+command -v git >/dev/null 2>&1 || {
+  echo "HARNESS ERROR: git is not on PATH. This suite refuses to delete anything"
+  echo "               it cannot first prove untracked (OD-119)."
+  exit 2
+}
+_tracked=""
+for _p in "${PLANTED[@]}"; do
+  git ls-files --error-unmatch -- "$_p" >/dev/null 2>&1 && _tracked="$_tracked  - $_p
+"
+done
+if [[ -n "$_tracked" ]]; then
+  echo "HARNESS ERROR: these PLANTED paths are TRACKED, and this suite will not delete them:"
+  printf '%s' "$_tracked"
+  echo "               A case plants a path; if git tracks it, that case is planting over"
+  echo "               committed source. That is OD-119. Fix the case, not this list."
+  exit 2
+fi
+# The tree as it was before the first case. TREE0 is the verdict's anchor and is
+# never reassigned; TREE_PREV rolls forward so each leak is attributed to the
+# case that caused it rather than re-reported by every case after it.
+TREE0="$(git status --porcelain)"
+TREE_PREV="$TREE0"
+leaks=0
+
 restore() {
   cp "$BK/verify" "$VERIFY"; cp "$BK/chaos" "$CHAOS"; cp "$BK/base" "$BASE"; cp "$BK/dev" "$DEV"; cp "$BK/df" "$DF"; cp "$BK/pgdf" "$PGDF"; cp "$BK/svc" scripts/svc; cp "$BK/corepkg" apps/core/package.json
-  rm -rf apps/core/src apps/qa-newapp docker/next.Dockerfile docker/rogue.Dockerfile
-  # T-037: the OD-36 / OD-37 / OD-38 cases. `chaos-extra.yml` is named
-  # deliberately — it is the file `tech-lead` cited to reject a
-  # `docker/compose*.yml` glob as the fix for OD-37.
-  rm -rf docker/rogue-single.Dockerfile docker/rogue-two-stage.Dockerfile \
-         docker/compose.extra.yml docker/chaos-extra.yml
-  # T-037 rework (OD-39) and the folded-in attack round.
-  rm -rf apps/qa-attack apps/qa-x apps/safety-gw/package.json.t037 docker/zz-thing.yaml
+  rm -rf -- "${PLANTED[@]}"
   [[ -f "$BK/sgwpkg" ]] && cp "$BK/sgwpkg" apps/safety-gw/package.json
   return 0
 }
+# `tree_check` is the per-case half of the OD-119 fix: "did nothing", "restored"
+# and "left something behind" are three distinguishable outcomes, and the third
+# names the case (PROTOCOL §5.1).
+tree_check() {
+  local now; now="$(git status --porcelain)"
+  [[ "$now" == "$TREE_PREV" ]] && return 0
+  leaks=$((leaks + 1))
+  echo "   !! WORKING TREE NOT RESTORED by: $1"
+  diff <(printf '%s\n' "$TREE_PREV") <(printf '%s\n' "$now") | head -20 | sed 's/^/      /'
+  TREE_PREV="$now"
+  return 1
+}
 trap 'restore; rm -rf "$BK"' EXIT
+# An interrupt must leave the tree as it found it too. Without these, a SIGINT
+# that arrives while `mut` is rewriting a tracked file leaves it mutated, and a
+# plant left on disk (bash defers the EXIT trap to the end of the foreground
+# child, but a signal that kills the shell outright runs nothing at all).
+trap 'echo; echo "INTERRUPTED (SIGINT) — restoring the working tree"; restore; rm -rf "$BK"; trap - EXIT; exit 130' INT
+trap 'echo; echo "TERMINATED (SIGTERM) — restoring the working tree"; restore; rm -rf "$BK"; trap - EXIT; exit 143' TERM
 
 # THE DIFFERENTIAL HARNESS (T-036). Which implementation of the gate to judge
 # each case with. The default is the committed gate and nothing in this repo
@@ -93,6 +183,8 @@ run_case() {
   [[ "$verdict" == FAIL* ]] && printf '%s\n' "$out" | grep -E '^  - ' | head -1 | cut -c1-150 | sed 's/^/       /'
   [[ "$verdict" == CRASH ]] && printf '%s\n' "$out" | tail -3 | sed 's/^/       /'
   restore
+  tree_check "$label"
+  return 0
 }
 
 CORE_BUILD="  core:
@@ -300,12 +392,27 @@ fs.writeFileSync(p, s.slice(0, j) + 'target: next-runtime' + s.slice(j + 'target
 JS
 run_case "20a next-runtime inheriting NOTHING: no USER/HC/ENTRYPOINT" FAIL
 
-echo; echo "=== cases 21-22: apps/<name>/src present with no start script ==="
-mkdir -p apps/core/src && echo 'export const x = 1;' > apps/core/src/index.ts
-run_case "21 apps/core has src/ but declares no start script" FAIL
-mkdir -p apps/core/src && echo 'export const x = 1;' > apps/core/src/index.ts
-node scripts/negative-tests/mutate.mjs apps/core/package.json '"type": "module",' '"type": "module",
-  "scripts": { "start": "node dist/main.js" },' && run_case "22 the same, once it declares start" PASS
+echo; echo "=== cases 21-22 (T-156, OD-120): apps/<name>/src present with no start script ==="
+# These two used to PLANT `apps/core/src/index.ts` and then, in 22, insert a
+# second `"scripts"` key into apps/core/package.json. Both halves stopped being
+# the state they name the day T-135 committed apps/core/src/** AND a `start`
+# script: case 21's plant added a file to a directory that already had source,
+# to an app that already declared `start`, so the app satisfied the rule and the
+# case reported `exit=0 PASS (expected FAIL)` on a clean main — this suite has
+# been red on main ever since (decisions.md OD-120). Case 22's insert was worse
+# than useless: JSON.parse keeps the LAST duplicate key, so the real `"scripts"`
+# won and the mutation changed nothing the gate read.
+#
+# The state that actually lacks a start script is core's own manifest with the
+# entry REMOVED. apps/core/package.json is already in the $BK backup set, so this
+# is an anchored mutation of a restored file and plants nothing; the anchor makes
+# a future rename of the script a HARNESS ERROR rather than a silent pass.
+# Case 22 keeps a `start` and changes only its VALUE, so the pair isolates the
+# key's presence: same src/, same file touched, opposite verdicts.
+mut apps/core/package.json '    "start": "node src/main.ts",
+' '' && run_case "21 apps/core has src/ but declares no start script" FAIL "declares no 'start' script"
+mut apps/core/package.json '"start": "node src/main.ts"' '"start": "node dist/main.js"' \
+  && run_case "22 the same, once it declares start" PASS
 
 echo; echo "=== cases 23-31 (T-035): STAGE AWARENESS — last-wins along the target stage's ancestry ==="
 # T-018's cases 09-12 are the same REPLACE shape four times: each swaps a good
@@ -1457,9 +1564,23 @@ mk_single && mut "$CHAOS" 'services: {}' "services:
 echo
 run_case "99 tree restored" PASS
 echo
-if [[ $bad -eq 0 && $harness -eq 0 ]]; then
+# T-156 (OD-119): the tracked-files check. The anchor is TREE0, read before the
+# first case, so this compares the tree against itself-before rather than against
+# a list written down here — a `git status` that is empty for the wrong reason
+# cannot satisfy it, and a pre-existing dirty tree is not counted against the
+# suite. restore() has already run (run_case's last act, and the EXIT trap's).
+tree_final="$(git status --porcelain)"
+if [[ "$tree_final" == "$TREE0" ]]; then
+  tree_bad=0
+  echo "WORKING TREE UNCHANGED: git status --porcelain identical before and after ($(printf '%s' "$TREE0" | grep -c . || true) line(s))"
+else
+  tree_bad=1
+  echo "!! WORKING TREE CHANGED: this suite did not restore what it planted"
+  diff <(printf '%s\n' "$TREE0") <(printf '%s\n' "$tree_final") | sed 's/^/   /'
+fi
+if [[ $bad -eq 0 && $harness -eq 0 && $leaks -eq 0 && $tree_bad -eq 0 ]]; then
   echo "ALL $ran CASES BEHAVED AS EXPECTED"
 else
-  echo "!! $bad of $ran CASE(S) MISBEHAVED; $harness HARNESS ERROR(S)"
+  echo "!! $bad of $ran CASE(S) MISBEHAVED; $harness HARNESS ERROR(S); $leaks TREE LEAK(S)"
 fi
-exit $((bad + harness))
+exit $((bad + harness + leaks + tree_bad))
