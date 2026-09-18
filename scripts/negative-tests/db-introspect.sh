@@ -140,8 +140,23 @@ restore() {
 # database is this ticket's own ephemeral compose project; a tracked file is not. Calling the full
 # restore() from a trap would put the database half first, and an unreachable database would then
 # abort BEFORE db/schema.ts was ever checked out — the trap would fail in exactly the direction it
-# exists to prevent. An interrupted run therefore leaves the database wherever the interrupt found
-# it, which was already true before this ticket; `svc down <ticket>` disposes of it.
+# exists to prevent.
+#
+# What that costs, stated plainly because it is a CONSEQUENCE ACCEPTED and not a non-effect (T-168
+# rework 1, QR-F1; measured by QA on both sides with a real database). An interrupt after the plant
+# has been applied leaves the database ADVANCED PAST WHAT THIS DIRECTORY CAN REVERT: the record
+# still reads $NEXT, and restore_tree has already deleted ${NEXT}_t138_plant.down.sql, which is the
+# one file `node scripts/db-migrate.ts down` would need. That command then answers
+#   MIGRATE REFUSED  the database records version <NEXT>, but the directory's highest migration is
+#                    <HIGHEST>: a recorded migration has no file          (exit 2)
+# and this suite cannot start again on that database at all — its own first act is `db:migrate up`,
+# which is refused the same way, so the run ends at `ABORT: db:migrate up failed before the first
+# case`. The remedy is to DISPOSE OF THE DATABASE, which `scripts/svc down <ticket>` does (it is
+# `docker compose down --volumes`, scripts/svc:580); the volume goes and the next `svc up` starts
+# from nothing. Without the traps — i.e. on main c27c354 — the down file survives and `db:migrate
+# down --to <HIGHEST>` still returns `MIGRATE OK`, so this is a real regression in the DATABASE
+# half, deliberately taken: the tree half is the one that protects COMMITTED SOURCE, the database
+# is this ticket's own ephemeral compose project, and a tracked file is not.
 #
 # restore_tree aborts (exit 2) when the tree does not come back clean, so "restored", "could not
 # restore" and "was never touched" stay three distinguishable outcomes from inside a trap too.

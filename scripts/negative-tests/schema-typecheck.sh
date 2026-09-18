@@ -59,9 +59,15 @@ restore() {
 # the tree back. These traps close the interrupt window: between a case's first write and the next
 # restore(), FIVE tracked paths are deleted, overwritten or rewritten in place — the two type-test
 # importers, db/schema.ts, tsconfig.base.json and scripts/gates/lib/schema-render.ts, by `rm -f`,
-# `sed -i`, `git show … >` and mutate.mjs across eleven sites (T-168 § Published contract §3 lists
-# them at main c27c354: L108, L113, L136, L144, L164-L176, L186, L188, L189, L208, L209, L239 —
-# those are MAIN's numbers, and this block shifts them). Until this ticket a Ctrl-C left them that way.
+# `sed -i`, `git show … >` and mutate.mjs across SIXTEEN sites on FIFTEEN lines (T-168 § Published
+# contract §3 lists them at main c27c354: L108, L113, L136, L144, L164, L170, L171, L175, L176,
+# L186, L188, L189, L208, L209, L239 — those are MAIN's numbers, and this block shifts them; L189
+# is two sites because `rm -f "$VALUE" "$TYPE"` names two tracked paths on one line). Until this
+# ticket a Ctrl-C left them that way.
+# The count was "eleven sites" until T-168 rework 1: eleven is the number of ITEMS in the list
+# above once L164-L176 is written as a range, not the number of sites. Sites are NOT deduplicated
+# — one line writing two paths is two sites — which is the lesson of T-156's signed annotation and
+# the third time this class of count has been understated here.
 #
 # The restoring instrument is restore() itself — `git checkout` over tracked paths plus `rm -f` over
 # the planted ones. It is NOT app-images.sh's PLANTED delete-list: this suite removes and overwrites
@@ -227,7 +233,13 @@ echo "== rejected option C1: noUnusedParameters off alone"
 # every real importer of it still typechecks and the only errors left in the program are the two
 # this case names. The expectation is NOT widened: it is still exactly the two TS6133s, still under
 # `noUnusedParameters: false`, and the case still goes BAD if either stops being reported.
-# Side effect worth stating: S09 no longer writes to any tracked path at all.
+# Side effect worth stating, narrowed in T-168 rework 1 (QR-F2) because the first wording said
+# "S09 no longer writes to any tracked path at all" and the very next mutate line falsifies it:
+# S09 no longer writes db/schema.ts — which is the point of the fix, and is asserted three lines
+# down by `git diff --quiet -- "$SCHEMA"`. It DOES still write the tracked tsconfig.base.json
+# (the `mutate "$BASE"` below; BASE=tsconfig.base.json), and it plants the untracked $C1RENDER and
+# $C1. Interrupted inside this block, `git status --porcelain` reads ` M tsconfig.base.json`; the
+# traps above are what put it back.
 git show "$EMPTY_RENDERING:$SCHEMA" >"$C1RENDER"
 grep -q '^import { sql } from "drizzle-orm"$' "$C1RENDER" || abort "the $EMPTY_RENDERING rendering did not land in $C1RENDER"
 git diff --quiet -- "$SCHEMA" || abort "S09 must not modify $SCHEMA"
