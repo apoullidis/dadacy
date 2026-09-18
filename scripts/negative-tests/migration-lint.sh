@@ -19,6 +19,9 @@
 # and one file under scripts/, and removes both. Case C99 also creates a detached git
 # worktree under the container's /tmp and removes it.
 #
+# T-168: EXIT/INT/TERM traps call restore(), so an INTERRUPTED run puts the two tracked files C3K
+# and C87 delete back too — see the block beside the traps.
+#
 # T-167 adds one section (CV*): R-VENDOR-SQL, the reviewed `-- @vendor-sql` marker (OD-150).
 #
 # T-031 adds four sections: R-ROLE-SWITCH (CR*), R-RUN-AS (CM*), runner-read marker lines in a
@@ -58,6 +61,25 @@ restore() {
     exit 2
   fi
 }
+
+# T-168 (OD-161/OD-162). Every case calls restore() explicitly, so a COMPLETE run already put the
+# tree back. These traps close the interrupt window: two cases delete a TRACKED file and leave it
+# deleted until the next restore() — `rm -f db/schema.ts` at C3K, and the bare `rm "$DOWN1"` at C87,
+# which removes db/migrations/0001_extensions_and_roles.down.sql, a MERGED migration. Until this
+# ticket a Ctrl-C in either window left the file gone.
+#
+# The restoring instrument is restore() itself — `git checkout -q -- "$M"` plus the conditional
+# checkout of db/schema.ts — not a delete-list: these are files git already has, so git is the
+# backup. restore() exits 2 when the tree does not come back clean, so "restored", "could not
+# restore" and "was never touched" stay three distinguishable outcomes from inside a trap too.
+#
+# BOUND, stated rather than assumed: restore() is a working-tree instrument. It does not remove a
+# detached worktree that C99 or a CT* case registered under the container's /tmp; an interrupt there
+# still leaves a stale entry in .git/worktrees, which `git status --porcelain` never showed and this
+# ticket does not change. `git worktree prune` clears it.
+trap 'restore; rm -f "$OUT"' EXIT
+trap 'echo; echo "INTERRUPTED (SIGINT) — restoring the working tree"; restore; rm -f "$OUT"; trap - EXIT; exit 130' INT
+trap 'echo; echo "TERMINATED (SIGTERM) — restoring the working tree"; restore; rm -f "$OUT"; trap - EXIT; exit 143' TERM
 
 # plant <file> <content>: write, then assert the bytes on disk are the bytes intended.
 plant() {
