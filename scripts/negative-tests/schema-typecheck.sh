@@ -56,9 +56,12 @@ restore() {
 }
 
 # T-168 (OD-160/OD-161). Every case above calls restore() explicitly, so a COMPLETE run already put
-# the tree back. These traps close the interrupt window: between `rm -f "$VALUE"` (L108) or
-# `git show … >"$SCHEMA"` (L144) and the next restore(), five TRACKED paths are deleted or
-# overwritten, and until this ticket a Ctrl-C there left them that way.
+# the tree back. These traps close the interrupt window: between a case's first write and the next
+# restore(), FIVE tracked paths are deleted, overwritten or rewritten in place — the two type-test
+# importers, db/schema.ts, tsconfig.base.json and scripts/gates/lib/schema-render.ts, by `rm -f`,
+# `sed -i`, `git show … >` and mutate.mjs across eleven sites (T-168 § Published contract §3 lists
+# them at main c27c354: L108, L113, L136, L144, L164-L176, L186, L188, L189, L208, L209, L239 —
+# those are MAIN's numbers, and this block shifts them). Until this ticket a Ctrl-C left them that way.
 #
 # The restoring instrument is restore() itself — `git checkout` over tracked paths plus `rm -f` over
 # the planted ones. It is NOT app-images.sh's PLANTED delete-list: this suite removes and overwrites
