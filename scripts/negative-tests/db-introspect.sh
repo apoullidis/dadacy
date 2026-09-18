@@ -907,7 +907,7 @@ check K55 "(T-165) the parent gains a column, which every partition gains too, a
 policy_fixture "$PART_FIXTURE"
 write_schema
 psql -X -q -v ON_ERROR_STOP=1 -c "CREATE INDEX t165_part_q1_own_idx ON public.t165_part_q1 (note)" >/dev/null || abort "the partition-only index failed"
-check K56 "(T-165) an index created on a partition alone, which the parent does not have: refused, never rendered as the parent's" I-PART 'renders "t165_part_q1_own_idx", which is its own and has no counterpart on the parent'
+check K56 "(T-165) an index created on a partition alone, which the parent does not have: refused, never rendered as the parent's" I-PART 'partition "t165_part_q1" has its own index "t165_part_q1_own_idx", which the parent has no counterpart for'
 
 plant "$UP" "-- @phase: expand
 CREATE TABLE public.t165_part (id bigint NOT NULL, at timestamptz NOT NULL,
@@ -1058,7 +1058,7 @@ $post}"
   grep -E '^fact ' "$OUT" | cut -c1-240 | sed 's/^/       /'
   mutate "$SCRIPT" "$SCHEMA_FILTER_NEW" "$SCHEMA_FILTER_OLD"
   grep -qF "AND n.nspname NOT LIKE 'pg\\\\_toast%'" "$SCRIPT" || abort "main's schema filter did not land in $SCRIPT"
-  grep -qF 'c.oid >= 16384' "$SCRIPT" && abort "the widened read is still in $SCRIPT"
+  grep -qF "AND n.nspname NOT LIKE 'pg\\\\_toast\\\\_temp\\\\_%'))" "$SCRIPT" && abort "the widened catalogue read is still in $SCRIPT"
   git diff -U0 -- "$SCRIPT" | grep -E '^[-+][^-+]' | sed 's/^/   mutation:   /'
   node scripts/db-introspect.ts --check >"$OUT" 2>&1
   code=$?
@@ -1147,7 +1147,7 @@ CREATE POLICY t165_part_q2_only ON public.t165_part_q2 FOR SELECT TO app_rw USIN
   "" \
   "SELECT c.relname || '/' || pol.polname FROM pg_policy pol JOIN pg_class c ON c.oid = pol.polrelid" \
   "t165_part_q2/t165_part_q2_only" \
-  'partition "t165_part_q2" has a policy of its own, "t165_part_q2_only", which the parent has no counterpart for' \
+  'partition "t165_part_q2" has its own policy "t165_part_q2_only", which the parent has no counterpart for' \
   0 none t165_part_q2_only
 
 partlocal_case K73 "(T-165 r1, OD-155) the SAME policy on the TEMPLATE partition: the same answer, [I-PART], not the incidental [I-POLICY] it used to be" \
@@ -1156,7 +1156,7 @@ CREATE POLICY t165_part_q1_only ON public.t165_part_q1 FOR SELECT TO app_rw USIN
   "" \
   "SELECT c.relname || '/' || pol.polname FROM pg_policy pol JOIN pg_class c ON c.oid = pol.polrelid" \
   "t165_part_q1/t165_part_q1_only" \
-  'partition "t165_part_q1" has a policy of its own, "t165_part_q1_only", which the parent has no counterpart for' \
+  'partition "t165_part_q1" has its own policy "t165_part_q1_only", which the parent has no counterpart for' \
   1 I-POLICY t165_part_q1_only
 
 partlocal_case K74 "(T-165 r1, OD-156) an INDEX on the non-template partition (QA's DRIFT 2): refused" \
@@ -1164,7 +1164,7 @@ partlocal_case K74 "(T-165 r1, OD-156) an INDEX on the non-template partition (Q
   "" \
   "SELECT count(*)::text FROM pg_class WHERE relname = 't165_part_q2_local_idx'" \
   "1" \
-  'partition "t165_part_q2" has a index of its own, "t165_part_q2_local_idx", which the parent has no counterpart for' \
+  'partition "t165_part_q2" has its own index "t165_part_q2_local_idx", which the parent has no counterpart for' \
   0 none t165_part_q2_local_idx
 
 partlocal_case K75 "(T-165 r1, OD-156) a CHECK constraint on the non-template partition alone: refused" \
@@ -1172,7 +1172,7 @@ partlocal_case K75 "(T-165 r1, OD-156) a CHECK constraint on the non-template pa
   "" \
   "SELECT count(*)::text FROM pg_constraint WHERE conname = 't165_part_q2_note_ck'" \
   "1" \
-  'partition "t165_part_q2" has a constraint of its own, "t165_part_q2_note_ck", which the parent has no counterpart for' \
+  'partition "t165_part_q2" has its own constraint "t165_part_q2_note_ck", which the parent has no counterpart for' \
   0 none t165_part_q2_note_ck
 
 partlocal_case K76 "(T-165 r1, OD-156) a UNIQUE constraint on the non-template partition alone: refused" \
@@ -1180,7 +1180,7 @@ partlocal_case K76 "(T-165 r1, OD-156) a UNIQUE constraint on the non-template p
   "" \
   "SELECT count(*)::text FROM pg_constraint WHERE conname = 't165_part_q2_note_key'" \
   "1" \
-  'partition "t165_part_q2" has a (constraint|index) of its own, "t165_part_q2_note_key", which the parent has no counterpart for' \
+  'partition "t165_part_q2" has its own (constraint|index) "t165_part_q2_note_key", which the parent has no counterpart for' \
   0 none t165_part_q2_note_key
 
 partlocal_case K77 "(T-165 r1, OD-156) a FOREIGN KEY from the non-template partition alone: refused" \
@@ -1190,7 +1190,7 @@ ALTER TABLE public.t165_part_q2 ADD CONSTRAINT t165_part_q2_note_fkey FOREIGN KE
   "DROP TABLE public.t165_ref;" \
   "SELECT count(*)::text FROM pg_constraint WHERE conname = 't165_part_q2_note_fkey'" \
   "1" \
-  'partition "t165_part_q2" has a constraint of its own, "t165_part_q2_note_fkey", which the parent has no counterpart for' \
+  'partition "t165_part_q2" has its own constraint "t165_part_q2_note_fkey", which the parent has no counterpart for' \
   0 none t165_part_q2_note_fkey
 
 partlocal_case K78 "(T-165 r1, OD-156) a TRIGGER on the non-template partition alone, which PostgreSQL's own FK triggers (tgisinternal) are told apart from: refused" \
@@ -1199,7 +1199,7 @@ CREATE TRIGGER t165_part_q2_local_trg BEFORE INSERT ON public.t165_part_q2 FOR E
   "DROP FUNCTION public.t165_noop();" \
   "SELECT count(*)::text FROM pg_trigger WHERE tgname = 't165_part_q2_local_trg' AND NOT tgisinternal" \
   "1" \
-  'partition "t165_part_q2" has a trigger of its own, "t165_part_q2_local_trg", which the parent has no counterpart for' \
+  'partition "t165_part_q2" has its own trigger "t165_part_q2_local_trg", which the parent has no counterpart for' \
   0 none t165_part_q2_local_trg
 
 # Three partitions, the offender in the middle: neither the template (byte-first) nor the last.
@@ -1218,7 +1218,7 @@ node scripts/db-migrate.ts up >"$OUT.p" 2>&1 || { cat "$OUT.p"; abort "K79: the 
 got=$(psql -X -A -t -q -c "SELECT string_agg(c.relname, ',' ORDER BY c.relname) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relispartition AND c.relkind = 'r' AND c.relname LIKE 't165\_part\_%'")
 [ "$got" = "t165_part_q1,t165_part_q2,t165_part_q3" ] || abort "K79: the three partitions did not land: [$got]"
 echo "   plant landed: partitions in byte order [$got]; the template is t165_part_q1 and the offender is t165_part_q2, neither first nor last"
-check K79 "(T-165 r1) three partitions, the offending policy on the middle one: refused, naming that partition" I-PART 'partition "t165_part_q2" has a policy of its own, "t165_part_q2_mid"'
+check K79 "(T-165 r1) three partitions, the offending policy on the middle one: refused, naming that partition" I-PART 'partition "t165_part_q2" has its own policy "t165_part_q2_mid"'
 
 # QA's A17 stage 2: the attach that changed the verdict before this rework.
 plant_two_partitions "ALTER TABLE public.t165_part_q2 ENABLE ROW LEVEL SECURITY;
@@ -1230,7 +1230,7 @@ got=$(psql -X -A -t -q -c "SELECT string_agg(c.relname, ',' ORDER BY c.relname) 
 got=$(psql -X -A -t -q -c "SELECT c.relname || '/' || pol.polname FROM pg_policy pol JOIN pg_class c ON c.oid = pol.polrelid")
 [ "$got" = "t165_part_q2/t165_part_q2_only" ] || abort "K80: the policy is no longer there: [$got]"
 echo "   attach landed: partitions [$(psql -X -A -t -q -c "SELECT string_agg(c.relname, ',' ORDER BY c.relname) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relispartition AND c.relkind = 'r' AND c.relname LIKE 't165\_part\_%'")], the template is now t165_part_a0; pg_policy STILL [$got]"
-check K80 "(T-165 r1, OD-155) QA's A17 stage 2: a partition that sorts FIRST attached, so the template changes — the policy on t165_part_q2 is refused just the same" I-PART 'partition "t165_part_q2" has a policy of its own, "t165_part_q2_only"'
+check K80 "(T-165 r1, OD-155) QA's A17 stage 2: a partition that sorts FIRST attached, so the template changes — the policy on t165_part_q2 is refused just the same" I-PART 'partition "t165_part_q2" has its own policy "t165_part_q2_only"'
 
 echo
 if [ "$bad" -eq 0 ]; then
