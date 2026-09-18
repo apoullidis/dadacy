@@ -50,10 +50,13 @@
  *      of its own. Every partitioned table in `public` is rendered under its own name from the
  *      first of its partitions in `public` in byte order, with every name mapped to the parent's by
  *      the catalogue and the parent's policies added from pg_policy; its partitions leave the
- *      rendering and are on neither side of I-VACUOUS (scripts/gates/lib/schema-partition.ts). A
- *      shape it cannot check — a sub-partitioned table, a partition outside `public` (including one
- *      in a schema I-SCOPE admits), a parent with no partition, a partition whose columns are not
- *      the parent's, an identity column, a name with no counterpart on the parent — fails the run.
+ *      rendering and are on neither side of I-VACUOUS (scripts/gates/lib/schema-partition.ts).
+ *      EVERY partition's own constraints, indexes, triggers and policies are read from the
+ *      catalogue and matched to the parent's first, because only the parent is rendered (rework 1,
+ *      OD-155/OD-156). A shape it cannot check — a sub-partitioned table, a partition outside
+ *      `public` (including one in a schema I-SCOPE admits), a parent with no partition, an object
+ *      any partition carries alone, a partition whose columns are not the parent's, an identity
+ *      column, a name with no counterpart on the parent — fails the run.
  *   4c. [I-POLICY] (T-152 rework 1, OD-109) drizzle-kit keeps a row-level security policy's
  *      `using` and `withCheck` only for the first pg_policies row it receives per table, from a query
  *      with no ORDER BY, so on a table with two or more policies the rendering is wrong and follows
@@ -323,6 +326,12 @@ function main(): void {
   const rows = parsed.ok ? parsed.rows : [];
   const admitted = (r: CatalogueRow): boolean => OUT_OF_SCOPE_HEX.includes(r.schemaHex);
   const members = rows.filter((r) => r.extensionMember && r.schema === INTROSPECTED_SCHEMA);
+  // T-165 rework 1 (QR-A1): an extension member outside `public` is excluded by the same rule as one
+  // inside it, and nothing named it. It is not refused — an extension owns it (T-138 QA-A3's class) —
+  // but it is printed, so it leaves a trace in every gate paste.
+  const membersElsewhere = rows.filter(
+    (r) => r.extensionMember && r.schema !== INTROSPECTED_SCHEMA,
+  );
   // T-165 (OD-84): a partition is not rendered — the partitioned table it belongs to is, under its
   // own name — so it is on neither side of I-VACUOUS. The parent is on both.
   const partitions = rows.filter(
@@ -341,6 +350,23 @@ function main(): void {
   );
   console.log(
     `  out of scope: ${String(outOfScope.length)} relation(s) in schema(s) ${OUT_OF_SCOPE_SCHEMAS.map(showName).join(', ')} admitted, not introspected and not counted [${outOfScope.map((r) => `${showName(r.schema)}.${showName(r.name)}`).join(', ')}]`,
+  );
+  console.log(
+    `  extension members outside ${INTROSPECTED_SCHEMA}: ${String(membersElsewhere.length)} relation(s), excluded because an extension owns them and named here only (QR-A1) [${membersElsewhere.map((r) => `${showName(r.schema)}.${showName(r.name)}`).join(', ')}]`,
+  );
+  // T-165 rework 1 (QR-A2): a relation kind this pipeline does not read at all, in a system schema.
+  // Indexes and TOAST tables are excluded from the count: every ordinary table has them.
+  const unread = psql(
+    `SELECT coalesce(string_agg(k.relkind || '=' || k.n, ', ' ORDER BY k.relkind), 'none')
+       FROM (SELECT c.relkind::text AS relkind, count(*)::text AS n
+               FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+              WHERE c.oid >= 16384
+                AND c.relkind NOT IN ('r', 'p', 'v', 'm', 'f', 'i', 'I', 't')
+                AND (n.nspname IN ('pg_catalog', 'information_schema') OR n.nspname LIKE 'pg\\_toast%')
+              GROUP BY c.relkind) k`,
+  );
+  console.log(
+    `  system schemas, kinds not read: ${unread.ok ? unread.out.trim() : `unreadable: ${unread.err.trim()}`} (outside relkind r/p/v/m/f; indexes and TOAST excluded) (QR-A2)`,
   );
   for (const r of elsewhere) {
     problem(
@@ -454,7 +480,7 @@ function main(): void {
   }
   const partitionedBody = parted.ok ? parted.body : mappedBody;
   console.log(
-    `  partitions: ${parted.ok ? `${String(parted.parents)} partitioned table(s) rendered from a partition; ${String(parted.removed)} partition declaration(s) removed; ${String(parted.mapped)} name(s) mapped to the parent's; ${String(parted.policies)} policy entr(ies) added from pg_policy; ${String(parted.names)} export name(s) checked against drizzle-kit's` : 'failed'}`,
+    `  partitions: ${parted.ok ? `${String(parted.parents)} partitioned table(s) rendered from a partition; ${String(parted.removed)} partition declaration(s) removed; ${String(parted.mapped)} name(s) mapped to the parent's; ${String(parted.policies)} policy entr(ies) added from pg_policy; ${String(parted.names)} export name(s) checked against drizzle-kit's; ${String(parted.checked)} constraint/index/trigger/policy name(s) on partitions checked for a parent counterpart` : 'failed'}`,
   );
 
   // 4c. row-level security policies checked against and rendered from pg_policy (T-152 rework 1, OD-109)

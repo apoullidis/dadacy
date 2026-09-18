@@ -20,9 +20,16 @@
  *      this step checks in the catalogue before using the rendering.
  *   2. The parent's row-level security policies are rendered into the same entry list from
  *      `pg_policy` (T-152's `renderPolicy`), because a partition carries none of the parent's.
- *   3. Every other partition of that parent in `public` is removed from the rendering.
+ *   3. **Every** partition — not only the template — has every constraint, index, trigger and policy
+ *      name it owns read from the catalogue and matched to the parent's counterpart
+ *      (`pg_constraint.conparentid`, `pg_inherits`, `pg_trigger.tgparentid`, and `pg_policy`, which
+ *      has no counterpart because PostgreSQL clones no policy to a partition). One without a
+ *      counterpart is a problem: only the parent is rendered, so a partition's own object would be
+ *      in the catalogue and in no reading of `db/schema.ts` (T-165 rework 1, OD-155 and OD-156).
+ *   4. Every other partition of that parent in `public` is then removed from the rendering.
  * Everything it cannot check is a problem, and it never passes a partitioned family through
- * silently: a sub-partitioned table, a partition outside `public`, a parent with no partition, a partition whose
+ * silently: a sub-partitioned table, a partition outside `public`, a parent with no partition, an
+ * object of any partition's own, a partition whose
  * column shape is not the parent's, an identity column (drizzle-kit renders a partition's as
  * `name: "null", startWith: null`, measured), a name in the template with no counterpart on the
  * parent, a constraint or index the parent has and the template partition does not, an export name
@@ -40,8 +47,15 @@ export interface CataloguePartition {
   readonly subPartitioned: boolean;
   /** the column signature: name, type, typmod, notNull, identity, generated and default, by attnum */
   readonly columns: string;
-  /** every constraint and index name this partition owns, and the parent's counterpart, or null */
-  readonly names: readonly { readonly from: string; readonly to: string | null }[];
+  /**
+   * every constraint, index, trigger and policy name this partition owns, with the parent's
+   * counterpart or null. A policy's counterpart is always null: PostgreSQL clones no policy.
+   */
+  readonly names: readonly {
+    readonly from: string;
+    readonly to: string | null;
+    readonly kind: string;
+  }[];
 }
 
 /** One partitioned table in `public`, owned by no extension. */
@@ -86,6 +100,8 @@ export type PartitionResult =
       readonly policies: number;
       /** export names this step and drizzle-kit spell identically, checked in this rendering */
       readonly names: number;
+      /** constraint, index, trigger and policy names read for a parent counterpart, on EVERY partition */
+      readonly checked: number;
     }
   | { readonly ok: false; readonly problems: readonly string[] };
 
@@ -127,23 +143,43 @@ export const PARTITIONS_SQL = `
               'name', ch.relname,
               'subPartitioned', ch.relkind = 'p',
               'columns', ${COLUMN_SIG.replace('REL', 'ch.oid')},
-              'names', (SELECT coalesce(json_agg(json_build_object('from', m.from_name, 'to', m.to_name)
-                                                 ORDER BY m.from_name, m.to_name), '[]'::json)
+              'names', (SELECT coalesce(json_agg(json_build_object('from', m.from_name, 'to', m.to_name, 'kind', m.kind)
+                                                 ORDER BY m.kind, m.from_name, m.to_name), '[]'::json)
                           FROM (
-                            SELECT con.conname AS from_name,
+                            SELECT con.conname::text AS from_name,
                                    coalesce(pcon.conname,
                                             (SELECT x.conname FROM pg_constraint x
-                                              WHERE x.conrelid = p.oid AND x.conname = con.conname)) AS to_name
+                                              WHERE x.conrelid = p.oid AND x.conname = con.conname))::text AS to_name,
+                                   'constraint'::text AS kind
                               FROM pg_constraint con
                               LEFT JOIN pg_constraint pcon ON pcon.oid = con.conparentid
                              WHERE con.conrelid = ch.oid AND con.contype <> 'n'
                             UNION ALL
-                            SELECT ci.relname, pi.relname
+                            SELECT ci.relname::text, pi.relname::text, 'index'::text
                               FROM pg_index i
                               JOIN pg_class ci ON ci.oid = i.indexrelid
                               LEFT JOIN pg_inherits ii ON ii.inhrelid = i.indexrelid
                               LEFT JOIN pg_class pi ON pi.oid = ii.inhparent
-                             WHERE i.indrelid = ch.oid) m))
+                             WHERE i.indrelid = ch.oid
+                            UNION ALL
+                            -- T-165 rework 1 (OD-156): a trigger of the partition's own. A trigger the
+                            -- parent has is cloned to every partition with tgparentid set, or at least
+                            -- under the same name; PostgreSQL's own FK triggers are tgisinternal.
+                            SELECT tg.tgname::text,
+                                   coalesce((SELECT pt.tgname FROM pg_trigger pt WHERE pt.oid = tg.tgparentid),
+                                            (SELECT x.tgname FROM pg_trigger x
+                                              WHERE x.tgrelid = p.oid AND x.tgname = tg.tgname
+                                                AND NOT x.tgisinternal))::text,
+                                   'trigger'::text
+                              FROM pg_trigger tg
+                             WHERE tg.tgrelid = ch.oid AND NOT tg.tgisinternal
+                            UNION ALL
+                            -- T-165 rework 1 (OD-155): pg_policy, read for the PARTITION. PostgreSQL
+                            -- never clones a parent's policy to a partition, so a policy row here is
+                            -- always the partition's own and has no counterpart: to_name is NULL.
+                            SELECT pol.polname::text, NULL::text, 'policy'::text
+                              FROM pg_policy pol
+                             WHERE pol.polrelid = ch.oid) m))
             ORDER BY cn.nspname, ch.relname), '[]'::json)
            FROM pg_inherits i
            JOIN pg_class ch ON ch.oid = i.inhrelid
@@ -178,7 +214,7 @@ export function exportName(relname: string): string {
     .join('');
 }
 
-function isNames(v: unknown): v is { from: string; to: string | null }[] {
+function isNames(v: unknown): v is { from: string; to: string | null; kind: string }[] {
   return (
     Array.isArray(v) &&
     v.every((e) => {
@@ -186,7 +222,12 @@ function isNames(v: unknown): v is { from: string; to: string | null }[] {
       if (typeof r !== 'object' || r === null) return false;
       const from: unknown = Reflect.get(r, 'from');
       const to: unknown = Reflect.get(r, 'to');
-      return typeof from === 'string' && (to === null || typeof to === 'string');
+      const kind: unknown = Reflect.get(r, 'kind');
+      return (
+        typeof from === 'string' &&
+        (to === null || typeof to === 'string') &&
+        typeof kind === 'string'
+      );
     })
   );
 }
@@ -401,7 +442,16 @@ export function canonicalPartitions(
 
   if (catalogue.parents.length === 0) {
     if (problems.length > 0) return { ok: false, problems };
-    return { ok: true, body: source, parents: 0, removed: 0, mapped: 0, policies: 0, names: 0 };
+    return {
+      ok: true,
+      body: source,
+      parents: 0,
+      removed: 0,
+      mapped: 0,
+      policies: 0,
+      names: 0,
+      checked: 0,
+    };
   }
 
   // The export names this step derives must be the names drizzle-kit itself wrote, for every
@@ -422,6 +472,7 @@ export function canonicalPartitions(
   let removed = 0;
   let mapped = 0;
   let emitted = 0;
+  let checked = 0;
 
   for (const parent of catalogue.parents) {
     const where = `partitioned table "${parent.name}"`;
@@ -471,6 +522,20 @@ export function canonicalPartitions(
       if (p.columns !== parent.columns) {
         problems.push(
           `${where}: partition "${p.name}" does not have the parent's columns in the parent's order (name, type, NOT NULL, identity, generated and default, by attnum), so its rendering is not the parent's`,
+        );
+      }
+    }
+    // EVERY partition, not only the template (T-165 rework 1, OD-155 / OD-156). Only the template's
+    // declaration is kept and relabelled as the parent's; every other partition's is deleted. So
+    // anything a partition carries that the parent does not — a policy above all, but also an index,
+    // a constraint or a trigger — would be in the catalogue and in no reading of it. Each is named
+    // here with the partition that owns it, whichever partition that is.
+    for (const p of local) {
+      for (const n of p.names) {
+        checked += 1;
+        if (n.to !== null) continue;
+        problems.push(
+          `${where}: partition "${p.name}" has a ${n.kind} of its own, "${n.from}", which the parent has no counterpart for${n.kind === 'policy' ? ' (PostgreSQL clones no policy to a partition, so a policy row on one is always its own)' : ''}; only the parent is rendered, so it would be in the catalogue and in no reading of ${'db/schema.ts'}`,
         );
       }
     }
@@ -595,7 +660,7 @@ export function canonicalPartitions(
     else body = fixed.body;
   }
   if (problems.length > 0) return { ok: false, problems };
-  return { ok: true, body, parents, removed, mapped, policies: emitted, names };
+  return { ok: true, body, parents, removed, mapped, policies: emitted, names, checked };
 }
 
 /** `pgPolicy` and `sql` must be imported where this step emitted policy entries. */

@@ -101,8 +101,24 @@ owned_in_public() {
   psql -X -A -t -q -c "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind IN ('r','p','v','m','f') AND n.nspname = 'public' AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e')"
 }
 
+# T-165 rework 1 (QR-A4): an abort must leave no debris. A plant left in db/migrations, a written
+# db/schema.ts or a database at $NEXT is measured by whatever runs next — qa-verification's gate:pr
+# failed on this ticket's leftovers rather than on the commit. The database is brought back FIRST,
+# while the plant's down file still exists, then the files go.
+cleanup_after_abort() {
+  echo "   abort cleanup: bringing the database back to $HIGHEST and restoring the tree"
+  if [ "$(record)" != "kinvara-migrate version=$HIGHEST" ]; then
+    node scripts/db-migrate.ts down --to "$HIGHEST" >"$OUT.abort" 2>&1 || cat "$OUT.abort"
+  fi
+  rm -f "$M/${NEXT}_t138_plant.up.sql" "$M/${NEXT}_t138_plant.down.sql"
+  git checkout -q -- "$SCHEMA" "$SCRIPT" "$RENDER" "$ORDER" "$POLICY" "$PARTITION"
+  echo "   abort cleanup: record now '$(record)'; git status --porcelain:"
+  git status --porcelain
+}
+
 abort() {
   echo "ABORT: $1"
+  cleanup_after_abort
   exit 2
 }
 
@@ -240,7 +256,122 @@ policy_check() {
 node scripts/db-migrate.ts up >"$OUT.m" 2>&1 || { cat "$OUT.m"; abort "db:migrate up failed before the first case"; }
 [ "$(record)" = "kinvara-migrate version=$HIGHEST" ] || abort "the record reads '$(record)' after db:migrate up, not $HIGHEST"
 
-echo "== T-152 rework 1: row-level security policies (OD-109). First, so that on a fresh project the first write sees a catalogue nobody has ANALYZEd"
+# T-165 rework 1 (QR-A4): a forced abort, to show that the abort path leaves no debris. It plants,
+# writes db/schema.ts and migrates to $NEXT first, so the abort happens at the dirtiest moment there
+# is. Not reached in a normal run.
+if [ "${T165_ABORT_DEMO:-}" = 1 ]; then
+  plant "$M/${NEXT}_t138_plant.up.sql" "-- @phase: expand
+CREATE TABLE public.t165_abort (id bigint PRIMARY KEY);
+GRANT SELECT ON public.t165_abort TO app_rw;"
+  plant "$M/${NEXT}_t138_plant.down.sql" "DROP TABLE public.t165_abort;"
+  node scripts/db-introspect.ts --write >"$OUT.demo" 2>&1
+  echo "   forced abort demo: write exit $?, record '$(record)', tree:"
+  git status --porcelain
+  abort "T165_ABORT_DEMO=1: a forced abort with db/schema.ts written, both plant files present and the database at $NEXT"
+fi
+
+# T-165 rework 1 (QR-A3): the partitioned-table control block runs FIRST, so that its first write
+# sees a catalogue nobody has ANALYZEd — K26b runs an ANALYZE, and until this rework K50 ran after
+# it. Neither this block nor the policy block that follows analyses anything, so both still meet an
+# un-analysed catalogue on a fresh project. OWNED is read here because this block needs it.
+OWNED=$(owned_in_public)
+echo "   relations in public owned by no extension at $HIGHEST, before any plant: $OWNED"
+echo "== T-165 (OD-84): a partitioned table is rendered under its own name; its partitions are not"
+
+# part_expectations: every `-- expect:` line of the fixture must be in db/schema.ts (grep -F) and no
+# `-- absent:` line may appear anywhere in it. One fact line each, into $OUT.f; adds to $miss.
+part_expectations() {
+  local line
+  PART_N=0
+  while IFS= read -r line; do
+    PART_N=$((PART_N + 1))
+    if grep -qF -- "$line" "$SCHEMA"; then
+      echo "fact ok (db/schema.ts has it): $line" >>"$OUT.f"
+    else
+      echo "fact MISMATCH (db/schema.ts lacks it): $line" >>"$OUT.f"
+      miss=$((miss + 1))
+    fi
+  done < <(sed -nE 's/^-- expect: //p' "$PART_FIXTURE")
+  while IFS= read -r line; do
+    PART_N=$((PART_N + 1))
+    if grep -qF -- "$line" "$SCHEMA"; then
+      echo "fact MISMATCH (db/schema.ts names it): $line" >>"$OUT.f"
+      miss=$((miss + 1))
+    else
+      echo "fact ok (db/schema.ts does not name it): $line" >>"$OUT.f"
+    fi
+  done < <(sed -nE 's/^-- absent: //p' "$PART_FIXTURE")
+  [ "$PART_N" -gt 0 ] || abort "$PART_FIXTURE has no -- expect:/-- absent: line"
+}
+
+# part_check <id> <description> <regex fact>...: the check must PASS, every fixture expectation must
+# hold against the committed db/schema.ts, and every regex must match the check's output.
+part_check() {
+  local id=$1 desc=$2 code n
+  shift 2
+  n=$#
+  node scripts/db-introspect.ts --check >"$OUT" 2>&1
+  code=$?
+  : >"$OUT.f"
+  facts_into "$@"
+  part_expectations
+  [ "$miss" -eq 0 ] && echo "ALL $((n + PART_N)) PARTITION FACTS HOLD" >>"$OUT.f"
+  cat "$OUT.f" >>"$OUT"
+  judge "$id" "$desc" PASS "$code" '^ALL [0-9]+ PARTITION FACTS HOLD$'
+  grep -E '^fact |^  partitions: |^  catalogue: ' "$OUT" | cut -c1-240 | sed 's/^/       /'
+}
+
+PART_RENDERED="^  partitions: 1 partitioned table\(s\) rendered from a partition; [0-9]+ partition declaration\(s\) removed; [0-9]+ name\(s\) mapped to the parent's; 2 policy entr\(ies\) added from pg_policy; [0-9]+ export name\(s\) checked"
+PART_COUNTS="^  catalogue: .*; 2 partition\(s\) in public excluded \[\"t165_part_q1\", \"t165_part_q2\"\]; $((OWNED + 1)) relation\(s\) owned by no extension in public\$"
+PART_INTRO="^  drizzle-kit [^:]+: $((OWNED + 1)) relation\(s\) introspected from public\$"
+
+policy_fixture "$PART_FIXTURE"
+sed 's/^/   plant up:   /' "$UP" | head -30
+PART_MARK=$(stats_mark)
+case "$PART_MARK" in
+  never*) echo "   pg_class last analyze / vacuum before the first write: '$PART_MARK' -- NEVER ANALYSED" ;;
+  *) echo "   pg_class last analyze / vacuum before the first write: '$PART_MARK' -- ALREADY ANALYSED: run this suite on a FRESH project" ;;
+esac
+write_schema
+# QR-A3: a case of its own, so that "K50-K54 ran against a never-ANALYZEd catalogue" is judged and
+# not merely printed. It is BAD on a project something has already analysed — run this suite fresh.
+total=$((total + 1))
+if [ "${PART_MARK#never}" != "$PART_MARK" ]; then v=ok; else
+  v=BAD
+  bad=$((bad + 1))
+fi
+printf '%-4s %s  %s\n       pg_class last analyze / vacuum at the first write of this suite: %s (expected it to begin "never")\n' "$v" K50a "(T-165 r1, QR-A3) the partitioned-table block runs before any ANALYZE in this suite" "$PART_MARK"
+part_check K50 "(T-165) CONTROL: a PARTITION BY RANGE parent with two partitions, regenerated, never ANALYZEd: the parent is rendered under its own name with the parent's key, index, check and policies; neither partition is in the file" \
+  "$PART_RENDERED" "$PART_COUNTS" "$PART_INTRO" 'byte-identical to a fresh introspection' '^  policies: 2 checked against pg_policy'
+
+m0=$(stats_mark)
+psql -X -q -v ON_ERROR_STOP=1 -c ANALYZE >/dev/null || abort "ANALYZE failed"
+m1=$(stats_mark)
+{ [ "$m1" != "$m0" ] && [ "${m1%% / *}" != never ]; } || abort "ANALYZE did not land on pg_class (last analyze / vacuum '$m0' -> '$m1')"
+echo "   statistics attack landed: pg_class last analyze / vacuum '$m0' -> '$m1'"
+part_check K51 "(T-165) the same file after ANALYZE (asserted above): byte-identical" "$PART_RENDERED" 'byte-identical to a fresh introspection'
+
+m0=$(stats_mark)
+psql -X -q -v ON_ERROR_STOP=1 -c "VACUUM ANALYZE" >/dev/null || abort "VACUUM ANALYZE failed"
+m1=$(stats_mark)
+{ [ "${m1#* / }" != "${m0#* / }" ] && [ "${m1#* / }" != never ]; } || abort "VACUUM ANALYZE did not land on pg_class (last analyze / vacuum '$m0' -> '$m1')"
+echo "   statistics attack landed: pg_class last analyze / vacuum '$m0' -> '$m1'"
+part_check K52 "(T-165) the same file after VACUUM ANALYZE (asserted above): byte-identical" "$PART_RENDERED" 'byte-identical to a fresh introspection'
+
+{ node scripts/db-migrate.ts down --to "$HIGHEST" >"$OUT.p" 2>&1 && grep -q "^MIGRATE OK  down: $NEXT -> $HIGHEST" "$OUT.p"; } || { cat "$OUT.p"; abort "db:migrate down --to $HIGHEST failed"; }
+{ node scripts/db-migrate.ts up >"$OUT.p" 2>&1 && grep -q "^MIGRATE OK  up: $HIGHEST -> $NEXT" "$OUT.p"; } || { cat "$OUT.p"; abort "db:migrate up to $NEXT failed"; }
+echo "   history attack landed: down --to $HIGHEST, up to $NEXT"
+part_check K53 "(T-165) the same file after the partition migration's down/up: byte-identical" "$PART_RENDERED" 'byte-identical to a fresh introspection'
+
+psql -X -q -v ON_ERROR_STOP=1 -c "CREATE TABLE public.t165_part_a0 PARTITION OF public.t165_part FOR VALUES FROM (TIMESTAMPTZ '2025-01-01Z') TO (TIMESTAMPTZ '2026-01-01Z')" >/dev/null || abort "attaching a third partition failed"
+attached=$(psql -X -A -t -q -c "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relispartition AND c.relkind IN ('r','p') AND c.relname LIKE 't165\_part\_%'")
+[ "$attached" = 3 ] || abort "the third partition did not land (partitions in public: $attached)"
+echo "   attach attack landed: t165_part_a0 sorts BEFORE t165_part_q1, so it is now the template; partitions in public: $attached"
+part_check K54 "(T-165) a third partition attached after db/schema.ts was written, sorting first so the template changes: the file is unchanged and the check still passes" \
+  '^  partitions: 1 partitioned table\(s\) rendered from a partition; 2 partition declaration\(s\) removed' 'byte-identical to a fresh introspection' '"t165_part_a0"'
+restore
+
+echo "== T-152 rework 1: row-level security policies (OD-109). First among the policy cases and still before any ANALYZE in this suite: T-165 rework 1 moved K50-K54 ahead of it (QR-A3) and neither block analyses anything"
 policy_fixture "$QA_POLICIES"
 echo "   pg_class last analyze / vacuum before the first write: '$(stats_mark)'"
 write_schema
@@ -766,88 +897,6 @@ shape_case K47 '"pgboss|x"' 'pgboss|x' '"pgboss\|x"' "^  out of scope: $((ADMITT
 shape_case K48 '"pgboss|x|true"' 'pgboss|x|true' '"pgboss\|x\|true"' "^  out of scope: $ADMITTED_BASE relation\(s\)" '!t145_t'
 shape_case K49 '"zz_other|x|true"' 'zz_other|x|true' '"zz_other\|x\|true"' "^  out of scope: $ADMITTED_BASE relation\(s\)" '!t145_t'
 
-echo "== T-165 (OD-84): a partitioned table is rendered under its own name; its partitions are not"
-
-# part_expectations: every `-- expect:` line of the fixture must be in db/schema.ts (grep -F) and no
-# `-- absent:` line may appear anywhere in it. One fact line each, into $OUT.f; adds to $miss.
-part_expectations() {
-  local line
-  PART_N=0
-  while IFS= read -r line; do
-    PART_N=$((PART_N + 1))
-    if grep -qF -- "$line" "$SCHEMA"; then
-      echo "fact ok (db/schema.ts has it): $line" >>"$OUT.f"
-    else
-      echo "fact MISMATCH (db/schema.ts lacks it): $line" >>"$OUT.f"
-      miss=$((miss + 1))
-    fi
-  done < <(sed -nE 's/^-- expect: //p' "$PART_FIXTURE")
-  while IFS= read -r line; do
-    PART_N=$((PART_N + 1))
-    if grep -qF -- "$line" "$SCHEMA"; then
-      echo "fact MISMATCH (db/schema.ts names it): $line" >>"$OUT.f"
-      miss=$((miss + 1))
-    else
-      echo "fact ok (db/schema.ts does not name it): $line" >>"$OUT.f"
-    fi
-  done < <(sed -nE 's/^-- absent: //p' "$PART_FIXTURE")
-  [ "$PART_N" -gt 0 ] || abort "$PART_FIXTURE has no -- expect:/-- absent: line"
-}
-
-# part_check <id> <description> <regex fact>...: the check must PASS, every fixture expectation must
-# hold against the committed db/schema.ts, and every regex must match the check's output.
-part_check() {
-  local id=$1 desc=$2 code n
-  shift 2
-  n=$#
-  node scripts/db-introspect.ts --check >"$OUT" 2>&1
-  code=$?
-  : >"$OUT.f"
-  facts_into "$@"
-  part_expectations
-  [ "$miss" -eq 0 ] && echo "ALL $((n + PART_N)) PARTITION FACTS HOLD" >>"$OUT.f"
-  cat "$OUT.f" >>"$OUT"
-  judge "$id" "$desc" PASS "$code" '^ALL [0-9]+ PARTITION FACTS HOLD$'
-  grep -E '^fact |^  partitions: |^  catalogue: ' "$OUT" | cut -c1-240 | sed 's/^/       /'
-}
-
-PART_RENDERED="^  partitions: 1 partitioned table\(s\) rendered from a partition; [0-9]+ partition declaration\(s\) removed; [0-9]+ name\(s\) mapped to the parent's; 2 policy entr\(ies\) added from pg_policy; [0-9]+ export name\(s\) checked"
-PART_COUNTS="^  catalogue: .*; 2 partition\(s\) in public excluded \[\"t165_part_q1\", \"t165_part_q2\"\]; $((OWNED + 1)) relation\(s\) owned by no extension in public\$"
-PART_INTRO="^  drizzle-kit [^:]+: $((OWNED + 1)) relation\(s\) introspected from public\$"
-
-policy_fixture "$PART_FIXTURE"
-sed 's/^/   plant up:   /' "$UP" | head -30
-echo "   pg_class last analyze / vacuum before the first write: '$(stats_mark)'"
-write_schema
-part_check K50 "(T-165) CONTROL: a PARTITION BY RANGE parent with two partitions, regenerated, never ANALYZEd: the parent is rendered under its own name with the parent's key, index, check and policies; neither partition is in the file" \
-  "$PART_RENDERED" "$PART_COUNTS" "$PART_INTRO" 'byte-identical to a fresh introspection' '^  policies: 2 checked against pg_policy'
-
-m0=$(stats_mark)
-psql -X -q -v ON_ERROR_STOP=1 -c ANALYZE >/dev/null || abort "ANALYZE failed"
-m1=$(stats_mark)
-{ [ "$m1" != "$m0" ] && [ "${m1%% / *}" != never ]; } || abort "ANALYZE did not land on pg_class (last analyze / vacuum '$m0' -> '$m1')"
-echo "   statistics attack landed: pg_class last analyze / vacuum '$m0' -> '$m1'"
-part_check K51 "(T-165) the same file after ANALYZE (asserted above): byte-identical" "$PART_RENDERED" 'byte-identical to a fresh introspection'
-
-m0=$(stats_mark)
-psql -X -q -v ON_ERROR_STOP=1 -c "VACUUM ANALYZE" >/dev/null || abort "VACUUM ANALYZE failed"
-m1=$(stats_mark)
-{ [ "${m1#* / }" != "${m0#* / }" ] && [ "${m1#* / }" != never ]; } || abort "VACUUM ANALYZE did not land on pg_class (last analyze / vacuum '$m0' -> '$m1')"
-echo "   statistics attack landed: pg_class last analyze / vacuum '$m0' -> '$m1'"
-part_check K52 "(T-165) the same file after VACUUM ANALYZE (asserted above): byte-identical" "$PART_RENDERED" 'byte-identical to a fresh introspection'
-
-{ node scripts/db-migrate.ts down --to "$HIGHEST" >"$OUT.p" 2>&1 && grep -q "^MIGRATE OK  down: $NEXT -> $HIGHEST" "$OUT.p"; } || { cat "$OUT.p"; abort "db:migrate down --to $HIGHEST failed"; }
-{ node scripts/db-migrate.ts up >"$OUT.p" 2>&1 && grep -q "^MIGRATE OK  up: $HIGHEST -> $NEXT" "$OUT.p"; } || { cat "$OUT.p"; abort "db:migrate up to $NEXT failed"; }
-echo "   history attack landed: down --to $HIGHEST, up to $NEXT"
-part_check K53 "(T-165) the same file after the partition migration's down/up: byte-identical" "$PART_RENDERED" 'byte-identical to a fresh introspection'
-
-psql -X -q -v ON_ERROR_STOP=1 -c "CREATE TABLE public.t165_part_a0 PARTITION OF public.t165_part FOR VALUES FROM (TIMESTAMPTZ '2025-01-01Z') TO (TIMESTAMPTZ '2026-01-01Z')" >/dev/null || abort "attaching a third partition failed"
-attached=$(psql -X -A -t -q -c "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relispartition AND c.relkind IN ('r','p') AND c.relname LIKE 't165\_part\_%'")
-[ "$attached" = 3 ] || abort "the third partition did not land (partitions in public: $attached)"
-echo "   attach attack landed: t165_part_a0 sorts BEFORE t165_part_q1, so it is now the template; partitions in public: $attached"
-part_check K54 "(T-165) a third partition attached after db/schema.ts was written, sorting first so the template changes: the file is unchanged and the check still passes" \
-  '^  partitions: 1 partitioned table\(s\) rendered from a partition; 2 partition declaration\(s\) removed' 'byte-identical to a fresh introspection' '"t165_part_a0"'
-restore
 
 policy_fixture "$PART_FIXTURE"
 write_schema
@@ -1028,6 +1077,160 @@ system_case K66 pg_catalog 'SET allow_system_table_mods = on;
 system_case K67 pg_toastq 'SET allow_system_table_mods = on;
 CREATE SCHEMA pg_toastq;
 ' 'DROP SCHEMA pg_toastq;'
+
+echo "== T-165 rework 1 (OD-155, OD-156): EVERY partition's own objects are read, not only the template's"
+# Before this rework the step consulted the names map for the TEMPLATE only and deleted every other
+# partition's declaration whole, so anything a non-template partition alone carried was read by
+# nothing: qa-verification's A17 (a policy) and DRIFT 2 (an index) both gave GATE PASS. Each case
+# below plants one such object on the NON-template partition (t165_part_q2; the template is the
+# byte-first, t165_part_q1), asserts it landed by reading the catalogue, and requires [I-PART]. Each
+# is then re-run with TEMPLATE-ONLY checking restored, which is the defect, in WRITE mode: the write
+# succeeds and the object's name is nowhere in db/schema.ts — OD-155's and OD-156's exact finding.
+TEMPLATE_ONLY_FROM="    for (const p of local) {
+      for (const n of p.names) {"
+TEMPLATE_ONLY_TO="    for (const p of local.filter((q) => q.name === template.name)) {
+      for (const n of p.names) {"
+
+# write_judge <id> <desc> <expected exit> <expected tag set or 'none'> <name that must be absent from db/schema.ts>
+write_judge() {
+  local id=$1 desc=$2 want_code=$3 want_tags=$4 absent=$5 code banners tags n v
+  node scripts/db-introspect.ts --write >"$OUT" 2>&1
+  code=$?
+  total=$((total + 1))
+  banners=$(grep -cE '^GATE (PASS|FAIL|CRASH)  db:introspect($| — |: )' "$OUT")
+  tags=$(grep -oE '^  - \[I-[A-Z]+\]' "$OUT" | sed -E 's/^  - \[(.*)\]$/\1/' | sort -u | tr '\n' ' ' | sed 's/ $//')
+  n=$(grep -c -- "$absent" "$SCHEMA")
+  if [ "$code" -eq "$want_code" ] && [ "$banners" -eq 1 ] && [ "${tags:-none}" = "$want_tags" ] && [ "$n" -eq 0 ]; then
+    v=ok
+  else
+    v=BAD
+    bad=$((bad + 1))
+  fi
+  printf '%-4s %s  %s\n       write exit %s (expected %s); banners %s; tags %s (expected %s); "%s" in db/schema.ts: %s (expected 0)\n' "$v" "$id" "$desc" "$code" "$want_code" "$banners" "${tags:-none}" "$want_tags" "$absent" "$n"
+  grep -E '^  - \[|^GATE |^  partitions: ' "$OUT" | cut -c1-240 | sed 's/^/       /'
+}
+
+# plant_two_partitions <extra up SQL> <extra down SQL>: the parent with t165_part_q1 (the template,
+# byte-first) and t165_part_q2, plus whatever the case adds.
+plant_two_partitions() {
+  plant "$UP" "-- @phase: expand
+CREATE TABLE public.t165_part (id bigint NOT NULL, at timestamptz NOT NULL, note text NOT NULL,
+  CONSTRAINT t165_part_pkey PRIMARY KEY (id, at)) PARTITION BY RANGE (at);
+CREATE TABLE public.t165_part_q1 PARTITION OF public.t165_part FOR VALUES FROM (TIMESTAMPTZ '2026-01-01Z') TO (TIMESTAMPTZ '2026-04-01Z');
+CREATE TABLE public.t165_part_q2 PARTITION OF public.t165_part FOR VALUES FROM (TIMESTAMPTZ '2026-04-01Z') TO (TIMESTAMPTZ '2026-07-01Z');
+GRANT SELECT, INSERT ON public.t165_part TO app_rw;
+$1"
+  plant "$DOWN" "DROP TABLE public.t165_part;${2:+
+$2}"
+}
+
+# partlocal_case <id> <desc> <extra up> <extra down> <assert SQL> <expected> <I-PART regex> <mutated exit> <mutated tags> <absent name>
+partlocal_case() {
+  local id=$1 desc=$2 xup=$3 xdown=$4 asql=$5 awant=$6 re=$7 mcode=$8 mtags=$9 absent=${10} got
+  plant_two_partitions "$xup" "$xdown"
+  sed 's/^/   plant up:   /' "$UP"
+  node scripts/db-migrate.ts up >"$OUT.p" 2>&1 || { cat "$OUT.p"; abort "$id: the plant did not apply"; }
+  got=$(psql -X -A -t -q -c "$asql")
+  [ "$got" = "$awant" ] || abort "$id: the plant did not land: [$got] but expected [$awant]"
+  echo "   plant landed, read from the catalogue: [$got]"
+  node scripts/db-introspect.ts --check >"$OUT" 2>&1
+  judge "$id" "$desc" I-PART "$?" "$re"
+  mutate "$PARTITION" "$TEMPLATE_ONLY_FROM" "$TEMPLATE_ONLY_TO"
+  git diff -U0 -- "$PARTITION" | grep -E '^[-+][^-+]' | sed 's/^/   mutation:   /'
+  write_judge "${id}m" "(T-165 r1) RED BEFORE: template-only checking restored (asserted above), the same plant is written with the object nowhere in db/schema.ts" "$mcode" "$mtags" "$absent"
+  restore
+}
+
+partlocal_case K72 "(T-165 r1, OD-155) a row-level security POLICY on the non-template partition (QA's A8b/A17 stage 1): refused, and the partition that owns it is named" \
+  "ALTER TABLE public.t165_part_q2 ENABLE ROW LEVEL SECURITY;
+CREATE POLICY t165_part_q2_only ON public.t165_part_q2 FOR SELECT TO app_rw USING (note <> 'x');" \
+  "" \
+  "SELECT c.relname || '/' || pol.polname FROM pg_policy pol JOIN pg_class c ON c.oid = pol.polrelid" \
+  "t165_part_q2/t165_part_q2_only" \
+  'partition "t165_part_q2" has a policy of its own, "t165_part_q2_only", which the parent has no counterpart for' \
+  0 none t165_part_q2_only
+
+partlocal_case K73 "(T-165 r1, OD-155) the SAME policy on the TEMPLATE partition: the same answer, [I-PART], not the incidental [I-POLICY] it used to be" \
+  "ALTER TABLE public.t165_part_q1 ENABLE ROW LEVEL SECURITY;
+CREATE POLICY t165_part_q1_only ON public.t165_part_q1 FOR SELECT TO app_rw USING (note <> 'x');" \
+  "" \
+  "SELECT c.relname || '/' || pol.polname FROM pg_policy pol JOIN pg_class c ON c.oid = pol.polrelid" \
+  "t165_part_q1/t165_part_q1_only" \
+  'partition "t165_part_q1" has a policy of its own, "t165_part_q1_only", which the parent has no counterpart for' \
+  1 I-POLICY t165_part_q1_only
+
+partlocal_case K74 "(T-165 r1, OD-156) an INDEX on the non-template partition (QA's DRIFT 2): refused" \
+  "CREATE INDEX t165_part_q2_local_idx ON public.t165_part_q2 (note);" \
+  "" \
+  "SELECT count(*)::text FROM pg_class WHERE relname = 't165_part_q2_local_idx'" \
+  "1" \
+  'partition "t165_part_q2" has a index of its own, "t165_part_q2_local_idx", which the parent has no counterpart for' \
+  0 none t165_part_q2_local_idx
+
+partlocal_case K75 "(T-165 r1, OD-156) a CHECK constraint on the non-template partition alone: refused" \
+  "ALTER TABLE public.t165_part_q2 ADD CONSTRAINT t165_part_q2_note_ck CHECK (note <> 'q2');" \
+  "" \
+  "SELECT count(*)::text FROM pg_constraint WHERE conname = 't165_part_q2_note_ck'" \
+  "1" \
+  'partition "t165_part_q2" has a constraint of its own, "t165_part_q2_note_ck", which the parent has no counterpart for' \
+  0 none t165_part_q2_note_ck
+
+partlocal_case K76 "(T-165 r1, OD-156) a UNIQUE constraint on the non-template partition alone: refused" \
+  "ALTER TABLE public.t165_part_q2 ADD CONSTRAINT t165_part_q2_note_key UNIQUE (note);" \
+  "" \
+  "SELECT count(*)::text FROM pg_constraint WHERE conname = 't165_part_q2_note_key'" \
+  "1" \
+  'partition "t165_part_q2" has a (constraint|index) of its own, "t165_part_q2_note_key", which the parent has no counterpart for' \
+  0 none t165_part_q2_note_key
+
+partlocal_case K77 "(T-165 r1, OD-156) a FOREIGN KEY from the non-template partition alone: refused" \
+  "CREATE TABLE public.t165_ref (note text PRIMARY KEY);
+GRANT SELECT ON public.t165_ref TO app_rw;
+ALTER TABLE public.t165_part_q2 ADD CONSTRAINT t165_part_q2_note_fkey FOREIGN KEY (note) REFERENCES public.t165_ref (note);" \
+  "DROP TABLE public.t165_ref;" \
+  "SELECT count(*)::text FROM pg_constraint WHERE conname = 't165_part_q2_note_fkey'" \
+  "1" \
+  'partition "t165_part_q2" has a constraint of its own, "t165_part_q2_note_fkey", which the parent has no counterpart for' \
+  0 none t165_part_q2_note_fkey
+
+partlocal_case K78 "(T-165 r1, OD-156) a TRIGGER on the non-template partition alone, which PostgreSQL's own FK triggers (tgisinternal) are told apart from: refused" \
+  "CREATE FUNCTION public.t165_noop() RETURNS trigger LANGUAGE plpgsql AS \$fn\$ BEGIN RETURN NEW; END \$fn\$;
+CREATE TRIGGER t165_part_q2_local_trg BEFORE INSERT ON public.t165_part_q2 FOR EACH ROW EXECUTE FUNCTION public.t165_noop();" \
+  "DROP FUNCTION public.t165_noop();" \
+  "SELECT count(*)::text FROM pg_trigger WHERE tgname = 't165_part_q2_local_trg' AND NOT tgisinternal" \
+  "1" \
+  'partition "t165_part_q2" has a trigger of its own, "t165_part_q2_local_trg", which the parent has no counterpart for' \
+  0 none t165_part_q2_local_trg
+
+# Three partitions, the offender in the middle: neither the template (byte-first) nor the last.
+plant "$UP" "-- @phase: expand
+CREATE TABLE public.t165_part (id bigint NOT NULL, at timestamptz NOT NULL, note text NOT NULL,
+  CONSTRAINT t165_part_pkey PRIMARY KEY (id, at)) PARTITION BY RANGE (at);
+CREATE TABLE public.t165_part_q1 PARTITION OF public.t165_part FOR VALUES FROM (TIMESTAMPTZ '2026-01-01Z') TO (TIMESTAMPTZ '2026-04-01Z');
+CREATE TABLE public.t165_part_q2 PARTITION OF public.t165_part FOR VALUES FROM (TIMESTAMPTZ '2026-04-01Z') TO (TIMESTAMPTZ '2026-07-01Z');
+CREATE TABLE public.t165_part_q3 PARTITION OF public.t165_part FOR VALUES FROM (TIMESTAMPTZ '2026-07-01Z') TO (TIMESTAMPTZ '2026-10-01Z');
+GRANT SELECT, INSERT ON public.t165_part TO app_rw;
+ALTER TABLE public.t165_part_q2 ENABLE ROW LEVEL SECURITY;
+CREATE POLICY t165_part_q2_mid ON public.t165_part_q2 FOR SELECT TO app_rw USING (note <> 'm');"
+plant "$DOWN" "DROP TABLE public.t165_part;"
+sed 's/^/   plant up:   /' "$UP"
+node scripts/db-migrate.ts up >"$OUT.p" 2>&1 || { cat "$OUT.p"; abort "K79: the plant did not apply"; }
+got=$(psql -X -A -t -q -c "SELECT string_agg(c.relname, ',' ORDER BY c.relname) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relispartition AND c.relkind = 'r' AND c.relname LIKE 't165\_part\_%'")
+[ "$got" = "t165_part_q1,t165_part_q2,t165_part_q3" ] || abort "K79: the three partitions did not land: [$got]"
+echo "   plant landed: partitions in byte order [$got]; the template is t165_part_q1 and the offender is t165_part_q2, neither first nor last"
+check K79 "(T-165 r1) three partitions, the offending policy on the middle one: refused, naming that partition" I-PART 'partition "t165_part_q2" has a policy of its own, "t165_part_q2_mid"'
+
+# QA's A17 stage 2: the attach that changed the verdict before this rework.
+plant_two_partitions "ALTER TABLE public.t165_part_q2 ENABLE ROW LEVEL SECURITY;
+CREATE POLICY t165_part_q2_only ON public.t165_part_q2 FOR SELECT TO app_rw USING (note <> 'x');" ""
+node scripts/db-migrate.ts up >"$OUT.p" 2>&1 || { cat "$OUT.p"; abort "K80: the plant did not apply"; }
+psql -X -q -v ON_ERROR_STOP=1 -c "CREATE TABLE public.t165_part_a0 PARTITION OF public.t165_part FOR VALUES FROM (TIMESTAMPTZ '2025-01-01Z') TO (TIMESTAMPTZ '2026-01-01Z')" >/dev/null || abort "K80: the attach failed"
+got=$(psql -X -A -t -q -c "SELECT string_agg(c.relname, ',' ORDER BY c.relname) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relispartition AND c.relkind = 'r' AND c.relname LIKE 't165\_part\_%'")
+[ "$got" = "t165_part_a0,t165_part_q1,t165_part_q2" ] || abort "K80: the attach did not land: [$got]"
+got=$(psql -X -A -t -q -c "SELECT c.relname || '/' || pol.polname FROM pg_policy pol JOIN pg_class c ON c.oid = pol.polrelid")
+[ "$got" = "t165_part_q2/t165_part_q2_only" ] || abort "K80: the policy is no longer there: [$got]"
+echo "   attach landed: partitions [$(psql -X -A -t -q -c "SELECT string_agg(c.relname, ',' ORDER BY c.relname) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relispartition AND c.relkind = 'r' AND c.relname LIKE 't165\_part\_%'")], the template is now t165_part_a0; pg_policy STILL [$got]"
+check K80 "(T-165 r1, OD-155) QA's A17 stage 2: a partition that sorts FIRST attached, so the template changes — the policy on t165_part_q2 is refused just the same" I-PART 'partition "t165_part_q2" has a policy of its own, "t165_part_q2_only"'
 
 echo
 if [ "$bad" -eq 0 ]; then
