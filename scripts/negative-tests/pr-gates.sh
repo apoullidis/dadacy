@@ -55,6 +55,7 @@ BACKED=(
   pnpm-workspace.yaml
   .github/workflows/pr.yml
   eslint.config.mjs
+  eslint.config.typed.mjs
   package.json
   packages/policy/package.json
   packages/contracts/package.json
@@ -261,6 +262,20 @@ mut package.json '"gate:pii-canary": "node scripts/gates/not-yet-supplied.ts gat
   run_case "A9 a PENDING hook that CRASHES is not a not-yet-supplied hook" FAIL \
     'WITHOUT the "GATE NOT YET SUPPLIED" banner' -- node "$PR" --only=gate:pii-canary
 
+# QR-A2. `GATE PASS  gate:pr` is the line every ticket pastes as its Definition
+# of Done, so the marker for a partial run belongs in THAT line and nowhere
+# else. These two cases read the banner itself: the substring they require
+# begins with `GATE PASS  gate:pr  [`, which a disclosure printed five lines up
+# in the summary block would not satisfy.
+CASE="A10"
+run_case "A10 --roster-only says so IN the GATE PASS banner" PASS \
+  'GATE PASS  gate:pr  [--roster-only: NO GATE EXECUTED' -- node "$PR" --roster-only
+
+CASE="A11"
+run_case "A11 --only= says so IN the GATE PASS banner, with the count" PASS \
+  'GATE PASS  gate:pr  [--only=gate:pii-canary: 1 of' 'rostered gate(s) executed — NOT a full' \
+  -- node "$PR" --only=gate:pii-canary
+
 echo
 echo "=== B. gate:negative-suites — how a suite's verdict is judged ==="
 # The fake suites live outside the repo. Each is a three-line script whose whole
@@ -434,6 +449,40 @@ mut eslint.config.mjs "      'db/schema.ts'," "      'db/schema.ts',
     'UNCOVERED' 'A lint gate that stopped looking at a file reports clean' \
     -- node scripts/gates/no-unsafe-any.ts
 
+# QR-F1 / QR-F2, rework 1. D0-D5 hold OCCURRENCE COUNTS; these three hold the
+# RULE SET and the FILE SET the counts are computed over. Every one of them was
+# `GATE PASS` before check C2 existed — QA measured all three.
+TYPED=eslint.config.typed.mjs
+PLANT='const raw: unknown = JSON.parse("{}");\nconst v = raw as never as { a: string };\nexport const out: string = (JSON.parse("{}") as never as { a: string }).a;\nexport const bad: string = JSON.parse("{}").a;\nexport const keep = v;\n'
+
+CASE="D6"
+mut "$TYPED" "    '@typescript-eslint/no-unsafe-call': 'error',
+" "" &&
+  run_case "D6 QR-F1: one rule of the five deleted from the overlay" FAIL \
+    'RULES-NOT-IN-FORCE' '@typescript-eslint/no-unsafe-call' \
+    'a rule that is not enabled' -- node scripts/gates/no-unsafe-any.ts
+
+CASE="D7"
+mut "$TYPED" "    'scripts/**/*.ts',
+" "" &&
+  run_case "D7 QR-F2: the overlay's files: glob narrowed" FAIL \
+    'RULES-NOT-IN-FORCE' 'a file the overlay no longer selects' \
+    -- node scripts/gates/no-unsafe-any.ts
+
+# D8 is QA's own construction (QRF-4) and D1 is its control: D1 shows the
+# committed overlay refusing this exact file with two NEW findings, and D8
+# shows that narrowing the glob no longer hides it — the gate is red on the
+# coverage reading instead, which is the only reading left once the rules do
+# not apply to the file.
+CASE="D8"
+mut "$TYPED" "    'scripts/**/*.ts',
+" "" &&
+  printf "$PLANT" > scripts/gates/qa-t005-unsafe.ts &&
+  git add -N scripts/gates/qa-t005-unsafe.ts &&
+  run_case "D8 QR-F2: narrowed glob AND a real any-value site inside it" FAIL \
+    'RULES-NOT-IN-FORCE' 'a file the overlay no longer selects' \
+    -- node scripts/gates/no-unsafe-any.ts
+
 echo
 echo "=== E. gate:supply-chain — OD-51 ==="
 sc() { node scripts/gates/supply-chain.ts; }
@@ -459,8 +508,14 @@ echo
 echo "=== F. gate:workflow — the mirrored, never-executed YAML ==="
 WF=.github/workflows/pr.yml
 wf() { node scripts/gates/workflow.ts; }
+# The `W7: 29 concrete` reason is not decoration: 29 is 22 blocking + 7 advisory
+# matrix values, so it is the assertion that BOTH `pnpm run ${{ matrix.gate }}`
+# steps were expanded and every value checked. Before rework 1 this number would
+# have been 0 — W7's pattern excluded `$`, `{` and `}` and skipped both lines.
+# Like MIN_BLOCKING and CASES, it is a pin: raise it when the roster grows.
 CASE="F0"
-run_case "F0 CONTROL: pr.yml is structurally valid and mirrors the roster" PASS 'GATE PASS' -- wf
+run_case "F0 CONTROL: pr.yml is structurally valid and mirrors the roster" PASS \
+  'GATE PASS' 'W7: 29 concrete' -- wf
 
 CASE="F1"
 mut "$WF" '          - gate:unit-tests
@@ -496,6 +551,22 @@ CASE="F6"
 mut "$WF" '      - run: pnpm install --frozen-lockfile' '      - run: pnpm gate:does-not-exist' &&
   run_case "F6 a job running a pnpm script nobody declared" FAIL \
     'package.json declares no script' -- wf
+
+# QR-H1, rework 1. F6 holds a LITERAL `run:` line; these two hold the only two
+# run: lines in pr.yml that do any work, both of which are
+# `pnpm run ${{ matrix.gate }}` and both of which W7 skipped silently until the
+# expansion landed. F7 is the refusal half, F8 the resolution half.
+CASE="F7"
+mut "$WF" 'pnpm run ${{ matrix.gate }}' 'pnpm run ${{ matrix.nosuch }}' &&
+  run_case "F7 a matrix-driven run: naming a key the matrix does not have" FAIL \
+    'job blocking step 4' 'this gate cannot resolve it' 'refused here rather than skipped' -- wf
+
+CASE="F8"
+mut package.json '    "gate:unit-tests": "node scripts/gates/unit-tests.ts",
+' '' &&
+  run_case "F8 a matrix value resolving to a script nobody declares" FAIL \
+    'runs `pnpm run gate:unit-tests` (from `pnpm run ${{ matrix.gate }}`)' \
+    'declares no script' -- wf
 
 echo
 echo "=== G. gate:semgrep-rules — OD-61 ==="

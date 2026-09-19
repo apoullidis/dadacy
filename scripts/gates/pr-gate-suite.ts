@@ -27,7 +27,7 @@ import { REPO_ROOT, finish } from './lib/run.ts';
 
 const SUITE = 'scripts/negative-tests/pr-gates.sh';
 /** Raise this in the same change set that adds a case. */
-const CASES = 62;
+const CASES = 69;
 
 const failures: string[] = [];
 const abs = path.join(REPO_ROOT, SUITE);

@@ -33,9 +33,19 @@
  *   W6  `fetch-depth: 0` on every `actions/checkout`. gate:migration-lint's
  *       R-TRAILER reads `merge-base..HEAD` (T-031 § contract; CONTRACTS.md
  *       addresses this to T-005 by name) and a shallow checkout breaks it.
- *   W7  every `run:` step invokes a pnpm script that EXISTS in package.json.
- *       A job that runs a script nobody defined would fail on a runner nobody
- *       has; it fails here instead.
+ *   W7  every `run:` step that invokes pnpm names a script that EXISTS in
+ *       package.json — INCLUDING through a `${{ matrix.<key> }}` expression,
+ *       which is expanded against that job's own `strategy.matrix.<key>` values
+ *       (the values W4 has already held against the roster) and checked once
+ *       per value. A pnpm `run:` step carrying an expression this gate cannot
+ *       resolve is REFUSED, not skipped.
+ *
+ *       THE EXPANSION IS NOT A REFINEMENT, IT IS THE WHOLE OF W7 ON THIS FILE.
+ *       Both real `run:` steps in pr.yml are `pnpm run ${{ matrix.gate }}`, and
+ *       until rework 1 the rule's pattern excluded `$`, `{` and `}`, so both
+ *       were silently skipped: QA changed them to `${{ matrix.nosuch }}` —
+ *       which would fail all 29 jobs on a runner — and this gate stayed green.
+ *       Cases F7 and F8 are the two halves of the corrected rule.
  *
  * WHAT IT DOES NOT PROVE, and cannot:
  *   * NOT that GitHub would accept the file. This is a structural check against
@@ -52,6 +62,12 @@
  *   * NOT that the jobs would PASS. That is what `pnpm gate:pr` is for, and it
  *     is the only evidence this build accepts (PROTOCOL §5.1: "A gate whose
  *     only proof is a green YAML file is not wired to anything").
+ *   * NOT anything about a `run:` step that does NOT start with `pnpm`. W7
+ *     reads pnpm invocations only; any other shell command is structurally
+ *     checked by W2 and otherwise unexamined. Nor does it read a pnpm line that
+ *     is not a bare `pnpm [run] <script>` — a chained or flag-bearing command
+ *     (`pnpm install --frozen-lockfile`, `pnpm a && pnpm b`) is out of the
+ *     pattern, and that bound is unchanged by the expansion above.
  *   * NOT anything about `merge`, `production` or `migrations` stages of
  *     SD §QD-4. This gate covers the PR row and the files in .github/workflows;
  *     a second workflow file added later is parsed and structurally checked
@@ -99,6 +115,42 @@ interface Job {
 }
 
 const parsedDocs = new Map<string, Record<string, unknown>>();
+
+/** How many concrete `pnpm <script>` commands W7 resolved and checked. */
+let runChecked = 0;
+
+/**
+ * Expand every `${{ … }}` in a `run:` command against the job's matrix.
+ *
+ * A `${{ matrix.<key> }}` whose key is a non-empty array of scalars in this
+ * job's `strategy.matrix` expands to one command per value — that is how
+ * `pnpm run ${{ matrix.gate }}` becomes 22 concrete commands. Anything else is
+ * returned as UNRESOLVED and the caller fails on it; nothing is dropped.
+ */
+function expandExpressions(
+  cmd: string,
+  matrix: Readonly<Record<string, unknown>> | undefined,
+): { commands: string[]; unresolved: string[] } {
+  const unresolved: string[] = [];
+  let commands = [cmd];
+  for (const found of cmd.match(/\$\{\{[^}]*\}\}/g) ?? []) {
+    const inner = found.slice(3, -2).trim();
+    const key = /^matrix\.([A-Za-z_][A-Za-z0-9_-]*)$/.exec(inner)?.[1];
+    const values: unknown = key === undefined ? undefined : matrix?.[key];
+    if (
+      !Array.isArray(values) ||
+      values.length === 0 ||
+      values.some((v) => typeof v !== 'string' && typeof v !== 'number')
+    ) {
+      unresolved.push(found);
+      continue;
+    }
+    commands = commands.flatMap((c) =>
+      (values as readonly (string | number)[]).map((v) => c.split(found).join(String(v))),
+    );
+  }
+  return { commands, unresolved };
+}
 
 for (const f of files) {
   const text = fs.readFileSync(path.join(absDir, f), 'utf8');
@@ -183,12 +235,32 @@ for (const f of files) {
       // W7
       if (hasRun) {
         const cmd = String(step.run).trim();
-        const m = /^pnpm\s+(?:run\s+)?(?!install\b|--)([^\s${}]+)\s*$/.exec(cmd);
-        if (m?.[1] !== undefined && !scripts.has(m[1])) {
-          failures.push(
-            `W7 ${at} step ${String(i)}: runs \`${cmd}\`, and package.json declares no script ` +
-              `\`${m[1]}\`.`,
-          );
+        if (/^pnpm\b/.test(cmd)) {
+          const { commands, unresolved } = expandExpressions(cmd, matrix);
+          for (const expr of unresolved) {
+            failures.push(
+              `W7 ${at} step ${String(i)}: runs \`${cmd}\`, which carries the expression ` +
+                `\`${expr}\`, and this gate cannot resolve it. It resolves ` +
+                '`${{ matrix.<key> }}` against the strategy.matrix of the job the step is in, ' +
+                'and nothing else. An unresolvable expression is an UNCHECKED command, so it ' +
+                'is refused here rather than skipped — skipping is how both of the real run: ' +
+                'steps in this workflow went unchecked until rework 1.',
+            );
+          }
+          if (unresolved.length === 0) {
+            for (const resolvedCmd of commands) {
+              const m = /^pnpm\s+(?:run\s+)?(?!install\b|--)([^\s${}]+)\s*$/.exec(resolvedCmd);
+              if (m?.[1] === undefined) continue;
+              runChecked += 1;
+              if (!scripts.has(m[1])) {
+                const via = resolvedCmd === cmd ? '' : ` (from \`${cmd}\`)`;
+                failures.push(
+                  `W7 ${at} step ${String(i)}: runs \`${resolvedCmd}\`${via}, and package.json ` +
+                    `declares no script \`${m[1]}\`.`,
+                );
+              }
+            }
+          }
         }
       }
     }
@@ -268,6 +340,11 @@ if (advisoryCoE !== true && advisoryCoE !== 'true') {
 if (blockingCoE === undefined && advisoryCoE === true) {
   console.log('  ok  the class mirror: blocking blocks, advisory is continue-on-error');
 }
+
+console.log(
+  `  ok  W7: ${String(runChecked)} concrete \`pnpm <script>\` invocation(s) checked against ` +
+    `package.json, after expanding every \`\${{ matrix.<key> }}\` in a pnpm \`run:\` step`,
+);
 
 console.log(
   `\n  This file is AUTHORED AND VALIDATED, NEVER EXECUTED. There is no remote (PROTOCOL §3), ` +

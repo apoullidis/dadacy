@@ -48,7 +48,16 @@ export default tseslint.config(...base, {
   },
   rules: {
     // The family, in full. Each one is a different route from an `any` value
-    // into typed code, and leaving any of them out leaves that route open.
+    // into typed code.
+    //
+    // WHAT GUARANTEES THAT, AND IT IS NOT THIS COMMENT. `gate:no-unsafe-any`
+    // check C2 resolves THIS config per file with ESLint's own API and FAILS
+    // unless all five below, plus the base config's `no-explicit-any`, are at
+    // `error` on every TypeScript file git tracks under apps/, packages/ and
+    // scripts/. So deleting one of the five, or narrowing the `files:` list
+    // above, is red (cases D6, D7, D8 in scripts/negative-tests/pr-gates.sh).
+    // Before C2 existed both were GREEN: the gate is a ratchet over OCCURRENCE
+    // COUNTS, and a rule that is not enabled produces none.
     '@typescript-eslint/no-unsafe-assignment': 'error',
     '@typescript-eslint/no-unsafe-member-access': 'error',
     '@typescript-eslint/no-unsafe-call': 'error',

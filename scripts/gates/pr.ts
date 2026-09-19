@@ -54,7 +54,12 @@ const MIN_BLOCKING = 22;
  *                   declared class. The roster checks still run.
  *
  * Neither weakens the default: `pnpm gate:pr` passes neither, and both PRINT
- * what they did, so a pasted run cannot be mistaken for a full one.
+ * what they did IN THE BANNER ITSELF — the `GATE PASS  gate:pr` line, which is
+ * the line every ticket in this programme pastes as its Definition of Done.
+ * That placement is rework 1's, and it is the point: until then the disclosure
+ * sat five lines up in the summary block and both flags ended in a banner
+ * byte-identical to a full run's. Cases A10 and A11 assert the marker is in the
+ * banner line, not merely somewhere in the output.
  */
 const argv = process.argv.slice(2);
 const rosterOnly = argv.includes('--roster-only');
@@ -190,10 +195,21 @@ console.log(
   `  ${String((counts['PENDING'] ?? 0) + (counts['SERVICE'] ?? 0))} rostered gate(s) are NOT green and are named above with their owner.`,
 );
 
+/**
+ * The marker that rides IN the banner. Empty for a full run, so `gate:pr`'s own
+ * banner is unchanged and a full run is still the plain line every ticket
+ * pastes — and non-empty, with the count, for either cheap entry point.
+ */
+const banner = rosterOnly
+  ? '  [--roster-only: NO GATE EXECUTED — NOT a full gate:pr run]'
+  : only !== undefined
+    ? `  [--only=${only}: ${String(outcomes.length)} of ${String(ROSTER.length)} rostered gate(s) executed — NOT a full gate:pr run]`
+    : '';
+
 if (failures.length > 0) {
-  console.error(`\nGATE FAIL  gate:pr — ${String(failures.length)} problem(s):`);
+  console.error(`\nGATE FAIL  gate:pr${banner} — ${String(failures.length)} problem(s):`);
   for (const f of failures) console.error(`  - ${f}`);
   process.exit(1);
 }
-console.log('\nGATE PASS  gate:pr');
+console.log(`\nGATE PASS  gate:pr${banner}`);
 process.exit(0);
