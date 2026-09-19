@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@kinvara/domain-types": "workspace:*",
+    "@kinvara/i18n": "workspace:*",
     "zod": "4.5.4"
   },
   "devDependencies": {
