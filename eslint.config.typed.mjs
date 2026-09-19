@@ -27,14 +27,14 @@
 //
 // Type-aware linting is slower than syntactic linting, which is the other
 // reason it is its own gate: `pnpm gate:lint` stays the fast one. Measured
-// through `scripts/dev`, the only way anything runs on this host:
-// `gate:no-unsafe-any` about 17 s (16.6 s and 17.7 s on two runs of this
-// branch) against `gate:lint` about 12 s (12.4 s both times). Container start
-// is 0.5 s (`time ./scripts/dev node -e ''`), so it is not what the gap is made
-// of. Stated as an "about" with the measurements beside it because an exact
-// figure here goes stale on the next commit — which is what happened to the
-// previous one, "about 17 s against about 8 s": the 8 s was not reproducible
-// through this instrument at all.
+// through `scripts/dev`, the only way anything runs on this host, over three
+// runs on this branch: `gate:no-unsafe-any` 16.6-17.7 s against `gate:lint`
+// 12.4-13.2 s. Container start is 0.5 s (`time ./scripts/dev node -e ''`), so
+// it is not what the gap is made of. A RANGE, not a point, and deliberately:
+// an exact figure here goes stale on the next commit or on the next run's
+// noise, which is exactly what happened to the one this replaces ("about 17 s
+// against about 8 s" — and its 8 s was never reproducible through this
+// instrument at all).
 
 import base from './eslint.config.mjs';
 import tseslint from 'typescript-eslint';
