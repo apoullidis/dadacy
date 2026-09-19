@@ -9,10 +9,13 @@
 #
 # WHY THIS FILE EXISTS IN THIS SHAPE. PROTOCOL §5.1: "Running your gate proves
 # it executes. ATTACKING it proves what it covers ... I had run the check; I had
-# not tried to get past it." A full `pnpm gate:pr` is about 9 1/4 minutes
-# (9:15.01 through scripts/dev at 9f99b1e; the run at the delivered commit is
-# pasted in tasks/state/EP-1/T-005.md), so the 69 cases below would be over ten
-# hours if each paid for one. Three of the gates therefore take a cheap entry
+# not tried to get past it." A full `pnpm gate:pr` is about 9 1/4 minutes --
+# measured through scripts/dev on this branch at 9:15.01 (9f99b1e) and 9:16.60
+# (5e5b5e6), both runs pasted in tasks/state/EP-1/T-005.md along with the run at
+# the delivered commit. It is stated as an "about" with its measurements
+# attributed because a comment-only commit cannot move it and an exact figure
+# would go stale on the next one. So the 69 cases below would be over ten hours
+# if each paid for a full run. Three of the gates therefore take a cheap entry
 # point — `pr.ts --roster-only` / `--only=`, `unit-tests.ts --dry-run`, and
 # `KINVARA_NEG_SUITES_TABLE` — each of which PRINTS what it did IN ITS OWN
 # BANNER LINE, so a run through one can never be pasted as a full run. For
