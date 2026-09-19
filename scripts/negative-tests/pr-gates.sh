@@ -292,8 +292,8 @@ echo
 echo "=== B. gate:negative-suites — how a suite's verdict is judged ==="
 # The fake suites live outside the repo. Each is a three-line script whose whole
 # job is to print a footer and exit, so that the JUDGING can be attacked without
-# paying 4m45s for the real suites (the six per-suite figures gate:negative-suites
-# prints, summed, at 9f99b1e).
+# paying about 4 3/4 minutes for the real suites (the six per-suite figures
+# gate:negative-suites prints, summed; it carries both measurements).
 mkfake() { # mkfake <name> <exit> <line...>
   local n="$1" x="$2"; shift 2
   { echo '#!/usr/bin/env bash'; for l in "$@"; do printf 'echo %q\n' "$l"; done; echo "exit $x"; } > "$TMP/$n"

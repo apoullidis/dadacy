@@ -47,9 +47,9 @@ const MIN_BLOCKING = 22;
  * only observed passing. A full run is about 9 1/4 minutes — measured through
  * scripts/dev on this branch at 9:15.01 (9f99b1e) and 9:16.60 (5e5b5e6), both
  * pasted in tasks/state/EP-1/T-005.md with the run at the delivered commit. The
- * two negative-suite gates are 7m36s of that: `gate:negative-suites` 4m45s plus
- * `gate:pr-gate-suite` 2m51s, both printed by the gates themselves in the
- * 9f99b1e run. That is long enough that nobody would write sixty-nine cases
+ * two negative-suite gates are about 7 1/2 minutes of that, both figures printed
+ * by the gates themselves: `gate:negative-suites` 4m45s / 4m47s plus
+ * `gate:pr-gate-suite` 2m51s / 2m52s, at 9f99b1e / 89e89d4 respectively. That is long enough that nobody would write sixty-nine cases
  * against a full run — and a gate nobody attacks is a gate whose coverage is
  * unknown (PROTOCOL §5.1: "I had run the check; I had not tried to get past
  * it").
