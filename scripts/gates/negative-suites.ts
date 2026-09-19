@@ -241,9 +241,7 @@ for (const sig of ['SIGINT', 'SIGTERM'] as const) {
 // ------------------------------------------------------------ a clean tree
 const porcelain = capture('git', ['status', '--porcelain']);
 if (porcelain.spawnFailed || porcelain.code !== 0) {
-  finish(GATE_NAME, [
-    '`git status --porcelain` failed; git is a hard dependency here',
-  ]);
+  finish(GATE_NAME, ['`git status --porcelain` failed; git is a hard dependency here']);
 }
 if (porcelain.stdout.trim() !== '') {
   finish(GATE_NAME, [
@@ -260,7 +258,9 @@ console.log('The suites run SEQUENTIALLY, in the foreground, under an exclusive 
 
 let ran = 0;
 for (const s of SUITE_TABLE) {
-  const abs = path.join(REPO_ROOT, s.file);
+  // `resolve`, not `join`: an entry may name an absolute path (the override
+  // table's scripted suites live outside the repo so they cannot dirty the tree).
+  const abs = path.resolve(REPO_ROOT, s.file);
   console.log(`${'-'.repeat(78)}\n  ${s.id}  [${s.state}]  pinned at ${String(s.cases)} case(s)`);
   console.log(`    ${s.why}`);
 
@@ -297,7 +297,7 @@ for (const s of SUITE_TABLE) {
   }
 
   const started = Date.now();
-  const r = spawnSync('bash', [s.file], {
+  const r = spawnSync('bash', [abs], {
     cwd: REPO_ROOT,
     encoding: 'utf8',
     maxBuffer: 256 * 1024 * 1024,

@@ -49,7 +49,9 @@ import type { WorkspacePackage } from './lib/workspace.ts';
  * a test run. `pnpm gate:unit-tests` does not pass it.
  */
 const DRY_RUN = process.argv.includes('--dry-run');
-const GATE = DRY_RUN ? 'gate:unit-tests [--dry-run: DECLARATION CHECKS ONLY, NO TEST RAN]' : 'gate:unit-tests';
+const GATE = DRY_RUN
+  ? 'gate:unit-tests [--dry-run: DECLARATION CHECKS ONLY, NO TEST RAN]'
+  : 'gate:unit-tests';
 
 const failures: string[] = [];
 

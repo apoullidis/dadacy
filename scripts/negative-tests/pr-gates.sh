@@ -441,19 +441,17 @@ CASE="E0"
 run_case "E0 CONTROL: minimumReleaseAgeStrict: true, no exemptions" PASS 'GATE PASS' -- sc
 
 CASE="E1"
-mut pnpm-workspace.yaml 'minimumReleaseAgeStrict: true' '# minimumReleaseAgeStrict removed' &&
+mut pnpm-workspace.yaml $'\nminimumReleaseAgeStrict: true' $'\n# minimumReleaseAgeStrict removed' &&
   run_case "E1 the strict setting deleted" FAIL \
     'S1 pnpm-workspace.yaml has no top-level' -- sc
 
 CASE="E2"
-mut pnpm-workspace.yaml 'minimumReleaseAgeStrict: true' 'minimumReleaseAgeStrict: false' &&
+mut pnpm-workspace.yaml $'\nminimumReleaseAgeStrict: true' $'\nminimumReleaseAgeStrict: false' &&
   run_case "E2 the strict setting turned off" FAIL \
     'is "false", not `true`' -- sc
 
 CASE="E3"
-mut pnpm-workspace.yaml 'minimumReleaseAgeStrict: true' 'minimumReleaseAgeExclude:
-  - some-package
-minimumReleaseAgeStrict: true' &&
+mut pnpm-workspace.yaml $'\nminimumReleaseAgeStrict: true' $'\nminimumReleaseAgeExclude:\n  - some-package\nminimumReleaseAgeStrict: true' &&
   run_case "E3 the exemption pnpm writes for you (OD-51)" FAIL \
     'S2 pnpm-workspace.yaml carries 1' 'some-package' 'PIN A RELEASE OLDER THAN THE WINDOW' -- sc
 
