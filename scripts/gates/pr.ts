@@ -2,81 +2,157 @@
  * gate:pr — the local PR aggregate (PROTOCOL.md §5.1, SD §QD-4 PR row).
  *
  * There is no CI service and there never will be. This command IS the PR gate.
- * It runs every sub-gate, reports each one separately so a single failure does
- * not mask the rest, and exits non-zero if any of them failed.
  *
- * T-001 owns the seven that need no application code. T-005 extends this list
- * with the gates that depend on other agents' work (locale completeness,
- * prohibited claims, safety-review currency, plural completeness, the SMS
- * segment assertion, the PII leak canary, policy branch coverage, Zod<->OpenAPI
- * drift, migration lint, Drizzle parity). Adding a name here is how a gate
- * becomes blocking; there is no other switch.
+ * The gate list is no longer written here. It is `scripts/gates/lib/roster.ts`,
+ * which also holds SD §QD-4's PR row as quoted text, and this program refuses
+ * to pass if the two diverge. Adding a name to the roster is how a gate becomes
+ * blocking; there is still no other switch, but now REMOVING one is refused too.
+ *
+ * What this program asserts, beyond "did each gate exit 0":
+ *
+ *   1. THE ROSTER COVERS THE SPEC. Every semicolon-separated item of SD §QD-4's
+ *      PR row has at least one roster entry. A gate cannot go missing; it can
+ *      only change class, and every non-BLOCKING class must name an owner and
+ *      the exact condition that makes it green (roster.ts `rosterProblems`).
+ *   2. EVERY ROSTERED GATE IS EXECUTED. Including the ones nobody expects to
+ *      pass. "Not yet supplied" is a RESULT here, produced by running the
+ *      command, not a row in a table that stopped being true.
+ *   3. THE OUTCOME MATCHES THE DECLARED CLASS. A PENDING hook that starts
+ *      exiting 0 fails this gate: its owner supplied it and nobody promoted it.
+ *      A PENDING hook that fails without the `GATE NOT YET SUPPLIED` banner
+ *      fails this gate too — refused, crashed and not-yet-supplied must stay
+ *      three distinguishable outcomes (PROTOCOL §5.1).
+ *   4. IT CANNOT PASS VACUOUSLY. Zero gates executed, or a BLOCKING population
+ *      of zero, is a FAIL — not a green run over an empty list. That is the
+ *      Trivy zero-package defect and OD-3, and it is asserted here as well as
+ *      inside the gates that can suffer it.
  */
 import { spawnSync } from 'node:child_process';
-import { REPO_ROOT } from './lib/run.ts';
+import { REPO_ROOT, capture } from './lib/run.ts';
+import { ROSTER, SPEC_PR_ROW, PROGRAMME, rosterProblems } from './lib/roster.ts';
+import type { RosterEntry } from './lib/roster.ts';
 
-interface Gate {
-  readonly name: string;
-  readonly why: string;
+const RULE = '='.repeat(78);
+
+/** The minimum number of BLOCKING gates. Anti-vacuity: see header note 4. */
+const MIN_BLOCKING = 15;
+
+interface Outcome {
+  readonly entry: RosterEntry;
+  readonly code: number;
+  /** '' when the gate's output went straight to the terminal. */
+  readonly text: string;
 }
 
-const GATES: readonly Gate[] = [
-  { name: 'gate:toolbox', why: 'toolchain pins, determinism, ownership (QA-F3)' },
-  { name: 'gate:typecheck', why: 'TypeScript strict across the workspace (SD §DH-2)' },
-  { name: 'gate:lint', why: 'ESLint flat config + Prettier (SD §DH-2)' },
-  { name: 'gate:deps', why: 'dependency-cruiser module boundaries (SA §SA-2)' },
-  { name: 'gate:secrets', why: 'gitleaks (SD §QD-4)' },
-  { name: 'gate:trivy', why: 'dependency vulnerabilities (SD §QD-4)' },
-  { name: 'gate:size-limit', why: 'per-route JS budgets (SD §PERF)' },
-  {
-    name: 'gate:egress-boundary',
-    why: 'every compose service on kinvara-int and nothing else; svc run has no egress; an overlay ADDITION is not an override (DOCKER.md §7, OD-12, OD-16, QA-F5)',
-  },
-  {
-    name: 'gate:app-images',
-    why: 'static checks over EVERY Dockerfile an overlay service builds and over compose.yml + every overlay (DOCKER.md §5, §3). The scope of each check is published in state/EP-1/T-036.md § Published contract, with the negative case that falsifies it; this gate is static and still cannot look inside an image — anchor image properties on docker image inspect and on the build',
-  },
-  {
-    // T-115. The STATIC half only: the tag-identity and no-mock rules need no
-    // Docker and no services, so they block on a PR. The half that RUNS the
-    // suites needs the Docker socket, which only `scripts/dev --docker` supplies
-    // (T-034) — and gate:toolbox §6 fails gate:pr on purpose when the socket is
-    // present, so the two cannot share one invocation. The full gate belongs in
-    // gate:heavy — T-006, which is blocked_by T-115 for this reason.
-    name: 'gate:constraint-suite:static',
-    why: "the Testcontainers image tag is compose's, and no constraint suite mocks the database (T-115)",
-  },
-  {
-    // T-021. Static: SQL and git only, no services. Its rules and the negative case that
-    // falsifies each are published in state/EP-2/T-021.md § Published contract.
-    name: 'gate:migration-lint',
-    why: 'expand/contract, protected objects, append-only grants, and merged migrations change only in comments (SD §DB-13, PROTOCOL §3)',
-  },
-];
+const outcomes: Outcome[] = [];
 
-const results: { name: string; code: number }[] = [];
-
-for (const g of GATES) {
-  console.log(`\n${'='.repeat(78)}\n== ${g.name} — ${g.why}\n${'='.repeat(78)}`);
-  const r = spawnSync('pnpm', ['run', '--silent', g.name], {
+function runStreamed(entry: RosterEntry): Outcome {
+  const r = spawnSync('pnpm', ['run', '--silent', entry.name], {
     cwd: REPO_ROOT,
     stdio: 'inherit',
   });
   const code = r.error !== undefined ? 127 : (r.status ?? 1);
-  results.push({ name: g.name, code });
+  return { entry, code, text: '' };
 }
 
-console.log(`\n${'='.repeat(78)}\n== gate:pr summary\n${'='.repeat(78)}`);
-let failed = 0;
-for (const r of results) {
-  const status = r.code === 0 ? 'PASS' : `FAIL (exit ${String(r.code)})`;
-  if (r.code !== 0) failed += 1;
-  console.log(`  ${status.padEnd(16)} ${r.name}`);
+function runCaptured(entry: RosterEntry): Outcome {
+  const r = capture('pnpm', ['run', '--silent', entry.name]);
+  const text = `${r.stdout}${r.stderr}`;
+  process.stdout.write(text.endsWith('\n') || text === '' ? text : `${text}\n`);
+  return { entry, code: r.spawnFailed ? 127 : r.code, text };
 }
-console.log(`\n  ${String(results.length - failed)}/${String(results.length)} gates passed.`);
 
-if (failed > 0) {
-  console.error(`\nGATE FAIL  gate:pr — ${String(failed)} gate(s) failed`);
+// --------------------------------------------------------------- 1. the roster
+const failures: string[] = [];
+for (const p of rosterProblems()) failures.push(`roster: ${p}`);
+
+console.log(`${RULE}\n== gate:pr — the roster, held against SD §QD-4's PR row\n${RULE}`);
+console.log(`  SD §QD-4 PR row items: ${String(SPEC_PR_ROW.length)}`);
+for (const item of SPEC_PR_ROW) {
+  const answering = ROSTER.filter((e) => e.spec === item).map((e) => e.name);
+  console.log(`    ${item}`);
+  console.log(
+    `      -> ${answering.length === 0 ? 'NOTHING — this is a FAIL' : answering.join(', ')}`,
+  );
+}
+const programme = ROSTER.filter((e) => e.spec === PROGRAMME).map((e) => e.name);
+console.log(`  gates this build added that SD §QD-4 does not name: ${programme.join(', ')}`);
+
+// ------------------------------------------------------------- 2. run them all
+for (const entry of ROSTER) {
+  console.log(`\n${RULE}\n== ${entry.name}  [${entry.cls}] — ${entry.why}\n${RULE}`);
+  if (entry.owner !== undefined) console.log(`   owed by: ${entry.owner}`);
+  if (entry.unblocks !== undefined) console.log(`   goes green when: ${entry.unblocks}\n`);
+  outcomes.push(entry.cls === 'BLOCKING' ? runStreamed(entry) : runCaptured(entry));
+}
+
+// ---------------------------------------------------- 3. judge against the class
+const NOT_SUPPLIED = 'GATE NOT YET SUPPLIED';
+
+for (const o of outcomes) {
+  const { entry, code, text } = o;
+  switch (entry.cls) {
+    case 'BLOCKING':
+      if (code !== 0) failures.push(`${entry.name} FAILED (exit ${String(code)})`);
+      break;
+    case 'PENDING':
+    case 'SERVICE':
+      if (code === 0) {
+        failures.push(
+          `${entry.name} is rostered ${entry.cls} but EXITED 0 — ${entry.owner ?? 'its owner'} has supplied it and nobody promoted it to BLOCKING. Move it in scripts/gates/lib/roster.ts.`,
+        );
+      } else if (!text.includes(NOT_SUPPLIED)) {
+        failures.push(
+          `${entry.name} is rostered ${entry.cls} and exited ${String(code)} WITHOUT the "${NOT_SUPPLIED}" banner — a crash and a not-yet-supplied hook must not look the same (PROTOCOL §5.1).`,
+        );
+      }
+      break;
+    case 'BLOCKED':
+      if (code !== 0) failures.push(`${entry.name} FAILED (exit ${String(code)})`);
+      break;
+  }
+}
+
+// -------------------------------------------------------------- 4. anti-vacuity
+const blocking = ROSTER.filter((e) => e.cls === 'BLOCKING').length;
+if (outcomes.length === 0) failures.push('gate:pr executed ZERO gates — a pass over an empty list');
+if (blocking < MIN_BLOCKING) {
+  failures.push(
+    `gate:pr has ${String(blocking)} BLOCKING gate(s); the floor is ${String(MIN_BLOCKING)}. A gate was demoted or deleted — a green run over a shrinking list is the defect this aggregate exists to prevent.`,
+  );
+}
+
+// -------------------------------------------------------------------- summary
+console.log(`\n${RULE}\n== gate:pr summary\n${RULE}`);
+const counts: Record<string, number> = { BLOCKING: 0, PENDING: 0, BLOCKED: 0, SERVICE: 0 };
+let blockingPassed = 0;
+for (const o of outcomes) {
+  counts[o.entry.cls] = (counts[o.entry.cls] ?? 0) + 1;
+  let status: string;
+  if (o.entry.cls === 'BLOCKING' || o.entry.cls === 'BLOCKED') {
+    status = o.code === 0 ? 'PASS' : `FAIL (exit ${String(o.code)})`;
+    if (o.code === 0) blockingPassed += 1;
+  } else {
+    status = o.code === 0 ? `UNEXPECTED PASS (promote it)` : 'NOT YET SUPPLIED';
+  }
+  const tail = o.entry.cls === 'BLOCKING' ? '' : `  <- ${o.entry.owner ?? '(no owner)'}`;
+  console.log(`  ${status.padEnd(22)} ${o.entry.name.padEnd(32)} [${o.entry.cls}]${tail}`);
+}
+console.log(
+  `\n  executed ${String(outcomes.length)} rostered gate(s): ` +
+    `${String(counts['BLOCKING'] ?? 0)} BLOCKING, ${String(counts['BLOCKED'] ?? 0)} BLOCKED, ` +
+    `${String(counts['SERVICE'] ?? 0)} SERVICE, ${String(counts['PENDING'] ?? 0)} PENDING.`,
+);
+console.log(
+  `  ${String(blockingPassed)}/${String((counts['BLOCKING'] ?? 0) + (counts['BLOCKED'] ?? 0))} gates that must pass, passed.`,
+);
+console.log(
+  `  ${String((counts['PENDING'] ?? 0) + (counts['SERVICE'] ?? 0))} rostered gate(s) are NOT green and are named above with their owner.`,
+);
+
+if (failures.length > 0) {
+  console.error(`\nGATE FAIL  gate:pr — ${String(failures.length)} problem(s):`);
+  for (const f of failures) console.error(`  - ${f}`);
   process.exit(1);
 }
 console.log('\nGATE PASS  gate:pr');

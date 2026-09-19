@@ -1,0 +1,118 @@
+# Kinvara — the PR stage, mirrored from SD §QD-4's PR row. T-005.
+#
+# THIS FILE IS AUTHORED AND SCHEMA-VALIDATED. IT IS NEVER EXECUTED.
+#
+# That is not a caveat, it is the status: there is no git remote on this machine
+# and none may be added (PROTOCOL §3), so GitHub Actions never runs here. The
+# workflow has exactly the standing Terraform has — a design artefact that must
+# stay honest and reviewable, validated as text and applied never
+# (platform-infrastructure.md § Non-negotiables 1, PROTOCOL §5.1).
+#
+# THE AUTHORITY IS `pnpm gate:pr`, NOT THIS FILE. The gate list lives in
+# scripts/gates/lib/roster.ts. `pnpm gate:workflow` fails if the two diverge in
+# EITHER direction, so this file cannot gain a job the aggregate does not run,
+# or lose one the aggregate does.
+#
+# `fetch-depth: 0` is load-bearing and is NOT an optimisation to remove:
+# gate:migration-lint's R-TRAILER reads `merge-base..HEAD` with git's own
+# trailer parser (T-031 § Published contract; CONTRACTS.md carries this as an
+# obligation addressed to T-005 by name). A shallow checkout makes that range
+# unresolvable, and the rule would fail open or fail obscurely.
+
+name: PR
+
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Every BLOCKING gate in scripts/gates/lib/roster.ts, one matrix leg each.
+  # fail-fast is off so one red gate does not hide the state of the others —
+  # the same reason `pnpm gate:pr` runs them all and summarises at the end.
+  blocking:
+    name: gate (blocking)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        gate:
+          - gate:toolbox
+          - gate:typecheck
+          - gate:lint
+          - gate:deps
+          - gate:no-unsafe-any
+          - gate:secrets
+          - gate:trivy
+          - gate:audit
+          - gate:size-limit
+          - gate:egress-boundary
+          - gate:app-images
+          - gate:constraint-suite:static
+          - gate:migration-lint
+          - gate:semgrep
+          - gate:semgrep-rules
+          - gate:contract-drift
+          - gate:unit-tests
+          - gate:policy-coverage
+          - gate:negative-suites
+          - gate:supply-chain
+          - gate:workflow
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .tool-versions
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run ${{ matrix.gate }}
+
+  # Rostered gates that are NOT green, each with the ticket that owes it.
+  # `continue-on-error: true` mirrors the local aggregate exactly: `gate:pr`
+  # runs these, asserts they fail with the NOT YET SUPPLIED banner, and does not
+  # let their failure fail the stage — while FAILING if one of them starts
+  # passing without being promoted. They are listed, never omitted: "no gate
+  # silently absent, and no gate silently skipped."
+  #
+  #   gate:drizzle-parity         SERVICE. Needs a database. In a real runner
+  #                               this job would carry a `services: postgres`
+  #                               block pinned to compose's image tag; locally
+  #                               it is gate:heavy's (T-006).
+  #   gate:locale-completeness    T-042      gate:prohibited-claims  T-043
+  #   gate:safety-review-currency T-044      gate:plural-completeness T-045
+  #   gate:sms-segments           T-046      gate:pii-canary          T-119
+  advisory:
+    name: gate (not yet supplied)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        gate:
+          - gate:drizzle-parity
+          - gate:locale-completeness
+          - gate:prohibited-claims
+          - gate:safety-review-currency
+          - gate:plural-completeness
+          - gate:sms-segments
+          - gate:pii-canary
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .tool-versions
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run ${{ matrix.gate }}

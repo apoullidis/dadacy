@@ -1,0 +1,42 @@
+{
+  "//": "T-005 / decisions.md OD-60. The `any`-VALUE sites that exist on main c27c354, each with the agent who owns the file. This is a RATCHET, not a waiver: gate:no-unsafe-any fails on a site that is not here, on a count higher than the one here, AND on an entry whose site has been fixed. Every direction moves the gate. Do not add an entry to make the gate green — an entry is a recorded debt with a named owner, and adding one without that owner's ticket is the thing this file exists to make visible.",
+  "//measured": "./scripts/dev node_modules/.bin/eslint --config eslint.config.typed.mjs -f json . on T-005-pr-gates, base main c27c354.",
+  "sites": {
+    "apps/core/test/fixtures/faults.ts": {
+      "owner": "apps/core — tech-lead (T-135 scaffold, T-141 fixtures)",
+      "why": "d4aProxy returns a Proxy whose get trap returns `any`; the fixture exists to break the problem+json Proxy invariant on purpose (T-023 D4a).",
+      "rules": { "@typescript-eslint/no-unsafe-return": 1 }
+    },
+    "packages/contracts/type-tests/refusals.ts": {
+      "owner": "packages/contracts — T-022",
+      "why": "A DELIBERATE TRIPWIRE. The file says: `encodeMinorUnits(JSON.parse(rawString).amountMinor)` ... `When OD-60 lands this line turns gate:lint red, which is the intended signal.` It is the falsifier for T-022 § Published contract §3's sentence that the type-level route is still open. Landing this gate is what fires it — so T-022's §3 now needs narrowing, and that is T-022's to do, not T-005's.",
+      "rules": {
+        "@typescript-eslint/no-unsafe-argument": 1,
+        "@typescript-eslint/no-unsafe-member-access": 1
+      }
+    },
+    "packages/domain-types/type-tests/refusals.ts": {
+      "owner": "packages/domain-types — T-023",
+      "why": "The same tripwire one package over: `takesSession(JSON.parse(raw))` and `takesMoney(JSON.parse('{\"amountMinor\":50.42}').amountMinor)`, written with the comment `an any flows into every brand ... neither tsc nor gate:lint refuses it (OD-60), a float into MinorUnits included`. These are the exact lines OD-60 was reported from.",
+      "rules": {
+        "@typescript-eslint/no-unsafe-argument": 2,
+        "@typescript-eslint/no-unsafe-member-access": 1
+      }
+    },
+    "packages/i18n/src/pipeline.test.ts": {
+      "owner": "packages/i18n — T-132",
+      "why": "`JSON.parse(readFileSync(package.json))` annotated with a target type; the annotation is the assertion, and the assignment is unchecked.",
+      "rules": { "@typescript-eslint/no-unsafe-assignment": 1 }
+    },
+    "packages/i18n/tools/compile.test.ts": {
+      "owner": "packages/i18n — T-132",
+      "why": "`await import(...)` of a generated module, annotated with a target type.",
+      "rules": { "@typescript-eslint/no-unsafe-assignment": 1 }
+    },
+    "packages/i18n/tools/compile.ts": {
+      "owner": "packages/i18n — T-040 / T-049",
+      "why": "`const cats = row['pluralCategories']` off a parsed catalogue row; narrowed immediately afterwards by Array.isArray and a per-element typeof check, but the assignment itself is from `any`.",
+      "rules": { "@typescript-eslint/no-unsafe-assignment": 1 }
+    }
+  }
+}
