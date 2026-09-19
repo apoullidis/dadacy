@@ -25,9 +25,13 @@
 // their owners, a TENTH fails the gate, and REMOVING one fails it too — which
 // is what makes it a ratchet rather than a waiver.
 //
-// Type-aware linting is slower than syntactic linting (measured: about 17 s
-// against about 8 s on this host), which is the other reason it is its own
-// gate: `pnpm gate:lint` stays the fast one.
+// Type-aware linting is slower than syntactic linting, which is the other
+// reason it is its own gate: `pnpm gate:lint` stays the fast one. Measured
+// through `scripts/dev` at the commit that carries this line, which is the only
+// way anything runs here: `gate:no-unsafe-any` 16.6 s against `gate:lint`
+// 12.4 s. Container start is 0.5 s (`time ./scripts/dev node -e ''`), so it is
+// not what the gap is made of. The previous figure here said "about 8 s" for
+// `gate:lint`; it was not reproducible through this instrument.
 
 import base from './eslint.config.mjs';
 import tseslint from 'typescript-eslint';

@@ -44,10 +44,13 @@ const MIN_BLOCKING = 22;
 
 /**
  * Two flags, and they exist so this program can be ATTACKED cheaply rather than
- * only observed passing. A full run is over six minutes (the negative suites
- * are 75% of it), which is long enough that nobody would write forty cases
- * against it — and a gate nobody attacks is a gate whose coverage is unknown
- * (PROTOCOL §5.1: "I had run the check; I had not tried to get past it").
+ * only observed passing. A full run is 9:15.01 (measured through scripts/dev at
+ * 9f99b1e), and the two negative-suite gates are 7m36s of that —
+ * `gate:negative-suites` 4m45s plus `gate:pr-gate-suite` 2m51s, both figures
+ * printed by the gates themselves in that run. That is long enough that nobody
+ * would write sixty-nine cases against a full run — and a gate nobody attacks
+ * is a gate whose coverage is unknown (PROTOCOL §5.1: "I had run the check; I
+ * had not tried to get past it").
  *
  *   --roster-only   the roster/spec/vacuity checks alone. Runs no gate.
  *   --only=<name>   execute exactly one rostered gate and judge it against its

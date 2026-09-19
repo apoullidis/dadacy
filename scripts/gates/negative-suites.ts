@@ -161,11 +161,13 @@ const SUITES: readonly Suite[] = [
 
 /**
  * THE DIFFERENTIAL HARNESS (the convention T-036 set for this repo, and the
- * reason this gate has forty cases against it instead of one green run).
+ * reason this gate has FIFTEEN cases against it — B0..B14 in
+ * scripts/negative-tests/pr-gates.sh — instead of one green run).
  *
- * A full pass of the real suites is 4m49s, which is far too slow to attack the
- * JUDGING with — and the judging is the part that decides whether a red suite
- * can reach `main`. `KINVARA_NEG_SUITES_TABLE=<path to json>` replaces the
+ * A full pass of the real suites is 4m45s: the six per-suite figures this gate
+ * prints, summed, at 9f99b1e — 60.2 + 72.9 + 2.8 + 20.8 + 42.3 + 85.8 = 284.8s.
+ * That is far too slow to attack the JUDGING with, and the judging is the part
+ * that decides whether a red suite can reach `main`. `KINVARA_NEG_SUITES_TABLE=<path to json>` replaces the
  * table above with tiny scripted suites, so every branch (no footer, a footer
  * that disagrees with the exit status, a case count that moved, a pinned
  * failure that became green, a digest that moved) has a case that runs in

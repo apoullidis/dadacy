@@ -9,11 +9,20 @@
 #
 # WHY THIS FILE EXISTS IN THIS SHAPE. PROTOCOL §5.1: "Running your gate proves
 # it executes. ATTACKING it proves what it covers ... I had run the check; I had
-# not tried to get past it." A full `pnpm gate:pr` is 6m22s, so forty cases
-# against it would be four hours. Three of the gates therefore take a cheap
-# entry point — `pr.ts --roster-only` / `--only=`, `unit-tests.ts --dry-run`,
-# and `KINVARA_NEG_SUITES_TABLE` — each of which PRINTS what it did in its own
-# banner, so a run through one can never be pasted as a full run.
+# not tried to get past it." A full `pnpm gate:pr` is about 9 1/4 minutes
+# (9:15.01 through scripts/dev at 9f99b1e; the run at the delivered commit is
+# pasted in tasks/state/EP-1/T-005.md), so the 69 cases below would be over ten
+# hours if each paid for one. Three of the gates therefore take a cheap entry
+# point — `pr.ts --roster-only` / `--only=`, `unit-tests.ts --dry-run`, and
+# `KINVARA_NEG_SUITES_TABLE` — each of which PRINTS what it did IN ITS OWN
+# BANNER LINE, so a run through one can never be pasted as a full run. For
+# `pr.ts` that placement is rework 1's and cases A10/A11 assert it: before then
+# both flags ended in a banner byte-identical to a full run's, with the
+# disclosure five lines up in the summary block (QR-A2).
+#
+# The previous figure on this line, 6m22s, was true before `gate:pr-gate-suite`
+# joined the roster. PROTOCOL §5.2: when the artefact a pasted line describes
+# changes, re-run the command — do not edit the number.
 #
 # HOW A CASE IS JUDGED. Three readings, which a gate that did nothing could not
 # all produce:
@@ -280,7 +289,8 @@ echo
 echo "=== B. gate:negative-suites — how a suite's verdict is judged ==="
 # The fake suites live outside the repo. Each is a three-line script whose whole
 # job is to print a footer and exit, so that the JUDGING can be attacked without
-# paying 4m49s for the real suites.
+# paying 4m45s for the real suites (the six per-suite figures gate:negative-suites
+# prints, summed, at 9f99b1e).
 mkfake() { # mkfake <name> <exit> <line...>
   local n="$1" x="$2"; shift 2
   { echo '#!/usr/bin/env bash'; for l in "$@"; do printf 'echo %q\n' "$l"; done; echo "exit $x"; } > "$TMP/$n"

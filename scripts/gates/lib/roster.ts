@@ -8,7 +8,16 @@
  * Two lists live here and they are checked against each other on every run:
  *
  *   SPEC_PR_ROW  the semicolon-separated items of SD §QD-4's PR row, quoted.
- *                Nothing in this file may change what that row says.
+ *                IT IS A TRANSCRIPTION AND NOTHING MECHANICAL ANCHORS IT.
+ *                software-design.md lives outside the git repo these gates
+ *                run in, so no gate can re-read it. What `gate:pr` checks is
+ *                the ROSTER against this list, both ways (cases A1 and A4);
+ *                it cannot check this list against SD. A coordinated edit to
+ *                an item here AND to the roster entry answering it passes,
+ *                and an SD revision adding an eighteenth PR item would go
+ *                unnoticed. Re-checking the transcription when SD is revised
+ *                is the orchestrator's standing obligation, recorded as such
+ *                rather than described here as something a gate does.
  *   ROSTER       every gate command the PR stage knows about, each carrying the
  *                SPEC_PR_ROW item it answers (or PROGRAMME, for the gates this
  *                build added that SD does not name).
