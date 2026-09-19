@@ -136,7 +136,8 @@ case_run K1 \
   '  recipientLocale: LocaleSchema,' \
   '  recipientLocale: LocaleSchema.optional(),' \
   'a payload with NO recipientLocale is refused, with the issue at that path' \
-  'an extension of NotifyJobBase still requires recipientLocale'
+  'an extension of NotifyJobBase still requires recipientLocale' \
+  'LIMITATION: each branded field IS its schema — not optional, not nullable, not a union, not a sentinel'
 
 case_run K2 \
   "the registry check (SD 1507 LocaleSchema) — the predicate is replaced by one that accepts everything" \
@@ -156,7 +157,8 @@ case_run K3 \
   'z.custom<Ulid>(() => true, { message: ULID_REFUSED })' \
   'a recipientAccountId that is not a ULID is refused at that path' \
   'the ULID schema verdict is the domain-types constructor verdict, value for value' \
-  'the ULID refusal never echoes the rejected identifier'
+  'the ULID refusal never echoes the rejected identifier' \
+  'LIMITATION: UlidSchema itself refuses every spelling of "no account"'
 
 case_run K4 \
   "enqueuedAt is an ISO datetime (SD 1510) — .datetime() is deleted" \
@@ -215,6 +217,62 @@ else
   sed -n '1,20p' "$TMP/tc-before"
   fail=$((fail + 1))
 fi
+
+# --------------------------------------------------------------------------
+# K8 … K12 — T-147 REWORK 1, QR-D1. ONE CASE PER FORBIDDEN INVENTION.
+#
+# § Published contract §5 forbids four inventions by name — an optional
+# `recipientAccountId`, a union, a placeholder and a second base — and said the
+# LIMITATION case went red on "optional or a union". QA measured that it does
+# NOT: a union keeps the key REQUIRED, so the omission the case asserts is
+# still refused, while an accountless recipient has become expressible. A
+# sentinel union and a second base passed the whole suite 25/25 GREEN.
+#
+# These five cases are the six widenings QA planted, committed as cases. The
+# PLACEHOLDER invention has no case here on purpose: a reserved all-zero ULID
+# IS a canonical ULID, so nothing at this layer can refuse it — that is stated,
+# with its own (green, control) test, rather than covered.
+# --------------------------------------------------------------------------
+
+case_run K8 \
+  "a UNION that admits null — .nullable() (QA's U2; z.union([UlidSchema, z.null()]) is the same widening)" \
+  '  recipientAccountId: UlidSchema,' \
+  '  recipientAccountId: UlidSchema.nullable(),' \
+  'a recipientAccountId that is not a ULID is refused at that path' \
+  'LIMITATION: each branded field IS its schema — not optional, not nullable, not a union, not a sentinel' \
+  'LIMITATION: UlidSchema itself refuses every spelling of "no account"'
+
+case_run K9 \
+  "a UNION with a literal SENTINEL for the four accountless recipients (QA's U3 — passed 25/25 green before these cases)" \
+  '  recipientAccountId: UlidSchema,' \
+  "  recipientAccountId: z.union([UlidSchema, z.literal('no-account')])," \
+  'LIMITATION: each branded field IS its schema — not optional, not nullable, not a union, not a sentinel' \
+  'LIMITATION: UlidSchema itself refuses every spelling of "no account"'
+
+case_run K10 \
+  "a SECOND BASE alongside, NotifyJobBase untouched (QA's U4 — passed 25/25 green before these cases)" \
+  '/** What a validated notify job payload IS. */' \
+  'export const AccountlessNotifyJobBase = z.strictObject({ recipientLocale: LocaleSchema, enqueuedAt: z.string().datetime() });
+
+/** A second base, planted by K10. */' \
+  'LIMITATION: jobs.ts exports no SECOND BASE — its runtime exports are exactly five'
+
+case_run K11 \
+  "an OPTIONAL recipientAccountId (QA's D1) — the one widening the original LIMITATION case already saw" \
+  '  recipientAccountId: UlidSchema,' \
+  '  recipientAccountId: UlidSchema.optional(),' \
+  'LIMITATION: a recipient with no account cannot be expressed, because recipientAccountId is required' \
+  'LIMITATION: each branded field IS its schema — not optional, not nullable, not a union, not a sentinel' \
+  'LIMITATION: UlidSchema itself refuses every spelling of "no account"'
+
+case_run K12 \
+  "a UNION with z.string() (QA's D2) — the widest union, and the LIMITATION case stays green under it" \
+  '  recipientAccountId: UlidSchema,' \
+  '  recipientAccountId: z.union([UlidSchema, z.string()]),' \
+  'a recipientAccountId that is not a ULID is refused at that path' \
+  'the ULID refusal never echoes the rejected identifier' \
+  'LIMITATION: each branded field IS its schema — not optional, not nullable, not a union, not a sentinel' \
+  'LIMITATION: UlidSchema itself refuses every spelling of "no account"'
 
 echo
 echo "=============================================================================="

@@ -21,6 +21,7 @@ import { describe, expect, test } from 'vitest';
 import * as z from 'zod';
 import { COMPONENT_SCHEMAS } from './endpoints.ts';
 import { LOCALE_REFUSED, LocaleSchema, NotifyJobBase, ULID_REFUSED, UlidSchema } from './jobs.ts';
+import * as jobsModule from './jobs.ts';
 
 interface RegistryRow {
   code: string;
@@ -351,15 +352,88 @@ describe('what this ticket does NOT solve — SD §BE-14 lines 1525-1532 (OD-90 
     // number with no account — have a stated LOCALE SOURCE and no stated
     // payload shape. SD line 1506 makes recipientAccountId required, so this
     // base cannot describe them. That is disclosed, not solved (PROTOCOL §2).
-    // This case goes RED the day someone makes recipientAccountId optional or
-    // widens it into a union, which is the signal that G2 was answered by an
-    // invention rather than a ruling.
+    // THE MEASURED WIDTH OF THIS CASE (T-147 rework 1, QR-D1): it asserts that
+    // a payload OMITTING the key is refused, so it goes red on .optional() and
+    // on the field's removal, and NOT on a union — a union keeps the key
+    // required. The three cases below cover the widenings this one cannot see.
     const r = NotifyJobBase.safeParse({
       recipientLocale: ENABLED_CODES[0],
       enqueuedAt: AN_INSTANT,
     });
     expect(r.success).toBe(false);
     expect(paths(r)).toStrictEqual(['recipientAccountId']);
+  });
+
+  /**
+   * ONE CASE PER FORBIDDEN INVENTION (T-147 rework 1, QR-D1). § Published
+   * contract §5 forbids four by name — an optional `recipientAccountId`, a
+   * union, a placeholder and a second base — and the case above sees only the
+   * first. QA widened the field six ways and three of them (a union with
+   * `z.string()`, a union with `z.null()`, `.nullable()`) left it green, while
+   * a sentinel union and a second base passed the WHOLE suite green. These
+   * cases close the two that are closeable and the fourth states its own
+   * blindness rather than pretending to cover it.
+   */
+  test('LIMITATION: each branded field IS its schema — not optional, not nullable, not a union, not a sentinel', () => {
+    // Identity, not behaviour: .optional(), .nullable(), z.union([...]) and a
+    // literal sentinel each REPLACE the field's schema object, so every one of
+    // them reds this case, including the three that keep the key required and
+    // are therefore invisible to the case above.
+    expect(NotifyJobBase.shape.recipientAccountId).toBe(UlidSchema);
+    expect(NotifyJobBase.shape.recipientLocale).toBe(LocaleSchema);
+  });
+
+  test('LIMITATION: UlidSchema itself refuses every spelling of "no account"', () => {
+    // The widening the case above cannot reach: UlidSchema rewritten as
+    // z.union([UlidSchema, z.literal('no-account')]) leaves the field object
+    // identity intact if the union is built INSIDE UlidSchema. This corpus is
+    // what an engineer answering G2 by invention would actually reach for.
+    const accountlessSpellings: unknown[] = [
+      null,
+      undefined,
+      '',
+      'no-account',
+      'NO_ACCOUNT',
+      'none',
+      'anonymous',
+      'accountless',
+      'n/a',
+      'null',
+      0,
+      false,
+    ];
+    expect(accountlessSpellings.length).toBeGreaterThan(6);
+    for (const v of accountlessSpellings) {
+      expect(UlidSchema.safeParse(v).success, String(v)).toBe(false);
+      expect(NotifyJobBase.safeParse(base({ recipientAccountId: v })).success, String(v)).toBe(
+        false,
+      );
+    }
+  });
+
+  test('LIMITATION: jobs.ts exports no SECOND BASE — its runtime exports are exactly five', () => {
+    // A second base "added alongside, NotifyJobBase untouched" is the fourth
+    // forbidden invention and passes 25/25 without this case. BOUND: it sees
+    // schema exports added to THIS MODULE. A second base in another file, or
+    // in another package, is not seen by any test in this ticket.
+    expect(Object.keys(jobsModule).sort()).toStrictEqual([
+      'LOCALE_REFUSED',
+      'LocaleSchema',
+      'NotifyJobBase',
+      'ULID_REFUSED',
+      'UlidSchema',
+    ]);
+  });
+
+  test('LIMITATION: a PLACEHOLDER ULID parses — the one forbidden invention nothing here can see', () => {
+    // Measured, and it is the honest half of §5: a reserved all-zero ULID is a
+    // canonical ULID, so T-023's constructor accepts it and so does this base.
+    // "No placeholder" is therefore a rule enforced by REVIEW, not by a test —
+    // this case exists so that sentence is falsifiable rather than remembered,
+    // and it goes red the day a placeholder becomes refusable here.
+    const placeholder = '00000000000000000000000000';
+    expect(isUlid(placeholder)).toBe(true);
+    expect(NotifyJobBase.safeParse(base({ recipientAccountId: placeholder })).success).toBe(true);
   });
 });
 
