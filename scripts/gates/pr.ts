@@ -34,8 +34,32 @@ import type { RosterEntry } from './lib/roster.ts';
 
 const RULE = '='.repeat(78);
 
-/** The minimum number of BLOCKING gates. Anti-vacuity: see header note 4. */
-const MIN_BLOCKING = 15;
+/**
+ * The floor on BLOCKING gates — a RATCHET, not a guess. It is the number this
+ * aggregate had when the floor was last raised; demoting or deleting one fails
+ * the aggregate. Adding a gate does not, so the correct move when you add one
+ * is to raise this number in the same change set. Anti-vacuity: header note 4.
+ */
+const MIN_BLOCKING = 21;
+
+/**
+ * Two flags, and they exist so this program can be ATTACKED cheaply rather than
+ * only observed passing. A full run is over six minutes (the negative suites
+ * are 75% of it), which is long enough that nobody would write forty cases
+ * against it — and a gate nobody attacks is a gate whose coverage is unknown
+ * (PROTOCOL §5.1: "I had run the check; I had not tried to get past it").
+ *
+ *   --roster-only   the roster/spec/vacuity checks alone. Runs no gate.
+ *   --only=<name>   execute exactly one rostered gate and judge it against its
+ *                   declared class. The roster checks still run.
+ *
+ * Neither weakens the default: `pnpm gate:pr` passes neither, and both PRINT
+ * what they did, so a pasted run cannot be mistaken for a full one.
+ */
+const argv = process.argv.slice(2);
+const rosterOnly = argv.includes('--roster-only');
+const onlyArg = argv.find((a) => a.startsWith('--only='));
+const only = onlyArg?.slice('--only='.length);
 
 interface Outcome {
   readonly entry: RosterEntry;
@@ -79,7 +103,16 @@ const programme = ROSTER.filter((e) => e.spec === PROGRAMME).map((e) => e.name);
 console.log(`  gates this build added that SD §QD-4 does not name: ${programme.join(', ')}`);
 
 // ------------------------------------------------------------- 2. run them all
-for (const entry of ROSTER) {
+if (rosterOnly) console.log('\n--roster-only: NO GATE WAS EXECUTED. Roster checks only.');
+if (only !== undefined) {
+  console.log(`\n--only=${only}: ONE gate executed. This is not a full gate:pr run.`);
+  if (!ROSTER.some((e) => e.name === only)) {
+    failures.push(`--only=${only} names no roster entry`);
+  }
+}
+const toRun = rosterOnly ? [] : ROSTER.filter((e) => only === undefined || e.name === only);
+
+for (const entry of toRun) {
   console.log(`\n${RULE}\n== ${entry.name}  [${entry.cls}] — ${entry.why}\n${RULE}`);
   if (entry.owner !== undefined) console.log(`   owed by: ${entry.owner}`);
   if (entry.unblocks !== undefined) console.log(`   goes green when: ${entry.unblocks}\n`);
@@ -115,7 +148,14 @@ for (const o of outcomes) {
 
 // -------------------------------------------------------------- 4. anti-vacuity
 const blocking = ROSTER.filter((e) => e.cls === 'BLOCKING').length;
-if (outcomes.length === 0) failures.push('gate:pr executed ZERO gates — a pass over an empty list');
+if (outcomes.length === 0 && !rosterOnly) {
+  failures.push('gate:pr executed ZERO gates — a pass over an empty list');
+}
+if (!rosterOnly && only === undefined && outcomes.length !== ROSTER.length) {
+  failures.push(
+    `gate:pr executed ${String(outcomes.length)} of ${String(ROSTER.length)} rostered gate(s)`,
+  );
+}
 if (blocking < MIN_BLOCKING) {
   failures.push(
     `gate:pr has ${String(blocking)} BLOCKING gate(s); the floor is ${String(MIN_BLOCKING)}. A gate was demoted or deleted — a green run over a shrinking list is the defect this aggregate exists to prevent.`,

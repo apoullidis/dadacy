@@ -159,6 +159,40 @@ const SUITES: readonly Suite[] = [
   },
 ];
 
+/**
+ * THE DIFFERENTIAL HARNESS (the convention T-036 set for this repo, and the
+ * reason this gate has forty cases against it instead of one green run).
+ *
+ * A full pass of the real suites is 4m49s, which is far too slow to attack the
+ * JUDGING with — and the judging is the part that decides whether a red suite
+ * can reach `main`. `KINVARA_NEG_SUITES_TABLE=<path to json>` replaces the
+ * table above with tiny scripted suites, so every branch (no footer, a footer
+ * that disagrees with the exit status, a case count that moved, a pinned
+ * failure that became green, a digest that moved) has a case that runs in
+ * milliseconds.
+ *
+ * THE ENV FORM IS MANDATORY and this is not pedantry (OD-62, ruled 2026-09-12):
+ * `scripts/dev` forwards only HOME, CI, TZ and LANG, so a variable written in
+ * front of the invocation stays on the HOST, never enters the container, and
+ * the gate then silently judges the REAL table while the case believes
+ * otherwise — the harness-no-op shape PROTOCOL §5.1 names. Use:
+ *
+ *   ./scripts/dev env KINVARA_NEG_SUITES_TABLE=/tmp/t.json pnpm gate:negative-suites
+ *
+ * An overridden run says so in its BANNER, not only in a line above it, so a
+ * pasted `GATE PASS` from an override can never be read as a real pass. Nothing
+ * in this repository sets the variable; `gate:pr` does not.
+ */
+const OVERRIDE = process.env['KINVARA_NEG_SUITES_TABLE'];
+const SUITE_TABLE: readonly Suite[] =
+  OVERRIDE !== undefined && OVERRIDE !== ''
+    ? (JSON.parse(fs.readFileSync(OVERRIDE, 'utf8')) as readonly Suite[])
+    : SUITES;
+const GATE_NAME =
+  OVERRIDE !== undefined && OVERRIDE !== ''
+    ? `gate:negative-suites [OVERRIDE TABLE: ${OVERRIDE}]`
+    : 'gate:negative-suites';
+
 const GREEN_FOOTER = /^ALL ([0-9]+) CASES BEHAVED AS EXPECTED$/m;
 const RED_FOOTER = /^!! ([0-9]+) of ([0-9]+) (?:CASE\(S\) MISBEHAVED|cases misbehaved)/m;
 /**
@@ -181,7 +215,7 @@ let lockFd: number;
 try {
   lockFd = fs.openSync(lockFile, 'wx');
 } catch {
-  finish('gate:negative-suites', [
+  finish(GATE_NAME, [
     `another run holds ${path.relative(REPO_ROOT, lockFile)}. REFUSED rather than interleaved: ` +
       'egress-boundary.sh mutates the live scripts/dev and app-images.sh overwrites nine tracked ' +
       'files mid-run (OD-55, T-156 § contract 5). If no run is in flight, delete the lock file.',
@@ -207,12 +241,12 @@ for (const sig of ['SIGINT', 'SIGTERM'] as const) {
 // ------------------------------------------------------------ a clean tree
 const porcelain = capture('git', ['status', '--porcelain']);
 if (porcelain.spawnFailed || porcelain.code !== 0) {
-  finish('gate:negative-suites', [
+  finish(GATE_NAME, [
     '`git status --porcelain` failed; git is a hard dependency here',
   ]);
 }
 if (porcelain.stdout.trim() !== '') {
-  finish('gate:negative-suites', [
+  finish(GATE_NAME, [
     'the working tree is not clean. These suites plant into the real tree and restore it with ' +
       '`git checkout`; two of them refuse a dirty tree themselves, and app-images.sh silently ' +
       'overwrites a mid-run edit to any of its nine backed-up files (T-156 § contract 5). ' +
@@ -225,7 +259,7 @@ if (porcelain.stdout.trim() !== '') {
 console.log('The suites run SEQUENTIALLY, in the foreground, under an exclusive lock (OD-55).\n');
 
 let ran = 0;
-for (const s of SUITES) {
+for (const s of SUITE_TABLE) {
   const abs = path.join(REPO_ROOT, s.file);
   console.log(`${'-'.repeat(78)}\n  ${s.id}  [${s.state}]  pinned at ${String(s.cases)} case(s)`);
   console.log(`    ${s.why}`);
@@ -376,19 +410,19 @@ for (const s of SUITES) {
 }
 
 // ------------------------------------------------------------- anti-vacuity
-const expectedRuns = SUITES.filter((s) => s.state !== 'NEEDS-SERVICE').length;
+const expectedRuns = SUITE_TABLE.filter((s) => s.state !== 'NEEDS-SERVICE').length;
 if (ran !== expectedRuns) {
   failures.push(
     `${String(ran)} of ${String(expectedRuns)} runnable suite(s) actually ran. ` +
       'A suite that did not run is not a suite that passed.',
   );
 }
-const pinnedTotal = SUITES.reduce((n, s) => n + s.cases, 0);
+const pinnedTotal = SUITE_TABLE.reduce((n, s) => n + s.cases, 0);
 console.log(`\n${'-'.repeat(78)}`);
 console.log(
-  `  ${String(ran)} suite(s) executed of ${String(SUITES.length)} rostered; ` +
+  `  ${String(ran)} suite(s) executed of ${String(SUITE_TABLE.length)} rostered; ` +
     `${String(pinnedTotal)} case(s) pinned in total.`,
 );
 for (const n of notes) console.log(`  NOT GREEN — ${n}`);
 
-finish('gate:negative-suites', failures);
+finish(GATE_NAME, failures);

@@ -41,13 +41,23 @@ import { capture, finish } from './lib/run.ts';
 import { workspacePackages } from './lib/workspace.ts';
 import type { WorkspacePackage } from './lib/workspace.ts';
 
+/**
+ * `--dry-run` performs V1-V4 — the DECLARATION checks, which are the whole of
+ * OD-3 and OD-57 — and runs no test. It exists so those four refusals can be
+ * attacked in milliseconds instead of once per 30-second full run, and it
+ * PRINTS that it ran nothing so a pasted `GATE PASS` from it cannot be read as
+ * a test run. `pnpm gate:unit-tests` does not pass it.
+ */
+const DRY_RUN = process.argv.includes('--dry-run');
+const GATE = DRY_RUN ? 'gate:unit-tests [--dry-run: DECLARATION CHECKS ONLY, NO TEST RAN]' : 'gate:unit-tests';
+
 const failures: string[] = [];
 
 let pkgs: WorkspacePackage[];
 try {
   pkgs = workspacePackages();
 } catch (e) {
-  finish('gate:unit-tests', [
+  finish(GATE, [
     `could not enumerate the workspace: ${e instanceof Error ? e.message : String(e)}`,
   ]);
 }
@@ -89,7 +99,7 @@ if (runnable.length === 0) {
       'NON-ZERO on that, where `pnpm -w test` exits 0 — see OD-3. A test stage with nothing ' +
       'in it is not a passing test stage.',
   );
-  finish('gate:unit-tests', failures);
+  finish(GATE, failures);
 }
 
 console.log(
@@ -100,6 +110,14 @@ console.log(
   `packages declaring only \`test:integration\` (run by gate:heavy, T-006 — they need \`db\`): ` +
     `${integrationOnly.length === 0 ? 'none' : integrationOnly.map((p) => p.name).join(', ')}`,
 );
+
+if (DRY_RUN) {
+  console.log(
+    '\n--dry-run: V1-V4 only. NO PACKAGE TEST SCRIPT WAS EXECUTED, so nothing here is evidence ' +
+      'that any test passed.',
+  );
+  finish(GATE, failures);
+}
 
 // ----------------------------------------------------------------- run them
 /** `run-tests: 56 of 56 tests passed in 7 of 7 declared files; ...` */
@@ -189,4 +207,4 @@ console.log(
     `(${String(unresolved.length)} of ${String(runnable.length)})`,
 );
 
-finish('gate:unit-tests', failures);
+finish(GATE, failures);
