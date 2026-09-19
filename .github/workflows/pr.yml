@@ -64,6 +64,7 @@ jobs:
           - gate:negative-suites
           - gate:supply-chain
           - gate:workflow
+          - gate:pr-gate-suite
     steps:
       - uses: actions/checkout@v4
         with:

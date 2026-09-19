@@ -40,7 +40,7 @@ const RULE = '='.repeat(78);
  * the aggregate. Adding a gate does not, so the correct move when you add one
  * is to raise this number in the same change set. Anti-vacuity: header note 4.
  */
-const MIN_BLOCKING = 21;
+const MIN_BLOCKING = 22;
 
 /**
  * Two flags, and they exist so this program can be ATTACKED cheaply rather than

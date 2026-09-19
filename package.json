@@ -41,6 +41,7 @@
     "gate:negative-suites": "node scripts/gates/negative-suites.ts",
     "gate:supply-chain": "node scripts/gates/supply-chain.ts",
     "gate:workflow": "node scripts/gates/workflow.ts",
+    "gate:pr-gate-suite": "node scripts/gates/pr-gate-suite.ts",
     "gate:drizzle-parity": "node scripts/gates/not-yet-supplied.ts gate:drizzle-parity",
     "gate:locale-completeness": "node scripts/gates/not-yet-supplied.ts gate:locale-completeness",
     "gate:prohibited-claims": "node scripts/gates/not-yet-supplied.ts gate:prohibited-claims",

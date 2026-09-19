@@ -241,7 +241,7 @@ mut "$ROSTER" "    cls: 'BLOCKING'," "    cls: 'PENDING',
     owner: 'nobody',
     unblocks: 'never'," &&
   run_case "A6 one BLOCKING gate demoted: the floor bites" FAIL \
-    'the floor is 21' 'A gate was demoted or deleted' -- node "$PR" --roster-only
+    'the floor is 22' 'A gate was demoted or deleted' -- node "$PR" --roster-only
 
 echo
 echo "=== A(bis). the CLASS assertion — a hook cannot pass, or fail wrongly ==="

@@ -230,6 +230,15 @@ export const ROSTER: readonly RosterEntry[] = [
     why: "pnpm's minimum-release-age exemptions are a recorded decision, not a line pnpm writes for you (OD-51)",
   },
   {
+    // T-005's own negative suite. Not a member of gate:negative-suites, which
+    // it attacks (its lock and its dirty-tree refusal); see the header of
+    // scripts/gates/pr-gate-suite.ts.
+    name: 'gate:pr-gate-suite',
+    spec: PROGRAMME,
+    cls: 'BLOCKING',
+    why: "scripts/negative-tests/pr-gates.sh — every refusal T-005's gates make, demonstrated refusing (PROTOCOL §5 item 4)",
+  },
+  {
     name: 'gate:workflow',
     spec: PROGRAMME,
     cls: 'BLOCKING',
