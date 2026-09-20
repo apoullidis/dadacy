@@ -9,11 +9,15 @@
  * Nothing refused it: not tsc, not ESLint.
  *
  * WHAT THIS GATE IS. A ratchet over the `no-unsafe-*` family under
- * eslint.config.typed.mjs. Nine sites in six files are red on `main c27c354`,
- * in packages owned by four other agents — two of them DELIBERATE tripwires
- * whose own comments say landing OD-60 should turn them red. They are
- * enumerated in no-unsafe-any.baseline.json with their owner and their reason,
- * and every direction of movement fails this gate:
+ * eslint.config.typed.mjs. The sites that are red today are in packages owned
+ * by other agents — three of them DELIBERATE tripwires whose own comments say
+ * landing OD-60 should turn them red. THE COUNT IS NOT WRITTEN HERE ON PURPOSE:
+ * it moved from nine to thirteen the moment T-147 merged, and a count in a
+ * comment beside a register that prints its own count is a second copy waiting
+ * to go stale (PROTOCOL §5.3 R2). The register is
+ * no-unsafe-any.baseline.json, every entry carries its owner and its reason,
+ * the gate prints the totals on every run, and every direction of movement
+ * fails this gate:
  *
  *   N1  a site that is not in the baseline           -> NEW
  *   N2  more occurrences of a rule in a baselined file than the baseline
@@ -26,12 +30,29 @@
  * survive the thing it was recorded for. N1 is what makes it a gate rather than
  * a list: a TENTH site fails the build, today, which is OD-60's live harm.
  *
- * WHAT IT DOES NOT CLAIM. It does not claim the nine are harmless; it claims
- * they are known, owned and frozen. It does not close the sites — those are
- * their owners' to close, and T-022 § contract §3 must be narrowed when its
- * tripwire fires. And it is a lint rule, not a proof: a cast through `unknown`
- * reaches any brand and no `no-unsafe-*` rule sees it (that route is recorded
- * in the same two refusal files and is not OD-60).
+ * WHAT IT DOES NOT CLAIM. It does not claim the baselined sites are harmless;
+ * it claims they are known, owned and frozen. It does not close them — those
+ * are their owners' to close, and T-022 § contract §3 must be narrowed when its
+ * tripwire fires. And it is a lint rule, not a proof. TWO assertion routes
+ * reach a brand with an `any` value and neither of the five enabled rules sees
+ * either of them:
+ *
+ *   `x as unknown as T`  — the laundering cast. Recorded in the refusal files
+ *                          of packages/contracts and packages/domain-types; it
+ *                          is not OD-60 and no `no-unsafe-*` rule covers it.
+ *   `x as T`             — the DIRECT assertion, and it is the more idiomatic
+ *                          spelling at a JSON boundary. `JSON.parse(s) as
+ *                          MinorUnits` is clean under the committed overlay,
+ *                          measured (qa-verification, rework 1, X4 —
+ *                          eslint exit 0). The plugin ships a rule for it,
+ *                          `@typescript-eslint/no-unsafe-type-assertion`, and
+ *                          adding it to the overlay reports two errors on that
+ *                          same file. IT IS NOT ENABLED HERE. Whether to enable
+ *                          it is T-174's: the blast radius is four other
+ *                          agents' packages, which is a behaviour change, not a
+ *                          wording one (stakeholder ruling OE-40, 2026-09-20).
+ *
+ * Two different spellings; only the first was named until 2026-09-20 (QR2-F2).
  *
  * ANTI-VACUITY, and it is the important part. A lint gate reports clean when
  * it lints nothing, and it reports clean when the rule it counts is not
@@ -41,10 +62,12 @@
  * thing it checks):
  *
  *   C1  THE FILE SET. `git ls-files` says which TypeScript files exist under
- *       apps/, packages/ and scripts/. Every one of them must appear in
- *       ESLint's result set, and none may carry a fatal parse error. An
- *       `ignores` entry added to either config, or a file ESLint declines to
- *       parse, turns this red instead of green (UNCOVERED / FATAL).
+ *       apps/, packages/ and scripts/. Every one of THEM must appear in
+ *       ESLint's result set, and none of THEM may carry a fatal parse error.
+ *       An `ignores` entry added to either config, or a TRACKED file ESLint
+ *       declines to parse, turns this red instead of green (UNCOVERED /
+ *       FATAL). A file git does not track is not in this reading at all —
+ *       see the scoping note beside the loop, and cases D9/D10.
  *   C2  THE RULE SET IN FORCE, PER FILE, from ESLint's own resolved config
  *       (`ESLint#calculateConfigForFile`) — not from reading the overlay's
  *       text, and not from what the occurrence report happens to mention.
@@ -143,12 +166,39 @@ try {
 }
 
 // ------------------------------------------------------------- coverage first
+// THE FATAL READING IS SCOPED TO THE TRACKED SET, and that is the check being
+// made equal to its own sentence (2026-09-20, found by rebasing onto main
+// 6582596). C1 above says: "`git ls-files` says which TypeScript files exist
+// under apps/, packages/ and scripts/. Every one of THEM must appear in
+// ESLint's result set, and NONE OF THEM may carry a fatal parse error." The
+// loop did not say `of them`: it raised FATAL for any file in ESLint's report,
+// and ESLint's report includes files git ignores. Measured: T-147 left eight
+// scratch files in the GITIGNORED apps/core/.cache/t147r1/bundle/, ESLint
+// linted them, `projectService` could not place them in any tsconfig, and this
+// gate was `GATE FAIL` with eight FATALs on files that are not in the
+// repository at all. A gate another agent's leftover scratch can redden is a
+// gate people learn to ignore.
+//
+// THE RATCHET BELOW IS DELIBERATELY WIDER and is NOT scoped this way: it counts
+// occurrences over every file ESLint reports on, so a NEW site fails this gate
+// before the file is even tracked. Case D1 plants an UNTRACKED file and
+// requires NEW, which is exactly that property; D9/D10 are the pair for this
+// one. The asymmetry is intended — coverage is a claim about what the repo
+// contains, occurrences are a claim about what the linter saw.
+//
+// WHAT IS NOT CLOSED BY THIS, stated rather than implied: a gitignored file
+// that DOES parse and does carry an `any` value would still be counted by the
+// ratchet and reported as NEW. There is no such file today (an ignored path is
+// not in any tsconfig `include`, which is why the measured instance was FATAL
+// rather than NEW), and it is recorded in decisions.md OD-169 rather than
+// assumed away.
 const covered = new Set<string>();
 for (const res of results) {
-  covered.add(path.relative(REPO_ROOT, res.filePath));
-  if ((res.fatalErrorCount ?? 0) > 0) {
+  const rel = path.relative(REPO_ROOT, res.filePath);
+  covered.add(rel);
+  if ((res.fatalErrorCount ?? 0) > 0 && expected.has(rel)) {
     failures.push(
-      `FATAL ${path.relative(REPO_ROOT, res.filePath)}: eslint could not parse it — ` +
+      `FATAL ${rel}: eslint could not parse it — ` +
         `${res.messages?.[0]?.message ?? '(no message)'}. An unparsed file is an unchecked file.`,
     );
   }

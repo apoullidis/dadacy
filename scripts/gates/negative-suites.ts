@@ -31,24 +31,34 @@
  * outcomes: no footer at all is CRASH, whatever the exit status says.
  *
  * ---------------------------------------------------------------------------
- * THE TWO RED SUITES. They are not skipped and they are not waived.
- *
- *   schema-typecheck.sh  is RUN, and judged against a PINNED EXPECTED FAILURE:
- *                        exactly `!! 1 of 16 cases misbehaved`, the one case
- *                        being S09, for the recorded cause. Green, a different
- *                        count, or a different case FAILS this gate and says
- *                        which ticket owns the answer. The allowance is closed,
- *                        enumerated and self-closing in the safe direction:
- *                        when T-168 lands, the suite goes green, the pin stops
- *                        matching, and this gate goes RED demanding promotion.
+ * THE ONE SUITE THAT IS NOT RUN HERE. It is not skipped and it is not waived.
  *
  *   db-introspect.sh     needs the `db` profile. `gate:pr` declares `svc: none`
  *                        (DOCKER.md §7) so it CANNOT be run here at all — not a
  *                        policy choice, a structural one. It is rostered, named,
  *                        printed with its owner, and anchored on the SHA-256 of
- *                        the suite file: when T-165 changes it, this gate goes
+ *                        the suite file: when its file changes, this gate goes
  *                        RED and demands a re-measurement against a real
  *                        database. Its home is `gate:heavy` (T-006).
+ *
+ * BOTH TRIPWIRES HAVE NOW FIRED ONCE, FOR REAL, ON ONE REBASE (2026-09-20,
+ * T-005 onto main 6582596), which is the only evidence that they work that is
+ * worth anything:
+ *   * schema-typecheck.sh was BLOCKED against a pinned expected failure
+ *     (`!! 1 of 16`, S09, its recorded cause). T-168 merged and fixed S09; the
+ *     suite went green, the pin stopped matching, and this gate went RED
+ *     demanding the promotion. It is now GREEN-classed. That is case B7's
+ *     property observed rather than simulated.
+ *   * db-introspect.sh's digest moved, because T-168 gave it EXIT/INT/TERM
+ *     traps. This gate went RED demanding a re-measurement; the new digest was
+ *     taken with sha256sum, not edited.
+ *
+ * WHAT THIS ROSTER DOES NOT DO, and it bit on the same rebase. SUITES below is
+ * a HAND-MAINTAINED LIST. Nothing derives it from `scripts/negative-tests/*.sh`,
+ * so a newly committed suite is not run by this gate and nothing goes red —
+ * which is OD-152's own shape. Live at 6582596: `jobs-contract.sh` (T-147) and
+ * `db-migrate.sh` are committed and NOT in this table. See
+ * tasks/state/EP-1/T-005.md § Integration and decisions.md OD-168.
  *
  * ---------------------------------------------------------------------------
  * OD-55 — SERIALITY IS PART OF THE DESIGN, NOT AN INSTRUCTION IN A COMMENT.
@@ -134,17 +144,19 @@ const SUITES: readonly Suite[] = [
     id: 'schema-typecheck',
     file: 'scripts/negative-tests/schema-typecheck.sh',
     cases: 16,
-    state: 'BLOCKED',
-    why: 'does the generated db/schema.ts typecheck when a module imports it (T-150, OD-93, OD-97)',
-    owner: 'T-168 — platform-infrastructure, PARKED awaiting stakeholder ruling OE-39',
-    unblocks:
-      "S09 swaps db/schema.ts for main-before-T-150's rendering; apps/core/src/identity/account.repository.ts:30 — committed AFTER the case was written (T-141) — then reports three TS2305s the expectation does not list. It goes green when T-168 updates S09's expected error set. Then THIS gate goes red until the entry is moved to GREEN (decisions.md OD-161a).",
-    pinnedFailure: {
-      misbehaved: 1,
-      caseIds: ['S09'],
-      causeSubstring: 'apps/core/src/identity/account.repository.ts:30 TS2305',
-    },
-    digest: 'ebc6c43dfdb52953fbdca47c209a2ff11ef69f0ed1a4e6984fa7ba4f07fe0759',
+    // PROMOTED BLOCKED -> GREEN, 2026-09-20, when T-005 rebased onto main
+    // 6582596. T-168 merged (aa45209, 3c54c71, 9b35d3e) and fixed S09, so the
+    // suite is green on the trunk: `ALL 16 CASES BEHAVED AS EXPECTED`, exit 0,
+    // 1:26.06 at 9f60552 — pasted in tasks/state/EP-1/T-005.md § I2.
+    //
+    // THIS IS THE TRIPWIRE FIRING, NOT A WAIVER BEING LIFTED. The BLOCKED entry
+    // carried a pinned expected failure (`!! 1 of 16`, S09, the recorded cause)
+    // and the digest of the suite file. When T-168 landed, BOTH stopped
+    // matching and this gate went RED demanding the promotion — case B7 is that
+    // property, and it is the one that fired here for real. The allowance could
+    // not outlive its reason, which is what § contract 6 said it could not.
+    state: 'GREEN',
+    why: 'does the generated db/schema.ts typecheck when a module imports it (T-150, T-168, OD-93, OD-97, OD-161a)',
   },
   {
     id: 'db-introspect',
@@ -155,7 +167,20 @@ const SUITES: readonly Suite[] = [
     owner: 'T-165 — tech-lead, PARKED awaiting stakeholder ruling OE-37',
     unblocks:
       "T-146's 0006 created schema `pgboss` with twelve relations; every K36-K49 case was written when it did not exist, so `!! 25 of 65 cases misbehaved` on `main` (OD-154, measured twice: tech-lead 2026-09-17 at 3b4e570, qa-verification 2026-09-18 at 3c54c71). T-165 re-cuts the plants to add to 0006's schema and takes the admitted counts from the catalogue. It ALSO needs the `db` profile, so its home is gate:heavy (T-006) even once green: `scripts/svc run <ticket> -- bash scripts/negative-tests/db-introspect.sh`.",
-    digest: 'e373e536ead265b1600e0f2a2e2121fb318960826bcb4e6fcf745b475455834e',
+    // RE-MEASURED 2026-09-20 on the rebase onto main 6582596. T-168 added
+    // EXIT/INT/TERM traps to this suite (9b35d3e), so the digest moved and this
+    // gate went RED — the tripwire firing, exactly as § contract 6 said it
+    // would. The new value is the sha256 of the file at that commit, taken with
+    // the instrument, never edited by hand (PROTOCOL §5.2):
+    //   $ git cat-file blob 6582596:scripts/negative-tests/db-introspect.sh | sha256sum
+    //   30708f1b2c3e458e54292488346fd2e9cd95490a40c8124e590ec935151155fb
+    // WHAT MOVING THE PIN DOES NOT MEAN. It does not mean the suite was
+    // re-measured against a database — it cannot be, here (svc: none). T-168
+    // changed the suite's restore/trap machinery and added no case, so the
+    // pinned `cases: 65` is unchanged and OD-154's `!! 25 of 65` on `main` is
+    // still the last real reading anyone has. The pin detects an edit; that is
+    // all it has ever claimed to detect.
+    digest: '30708f1b2c3e458e54292488346fd2e9cd95490a40c8124e590ec935151155fb',
   },
 ];
 

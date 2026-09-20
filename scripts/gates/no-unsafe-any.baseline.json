@@ -1,6 +1,6 @@
 {
-  "//": "T-005 / decisions.md OD-60. The `any`-VALUE sites that exist on main c27c354, each with the agent who owns the file. This is a RATCHET, not a waiver: gate:no-unsafe-any fails on a site that is not here, on a count higher than the one here, AND on an entry whose site has been fixed. Every direction moves the gate. Do not add an entry to make the gate green — an entry is a recorded debt with a named owner, and adding one without that owner's ticket is the thing this file exists to make visible.",
-  "//measured": "./scripts/dev node_modules/.bin/eslint --config eslint.config.typed.mjs -f json . on T-005-pr-gates, base main c27c354.",
+  "//": "T-005 / decisions.md OD-60. The `any`-VALUE sites that exist on main, each with the agent who owns the file. This is a RATCHET, not a waiver: gate:no-unsafe-any fails on a site that is not here, on a count higher than the one here, AND on an entry whose site has been fixed. Every direction moves the gate. Do not add an entry to make the gate green — an entry is a recorded debt with a named owner, and adding one without that owner's ticket is the thing this file exists to make visible.",
+  "//measured": "./scripts/dev node_modules/.bin/eslint --config eslint.config.typed.mjs -f json . on T-005-pr-gates, base main 6582596 (2026-09-20). The previous reading was taken at base main c27c354 and recorded nine occurrences in six files; T-147 then merged a fourth deliberate tripwire and the reading is now thirteen in seven. That is the ratchet working: a merge that adds an `any`-value site turns this gate RED until the site is owned in writing.",
   "sites": {
     "apps/core/test/fixtures/faults.ts": {
       "owner": "apps/core — tech-lead (T-135 scaffold, T-141 fixtures)",
@@ -14,6 +14,11 @@
         "@typescript-eslint/no-unsafe-argument": 1,
         "@typescript-eslint/no-unsafe-member-access": 1
       }
+    },
+    "packages/contracts/type-tests/jobs-refusals.ts": {
+      "owner": "packages/contracts — T-147 (NotifyJobBase, SD §BE-14)",
+      "why": "A DELIBERATE TRIPWIRE, the third of its shape and the first to fire AFTER this gate existed. The file's own CONTROL block says: `any` — which is what `JSON.parse` yields — flows into both brands with no compile error ... `When OD-60's type-aware no-unsafe-* rules land this line turns gate:lint red, which is the intended signal.` It landed as gate:no-unsafe-any, not gate:lint — the same gate-name defect T-005 § Deviation 4 records for packages/contracts/type-tests/refusals.ts, now in a second file (decisions.md OD-170). The four occurrences are lines 77 (`const parsed = JSON.parse(raw)`) and 78 (three properties of the payload literal), measured with `eslint --config eslint.config.typed.mjs packages/contracts/type-tests/jobs-refusals.ts` at main 6582596. Recorded, not fixed: packages/contracts is T-022/T-147's and T-005 wires gates rather than writing the code they check. The line is the falsifier for T-147 § Published contract's sentence that the compile refusal does not close the `any` route, so that sentence is now the one to re-read — T-147's to do, not T-005's.",
+      "rules": { "@typescript-eslint/no-unsafe-assignment": 4 }
     },
     "packages/domain-types/type-tests/refusals.ts": {
       "owner": "packages/domain-types — T-023",

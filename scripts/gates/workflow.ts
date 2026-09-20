@@ -24,9 +24,23 @@
  *       the parsed key set contains `on` as a STRING, so a parser change that
  *       silently renames the trigger key is caught rather than inherited.
  *   W4  DIVERGENCE, both ways, against scripts/gates/lib/roster.ts: the
- *       blocking matrix must equal the roster's BLOCKING + BLOCKED names
- *       exactly, and the advisory matrix the PENDING + SERVICE names exactly.
- *       A gate added locally and not here, or here and not locally, is a FAIL.
+ *       `strategy.matrix.gate` ARRAY of the blocking job must equal the
+ *       roster's BLOCKING + BLOCKED names exactly, and the advisory job's the
+ *       PENDING + SERVICE names exactly. A gate added locally and not here, or
+ *       here and not locally, is a FAIL.
+ *
+ *       IT COMPARES THAT ARRAY, NOT THE EFFECTIVE MATRIX (QR2-A4, narrowed
+ *       2026-09-20). GitHub builds a matrix from `gate:` AND from `include:` /
+ *       `exclude:`. This gate reads `strategy.matrix.gate` only, so a leg added
+ *       through `include:` is invisible to W4 and to W7 alike — measured by
+ *       qa-verification: `include: [{ gate: gate:does-not-exist }]` beside the
+ *       existing list leaves this gate GATE PASS at `29 concrete`, while on a
+ *       runner it would create a 23rd leg running an undeclared script. Reading
+ *       `include`/`exclude` into both checks is a few lines and it is NOT done
+ *       here: it is a live route, and a route is closed by a ticket with its own
+ *       red-before/green-after cases, not by a comment (PROTOCOL §6.5's
+ *       distinction, applied by the implementer rather than to it). Carried as
+ *       decisions.md OD-171 with T-005 § Integration naming it.
  *   W5  the CLASS mirror: the advisory job carries `continue-on-error: true`
  *       and the blocking job does not. Without this, W4 could pass while the
  *       file made a pending hook blocking or a blocking gate advisory.
@@ -64,10 +78,25 @@
  *     only proof is a green YAML file is not wired to anything").
  *   * NOT anything about a `run:` step that does NOT start with `pnpm`. W7
  *     reads pnpm invocations only; any other shell command is structurally
- *     checked by W2 and otherwise unexamined. Nor does it read a pnpm line that
- *     is not a bare `pnpm [run] <script>` — a chained or flag-bearing command
- *     (`pnpm install --frozen-lockfile`, `pnpm a && pnpm b`) is out of the
- *     pattern, and that bound is unchanged by the expansion above.
+ *     checked by W2 and otherwise unexamined — including `npx pnpm run <x>`,
+ *     measured GATE PASS. Nor does it read a pnpm line that is not a bare
+ *     `pnpm [run] <script>`. THE THREE SHAPES THAT ARE SILENTLY SKIPPED, named
+ *     individually because "chained or flag-bearing" is not what a reader reads
+ *     that as (QR2-A5, widened 2026-09-20 from qa-verification's measurements):
+ *       - a CHAINED line, `pnpm run a && pnpm run b`;
+ *       - a FLAG-BEARING line, `pnpm run ${{ matrix.gate }} --filter nosuch`,
+ *         which also drops W7's count to `0 concrete` while the gate passes;
+ *       - a MULTI-LINE `run: |` BLOCK whose first word is `pnpm`, which is the
+ *         most ordinary shape a real CI step takes.
+ *     Each was measured GATE PASS with an undeclared script inside it. That
+ *     bound is unchanged by the expansion above.
+ *   * NOT that W7 checked ANYTHING. It prints the number of concrete
+ *     invocations it resolved and nothing in this gate asserts that number is
+ *     greater than zero (QR2-A3). It is caught one level up — case F0 requires
+ *     the literal `W7: 29 concrete` in the control's output, so a committed
+ *     pr.yml of the flag-bearing shape goes red in gate:pr-gate-suite — but the
+ *     gate a reader runs ALONE passes at zero coverage. The one-line floor
+ *     belongs in this file and is T-174's, which already owns it by name.
  *   * NOT anything about `merge`, `production` or `migrations` stages of
  *     SD §QD-4. This gate covers the PR row and the files in .github/workflows;
  *     a second workflow file added later is parsed and structurally checked

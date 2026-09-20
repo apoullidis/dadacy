@@ -14,7 +14,7 @@
 # (5e5b5e6), both runs pasted in tasks/state/EP-1/T-005.md along with the run at
 # the delivered commit. It is stated as an "about" with its measurements
 # attributed because a comment-only commit cannot move it and an exact figure
-# would go stale on the next one. So the 69 cases below would be over ten hours
+# would go stale on the next one. So the 71 cases below would be over ten hours
 # if each paid for a full run. Three of the gates therefore take a cheap entry
 # point — `pr.ts --roster-only` / `--only=`, `unit-tests.ts --dry-run`, and
 # `KINVARA_NEG_SUITES_TABLE` — each of which PRINTS what it did IN ITS OWN
@@ -80,6 +80,7 @@ PLANTED=(
   packages/qa-t005-probe
   scripts/gates/qa-t005-unsafe.ts
   packages/policy/src/qa-t005-untracked.test.ts
+  apps/core/.cache/qa-t005
   .cache/negative-suites.lock
 )
 
@@ -108,8 +109,9 @@ restore() {
     cp "$d" "$f"
   done
   git rm --cached -r -q --ignore-unmatch packages/qa-t005-probe \
-    scripts/gates/qa-t005-unsafe.ts packages/policy/src/qa-t005-untracked.test.ts >/dev/null 2>&1
-  rm -rf packages/qa-t005-probe
+    scripts/gates/qa-t005-unsafe.ts packages/policy/src/qa-t005-untracked.test.ts \
+    apps/core/.cache/qa-t005 >/dev/null 2>&1
+  rm -rf packages/qa-t005-probe apps/core/.cache/qa-t005
   rm -f scripts/gates/qa-t005-unsafe.ts packages/policy/src/qa-t005-untracked.test.ts
   rm -f .cache/negative-suites.lock
   return 0
@@ -365,12 +367,21 @@ run_case "B10 a rostered suite file that does not exist" FAIL \
 # has, because gate:pr cannot run it (no `db`). The case holds the REAL file
 # against a wrong digest; the real pin is proven correct by the gate passing in
 # the full run.
+#
+# THE EXPECTED SUBSTRING IS DERIVED, NOT TYPED (2026-09-20). It used to spell
+# `sha256 e373e536` — the digest of db-introspect.sh at the commit the case was
+# written at. T-168 then edited that suite, and the literal became a case that
+# could only fail: a number in a case, copied from a file the case does not
+# own, is the same staleness OD-152 is about, one layer down. sha256sum is the
+# instrument and the case reads it at run time, so the assertion cannot go
+# stale and it still fires for the right reason.
+DBI_SHA="$(sha256sum scripts/negative-tests/db-introspect.sh | cut -d' ' -f1)"
 CASE="B11"; table '[{"id":"db-introspect","file":"scripts/negative-tests/db-introspect.sh","cases":65,"state":"NEEDS-SERVICE","why":"the real file","owner":"T-165","unblocks":"OE-37","digest":"0000000000000000000000000000000000000000000000000000000000000000"}]' >/dev/null
 run_case "B11 the NEEDS-SERVICE digest pin moves on the real file" FAIL \
-  'scripts/negative-tests/db-introspect.sh has changed (sha256 e373e536' \
+  "scripts/negative-tests/db-introspect.sh has changed (sha256 ${DBI_SHA}" \
   'Re-measure it' -- runneg
 
-CASE="B12"; table '[{"id":"x","file":"scripts/negative-tests/db-introspect.sh","cases":65,"state":"NEEDS-SERVICE","why":"no owner","digest":"e373e536ead265b1600e0f2a2e2121fb318960826bcb4e6fcf745b475455834e"}]' >/dev/null
+CASE="B12"; table "[{\"id\":\"x\",\"file\":\"scripts/negative-tests/db-introspect.sh\",\"cases\":65,\"state\":\"NEEDS-SERVICE\",\"why\":\"no owner\",\"digest\":\"${DBI_SHA}\"}]" >/dev/null
 run_case "B12 a NEEDS-SERVICE entry with no owner or unblock condition" FAIL \
   'NEEDS-SERVICE with no owner' -- runneg
 
@@ -475,25 +486,71 @@ mut "$TYPED" "    '@typescript-eslint/no-unsafe-call': 'error',
     'RULES-NOT-IN-FORCE' '@typescript-eslint/no-unsafe-call' \
     'a rule that is not enabled' -- node scripts/gates/no-unsafe-any.ts
 
+# D7/D8 NOW ASSERT THE COUNT, not only the two substrings (QR2-F1, 2026-09-20).
+# § Published contract cites D7 as the test that `RULES-NOT-IN-FORCE <n> of <m>`
+# is what a narrowed glob produces, and the case asserted neither number — so a
+# wrong count could be written into the contract and D7 would stay green, which
+# is exactly what happened (`36 of 195`, a number no run has ever printed).
+#
+# THE TWO NUMBERS ARE DERIVED HERE FROM git, NOT TYPED. `n` is the tracked
+# TypeScript under scripts/ — the files the dropped glob stops selecting — and
+# `m` is the tracked TypeScript under all three roots. The gate computes `m`
+# from git too, but `n` it computes from ESLint's own per-file config
+# RESOLUTION, so this case holds one instrument against the other rather than
+# against itself (PROTOCOL §5.1). And it cannot go stale: both recompute on
+# every run, which is the whole reason the literal was wrong in the first place.
+TS_SCRIPTS="$(git ls-files | grep -cE '^scripts/.*\.tsx?$')"
+TS_ALL="$(git ls-files | grep -cE '^(apps|packages|scripts)/.*\.tsx?$')"
+
 CASE="D7"
 mut "$TYPED" "    'scripts/**/*.ts',
 " "" &&
   run_case "D7 QR-F2: the overlay's files: glob narrowed" FAIL \
-    'RULES-NOT-IN-FORCE' 'a file the overlay no longer selects' \
+    "RULES-NOT-IN-FORCE ${TS_SCRIPTS} of ${TS_ALL} tracked" \
+    'a file the overlay no longer selects' \
     -- node scripts/gates/no-unsafe-any.ts
 
 # D8 is QA's own construction (QRF-4) and D1 is its control: D1 shows the
 # committed overlay refusing this exact file with two NEW findings, and D8
 # shows that narrowing the glob no longer hides it — the gate is red on the
-# coverage reading instead, which is the only reading left once the rules do
-# not apply to the file.
+# RULE-SET reading (C2, RULES-NOT-IN-FORCE), which is the reading left once the
+# rules do not apply to the file. It is NOT the coverage reading: C1 is green
+# there, because the base config still reports on the file. That word was wrong
+# in this comment and in § OD-60's table until 2026-09-20 (QR2-A6).
+#
+# The plant is `git add -N`ed, so it joins BOTH derived counts above — one more
+# tracked file under scripts/ and one more overall.
 CASE="D8"
 mut "$TYPED" "    'scripts/**/*.ts',
 " "" &&
   printf "$PLANT" > scripts/gates/qa-t005-unsafe.ts &&
   git add -N scripts/gates/qa-t005-unsafe.ts &&
   run_case "D8 QR-F2: narrowed glob AND a real any-value site inside it" FAIL \
-    'RULES-NOT-IN-FORCE' 'a file the overlay no longer selects' \
+    "RULES-NOT-IN-FORCE $((TS_SCRIPTS + 1)) of $((TS_ALL + 1)) tracked" \
+    'a file the overlay no longer selects' \
+    -- node scripts/gates/no-unsafe-any.ts
+
+# D9/D10 — THE FATAL READING IS SCOPED TO THE TRACKED SET, both directions.
+# Found by rebasing onto main 6582596: T-147 left eight scratch .ts files in
+# the GITIGNORED apps/core/.cache/t147r1/bundle/, ESLint linted them,
+# `projectService` could not place them in a tsconfig, and gate:no-unsafe-any
+# was GATE FAIL with eight FATALs on files that are not in the repository.
+# D9 is the false red that must not happen; D10 is the true red that must still
+# happen on the byte-identical file once git tracks it. Without D10 this pair
+# would only prove the gate got quieter.
+FATALPLANT='apps/core/.cache/qa-t005/unparsed.ts'
+CASE="D9"
+mkdir -p apps/core/.cache/qa-t005 &&
+  printf 'export const x: number = 1;\n' > "$FATALPLANT" &&
+  run_case "D9 a GITIGNORED .ts eslint cannot place in a tsconfig is not this gate's" PASS \
+    'GATE PASS' -- node scripts/gates/no-unsafe-any.ts
+
+CASE="D10"
+mkdir -p apps/core/.cache/qa-t005 &&
+  printf 'export const x: number = 1;\n' > "$FATALPLANT" &&
+  git add -f -N "$FATALPLANT" &&
+  run_case "D10 CONTROL: the same file TRACKED is still FATAL" FAIL \
+    "FATAL ${FATALPLANT}" 'An unparsed file is an unchecked file' \
     -- node scripts/gates/no-unsafe-any.ts
 
 echo

@@ -127,10 +127,14 @@ export const ROSTER: readonly RosterEntry[] = [
     why: 'dependency-cruiser module boundaries (SA §SA-2)',
   },
   {
-    // T-005, OD-60. The no-unsafe-* family needs type information, and nine
-    // sites in six files owned by four other agents are red today. A ratchet,
-    // not a waiver: the nine are enumerated with their owners, a tenth fails,
-    // and fixing one of the nine also fails until its entry is removed.
+    // T-005, OD-60. FIVE of the plugin's ten `no-unsafe-*` rules — the
+    // value-flow ones — which need type information. Sites in other agents'
+    // packages are red today. A ratchet, not a waiver: each is enumerated with
+    // its owner in scripts/gates/no-unsafe-any.baseline.json, ONE MORE fails,
+    // and fixing one also fails until its entry is removed. The COUNT is not
+    // written here (it moved from nine to thirteen when T-147 merged) and
+    // neither is a claim that the five are the whole family — they are not:
+    // `no-unsafe-type-assertion` is not enabled and is T-174's decision.
     name: 'gate:no-unsafe-any',
     spec: 'ESLint + import-boundary (dependency-cruiser)',
     cls: 'BLOCKING',
@@ -229,7 +233,7 @@ export const ROSTER: readonly RosterEntry[] = [
     name: 'gate:negative-suites',
     spec: PROGRAMME,
     cls: 'BLOCKING',
-    why: 'the committed negative suites — the refusals every other gate contract cites (OD-152, OD-120, OD-154, OD-161a)',
+    why: 'the committed negative suites this gate rosters — the refusals every other gate contract cites (OD-152, OD-120, OD-154, OD-161a). The roster is a hand list, not a scan of scripts/negative-tests/: see OD-168.',
   },
   {
     // OD-51.
