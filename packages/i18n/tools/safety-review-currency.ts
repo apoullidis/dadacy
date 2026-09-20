@@ -92,9 +92,10 @@ const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 /* ------------------------------------------------------------------- pins */
 
 /**
- * READING C. Three pins, written in this file on 2026-09-20 by T-044, because
- * a gate whose expected workload is read entirely out of the files it is
- * checking can be silenced by editing those files (PROTOCOL §5.1).
+ * READING C. FOUR pins — SAFETY_KEYS_PINNED, WAIVER_KEYS_CEILING,
+ * LOCALES_PINNED and WAIVER_NOT_AFTER — written in this file on 2026-09-20 by
+ * T-044, because a gate whose expected workload is read entirely out of the
+ * files it is checking can be silenced by editing those files (PROTOCOL §5.1).
  *
  * T-040's QA left this as a named obligation on this ticket (QA-F5): *"T-044
  * should assert the `safety_critical` key set against a committed, reviewed
