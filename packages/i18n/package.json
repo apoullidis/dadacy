@@ -13,7 +13,8 @@
     "build": "node tools/compile.ts",
     "build:check": "node tools/compile.ts --check",
     "test": "node tools/run-tests.ts",
-    "test:negatives": "node tools/run-tests-negatives.ts"
+    "test:negatives": "node tools/run-tests-negatives.ts",
+    "gate:locale-completeness:negatives": "node tools/locale-completeness-negatives.ts"
   },
   "dependencies": {
     "intl-messageformat": "11.2.14"
