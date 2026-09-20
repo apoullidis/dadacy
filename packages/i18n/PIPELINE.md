@@ -243,13 +243,14 @@ unwaived ones — so the self-closing property, which is the entire value of the
 mechanism, survives the change.
 
 **This is not an open-ended waiver and it is prevented from becoming one**, by
-three things that all live _outside_ the register:
+four things that all live _outside_ the register:
 
-| Guard                                            | Where it lives                                       | What it stops                                                                                          |
-| ------------------------------------------------ | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `expected_by ≤ 2026-12-05`                       | a literal in `src/review.test.ts`                    | The date drifting later without an edit to a test file                                                 |
-| `pipeline.deadline === '2026-12-05'`             | a literal in `src/pipeline.test.ts`                  | The date drifting _earlier_ in the register than the anchor, or the anchor moving without the register |
-| **≤ 1 re-anchor while `external_start` is null** | `MAX_UNSTARTED_RE_ANCHORS` in `src/pipeline.test.ts` | Moving the date repeatedly while nothing is engaged. One has been used                                 |
+| Guard                                            | Where it lives                                                                      | What it stops                                                                                                                                                                        |
+| ------------------------------------------------ | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `expected_by ≤ 2026-12-05`                       | a literal in `src/review.test.ts`                                                   | The date drifting later without an edit to a test file                                                                                                                               |
+| `pipeline.deadline === '2026-12-05'`             | a literal in `src/pipeline.test.ts`                                                 | The date drifting _earlier_ in the register than the anchor, or the anchor moving without the register                                                                               |
+| **≤ 1 re-anchor while `external_start` is null** | `MAX_UNSTARTED_RE_ANCHORS` in `src/pipeline.test.ts`                                | Moving the date repeatedly while nothing is engaged. One has been used                                                                                                               |
+| `expected_by ≤ 2026-12-05`                       | `WAIVER_NOT_AFTER` in `tools/safety-review-currency.ts` (`T-044`, added 2026-09-20) | The same drift, in the gate that blocks the PR rather than in a test: a later `expected_by` is refused as `WAIVER-RENEWED`. Earlier is allowed — shortening a waiver cannot buy time |
 
 And one that lives inside, but is checkable: `pending_pipeline.re_anchors` is an
 **append-only chain**. Each row's `from` is the previous row's `to`, the first
@@ -315,11 +316,16 @@ decision instead of an edit.
 4. **Then re-anchor `expected_by` to `external_start + 42 days`**, appending a
    `re_anchors` row with `external_start_at_decision` set — which is the moment
    the date becomes a genuine forecast for the first time, and the moment the
-   unstarted-re-anchor bound stops applying.
+   unstarted-re-anchor bound stops applying. **If that lands after 2026-12-05,
+   move `WAIVER_NOT_AFTER` in `tools/safety-review-currency.ts` in the same
+   commit**, or `gate:safety-review-currency` refuses it as `WAIVER-RENEWED`.
+   That cost is the same cost the two test literals already carry, in the gate
+   that blocks a PR.
 5. **If 2026-12-05 arrives with `external_start` still null**, that is a second
    unstarted re-anchor and it must be an explicit orchestrator decision against
    BOARD **RK-2**, moving `pending_pipeline.expected_by`, the `2026-12-05`
-   literals in both test files, `MAX_UNSTARTED_RE_ANCHORS`, and a new
+   literals in both test files, `WAIVER_NOT_AFTER` in
+   `tools/safety-review-currency.ts`, `MAX_UNSTARTED_RE_ANCHORS`, and a new
    `re_anchors` row, plus `pipeline.deadline` and
    `pipeline.latest_external_start` — **together**. That cost is the intended
    mechanism. What must not happen is the date arriving unattended: the cheapest
