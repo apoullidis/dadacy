@@ -28,7 +28,7 @@
  *
  * N3 is what stops this being an open-ended allowance: an entry cannot quietly
  * survive the thing it was recorded for. N1 is what makes it a gate rather than
- * a list: a TENTH site fails the build, today, which is OD-60's live harm.
+ * a list: ONE MORE site fails the build, today, which is OD-60's live harm.
  *
  * WHAT IT DOES NOT CLAIM. It does not claim the baselined sites are harmless;
  * it claims they are known, owned and frozen. It does not close them — those
@@ -190,7 +190,7 @@ try {
 // that DOES parse and does carry an `any` value would still be counted by the
 // ratchet and reported as NEW. There is no such file today (an ignored path is
 // not in any tsconfig `include`, which is why the measured instance was FATAL
-// rather than NEW), and it is recorded in decisions.md OD-169 rather than
+// rather than NEW), and it is recorded in decisions.md OD-171 rather than
 // assumed away.
 const covered = new Set<string>();
 for (const res of results) {

@@ -443,11 +443,11 @@ echo
 echo "=== D. gate:no-unsafe-any — OD-60 ==="
 BL=scripts/gates/no-unsafe-any.baseline.json
 CASE="D0"
-run_case "D0 CONTROL: the nine recorded sites" PASS 'GATE PASS' -- node scripts/gates/no-unsafe-any.ts
+run_case "D0 CONTROL: the recorded sites, as the register has them" PASS 'GATE PASS' -- node scripts/gates/no-unsafe-any.ts
 
 CASE="D1"
 printf 'const raw: unknown = JSON.parse("{}");\nconst v = raw as never as { a: string };\nexport const out: string = (JSON.parse("{}") as never as { a: string }).a;\nexport const bad: string = JSON.parse("{}").a;\nexport const keep = v;\n' > scripts/gates/qa-t005-unsafe.ts &&
-  run_case "D1 a TENTH site: a new any value reaching typed code" FAIL \
+  run_case "D1 ONE MORE site: a new any value reaching typed code" FAIL \
     'NEW scripts/gates/qa-t005-unsafe.ts' -- node scripts/gates/no-unsafe-any.ts
 
 CASE="D2"

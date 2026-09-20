@@ -40,7 +40,7 @@
  *       here: it is a live route, and a route is closed by a ticket with its own
  *       red-before/green-after cases, not by a comment (PROTOCOL §6.5's
  *       distinction, applied by the implementer rather than to it). Carried as
- *       decisions.md OD-171 with T-005 § Integration naming it.
+ *       decisions.md OD-173 with T-005 § Integration naming it.
  *   W5  the CLASS mirror: the advisory job carries `continue-on-error: true`
  *       and the blocking job does not. Without this, W4 could pass while the
  *       file made a pending hook blocking or a blocking gate advisory.

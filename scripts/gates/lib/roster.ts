@@ -233,7 +233,7 @@ export const ROSTER: readonly RosterEntry[] = [
     name: 'gate:negative-suites',
     spec: PROGRAMME,
     cls: 'BLOCKING',
-    why: 'the committed negative suites this gate rosters — the refusals every other gate contract cites (OD-152, OD-120, OD-154, OD-161a). The roster is a hand list, not a scan of scripts/negative-tests/: see OD-168.',
+    why: 'the committed negative suites this gate rosters — the refusals every other gate contract cites (OD-152, OD-120, OD-154, OD-161a). The roster is a hand list, not a scan of scripts/negative-tests/: see OD-170.',
   },
   {
     // OD-51.

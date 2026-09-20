@@ -58,7 +58,7 @@
  * so a newly committed suite is not run by this gate and nothing goes red —
  * which is OD-152's own shape. Live at 6582596: `jobs-contract.sh` (T-147) and
  * `db-migrate.sh` are committed and NOT in this table. See
- * tasks/state/EP-1/T-005.md § Integration and decisions.md OD-168.
+ * tasks/state/EP-1/T-005.md § Integration and decisions.md OD-170.
  *
  * ---------------------------------------------------------------------------
  * OD-55 — SERIALITY IS PART OF THE DESIGN, NOT AN INSTRUCTION IN A COMMENT.
