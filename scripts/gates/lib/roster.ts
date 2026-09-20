@@ -290,13 +290,15 @@ export const ROSTER: readonly RosterEntry[] = [
       'T-043 supplies the three lists with named authorship and the gate fails on each prohibited string in each locale (nine demonstrated failures minimum).',
   },
   {
+    // T-044 supplied it (frontend-developer), so this entry moved PENDING ->
+    // BLOCKING and lost its owner/unblocks fields, as T-005 § Published
+    // contract §8 (as amended, OD-176) requires. It is green today BECAUSE OF
+    // the dated, self-closing T-049 waiver, which it prints and which expires
+    // 2026-12-05 — see packages/i18n/tools/safety-review-currency.ts.
     name: 'gate:safety-review-currency',
     spec: '`gate:safety-review-currency`',
-    cls: 'PENDING',
+    cls: 'BLOCKING',
     why: 'a `safety_critical` string without a current DSL review record fails the build (SD §Revision Log D8, SA §TS-12.3)',
-    owner: 'T-044 — frontend-developer (blocked_by T-040, T-005)',
-    unblocks:
-      'T-044 makes `review.json` a build input and the gate fails on a `safety_critical` string with a stale or absent review record.',
   },
   {
     name: 'gate:plural-completeness',

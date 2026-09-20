@@ -66,6 +66,7 @@ jobs:
           - gate:workflow
           - gate:pr-gate-suite
           - gate:locale-completeness
+          - gate:safety-review-currency
     steps:
       - uses: actions/checkout@v4
         with:
@@ -89,13 +90,15 @@ jobs:
   #                               this job would carry a `services: postgres`
   #                               block pinned to compose's image tag; locally
   #                               it is gate:heavy's (T-006).
-  #   gate:prohibited-claims      T-043      gate:safety-review-currency T-044
-  #   gate:plural-completeness    T-045      gate:sms-segments           T-046
-  #   gate:pii-canary             T-119
+  #   gate:prohibited-claims      T-043      gate:plural-completeness    T-045
+  #   gate:sms-segments           T-046      gate:pii-canary             T-119
   #
   #   gate:locale-completeness was here until 2026-09-20; T-042 supplied it and
-  #   it is in the `blocking` matrix above. W4 compares both matrices with the
-  #   roster's classes, so a promotion is two edits or gate:workflow reds.
+  #   it is in the `blocking` matrix above. gate:safety-review-currency was here
+  #   until later the same day; T-044 supplied it and it is there too — green
+  #   while the dated T-049 copy waiver holds, red from 2026-12-06. W4 compares
+  #   both matrices with the roster's classes, so a promotion is two edits or
+  #   gate:workflow reds.
   advisory:
     name: gate (not yet supplied)
     runs-on: ubuntu-latest
@@ -106,7 +109,6 @@ jobs:
         gate:
           - gate:drizzle-parity
           - gate:prohibited-claims
-          - gate:safety-review-currency
           - gate:plural-completeness
           - gate:sms-segments
           - gate:pii-canary

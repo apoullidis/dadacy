@@ -265,7 +265,7 @@ mut "$ROSTER" "    cls: 'BLOCKING'," "    cls: 'PENDING',
     owner: 'nobody',
     unblocks: 'never'," &&
   run_case "A6 one BLOCKING gate demoted: the floor bites" FAIL \
-    'the floor is 23' 'A gate was demoted or deleted' -- node "$PR" --roster-only
+    'the floor is 24' 'A gate was demoted or deleted' -- node "$PR" --roster-only
 
 echo
 echo "=== A(bis). the CLASS assertion — a hook cannot pass, or fail wrongly ==="
@@ -593,15 +593,17 @@ echo
 echo "=== F. gate:workflow — the mirrored, never-executed YAML ==="
 WF=.github/workflows/pr.yml
 wf() { node scripts/gates/workflow.ts; }
-# The `W7: 29 concrete` reason is not decoration: 29 is 23 blocking + 6 advisory
+# The `W7: 29 concrete` reason is not decoration: 29 is 24 blocking + 5 advisory
 # matrix values, so it is the assertion that BOTH `pnpm run ${{ matrix.gate }}`
 # steps were expanded and every value checked. Before rework 1 this number would
 # have been 0 — W7's pattern excluded `$`, `{` and `}` and skipped both lines.
 # Like MIN_BLOCKING and CASES, it is a pin: raise it when the roster grows.
 # It was 22 blocking + 7 advisory until 2026-09-20, when T-042 supplied
 # gate:locale-completeness and it moved from the advisory job to the blocking
-# one. The TOTAL is unchanged at 29, which is why this line and not the pin
-# had to move: a promotion shifts a gate between the two matrices.
+# one; then 23 blocking + 6 advisory until later the same day, when T-044
+# supplied gate:safety-review-currency and it moved the same way. The TOTAL is
+# unchanged at 29 across both, which is why this line and not the pin has had
+# to move: a promotion shifts a gate between the two matrices.
 CASE="F0"
 run_case "F0 CONTROL: pr.yml is structurally valid and mirrors the roster" PASS \
   'GATE PASS' 'W7: 29 concrete' -- wf

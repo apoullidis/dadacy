@@ -44,8 +44,16 @@ const RULE = '='.repeat(78);
  * and promoted PENDING -> BLOCKING. Case A6 in scripts/negative-tests/
  * pr-gates.sh reads this number, and so does the `W7: 29 concrete` pin in
  * case F0 (23 blocking + 6 advisory matrix values); both moved with it.
+ *
+ * 23 -> 24 on 2026-09-20 (T-044), when gate:safety-review-currency was
+ * supplied and promoted PENDING -> BLOCKING. Case A6's expected reason moved
+ * with it; F0's `W7: 29 concrete` pin did NOT, because a promotion moves a
+ * gate between the two matrices and leaves the total alone (24 blocking + 5
+ * advisory). Measured in both directions in tasks/state/EP-0/T-044.md
+ * § Evidence 6: at floor 23, A6's own mutation is a GATE PASS and the refusal
+ * is silently lost.
  */
-const MIN_BLOCKING = 23;
+const MIN_BLOCKING = 24;
 
 /**
  * Two flags, and they exist so this program can be ATTACKED cheaply rather than
