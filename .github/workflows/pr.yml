@@ -65,6 +65,7 @@ jobs:
           - gate:supply-chain
           - gate:workflow
           - gate:pr-gate-suite
+          - gate:locale-completeness
     steps:
       - uses: actions/checkout@v4
         with:
@@ -88,9 +89,13 @@ jobs:
   #                               this job would carry a `services: postgres`
   #                               block pinned to compose's image tag; locally
   #                               it is gate:heavy's (T-006).
-  #   gate:locale-completeness    T-042      gate:prohibited-claims  T-043
-  #   gate:safety-review-currency T-044      gate:plural-completeness T-045
-  #   gate:sms-segments           T-046      gate:pii-canary          T-119
+  #   gate:prohibited-claims      T-043      gate:safety-review-currency T-044
+  #   gate:plural-completeness    T-045      gate:sms-segments           T-046
+  #   gate:pii-canary             T-119
+  #
+  #   gate:locale-completeness was here until 2026-09-20; T-042 supplied it and
+  #   it is in the `blocking` matrix above. W4 compares both matrices with the
+  #   roster's classes, so a promotion is two edits or gate:workflow reds.
   advisory:
     name: gate (not yet supplied)
     runs-on: ubuntu-latest
@@ -100,7 +105,6 @@ jobs:
       matrix:
         gate:
           - gate:drizzle-parity
-          - gate:locale-completeness
           - gate:prohibited-claims
           - gate:safety-review-currency
           - gate:plural-completeness

@@ -271,13 +271,14 @@ export const ROSTER: readonly RosterEntry[] = [
 
   // ------------------------------------------------ hooks other agents supply
   {
+    // T-042 supplied it (frontend-developer), so this entry moved PENDING ->
+    // BLOCKING and lost its owner/unblocks fields, as T-005 § Published
+    // contract §8 requires. The check reads the catalogue SOURCE and the
+    // committed compiled/ — see packages/i18n/tools/locale-completeness.ts.
     name: 'gate:locale-completeness',
     spec: '`gate:locale-completeness`',
-    cls: 'PENDING',
+    cls: 'BLOCKING',
     why: 'no Critical- or Transactional-tier string may resolve to a missing translation (SA §TS-12.3, SD §FE-10)',
-    owner: 'T-042 — frontend-developer (blocked_by T-040, T-005)',
-    unblocks:
-      'T-042 replaces the hook with the check and moves this entry to BLOCKING. Acceptance: the gate fails on a deliberately removed `ru` key and passes when restored.',
   },
   {
     name: 'gate:prohibited-claims',

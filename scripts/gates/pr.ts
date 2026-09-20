@@ -39,8 +39,13 @@ const RULE = '='.repeat(78);
  * aggregate had when the floor was last raised; demoting or deleting one fails
  * the aggregate. Adding a gate does not, so the correct move when you add one
  * is to raise this number in the same change set. Anti-vacuity: header note 4.
+ *
+ * 22 -> 23 on 2026-09-20 (T-042), when gate:locale-completeness was supplied
+ * and promoted PENDING -> BLOCKING. Case A6 in scripts/negative-tests/
+ * pr-gates.sh reads this number, and so does the `W7: 29 concrete` pin in
+ * case F0 (23 blocking + 6 advisory matrix values); both moved with it.
  */
-const MIN_BLOCKING = 22;
+const MIN_BLOCKING = 23;
 
 /**
  * Two flags, and they exist so this program can be ATTACKED cheaply rather than
