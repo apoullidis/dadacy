@@ -71,10 +71,16 @@
  *   C1  THE FILE SET. `git ls-files` says which TypeScript files exist under
  *       apps/, packages/ and scripts/. Every one of THEM must appear in
  *       ESLint's result set, and none of THEM may carry a fatal parse error.
- *       An `ignores` entry added to either config, or a TRACKED file ESLint
- *       declines to parse, turns this red instead of green (UNCOVERED /
- *       FATAL). A file git does not track is not in this reading at all —
- *       see the scoping note beside the loop, and cases D9/D10.
+ *       An `ignores` entry added to either config, or a tracked file UNDER
+ *       THOSE THREE ROOTS that ESLint declines to parse, turns this red
+ *       instead of green (UNCOVERED / FATAL). A file git does not track — and
+ *       equally a tracked file OUTSIDE those roots — is not in this reading at
+ *       all, because `expected` below is `git ls-files` INTERSECTED with
+ *       `ROOTS`: the boundary is tracked-AND-under-ROOTS, never
+ *       tracked-versus-untracked. (Bound restored 2026-09-20 under PROTOCOL
+ *       §6.5, finding QR3-F1, which got past this sentence with a tracked
+ *       `tools/*.ts`; widening `ROOTS` is T-174's, which owns that list.)
+ *       See the scoping note beside the loop, and cases D9/D10.
  *   C2  THE RULE SET IN FORCE, PER FILE, from ESLint's own resolved config
  *       (`ESLint#calculateConfigForFile`) — not from reading the overlay's
  *       text, and not from what the occurrence report happens to mention.
@@ -173,9 +179,16 @@ try {
 }
 
 // ------------------------------------------------------------- coverage first
-// THE FATAL READING IS SCOPED TO THE TRACKED SET, and that is the check being
-// made equal to its own sentence (2026-09-20, found by rebasing onto main
-// 6582596). C1 above says: "`git ls-files` says which TypeScript files exist
+// THE FATAL READING IS SCOPED TO THE TRACKED FILES UNDER `ROOTS` — apps/,
+// packages/ and scripts/ — and NOT to the tracked set at large: `expected` is
+// `git ls-files` intersected with `ROOTS`, so a tracked .ts outside those three
+// roots is GATE PASS here. (This heading said "THE TRACKED SET" until
+// 2026-09-20; bound restored under PROTOCOL §6.5, finding QR3-F1, measured on a
+// tracked `tools/*.ts`. Widening `ROOTS`, or raising FATAL for any tracked
+// .tsx? anywhere, is a BEHAVIOUR change and is T-174's — not a comment's.)
+// The scoping is the check being made equal to its own sentence (2026-09-20,
+// found by rebasing onto main 6582596). C1 above says: "`git ls-files`
+// says which TypeScript files exist
 // under apps/, packages/ and scripts/. Every one of THEM must appear in
 // ESLint's result set, and NONE OF THEM may carry a fatal parse error." The
 // loop did not say `of them`: it raised FATAL for any file in ESLint's report,

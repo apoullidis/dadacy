@@ -540,7 +540,12 @@ mut "$TYPED" "    'scripts/**/*.ts',
     'a file the overlay no longer selects' \
     -- node scripts/gates/no-unsafe-any.ts
 
-# D9/D10 — THE FATAL READING IS SCOPED TO THE TRACKED SET, both directions.
+# D9/D10 — THE FATAL READING IS SCOPED TO THE TRACKED FILES UNDER ROOTS
+# (apps/, packages/, scripts/), both directions — NOT to the tracked set at
+# large. A tracked .ts outside those three roots is GATE PASS here too, and
+# NEITHER of these two cases covers it: that hole is T-174's, which owns ROOTS.
+# (This heading said "THE TRACKED SET" until 2026-09-20; bound restored under
+# PROTOCOL §6.5, finding QR3-F1.)
 # Found by rebasing onto main 6582596: T-147 left eight scratch .ts files in
 # the GITIGNORED apps/core/.cache/t147r1/bundle/, ESLint linted them,
 # `projectService` could not place them in a tsconfig, and gate:no-unsafe-any
