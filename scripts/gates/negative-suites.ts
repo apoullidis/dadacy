@@ -189,10 +189,11 @@ const SUITES: readonly Suite[] = [
  * reason this gate has FIFTEEN cases against it — B0..B14 in
  * scripts/negative-tests/pr-gates.sh — instead of one green run).
  *
- * A full pass of the real suites is about 4 3/4 minutes — the six per-suite
- * figures this gate prints, summed: 284.8s at 9f99b1e
- * (60.2 + 72.9 + 2.8 + 20.8 + 42.3 + 85.8) and 287.0s at 89e89d4
- * (61.2 + 73.0 + 2.9 + 21.3 + 42.4 + 86.2). Both runs are pasted in
+ * A full pass of the real suites is 290.4s at 8c35307 — the six
+ * per-suite figures THIS GATE PRINTS, summed: 58.6 + 70.6 + 2.7 + 20.5 + 40.8 + 97.2. The figure is
+ * recomputed and printed on every run, so this line is a pointer at the gate's
+ * own output rather than a second copy of it, and the attribution is to the
+ * commit the sum was taken at (PROTOCOL §5.3 R1). The run is pasted in
  * tasks/state/EP-1/T-005.md. That is far too slow to attack the JUDGING with,
  * and the judging is the part that decides whether a red suite can reach
  * `main`. `KINVARA_NEG_SUITES_TABLE=<path to json>` replaces the

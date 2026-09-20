@@ -29,18 +29,35 @@
 // holds the count and the gate prints it (PROTOCOL §5.3 R2 — a second copy of a
 // number is a second thing to forget).
 //
-// Type-aware linting is slower than syntactic linting, which is the other
-// reason it is its own gate: `pnpm gate:lint` stays the fast one. Measured
-// through `scripts/dev`, the only way anything runs on this host:
-// `gate:no-unsafe-any` 16.2-17.8 s against `gate:lint` 12.2-13.3 s. Those are
-// the lowest and highest of EVERY measurement recorded for this ticket,
-// qa-verification's included; the individual runs are in
-// tasks/state/EP-1/T-005.md. Container start is 0.5 s
-// (`time ./scripts/dev node -e ''`), so it is not what the gap is made of.
-// A RANGE, not a point, and deliberately: an exact figure here goes stale on
-// the next commit or on the next run's noise, which is exactly what happened
-// to the one this replaces ("about 17 s against about 8 s" — and its 8 s was
-// never reproducible through this instrument at all).
+// Type-aware linting is slower than syntactic linting, and THAT is the reason
+// this is its own gate rather than a rule in the base config: `pnpm gate:lint`
+// stays the fast one. The reason is structural — these five rules need the
+// TypeScript program, which `projectService` builds — and it does not depend on
+// any particular number.
+//
+// The numbers, as measurements attributed to the commit they were taken at
+// (PROTOCOL §5.3 R1). Instrument: `{ time ./scripts/dev pnpm run --silent
+// <gate> >/dev/null ; }`, zsh's builtin `time`, the `total` column, on this
+// host; both runs are pasted in tasks/state/EP-1/T-005.md § I6.
+//
+//   gate:no-unsafe-any   17.099 s   at 7ca1c86
+//   gate:lint            12.193 s   at 7ca1c86
+//   ./scripts/dev node -e ''        0.436 s   at 7ca1c86   (container start,
+//                                   so it is not what the gap is made of)
+//
+// A SECOND MEASUREMENT IS A SECOND LINE IN THAT TABLE — never a widened range,
+// and never a superlative over the set of measurements. This comment has now
+// carried three forms and two of them were defects: "about 17 s against about
+// 8 s", whose 8 s was never reproducible through this instrument at all; and
+// then a band described as "the lowest and highest of EVERY measurement
+// recorded for this ticket, qa-verification's included", which enrolled every
+// future reader's runs in its own scope and was therefore falsified twice in
+// one day by the routine act of re-measuring — once by its author mid-rework
+// and once, within the hour, by the first reviewer to time these two gates
+// (T-005 QR2-F3). Widening it a third time was not available; a range derived
+// from its own sample is not a claim a run can confirm, only one every run can
+// break. If a BOUND is wanted here rather than a record, state a tolerance the
+// next run can violate ("under twenty seconds") and let a case assert it.
 
 import base from './eslint.config.mjs';
 import tseslint from 'typescript-eslint';

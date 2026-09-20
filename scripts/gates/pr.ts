@@ -44,15 +44,23 @@ const MIN_BLOCKING = 22;
 
 /**
  * Two flags, and they exist so this program can be ATTACKED cheaply rather than
- * only observed passing. A full run is about 9 1/4 minutes — measured through
- * scripts/dev on this branch at 9:15.01 (9f99b1e) and 9:16.60 (5e5b5e6), both
- * pasted in tasks/state/EP-1/T-005.md with the run at the delivered commit. The
- * two negative-suite gates are about 7 1/2 minutes of that, both figures printed
- * by the gates themselves: `gate:negative-suites` 4m45s / 4m47s plus
- * `gate:pr-gate-suite` 2m51s / 2m52s, at 9f99b1e / 89e89d4 respectively. That is long enough that nobody would write sixty-nine cases
- * against a full run — and a gate nobody attacks is a gate whose coverage is
- * unknown (PROTOCOL §5.1: "I had run the check; I had not tried to get past
- * it").
+ * only observed passing. A full run is slow:
+ *
+ *   9:59.38 total, at 8c35307, measured with
+ *   `{ time ./scripts/dev pnpm run --silent gate:pr ; }` — zsh's builtin
+ *   `time`, the `total` column, on this host; the run is pasted in
+ *   tasks/state/EP-1/T-005.md.
+ *
+ * The two negative-suite gates are most of it, and BOTH FIGURES ARE PRINTED BY
+ * THE GATES THEMSELVES on every run rather than restated here:
+ * `gate:negative-suites` 290.4s (the six per-suite lines it prints, summed)
+ * plus `gate:pr-gate-suite` 212.6s, at that same commit. That is long
+ * enough that nobody would write seventy-one cases against a full run — and a
+ * gate nobody attacks is a gate whose coverage is unknown (PROTOCOL §5.1: "I
+ * had run the check; I had not tried to get past it").
+ *
+ * A second measurement is a SECOND ATTRIBUTED LINE, never a merged range
+ * (PROTOCOL §5.3 R1).
  *
  *   --roster-only   the roster/spec/vacuity checks alone. Runs no gate.
  *   --only=<name>   execute exactly one rostered gate and judge it against its

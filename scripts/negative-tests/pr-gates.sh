@@ -9,23 +9,32 @@
 #
 # WHY THIS FILE EXISTS IN THIS SHAPE. PROTOCOL §5.1: "Running your gate proves
 # it executes. ATTACKING it proves what it covers ... I had run the check; I had
-# not tried to get past it." A full `pnpm gate:pr` is about 9 1/4 minutes --
-# measured through scripts/dev on this branch at 9:15.01 (9f99b1e) and 9:16.60
-# (5e5b5e6), both runs pasted in tasks/state/EP-1/T-005.md along with the run at
-# the delivered commit. It is stated as an "about" with its measurements
-# attributed because a comment-only commit cannot move it and an exact figure
-# would go stale on the next one. So the 71 cases below would be over ten hours
-# if each paid for a full run. Three of the gates therefore take a cheap entry
-# point — `pr.ts --roster-only` / `--only=`, `unit-tests.ts --dry-run`, and
+# not tried to get past it." A full `pnpm gate:pr` is slow:
+#
+#   9:59.38 total, at 8c35307, measured with
+#   `{ time ./scripts/dev pnpm run --silent gate:pr ; }` -- zsh's builtin
+#   `time`, the `total` column, on this host. The run is pasted in
+#   tasks/state/EP-1/T-005.md.
+#
+# So the 71 cases below would be most of a working day if each paid for a full
+# run. Three of the gates therefore take a cheap entry point — `pr.ts --roster-only` / `--only=`, `unit-tests.ts --dry-run`, and
 # `KINVARA_NEG_SUITES_TABLE` — each of which PRINTS what it did IN ITS OWN
 # BANNER LINE, so a run through one can never be pasted as a full run. For
 # `pr.ts` that placement is rework 1's and cases A10/A11 assert it: before then
 # both flags ended in a banner byte-identical to a full run's, with the
 # disclosure five lines up in the summary block (QR-A2).
 #
-# The previous figure on this line, 6m22s, was true before `gate:pr-gate-suite`
-# joined the roster. PROTOCOL §5.2: when the artefact a pasted line describes
-# changes, re-run the command — do not edit the number.
+# THE SHAPE OF THAT FIGURE IS PROTOCOL §5.3 R1's, AND THIS LINE IS THE WORKED
+# EXAMPLE THE RULE WAS WRITTEN FROM. It was `6m22s` -- a real measurement of a
+# real run, with NO COMMIT BESIDE IT, and it went stale the moment
+# `gate:pr-gate-suite` joined the roster. It was then an "about" glued to two
+# attributed points, which is better but still asks a reader to decide what
+# "about" tolerates. It is now ONE MEASUREMENT ATTRIBUTED TO THE COMMIT IT WAS
+# TAKEN AT, with the instrument and its parameters stated. A second measurement
+# is a SECOND LINE HERE, never a widened range and never a superlative over the
+# set of measurements -- that form was falsified twice in one day by the routine
+# act of re-measuring (T-005 QR2-F3). Re-run the command; never edit the
+# number (PROTOCOL §5.2).
 #
 # HOW A CASE IS JUDGED. Three readings, which a gate that did nothing could not
 # all produce:
@@ -294,8 +303,9 @@ echo
 echo "=== B. gate:negative-suites — how a suite's verdict is judged ==="
 # The fake suites live outside the repo. Each is a three-line script whose whole
 # job is to print a footer and exit, so that the JUDGING can be attacked without
-# paying about 4 3/4 minutes for the real suites (the six per-suite figures
-# gate:negative-suites prints, summed; it carries both measurements).
+# paying for the real suites: 290.4s at 8c35307, which is the six
+# per-suite figures gate:negative-suites PRINTS on every run, summed. That gate
+# is the instrument; this line points at it rather than keeping a second copy.
 mkfake() { # mkfake <name> <exit> <line...>
   local n="$1" x="$2"; shift 2
   { echo '#!/usr/bin/env bash'; for l in "$@"; do printf 'echo %q\n' "$l"; done; echo "exit $x"; } > "$TMP/$n"

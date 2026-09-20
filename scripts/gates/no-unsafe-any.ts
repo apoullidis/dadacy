@@ -54,12 +54,19 @@
  *
  * Two different spellings; only the first was named until 2026-09-20 (QR2-F2).
  *
- * ANTI-VACUITY, and it is the important part. A lint gate reports clean when
- * it lints nothing, and it reports clean when the rule it counts is not
- * enabled. So this gate does not trust the ESLint run to say what it covered.
- * It takes TWO readings, neither of them the occurrence report itself
- * (PROTOCOL §5.1 — a check must not be derived from the same reading as the
- * thing it checks):
+ * ANTI-VACUITY, and it is the important part. A lint gate reports clean in
+ * THREE ways, and this gate reads two of them. It reports clean when it lints
+ * nothing (C1); when the rule it counts is not enabled (C2); AND when the rule
+ * IS enabled, DOES apply to the file, and is suppressed AT the file by an
+ * inline `eslint-disable` comment. `calculateConfigForFile` resolves the STATIC
+ * configuration and does not see inline directives, and the base config sets no
+ * `linterOptions.noInlineConfig` — so a tracked file carrying a five-rule
+ * disable header and a genuine `any`-value site is GATE PASS, measured by
+ * qa-verification (T-005 QR2-A1). THAT THIRD ROUTE IS OPEN AND IS T-174's, by
+ * name; it is written here because an enumeration that said "two" was what made
+ * it invisible. The two this gate does read, neither of them the occurrence
+ * report itself (PROTOCOL §5.1 — a check must not be derived from the same
+ * reading as the thing it checks):
  *
  *   C1  THE FILE SET. `git ls-files` says which TypeScript files exist under
  *       apps/, packages/ and scripts/. Every one of THEM must appear in
