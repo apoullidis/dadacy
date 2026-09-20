@@ -48,9 +48,12 @@
  *
  * IF IT CHECKED NOTHING, WOULD IT SAY SO? It refuses to pass on: fewer than
  * two enabled locales; zero strict-tier keys; a default locale that is not
- * enabled; a missing catalogue directory or namespace file; and — the floor
- * that catches everything else — a count of examined (locale, key) pairs that
- * does not equal `strict keys x enabled locales`. Every run prints that count.
+ * enabled; a missing catalogue directory or namespace file; and, UNDER ALL OF
+ * THOSE, a count of examined (locale, key) pairs that does not equal
+ * `strict keys x enabled locales`. Every run prints that count. Each of the
+ * first four is planted in tools/locale-completeness.test.ts; the count is
+ * asserted positively by the CONTROL case, against a number computed from the
+ * package's own exports rather than from this gate's output.
  *
  * USAGE:  node packages/i18n/tools/locale-completeness.ts [--root <dir>]
  *
