@@ -314,8 +314,12 @@ describe('the claims jobs.ts makes about this file', () => {
   const TEST_SOURCE = readFileSync(fileURLToPath(import.meta.url), 'utf8');
 
   /**
-   * Every emphasised single-line span in jobs.ts that is not a spec quotation
-   * (those begin with a double quote) is a CITATION of a test in this file.
+   * Every emphasised span in jobs.ts that is not a spec quotation (those begin
+   * with a double quote) is a CITATION of a test in this file. NOT only a
+   * single-line span: the extractor below collapses each whitespace-newline-
+   * whitespace run to one space before matching, so a span crossing source
+   * lines — a blank line included — is found too. (QR2-H1: the withdrawn
+   * "single-line" claim, corrected at its point of use.)
    * PROTOCOL §5.1: "every sentence in a contract must name the test that would
    * fail if it were false" — a citation naming a test that does not exist is
    * the failure mode this programme has hit five times, so it is checked by a
