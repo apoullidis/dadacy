@@ -295,7 +295,26 @@ if (allowedKeys.length < FLOOR.allowedKeys) {
 }
 
 // ---------------------------------------------------------------- R4
-/** Metric names this pipeline produces, derived from the collector config. */
+/**
+ * Metric names this pipeline produces, derived from the collector config.
+ *
+ * MEASURED, and the translation is named rather than assumed. On the running
+ * collector the connector emits OTLP metrics `kinvara.calls` (Sum, monotonic)
+ * and `kinvara.duration` (Histogram, `Unit: ms`) — read from
+ * `docker logs kinvara-t-008-otel-collector-1` at commit `b29c9e4`,
+ * 2026-09-21, and pasted in state/EP-1/T-008.md § Evidence 6. The names below
+ * are those OTLP names under the OpenTelemetry **Prometheus naming
+ * convention** (a monotonic Sum gains `_total`; a histogram with `Unit: ms`
+ * gains `_milliseconds` and the `_bucket`/`_sum`/`_count` suffixes; `.` maps
+ * to `_`), because the dashboards are PromQL against the Grafana Cloud
+ * destination SA §TS-10 names.
+ *
+ * WHAT IS NOT PROVEN, and cannot be from here: that any Prometheus-compatible
+ * backend applies that convention the way this function does. There is no
+ * Prometheus in this build and nothing is deployed (DOCKER.md §10), so the
+ * convention is a reading of the specification, not a measurement, and the
+ * first ticket that stands a real backend up owes the check.
+ */
 const metricNames = (): readonly string[] => {
   const ns = spanMetricsNamespace === '' ? '' : `${spanMetricsNamespace}_`;
   return [

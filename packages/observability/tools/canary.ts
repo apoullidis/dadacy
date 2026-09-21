@@ -64,7 +64,22 @@
  * P4+P5 together are the answer to the question: they prove the capture can
  * see a leak of exactly this kind, so the absence of the other sentinels is
  * evidence rather than silence. Remove `redaction` from the collector's traces
- * pipeline and this program goes RED at the sentinel check, not green.
+ * pipeline and this program goes RED, not green.
+ *
+ *   P0  EVERY SPAN THIS RUN JUDGES IS ONE THIS RUN PRODUCED. Jaeger's storage
+ *       outlives a run, and the first version of this program keyed its
+ *       readiness on "are there at least N traces for this service?" — which a
+ *       PREVIOUS run's traces already satisfy. It then judged a byte-identical
+ *       stale capture and reported the previous run's contract values. That is
+ *       the harness-no-op class (PROTOCOL §5.1) in this program's own body, and
+ *       it was found by mutating the collector and watching the verdict come
+ *       back for the wrong reason. The fix is not a longer wait: every probe
+ *       request carries a `traceparent` WITH A TRACE ID THIS RUN GENERATED, and
+ *       every positive control is computed from spans fetched BY THOSE IDS. A
+ *       run whose spans never arrived now fails at P0 and says which ids are
+ *       missing. The one probe that cannot be identified this way — the one
+ *       whose whole point is a MALFORMED `traceparent` — is covered by a count
+ *       delta taken before and after, which is a run-local measurement too.
  *
  * ================================================================
  * RUNNING IT
@@ -92,7 +107,6 @@ const JAEGER = process.env['JAEGER_QUERY_BASE'] ?? 'http://jaeger:16686';
 const CORE_SERVICE = 'kinvara-core';
 const CANARY_SERVICE = 'kinvara-canary';
 const LEAK_KEY = 'kinvara.canary.leak';
-const MIN_TRACES = 4;
 
 const problems: string[] = [];
 const notes: string[] = [];
@@ -111,6 +125,20 @@ const SENTINEL = {
   leak: `Χριστοδούλου-+357-${nonce()}`,
 } as const;
 const SENTINELS: readonly [string, string][] = Object.entries(SENTINEL);
+
+/** One fresh trace id per identified probe. THIS is what makes a run run-local. */
+const newTraceId = (): string => randomBytes(16).toString('hex');
+const traceparentFor = (traceId: string): string =>
+  `00-${traceId}-${randomBytes(8).toString('hex')}-01`;
+
+const ID = {
+  registered: newTraceId(),
+  unmatchedPath: newTraceId(),
+  unmatchedBody: newTraceId(),
+  headers: newTraceId(),
+  healthz: newTraceId(),
+  leak: newTraceId(),
+} as const;
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -131,16 +159,71 @@ async function waitFor(
   for (;;) {
     if (await probe()) return true;
     if (Date.now() > deadline) {
-      notes.push(`${label} did not become ready within ${String(seconds)}s`);
+      notes.push(`${label} did not become true within ${String(seconds)}s`);
       return false;
     }
     await sleep(500);
   }
 }
 
+// ---------------------------------------------------------------- jaeger reads
+interface JaegerTag {
+  key?: unknown;
+  value?: unknown;
+}
+interface JaegerSpan {
+  operationName?: unknown;
+  tags?: unknown;
+}
+interface JaegerTrace {
+  spans?: unknown;
+}
+interface Capture {
+  readonly raw: string;
+  readonly traces: JaegerTrace[];
+}
+
+const EMPTY: Capture = { raw: '', traces: [] };
+
+const tagsOf = (span: JaegerSpan): Record<string, string> => {
+  const out: Record<string, string> = {};
+  if (Array.isArray(span.tags)) {
+    for (const tag of span.tags as JaegerTag[]) {
+      if (typeof tag.key === 'string') out[tag.key] = String(tag.value ?? '');
+    }
+  }
+  return out;
+};
+
+async function readTraces(url: string): Promise<Capture> {
+  const r = await tryFetch(url);
+  if (r === undefined || !r.ok) return EMPTY;
+  const raw = await r.text();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { raw, traces: [] };
+  }
+  const data =
+    typeof parsed === 'object' &&
+    parsed !== null &&
+    Array.isArray((parsed as { data?: unknown }).data)
+      ? (parsed as { data: JaegerTrace[] }).data
+      : [];
+  return { raw, traces: data };
+}
+
+const byId = (traceId: string): Promise<Capture> => readTraces(`${JAEGER}/api/traces/${traceId}`);
+const byService = (service: string): Promise<Capture> =>
+  readTraces(`${JAEGER}/api/traces?service=${encodeURIComponent(service)}&limit=500&lookback=1h`);
+
+const spansOf = (capture: Capture): JaegerSpan[] =>
+  capture.traces.flatMap((t) => (Array.isArray(t.spans) ? (t.spans as JaegerSpan[]) : []));
+
 // ---------------------------------------------------------------- preconditions
 const coreUp = await waitFor(
-  `${CORE}/healthz`,
+  `${CORE}/healthz answering with mode:real`,
   async () => {
     const r = await tryFetch(`${CORE}/healthz`);
     if (r === undefined || !r.ok) return false;
@@ -153,31 +236,39 @@ const coreUp = await waitFor(
 );
 if (!coreUp) harness = `core is not answering /healthz with mode:real at ${CORE}`;
 
-const jaegerUp =
-  harness === undefined &&
-  (await waitFor(
-    `${JAEGER}/api/services`,
+if (harness === undefined) {
+  const ok = await waitFor(
+    `${JAEGER}/api/services answering`,
     async () => {
       const r = await tryFetch(`${JAEGER}/api/services`);
       return r !== undefined && r.ok;
     },
     60,
-  ));
-if (harness === undefined && !jaegerUp)
-  harness = `jaeger's query API is not answering at ${JAEGER}`;
+  );
+  if (!ok) harness = `jaeger's query API is not answering at ${JAEGER}`;
+}
+
+/** The count BEFORE this run, so the one unidentifiable probe has a run-local control. */
+const tracesBefore = harness === undefined ? (await byService(CORE_SERVICE)).traces.length : 0;
 
 // ---------------------------------------------------------------- plant, through the app
 let requestsMade = 0;
 if (harness === undefined) {
   const probes: [string, RequestInit][] = [
-    [`${CORE}/v1/meta/platform-fee`, {}],
-    [`${CORE}/v1/${SENTINEL.path}`, {}],
-    [`${CORE}/v1/meta/platform-fee?probe=${encodeURIComponent(SENTINEL.query)}`, {}],
+    [`${CORE}/v1/meta/platform-fee`, { headers: { traceparent: traceparentFor(ID.registered) } }],
+    [`${CORE}/v1/${SENTINEL.path}`, { headers: { traceparent: traceparentFor(ID.unmatchedPath) } }],
+    [
+      `${CORE}/v1/meta/platform-fee?probe=${encodeURIComponent(SENTINEL.query)}`,
+      { headers: { traceparent: traceparentFor(ID.healthz) } },
+    ],
     [
       `${CORE}/v1/${SENTINEL.path}/submit`,
       {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: {
+          'content-type': 'application/json',
+          traceparent: traceparentFor(ID.unmatchedBody),
+        },
         body: JSON.stringify({ email: SENTINEL.body, iban: SENTINEL.header }),
       },
     ],
@@ -185,13 +276,19 @@ if (harness === undefined) {
       `${CORE}/v1/meta/platform-fee`,
       {
         headers: {
+          traceparent: traceparentFor(ID.headers),
           'x-kinvara-probe': SENTINEL.header,
           cookie: `kinvara_session=${SENTINEL.cookie}`,
-          traceparent: `00-${SENTINEL.traceparent}-1111111111111111-01`,
         },
       },
     ],
-    [`${CORE}/healthz`, {}],
+    // THE ONE PROBE WITH NO KNOWN ID, deliberately: its whole point is a
+    // MALFORMED traceparent, so the app must generate a fresh id and this
+    // program cannot know it. Its control is the count delta, below.
+    [
+      `${CORE}/v1/meta/platform-fee`,
+      { headers: { traceparent: `00-${SENTINEL.traceparent}-1111111111111111-01` } },
+    ],
   ];
   for (const [url, init] of probes) {
     const r = await tryFetch(url, init);
@@ -204,9 +301,6 @@ if (harness === undefined) {
 }
 
 // ---------------------------------------------------------------- plant, at the collector
-// THE LEAK CONTROL. One span with an allowlisted attribute set PLUS one key the
-// allowlist does not pass, carrying its own sentinel.
-const leakTraceId = randomBytes(16).toString('hex');
 if (harness === undefined) {
   const now = Date.now();
   const payload = {
@@ -220,14 +314,14 @@ if (harness === undefined) {
             scope: { name: '@kinvara/observability/canary', version: '0.0.0' },
             spans: [
               {
-                traceId: leakTraceId,
+                traceId: ID.leak,
                 spanId: randomBytes(8).toString('hex'),
                 name: 'GET /healthz',
                 kind: 2,
-                startTimeUnixNano: `${now}000000`,
-                endTimeUnixNano: `${now + 1}000000`,
+                startTimeUnixNano: `${String(now)}000000`,
+                endTimeUnixNano: `${String(now + 1)}000000`,
                 attributes: [
-                  { key: 'trace_id', value: { stringValue: leakTraceId } },
+                  { key: 'trace_id', value: { stringValue: ID.leak } },
                   { key: 'route', value: { stringValue: 'GET /healthz' } },
                   { key: 'module', value: { stringValue: 'meta' } },
                   { key: 'actor_role', value: { stringValue: 'system' } },
@@ -256,90 +350,73 @@ if (harness === undefined) {
   }
 }
 
-// ---------------------------------------------------------------- capture
-interface JaegerTag {
-  key?: unknown;
-  value?: unknown;
-}
-interface JaegerSpan {
-  operationName?: unknown;
-  tags?: unknown;
-}
-interface JaegerTrace {
-  spans?: unknown;
-}
+// ---------------------------------------------------------------- capture, BY THIS RUN'S IDS
+const captures = new Map<string, Capture>();
+let serviceCapture: Capture = EMPTY;
+let canaryServiceCapture: Capture = EMPTY;
+let tracesAfter = 0;
 
-const tagsOf = (span: JaegerSpan): Record<string, string> => {
-  const out: Record<string, string> = {};
-  if (Array.isArray(span.tags)) {
-    for (const tag of span.tags as JaegerTag[]) {
-      if (typeof tag.key === 'string') out[tag.key] = String(tag.value ?? '');
-    }
-  }
-  return out;
-};
-
-async function traces(service: string): Promise<{ raw: string; traces: JaegerTrace[] }> {
-  const url = `${JAEGER}/api/traces?service=${encodeURIComponent(service)}&limit=200&lookback=1h`;
-  const r = await tryFetch(url);
-  if (r === undefined || !r.ok) return { raw: '', traces: [] };
-  const raw = await r.text();
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return { raw, traces: [] };
-  }
-  const data =
-    typeof parsed === 'object' &&
-    parsed !== null &&
-    Array.isArray((parsed as { data?: unknown }).data)
-      ? (parsed as { data: JaegerTrace[] }).data
-      : [];
-  return { raw, traces: data };
-}
-
-let coreCapture = { raw: '', traces: [] as JaegerTrace[] };
-let canaryCapture = { raw: '', traces: [] as JaegerTrace[] };
 if (harness === undefined) {
-  // The app exporter flushes after 200 ms and the collector batches for 200 ms.
-  const gotThem = await waitFor(
-    'jaeger to hold the planted spans',
+  await waitFor(
+    "every one of this run's trace ids to be retrievable from jaeger",
     async () => {
-      coreCapture = await traces(CORE_SERVICE);
-      canaryCapture = await traces(CANARY_SERVICE);
-      return coreCapture.traces.length >= MIN_TRACES && canaryCapture.traces.length >= 1;
+      for (const [label, traceId] of Object.entries(ID)) {
+        const capture = await byId(traceId);
+        captures.set(label, capture);
+      }
+      serviceCapture = await byService(CORE_SERVICE);
+      canaryServiceCapture = await byService(CANARY_SERVICE);
+      tracesAfter = serviceCapture.traces.length;
+      return (
+        [...captures.values()].every((c) => spansOf(c).length > 0) &&
+        tracesAfter >= tracesBefore + 6
+      );
     },
     45,
   );
-  if (!gotThem) {
-    notes.push(
-      `capture after the wait: ${String(coreCapture.traces.length)} ${CORE_SERVICE} trace(s), ${String(canaryCapture.traces.length)} ${CANARY_SERVICE} trace(s)`,
-    );
-  }
 }
 
-// ---------------------------------------------------------------- the five positive controls
-const allSpans = (capture: { traces: JaegerTrace[] }): JaegerSpan[] =>
-  capture.traces.flatMap((t) => (Array.isArray(t.spans) ? (t.spans as JaegerSpan[]) : []));
-
+// ---------------------------------------------------------------- P0..P5
 let spansScanned = 0;
 let bytesScanned = 0;
+/**
+ * P0 alone gates the absence check, NOT the whole of P2-P5.
+ *
+ * P0 is the control that makes an absence mean anything — it says the capture
+ * is THIS RUN's. P2-P5 are shape and leak-visibility controls, and failing one
+ * of them is no reason to stop looking for a planted value; a mutation that
+ * breaks the span's shape is exactly the kind that also leaks. An earlier
+ * version gated the absence check behind every control and a real, measured
+ * leak was reported only as a shape failure.
+ */
+let p0Ok = true;
 
 if (harness === undefined) {
-  const coreSpans = allSpans(coreCapture);
-  const canarySpans = allSpans(canaryCapture);
-  spansScanned = coreSpans.length + canarySpans.length;
-  bytesScanned = coreCapture.raw.length + canaryCapture.raw.length;
+  const perId = [...captures.values()];
+  spansScanned = perId.reduce((n, c) => n + spansOf(c).length, 0);
+  bytesScanned =
+    perId.reduce((n, c) => n + c.raw.length, 0) +
+    serviceCapture.raw.length +
+    canaryServiceCapture.raw.length;
 
-  // P1
-  if (coreCapture.traces.length < MIN_TRACES) {
+  // P0 — every span judged below is one THIS RUN produced.
+  const missing = [...captures.entries()]
+    .filter(([, c]) => spansOf(c).length === 0)
+    .map(([label]) => label);
+  if (missing.length > 0) {
     problems.push(
-      `P1 jaeger returned ${String(coreCapture.traces.length)} ${CORE_SERVICE} trace(s); at least ${String(MIN_TRACES)} are required. AN ABSENCE CHECK OVER AN EMPTY CAPTURE PASSES, so nothing below is judged.`,
+      `P0 jaeger holds no span for this run's trace id(s): ${missing.join(', ')}. THE ABSENCE CHECK IS NOT RUN, because an absence check over someone else's capture — or over a previous run's — proves nothing about this one.`,
     );
+    p0Ok = false;
+  }
+  if (tracesAfter < tracesBefore + 6) {
+    problems.push(
+      `P0 ${CORE_SERVICE} had ${String(tracesBefore)} trace(s) before this run and ${String(tracesAfter)} after; six new ones are required. The malformed-traceparent probe has no known id and this delta is its only control.`,
+    );
+    p0Ok = false;
   }
 
-  // P2
+  // P2 — the sample request emits the FULL contract.
   const CONTRACT = [
     'trace_id',
     'route',
@@ -349,59 +426,72 @@ if (harness === undefined) {
     'duration_ms',
     'data_class',
   ];
-  const registered = coreSpans.find((s) => tagsOf(s)['route'] === 'GET /v1/meta/platform-fee');
-  if (registered === undefined) {
+  const registeredSpan = spansOf(captures.get('registered') ?? EMPTY)[0];
+  if (registeredSpan === undefined) {
     problems.push(
-      `P2 no span for the registered route \`GET /v1/meta/platform-fee\` is in the capture, so the instrumentation is not demonstrably emitting anything.`,
+      `P2 this run's registered-route trace ${ID.registered} holds no span, so the instrumentation is not demonstrably emitting anything.`,
     );
   } else {
-    const tags = tagsOf(registered);
-    const missing = CONTRACT.filter((field) => !(field in tags));
-    if (missing.length > 0) {
+    const tags = tagsOf(registeredSpan);
+    const absent = CONTRACT.filter((field) => !(field in tags));
+    if (absent.length > 0) {
       problems.push(
-        `P2 the span for \`GET /v1/meta/platform-fee\` is missing contract field(s): ${missing.join(', ')}. SD §QD-5 requires all seven.`,
+        `P2 the sample request's span is missing contract field(s): ${absent.join(', ')}. SD §QD-5 requires all seven.`,
+      );
+    }
+    if (tags['route'] !== 'GET /v1/meta/platform-fee') {
+      problems.push(
+        `P2 the sample request's span carries route=${JSON.stringify(tags['route'])}; the registry key is \`GET /v1/meta/platform-fee\`.`,
       );
     }
     if (tags['data_class'] !== 'C4') {
       problems.push(
-        `P2 the span for \`GET /v1/meta/platform-fee\` carries data_class=${JSON.stringify(tags['data_class'])}; the route registry declares C4.`,
+        `P2 the sample request's span carries data_class=${JSON.stringify(tags['data_class'])}; the route registry declares C4.`,
+      );
+    }
+    if (tags['trace_id'] !== ID.registered) {
+      problems.push(
+        `P2 the sample request's span carries trace_id=${JSON.stringify(tags['trace_id'])}, not this run's ${ID.registered}.`,
       );
     }
     notes.push(
-      `P2 contract on the sample request: ${CONTRACT.map((f) => `${f}=${tags[f] ?? '(absent)'}`).join(' ')}`,
+      `P2 contract on THIS RUN's sample request: ${CONTRACT.map((f) => `${f}=${tags[f] ?? '(absent)'}`).join(' ')}`,
     );
   }
 
-  // P3
-  const unmatched = coreSpans.filter((s) => tagsOf(s)['route'] === '(unmatched)');
-  if (unmatched.length < 2) {
-    problems.push(
-      `P3 found ${String(unmatched.length)} \`(unmatched)\` span(s); at least 2 are required (the path probe and the body probe). If those requests were never traced, their sentinels could not appear whatever the instrumentation did, and their absence would prove nothing.`,
-    );
+  // P3 — the requests that carried the path and body sentinels WERE traced.
+  for (const label of ['unmatchedPath', 'unmatchedBody'] as const) {
+    const span = spansOf(captures.get(label) ?? EMPTY)[0];
+    if (span === undefined) continue; // already reported by P0
+    const tags = tagsOf(span);
+    if (tags['route'] !== '(unmatched)') {
+      problems.push(
+        `P3 the ${label} probe's span carries route=${JSON.stringify(tags['route'])}; an unmatched request must be stamped \`(unmatched)\` with its path discarded.`,
+      );
+    }
   }
 
-  // P4 + P5
-  const leakSpan = canarySpans.find((s) => tagsOf(s)['trace_id'] === leakTraceId);
+  // P4 + P5 — the leak control.
+  const leakSpan = spansOf(captures.get('leak') ?? EMPTY)[0];
   if (leakSpan === undefined) {
     problems.push(
-      `P4 the leak-control span did not arrive in jaeger, so this run cannot demonstrate that the capture is able to see a leak at all.`,
+      `P4 the leak-control span (trace ${ID.leak}) did not arrive in jaeger, so this run cannot demonstrate that the capture is able to see a leak at all. Check the collector's traces pipeline.`,
     );
   } else {
     const tags = tagsOf(leakSpan);
     if (LEAK_KEY in tags) {
       problems.push(
-        `P4/LEAK the unallowlisted attribute \`${LEAK_KEY}\` REACHED JAEGER. The collector's redaction allowlist did not remove it.`,
+        `P4/LEAK the unallowlisted attribute \`${LEAK_KEY}\` REACHED JAEGER carrying ${JSON.stringify(tags[LEAK_KEY])}. The collector's redaction allowlist did not remove it.`,
       );
     }
     const redactedKeys = tags['redaction.redacted.keys'] ?? '';
-    if (
-      !redactedKeys
-        .split(',')
-        .map((k) => k.trim())
-        .includes(LEAK_KEY)
-    ) {
+    const named = redactedKeys
+      .split(',')
+      .map((k) => k.trim())
+      .includes(LEAK_KEY);
+    if (!named) {
       problems.push(
-        `P5 the arrived leak-control span does not name \`${LEAK_KEY}\` in redaction.redacted.keys (it names ${JSON.stringify(redactedKeys)}). Without that, "the attribute was redacted" and "the attribute never arrived" are the same observation, and this whole run is one outcome short of a verdict.`,
+        `P5 the arrived leak-control span does not name \`${LEAK_KEY}\` in redaction.redacted.keys (it names ${JSON.stringify(redactedKeys)}). Without that, "the attribute was redacted" and "the attribute never arrived" are the same observation, and this run is one outcome short of a verdict.`,
       );
     } else {
       notes.push(`P5 the collector reports it removed: ${redactedKeys}`);
@@ -410,16 +500,21 @@ if (harness === undefined) {
 }
 
 // ---------------------------------------------------------------- the absence check
-if (harness === undefined && problems.length === 0) {
-  const haystack = `${coreCapture.raw}\n${canaryCapture.raw}`;
+if (harness === undefined && p0Ok) {
+  const haystack = [
+    ...[...captures.values()].map((c) => c.raw),
+    serviceCapture.raw,
+    canaryServiceCapture.raw,
+  ].join('\n');
   for (const [name, value] of SENTINELS) {
     if (haystack.includes(value)) {
       problems.push(
         `LEAK the ${name} sentinel ${JSON.stringify(value)} IS PRESENT in what jaeger stored.`,
       );
     }
-    // A URL-encoded copy is the same value by another spelling; catching it is
-    // in scope, because the encoding happens in THIS program, not downstream.
+    // A URL-encoded copy is the same value by another spelling, and the
+    // encoding happens in THIS program rather than downstream, so catching it
+    // is in scope. No other transformation is (see the header).
     const encoded = encodeURIComponent(value);
     if (encoded !== value && haystack.includes(encoded)) {
       problems.push(
@@ -439,7 +534,15 @@ console.log(
 );
 console.log(`  requests made:     ${String(requestsMade)}`);
 console.log(
-  `  captured:          ${String(coreCapture.traces.length)} ${CORE_SERVICE} trace(s), ${String(canaryCapture.traces.length)} ${CANARY_SERVICE} trace(s), ${String(spansScanned)} span(s), ${String(bytesScanned)} byte(s) of jaeger JSON`,
+  `  this run's trace ids: ${Object.entries(ID)
+    .map(([k, v]) => `${k}=${v.slice(0, 8)}…`)
+    .join(' ')}`,
+);
+console.log(
+  `  ${CORE_SERVICE} traces before/after: ${String(tracesBefore)} -> ${String(tracesAfter)}`,
+);
+console.log(
+  `  judged: ${String(spansScanned)} span(s) fetched BY THIS RUN'S TRACE IDS; ${String(bytesScanned)} byte(s) of jaeger JSON scanned for sentinels`,
 );
 for (const note of notes) console.log(`  note: ${note}`);
 console.log(
