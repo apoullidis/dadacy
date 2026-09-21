@@ -79,6 +79,12 @@ export const DATA_CLASSES = ['C1', 'C2', 'C3', 'C4'] as const;
  * route has no registry entry, so that an unclassified span is visibly
  * unclassified instead of quietly looking like C4. `assertDataClass` refuses it
  * as an input; only `refuseRequestSpan` may produce it.
+ *
+ * "INSTEAD OF QUIETLY LOOKING LIKE C4" IS A CLAIM ABOUT THE PATH `apps/core`
+ * TAKES, and it shipped false: `(unregistered)` is itself a `ROUTE_REGISTRY`
+ * key, so the observer found its entry and stamped `C4` (T-008 rework 1,
+ * QA-F1). Falsified by `http.test.ts` › *a matched-but-unregistered route is
+ * stamped UNCLASSIFIED THROUGH the observer, and refusedSpans increments*.
  */
 export const UNCLASSIFIED = 'UNCLASSIFIED' as const;
 

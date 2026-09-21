@@ -19,6 +19,15 @@
  * 32-lowercase-hex trace id; anything else gets a fresh id. A header is client
  * input, and client input reaches telemetry only through a total function onto
  * a closed set.
+ *
+ * A MATCHED ROUTE WITH NO REGISTRY ENTRY IS STAMPED, THROUGH THIS OBSERVER AND
+ * NOT ONLY THROUGH A DIRECT CALL TO THE BUILDER: `route` becomes
+ * `(unregistered)`, `data_class` becomes the non-class `UNCLASSIFIED`, `module`
+ * becomes `meta`, and `counters.refusedSpans` increments. Falsified by
+ * `http.test.ts` › *a matched-but-unregistered route is stamped UNCLASSIFIED
+ * THROUGH the observer, and refusedSpans increments* — which is the case that
+ * did not exist when this observer shipped stamping such a route `C4`
+ * (T-008 rework 1, QA-F1). See the comment on `entry` below for the mechanism.
  */
 import { UNCLASSIFIED, type ActorRole } from './contract.ts';
 import { RESERVED_ROUTES, lookupRoute, routeKey } from './routes.ts';
@@ -81,7 +90,16 @@ export function createRequestObserver(exporter: Exporter): RequestObserver {
   return {
     observe(request: ObservedRequest): OtlpSpan {
       const route = resolveRoute(request.method, request.routeTemplate);
-      const entry = lookupRoute(route);
+      // `(unregistered)` IS ITSELF A KEY OF `ROUTE_REGISTRY` — it has to be, so
+      // that the refusal span's own `route` value and a dashboard's `route=`
+      // label are drawn from the same closed set. `resolveRoute` has already
+      // replaced an unregistered route with it, so a bare `lookupRoute(route)`
+      // here FINDS the marker's own entry and hands back its `C4` / `meta`:
+      // the refusal branch below becomes unreachable from this adapter and an
+      // unregistered route is stamped as though it were classified. That was
+      // the shipped defect (T-008 rework 1, QA-F1). The marker is a refusal
+      // marker, not a servable route, so it is never looked up as one.
+      const entry = route === RESERVED_ROUTES.unregistered ? undefined : lookupRoute(route);
       const timing: Timing = timingFrom(request.startMillis, request.durationMs);
       const span = requestSpanOrRefusal(
         {

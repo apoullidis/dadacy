@@ -16,26 +16,38 @@
  *      entry — a data class outside SA §SEC-3's four, a module outside
  *      SA §SA-2's set, a duplicate key, a path that is not a template — throws,
  *      so the app does not boot.
- *   3. AT EMIT TIME. `emitRequestSpan` looks the route up here. A route with no
- *      entry cannot produce a classified span: see `UNCLASSIFIED` below.
+ *   3. AT EMIT TIME. `buildRequestSpan` looks the route up here. A route with
+ *      no entry cannot produce a classified span: see `UNCLASSIFIED` below.
+ *      THE RESERVED `(unregistered)` TEMPLATE IS REFUSED AS AN INPUT ROUTE
+ *      TOO, although it has an entry of its own below — otherwise a caller
+ *      that has already normalised an unregistered route to the marker (which
+ *      is what `resolveRoute`, and so every request through
+ *      `createRequestObserver`, does) would be handed the marker's own `C4`.
  *
  * WHAT HAPPENS WHEN IT IS ABSENT OR WRONG:
  *
  *   ABSENT (no registry entry for the route)  -> the span is REFUSED as
  *     emitted. `refuseRequestSpan` substitutes the reserved template
  *     `(unregistered)` for the route, `data_class: 'UNCLASSIFIED'`, and
- *     `module: 'meta'`, and increments `counters.refusedSpans`. The concrete
- *     path NEVER reaches the exporter. The request itself still succeeds —
- *     observability must not be able to fail a request — but the span says, in
- *     the exporter's own output, that the contract was not met.
+ *     `module: 'meta'`, and increments `counters.refusedSpans`. THIS HOLDS ON
+ *     THE PATH `apps/core` USES, not only for a direct call to the builder:
+ *     `http.test.ts` › *a matched-but-unregistered route is stamped
+ *     UNCLASSIFIED THROUGH the observer, and refusedSpans increments* is the
+ *     case that falsifies it, and it is the case whose absence let this
+ *     paragraph ship one step wider than the mechanism (T-008 rework 1,
+ *     QA-F1). The concrete path NEVER reaches the exporter. The request itself
+ *     still succeeds — observability must not be able to fail a request — but
+ *     the span says, in the exporter's own output, that the contract was not
+ *     met.
  *   WRONG (a value outside SA §SEC-3's four) -> `assertRegistry` throws at
- *     import, `gate:otel-contract` R2 is red, and `emitRequestSpan` refuses.
+ *     import, `gate:otel-contract` R2 is red, and `buildRequestSpan` refuses.
  *   INCONSISTENT (a caller passing a `data_class` that disagrees with the
  *     registry) -> refused with `REFUSAL.routeDataClassMismatch`. The caller
  *     cannot upgrade or downgrade a route's class from the request path.
  *
- * Every sentence above names a test in `src/routes.test.ts` or a case in
- * `scripts/negative-tests/otel-contract.sh`; see state/EP-1/T-008.md
+ * Every sentence above names a test in `src/routes.test.ts`, in
+ * `src/http.test.ts` (the OBSERVER path — the only one `apps/core` takes) or a
+ * case in `scripts/negative-tests/otel-contract.sh`; see state/EP-1/T-008.md
  * § Published contract §3.
  */
 import { DATA_CLASSES, MODULES, type DataClass, type KinvaraModule } from './contract.ts';
@@ -104,7 +116,7 @@ export const ROUTE_REGISTRY: Readonly<Record<string, RouteEntry>> = Object.freez
     module: 'meta',
     data_class: 'C4',
     because:
-      'The refusal template. Its own class is C4 because the template carries no subject; the span it appears on is stamped UNCLASSIFIED, which is not a class.',
+      "The refusal template. Its own class is C4 because the template carries no subject; the span it appears on is stamped UNCLASSIFIED, which is not a class. It is here so that the refusal span's route value and a dashboard route= label are drawn from this closed set — and because it is here, buildRequestSpan refuses it as an INPUT route (T-008 rework 1, QA-F1).",
   },
 });
 
@@ -122,7 +134,23 @@ export class RegistryMalformed extends Error {
 }
 
 const RESERVED = new Set<string>(Object.values(RESERVED_ROUTES));
-/** `<METHOD> /path`, with no query string, no fragment and no `:param`-free concrete id. */
+/**
+ * `<METHOD> /path`, with no query string, no fragment and no concrete id.
+ *
+ * `:` IS NOT IN THIS CHARACTER CLASS, so a registry key cannot be written in
+ * Fastify's `:id` spelling — while `routeKey(request.method,
+ * request.routeOptions.url)` produces exactly that spelling at run time.
+ * `OPERATIONS` uses the OpenAPI `{id}` spelling, so `gate:otel-contract` R1
+ * compares `{id}` to `{id}` and stays GREEN while the running app resolves
+ * `GET /v1/x/:id` to `(unregistered)` (T-008 rework 1, QA-F1b).
+ *
+ * NO PARAMETERISED ROUTE IS SERVED TODAY, so this is latent, not live — and
+ * since rework 1 such a route is at least STAMPED `UNCLASSIFIED`, counted in
+ * `counters.refusedSpans` and visible on the T&S board's `refused` series
+ * rather than passing as `C4`. The first ticket to serve one owes the
+ * normalisation between the two spellings, and R1 must compare the spelling
+ * the ROUTER produces: state/EP-1/T-008.md § Published contract §11.
+ */
 const TEMPLATE = /^[A-Z]+ \/[A-Za-z0-9\-._~/{}]*$/;
 
 /**

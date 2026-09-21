@@ -166,7 +166,7 @@
         "type": "prometheus",
         "uid": "${DS_KINVARA}"
       },
-      "description": "A non-zero `refused` line means a route is being served that has no entry in ROUTE_REGISTRY, so its span was stamped UNCLASSIFIED and its path discarded. gate:otel-contract R1 makes that unreachable for an operation in the OpenAPI document; this panel covers a route registered outside it.",
+      "description": "A non-zero `refused` line means a route is being served that has no entry in ROUTE_REGISTRY, so its span was stamped UNCLASSIFIED and its path discarded. gate:otel-contract R1 makes that unreachable for an operation in the OpenAPI document; this panel covers a route registered outside it — /healthz is already such a route, so R1's silence is not the board's. THIS SERIES WAS PERMANENTLY ZERO ON THE LIVE EMITTER PATH UNTIL T-008 rework 1 (QA-F1): the observer stamped such a route C4, because the reserved (unregistered) template is itself a ROUTE_REGISTRY key. The case that falsifies this panel's sentence is packages/observability/src/http.test.ts > 'a matched-but-unregistered route is stamped UNCLASSIFIED THROUGH the observer, and refusedSpans increments'. NOT PROVEN FROM HERE (gate:otel-contract R4's own bound, § contract §10): that any query returns data, or that a Prometheus-compatible backend names the metric this way.",
       "targets": [
         {
           "refId": "A",

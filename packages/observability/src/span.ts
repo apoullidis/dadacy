@@ -145,7 +145,16 @@ export function buildRequestSpan(fields: unknown, timing: Timing, spanId?: strin
   const record = assertExactKeys(fields, REQUEST_FIELDS);
   const trace_id = assertTraceId(record['trace_id']);
   const route = typeof record['route'] === 'string' ? record['route'] : '';
-  const entry = lookupRoute(route);
+  // `(unregistered)` IS A REFUSAL MARKER, NOT A SERVABLE ROUTE — exactly as
+  // `UNCLASSIFIED` is a refusal marker and not a data class, and it is refused
+  // as an INPUT for the same reason. It carries a `ROUTE_REGISTRY` entry so
+  // that the refusal span's own `route` value and a dashboard's `route=` label
+  // are drawn from a closed set, which means `lookupRoute` finds it; without
+  // this guard, a caller that has already normalised an unregistered route to
+  // the marker (which is what `resolveRoute` does, and therefore what every
+  // request through `createRequestObserver` does) is handed the marker's own
+  // `C4` and the refusal below is unreachable. T-008 rework 1, QA-F1.
+  const entry = route === RESERVED_ROUTES.unregistered ? undefined : lookupRoute(route);
   if (entry === undefined) {
     throw new InstrumentationRefused(REFUSAL.unregisteredRoute, 'route');
   }
