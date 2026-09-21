@@ -897,6 +897,23 @@ function candidatesFor(
       if (reachedByInteger.has(signatureOf(shape, v, rules))) continue;
       consider(v);
     }
+    const explicitBranches: string[] = [];
+    for (const site of shape.sites) {
+      for (const branch of site.options) {
+        if (/^=\d+$/.test(branch) && !explicitBranches.includes(branch))
+          explicitBranches.push(branch);
+      }
+    }
+    if (explicitBranches.length > 0) {
+      console.log(
+        `      note ${where}: the plural on '${param}' declares explicit branch(es) ` +
+          `[${explicitBranches.join(', ')}], which ICU matches BEFORE any CLDR category rule. ` +
+          'Each is its own branch signature and is bound at its own value, INCLUDING when it is ' +
+          'declared by an element other than the last (T-176) and including a value outside the ' +
+          'declared domain, because a branch the gate never binds is a branch the product sends ' +
+          'unmeasured (T-046 rework 1, QA-F1).',
+      );
+    }
     const fromHalves = [...best.entries()].filter(([sig]) => !reachedByInteger.has(sig));
     if (fromHalves.length > 0) {
       const branches = new Set<string>();
@@ -1246,18 +1263,19 @@ function worstRender(
       domain.some((v) => typeof v === 'number' && rules.select(v - site.offset) === branch);
     if (shadowed) {
       console.log(
-        `      note ${where}: plural branch [${branch}] of the element on '${site.param}' is ` +
-          'SHADOWED — CLDR selects it, but every value that selects it is matched by an ' +
-          'explicit `=N` branch first, so ICU never renders it. Not measured, because it ' +
-          'cannot be sent.',
+        `      note ${where}: plural branch [${branch}] is SHADOWED (element ` +
+          `#${String(site.id)} on '${site.param}') — CLDR selects it, but every value that ` +
+          'selects it is matched by an explicit `=N` branch first, so ICU never renders it. Not ' +
+          'measured, because it cannot be sent, and PLURAL-COVERAGE still requires it to be there.',
       );
       continue;
     }
     missed += 1;
     failures.push(
-      `${site.kind === 'plural' ? 'PLURAL' : 'SELECT'}-UNREACHABLE ${where}: no value in the ` +
-        `declared domain of '${site.param}' makes ICU render branch '${branch}' of the ` +
-        `${site.kind} element #${String(site.id)}. That branch of the message is therefore never ` +
+      `${site.kind === 'plural' ? 'PLURAL' : 'SELECT'}-UNREACHABLE ${where}: nothing in the ` +
+        `declared domain of '${site.param}' renders the ${site.kind} branch '${branch}' of ` +
+        `element #${String(site.id)} — measured by asking ICU which branch it selected, not by ` +
+        "reading this gate's own candidate map. That branch of the message is therefore never " +
         'rendered and its length is never measured — the worst case would be understated.',
     );
   }

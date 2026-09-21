@@ -34,7 +34,7 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -803,7 +803,7 @@ test('a --root run says SOURCE READING ONLY on the FAIL path too', () => {
   );
 });
 
-/* ─── the worst case covers every branch OF ONE BRANCHING ELEMENT (QA-F1) ─── */
+/* ─── the worst case covers every branch of every branching ELEMENT (QA-F1 · T-176) ─── */
 
 /**
  * T-046 rework 1. `qa-verification` falsified the sentence this whole gate
@@ -819,32 +819,33 @@ test('a --root run says SOURCE READING ONLY on the FAIL path too', () => {
  * names its branch) under the new one, which is the only property that makes
  * them worth committing.
  *
- * WHAT THESE CASES DO NOT COVER, said here because this is where a reader looks
- * for the width of the fix (T-046, narrowed under stakeholder ruling OE-43 (B)):
- * `shapeOf` keys the shape by PARAMETER NAME, so a parameter branched on by
- * MORE THAN ONE plural or `select` element keeps only the LAST element's
- * branches. An explicit `=0` in an earlier element is unmeasured and
- * PLURAL-UNREACHABLE cannot see it either — measured by qa-verification at
- * 5e6938e (`el` prints 2 segments, ICU sends 4) — and the `select` form of the
- * same defect is measured in T-046 § Narrowing (OE-43 (B)) §3 (the gate prints
- * `48 unit(s) 1 segment(s)` and PASSES while ICU sends 176 units = 3 segments).
- * There is deliberately NO case for either here: the gap is open and owned by
- * T-176. A case would have to be red, and it would be red against the
- * committed gate.
+ * THE GAP THIS BLOCK USED TO DECLARE IS CLOSED (T-176), AND ITS CASES ARE IN
+ * THE T-176 BLOCK AT THE END OF THIS FILE. What stood here said that the shape
+ * is keyed by PARAMETER NAME, that a parameter branched on by more than one
+ * element keeps only the LAST element's branches, that `PLURAL-UNREACHABLE`
+ * could not see the difference, and that there was DELIBERATELY NO CASE for
+ * either the `plural` or the `select` form because the gap was open. All of
+ * that was true at `c140093` and none of it is true now: the candidate set is
+ * one value per BRANCH SIGNATURE over EVERY site, and both forms are planted
+ * and red (`T-176: the same parameter pluralised TWICE…`, `T-176: the same
+ * parameter selected TWICE…`).
  *
- * AND THREE NARROWER BOUNDS ON THE CASES BELOW, because a passing case reads as
- * a coverage claim and each of these is one step narrower than its title:
+ * TWO OF THE THREE NARROWER BOUNDS THAT STOOD HERE ARE ALSO CLOSED, and the
+ * third is not — read it as still live:
  *
- *  - the `offset:` case proves the `one` branch is REACHED. It does not prove
- *    the candidate is the WORST one: `#` renders `v - offset` while the
- *    ranking is on `format(v)`, so the gate understates by up to the digit-count
- *    difference between `max` and `max - offset`. T-176.
- *  - "the pin is on LENGTH" means LENGTH AND NOT SCRIPT. Replacing the declared
- *    Greek name with a 38-character LATIN one keeps `WORST_CASE_FLOOR`
- *    satisfied and retires the cross-script measurement; no case here catches
- *    that, and the warning lives beside the names in channels.json.
+ *  - the `offset:` case below proves the `one` branch is REACHED. It still does
+ *    not prove the candidate is the WORST one, but that is no longer a gap:
+ *    the ranking is now on the strings the message INSERTS, and
+ *    `T-176: with an `offset:`, the candidate is the value `#` renders longest`
+ *    is the case for it.
  *  - an explicit `=N` OUTSIDE the declared [0, max] is bound at its own value.
- *    That sub-case is reasoned, not planted: no committed message has one.
+ *    STILL reasoned, not planted: no committed message has one.
+ *  - "the pin is on LENGTH" means LENGTH AND NOT SCRIPT. **Still open.**
+ *    Replacing the declared Greek name with a 38-character LATIN one keeps
+ *    `WORST_CASE_FLOOR` satisfied and retires the cross-script measurement; no
+ *    case here catches that, and the warning lives beside the names in
+ *    channels.json. It is not T-176's — T-176 owns the candidate model, not the
+ *    declaration's own review.
  */
 const GREEK_ZERO_BRANCH =
   'Καμία χαμένη καταγραφή από {sitterName} σήμερα. Όλα τα check-in ολοκληρώθηκαν κανονικά ' +
@@ -964,4 +965,391 @@ test('QA-F2: the half-integer fallback takes the LONGEST half-integer in the dec
   const bound = /"count":([0-9.]+)/.exec(line);
   assert.ok(bound !== null, line);
   assert.equal(fmt.format(Number(bound[1])).length, longest, line);
+});
+
+/* ────────────────────────── T-176 — the model, and the check that is not it ─────────────────────── */
+
+/**
+ * T-046 shipped with two DECLARED gaps and a note, and `qa-verification` found
+ * each member of the family by asking WHAT ELSE DOES THE CANDIDATE SET ASSUME?
+ * The cases below are the four measured members, plus the two that matter most:
+ * the ones that prove the CHECK is not derived from the READING.
+ *
+ * `regressedGate` writes a copy of the gate with one anchored line replaced,
+ * asserts the anchor was unique, and runs THAT copy against a fixture root. The
+ * two regressions restore T-046's behaviour exactly — its per-parameter reading
+ * and its `format(v)` ranking — and the assertion is that the independent check
+ * FIRES ON THEM, without having been told what the defect is. A check that
+ * could not catch the defect it replaced could not catch a fifth member either.
+ *
+ * The temporary directory is outside the repository and carries a symlink to
+ * the package's own `node_modules`, so the copy resolves `intl-messageformat`
+ * exactly as the committed gate does and no untracked file is ever written into
+ * the working tree (`test:negatives` refuses a dirty one, and `gate:pr` refuses
+ * a dirty tree outright — `T-005` § contract §4).
+ */
+function regressedGate(replacements: readonly (readonly [string, string])[]): {
+  dir: string;
+  file: string;
+} {
+  const dir = mkdtempSync(join(tmpdir(), 't176-regress-'));
+  symlinkSync(join(PACKAGE_ROOT, 'node_modules'), join(dir, 'node_modules'), 'dir');
+  let src = readFileSync(GATE_SCRIPT, 'utf8');
+  for (const [from, to] of replacements) {
+    assert.equal(
+      src.split(from).length - 1,
+      1,
+      `the regression anchor must be unique, or the case judges a gate it did not regress: ${from}`,
+    );
+    src = src.replace(from, to);
+  }
+  src = src
+    .replace(/from '\.\.\/src\//g, `from '${join(PACKAGE_ROOT, 'src')}/`)
+    .replace(
+      /from '\.\/sms-encoding\.ts'/g,
+      `from '${join(PACKAGE_ROOT, 'tools', 'sms-encoding.ts')}'`,
+    );
+  const file = join(dir, 'gate.ts');
+  writeFileSync(file, src, 'utf8');
+  return { dir, file };
+}
+
+/** `attack`, but against a named gate file — used for the two regressions and their controls. */
+function attackWith(
+  gate: string,
+  plant: (root: string) => void,
+  landed: (root: string) => boolean,
+  expect: 'PASS' | 'FAIL',
+  present: readonly string[],
+  absent: readonly string[] = [],
+): void {
+  const root = makeRoot();
+  try {
+    plant(root);
+    assert.ok(landed(root), 'the plant did not land; the run below would judge an unmutated tree');
+    const r = spawnSync(process.execPath, [gate, '--root', root], {
+      encoding: 'utf8',
+      maxBuffer: 32 * 1024 * 1024,
+    });
+    const out = `${r.stdout ?? ''}${r.stderr ?? ''}`;
+    const pass = /^GATE PASS {2}gate:sms-segments/m.test(out);
+    const fail = /^GATE FAIL {2}gate:sms-segments/m.test(out);
+    assert.equal(
+      pass && fail ? 'BOTH' : pass ? 'PASS' : fail ? 'FAIL' : 'NONE',
+      expect,
+      `expected exactly one ${expect} banner\n${out}`,
+    );
+    assert.equal(r.status, expect === 'PASS' ? 0 : 1, out);
+    for (const reason of present) {
+      assert.ok(out.includes(reason), `expected ${JSON.stringify(reason)} in:\n${out}`);
+    }
+    for (const reason of absent) {
+      assert.ok(!out.includes(reason), `did NOT expect ${JSON.stringify(reason)} in:\n${out}`);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+/** T-046's reading: `shapeOf` keyed by parameter, keeping the LAST element only. */
+const REGRESS_READING = ['      sites: list,', '      sites: list.slice(-1),'] as const;
+/** T-046's ranking: longest `Intl.NumberFormat(v)` form, not longest INSERTED string. */
+const REGRESS_RANKING = [
+  '      let width = offsets.reduce((n, o) => n + fmt.format(v - o).length, 0);',
+  '      let width = fmt.format(v).length;',
+] as const;
+
+/** `qa-verification`'s QR-3 plant: agreement in two places, the `=0` in the FIRST element. */
+const EL_TWO_PLURALS =
+  '{count, plural, =0 {Καμία χαμένη καταγραφή από {sitterName} σήμερα, όλα τα check-in ' +
+  'ολοκληρώθηκαν κανονικά και δεν χρειάζεται καμία ενέργεια από εσάς} ' +
+  'one {# χαμένη καταγραφή} other {# χαμένες καταγραφές}} από {sitterName}. ' +
+  '{count, plural, one {Χρειάζεται} other {Χρειάζονται}} έλεγχο.';
+
+/** The `select` form of the same defect: the long branch in the FIRST of two elements. */
+const EL_TWO_SELECTS =
+  '{tone, select, urgent {ΕΠΕΙΓΟΝ: χαμένη καταγραφή από {sitterName}. Χρειάζεται άμεση ' +
+  'ενέργεια από εσάς τώρα, παρακαλούμε επικοινωνήστε αμέσως} other {Χαμένη καταγραφή}} ' +
+  'από {sitterName}. {tone, select, other {Ελέγξτε}}.';
+
+/** A filler with a full CLDR branch set, for the locales a case is not about. */
+const FILLER: Readonly<Record<string, string>> = {
+  en: '{count, plural, one {# a} other {# b}} {sitterName}',
+  el: '{count, plural, one {# α} other {# β}} {sitterName}',
+  ru: '{count, plural, one {# а} few {# б} many {# в} other {# г}} {sitterName}',
+};
+
+/** Plant a message in one locale and the full-branch filler in the other two. */
+function plantOnly(root: string, locale: string, text: string): void {
+  for (const other of ['en', 'el', 'ru']) {
+    plantSource(root, other, other === locale ? text : (FILLER[other] ?? 'ok'));
+  }
+}
+
+/**
+ * The same for a `select` message: the filler must take the SAME parameters, or
+ * the other two locales raise PARAM-SURPLUS and the case is judging that
+ * instead of what it is about.
+ */
+function plantSelectOnly(root: string, locale: string, text: string): void {
+  for (const other of ['en', 'el', 'ru']) {
+    plantSource(
+      root,
+      other,
+      other === locale ? text : '{tone, select, other {Missed check-in}} {sitterName}',
+    );
+  }
+}
+
+/** The `worst_case` a `select` case declares: `tone` and the name, and no plural. */
+const SELECT_WORST_CASE: Record<string, unknown> = {
+  sitterName: {
+    kind: 'text',
+    values: ['Konstantina Papadopoulou-Hadjigeorgiou'],
+    why: 'the case',
+  },
+};
+
+test('T-176: the same parameter pluralised TWICE — the FIRST element`s `=0` branch is measured, not lost', () => {
+  attack(
+    (root) => plantOnly(root, 'el', EL_TWO_PLURALS),
+    (root) => String(sourceOf(root, 'el')).includes('=0 {Καμία'),
+    'FAIL',
+    [
+      'OVER-BUDGET',
+      "'session.checkins_missed' in el",
+      '219 UCS-2 unit(s) is 4 segments',
+      '"count":0',
+    ],
+  );
+});
+
+test('T-176: the same parameter SELECTED twice — the FIRST element`s branch is bound, and `select` had no PLURAL-COVERAGE to fall back on', () => {
+  attack(
+    (root) => {
+      plantSelectOnly(root, 'el', EL_TWO_SELECTS);
+      editChannel(root, SMS_KEY, { worst_case: SELECT_WORST_CASE });
+    },
+    (root) => String(sourceOf(root, 'el')).includes('{tone, select, urgent {ΕΠΕΙΓΟΝ'),
+    'FAIL',
+    ['OVER-BUDGET', "'session.checkins_missed' in el", 'is 3 segments', '"tone":"urgent"'],
+  );
+});
+
+test('T-176: three elements on one parameter — a long branch in the MIDDLE is measured, so it is not a last-element rule either', () => {
+  attack(
+    (root) =>
+      plantOnly(
+        root,
+        'el',
+        '{count, plural, one {α} other {β}} {count, plural, =7 {' +
+          'ΧΧΧΧΧΧΧΧΧΧ'.repeat(18) +
+          '} one {γ} other {δ}} {count, plural, one {ε} other {ζ}} {sitterName}',
+      ),
+    (root) => String(sourceOf(root, 'el')).includes('=7 {'),
+    'FAIL',
+    ['OVER-BUDGET', "'session.checkins_missed' in el", '"count":7'],
+  );
+});
+
+test('T-176: with an `offset:`, the candidate is the value `#` renders longest, not the value `format(v)` is longest for', () => {
+  attack(
+    (root) =>
+      plantOnly(
+        root,
+        'en',
+        '{count, plural, offset:100 one {one missed from {sitterName}} ' +
+          'other {# missed check-ins from {sitterName} ' +
+          'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx}}',
+      ),
+    (root) => String(sourceOf(root, 'en')).includes('offset:100'),
+    'FAIL',
+    // `#` renders `v - 100`, so the longest inserted form in [0, 999] is at
+    // v = 0 ("-100", four characters) and NOT at v = 999 ("899", three) nor at
+    // T-046's pick of v = 100 ("100" ranked on the unadjusted value).
+    ['OVER-BUDGET', '"count":0'],
+  );
+});
+
+test('T-176: a `select` worst case declared in channels.json IS honoured — T-046 returned the message`s branch names and ignored it', () => {
+  attack(
+    (root) => {
+      plantSelectOnly(
+        root,
+        'en',
+        '{tone, select, other {Missed check-in}} for {tone} from {sitterName}',
+      );
+      editChannel(root, SMS_KEY, {
+        worst_case: {
+          ...SELECT_WORST_CASE,
+          tone: {
+            kind: 'text',
+            values: ['a-declared-tone-value-that-is-not-a-branch-name-at-all-and-is-long'],
+            why: 'the case',
+          },
+        },
+      });
+    },
+    (root) => String(sourceOf(root, 'en')).includes('{tone, select, other'),
+    'PASS',
+    ['"tone":"a-declared-tone-value-that-is-not-a-branch-name-at-all-and-is-long"'],
+  );
+});
+
+test('T-176: a SECOND `//`-prefixed comment key inside worst_case is a comment, not a malformed declared parameter', () => {
+  attack(
+    (root) => {
+      const channels = readJson(root, 'channels.json');
+      const map = channels['channels'] as Record<string, Record<string, unknown>>;
+      const entry = { ...map[SMS_KEY] };
+      const wc = { ...(entry['worst_case'] as Record<string, unknown>) };
+      wc['//2'] = 'a second comment key, which T-046 refused as INPUT';
+      entry['worst_case'] = wc;
+      map[SMS_KEY] = entry;
+      writeJson(root, 'channels.json', channels);
+    },
+    (root) =>
+      JSON.stringify(readJson(root, 'channels.json')).includes('a second comment key, which'),
+    'PASS',
+    ['asserted 3 (locale, key) pair(s)'],
+  );
+});
+
+test('T-176: a parameter branched on as BOTH a plural and a select is refused rather than measured against one of the two', () => {
+  attack(
+    (root) =>
+      plantOnly(
+        root,
+        'en',
+        '{p, plural, one {a} other {b}} {p, select, x {y} other {z}} {sitterName}',
+      ),
+    (root) => String(sourceOf(root, 'en')).includes('{p, select,'),
+    'FAIL',
+    ['PARAM-KIND-CONFLICT', "'p' is branched on as BOTH a plural and a select"],
+  );
+});
+
+test('T-176: a declared domain too large to check the candidate set against ICU is REFUSED, never sampled', () => {
+  attack(
+    (root) => {
+      plantOnly(root, 'en', FILLER['en'] ?? 'ok');
+      editChannel(root, SMS_KEY, {
+        worst_case: {
+          count: { kind: 'plural', max: 200000, why: 'the case' },
+          sitterName: {
+            kind: 'text',
+            values: ['Konstantina Papadopoulou-Hadjigeorgiou'],
+            why: 'the case',
+          },
+        },
+      });
+    },
+    (root) => JSON.stringify(readJson(root, 'channels.json')).includes('200000'),
+    'FAIL',
+    ['VERIFICATION-EXPLOSION', 'over the 250000 cap', 'refuses rather than sampling'],
+  );
+});
+
+test('T-176: a parameter reachable only inside an ICU tag is SEEN — T-046`s shape did not traverse tag children', () => {
+  attack(
+    (root) =>
+      plantOnly(
+        root,
+        'en',
+        'Missed <b>{who}</b> {count, plural, one {#} other {#}} from {sitterName}',
+      ),
+    (root) => String(sourceOf(root, 'en')).includes('<b>{who}</b>'),
+    'FAIL',
+    ['PARAM-UNDECLARED', "'who' is a parameter of this message"],
+  );
+});
+
+test('T-176 ANTI-VACUITY: the run PRINTS how many bindings it checked against ICU, and the number is the declared domain computed from channels.json', () => {
+  // Derived from the DECLARATION and from Intl, never from the gate's output:
+  // the integers in [0, max], the same count of half-integers, times the
+  // declared names. If the check ever examined nothing, this is the line that
+  // would say so — `verified 0 binding(s)` — rather than the gate passing.
+  const channels = JSON.parse(readFileSync(join(PACKAGE_ROOT, 'channels.json'), 'utf8')) as Record<
+    string,
+    Record<string, Record<string, Record<string, Record<string, unknown>>>>
+  >;
+  const wc = channels['channels']?.[SMS_KEY]?.['worst_case'];
+  const max = wc?.['count']?.['max'];
+  const names = wc?.['sitterName']?.['values'];
+  assert.equal(typeof max, 'number');
+  assert.ok(Array.isArray(names));
+  const expected = 2 * (Number(max) + 1) * (names as unknown[]).length;
+  const run = runGate([]);
+  assert.equal(run.banner, 'PASS', run.out);
+  assert.ok(
+    run.out.includes(`verified ${String(expected)} binding(s) of the declared domain`),
+    `expected the gate to have verified ${String(expected)} bindings:\n${run.out}`,
+  );
+  assert.ok(
+    run.out.includes('4 of 4 declared branch(es)'),
+    `expected all four ru branches to have been rendered by the measured set:\n${run.out}`,
+  );
+});
+
+test('T-176 THE CHECK IS NOT THE READING: regressing the reading to T-046`s per-parameter one makes the gate refuse ITSELF with CANDIDATE-INCOMPLETE', () => {
+  const regressed = regressedGate([REGRESS_READING]);
+  try {
+    attackWith(
+      regressed.file,
+      (root) => plantOnly(root, 'el', EL_TWO_PLURALS),
+      (root) => String(sourceOf(root, 'el')).includes('=0 {Καμία'),
+      'FAIL',
+      [
+        'CANDIDATE-INCOMPLETE',
+        "ICU renders branch '=0' of the plural element #0 on 'count'",
+        'NO binding this gate measured ever rendered it',
+        '4 of 5 declared branch(es)',
+      ],
+    );
+  } finally {
+    rmSync(regressed.dir, { recursive: true, force: true });
+  }
+});
+
+test('T-176 THE CONTROL: the DELIVERED reading renders all five branches and CANDIDATE-INCOMPLETE does not fire on the same plant', () => {
+  const control = regressedGate([]);
+  try {
+    attackWith(
+      control.file,
+      (root) => plantOnly(root, 'el', EL_TWO_PLURALS),
+      (root) => String(sourceOf(root, 'el')).includes('=0 {Καμία'),
+      'FAIL',
+      ['5 of 5 declared branch(es)', 'OVER-BUDGET', '219 UCS-2 unit(s) is 4 segments'],
+      ['CANDIDATE-INCOMPLETE'],
+    );
+  } finally {
+    rmSync(control.dir, { recursive: true, force: true });
+  }
+});
+
+test('T-176 THE CHECK IS NOT THE RANKING: regressing the ranking to `format(v)` makes the gate refuse itself with CANDIDATE-UNDERSTATED', () => {
+  const regressed = regressedGate([REGRESS_RANKING]);
+  const plant = (root: string): void =>
+    plantOnly(
+      root,
+      'en',
+      '{count, plural, offset:100 one {one missed from {sitterName}} ' +
+        'other {# missed check-ins from {sitterName} ' +
+        'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx}}',
+    );
+  const landed = (root: string): boolean => String(sourceOf(root, 'en')).includes('offset:100');
+  try {
+    attackWith(regressed.file, plant, landed, 'FAIL', [
+      'CANDIDATE-UNDERSTATED',
+      'The reduction kept the wrong representative of a branch signature',
+    ]);
+  } finally {
+    rmSync(regressed.dir, { recursive: true, force: true });
+  }
+  const control = regressedGate([]);
+  try {
+    attackWith(control.file, plant, landed, 'FAIL', ['OVER-BUDGET'], ['CANDIDATE-UNDERSTATED']);
+  } finally {
+    rmSync(control.dir, { recursive: true, force: true });
+  }
 });
