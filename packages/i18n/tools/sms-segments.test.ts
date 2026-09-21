@@ -802,3 +802,139 @@ test('a --root run says SOURCE READING ONLY on the FAIL path too', () => {
     ['SOURCE READING ONLY'],
   );
 });
+
+/* ──────── the worst case covers EVERY BRANCH THE MESSAGE DECLARES (QA-F1) ── */
+
+/**
+ * T-046 rework 1. `qa-verification` falsified the sentence this whole gate
+ * rests on — that the declared worst case is the worst — with ordinary ICU
+ * idiom: an explicit `=0` branch. It is matched BEFORE any category rule, and
+ * the old candidate set had one value per REGISTRY-declared CLDR category, so
+ * `=0` was never bound, never rendered and never measured. The plant below is
+ * QA's own: the committed Greek template with a long `=0` branch, which sends
+ * 171 UCS-2 units — three segments — while the gate printed
+ * `1 segment(s), headroom 69` and exited 0.
+ *
+ * Every case in this block would be GREEN under the old rule and is RED (or
+ * names its branch) under the new one, which is the only property that makes
+ * them worth committing.
+ */
+const GREEK_ZERO_BRANCH =
+  'Καμία χαμένη καταγραφή από {sitterName} σήμερα. Όλα τα check-in ολοκληρώθηκαν κανονικά ' +
+  'και δεν χρειάζεται καμία ενέργεια από εσάς αυτή τη στιγμή.';
+
+const GREEK_WITH_ZERO =
+  `{count, plural, =0 {${GREEK_ZERO_BRANCH}} ` +
+  'one {# χαμένη καταγραφή από {sitterName}} other {# χαμένες καταγραφές από {sitterName}}}';
+
+test('QA-F1: an explicit `=0` plural branch IS rendered — a long Greek `=0` branch is three segments and is REFUSED', () => {
+  attack(
+    (root) => plantSource(root, 'el', GREEK_WITH_ZERO),
+    (root) => String(sourceOf(root, 'el')).includes('=0 {Καμία'),
+    'FAIL',
+    ['OVER-BUDGET', "'session.checkins_missed' in el", 'is 3 segments', '"count":0'],
+  );
+});
+
+test('QA-F1: an explicit `=0` branch that fits passes, and the run NAMES the branch it bound', () => {
+  attack(
+    (root) =>
+      plantSource(
+        root,
+        'el',
+        '{count, plural, =0 {Καμία χαμένη καταγραφή από {sitterName}} ' +
+          'one {# χαμένη καταγραφή από {sitterName}} other {# χαμένες καταγραφές από {sitterName}}}',
+      ),
+    (root) => String(sourceOf(root, 'el')).includes('=0 {'),
+    'PASS',
+    ['declares explicit branch(es) [=0]'],
+  );
+});
+
+test('a plural `offset:` is applied before the category is selected, so the `one` branch is reached and measured', () => {
+  const longOne =
+    'Μία ακόμη χαμένη καταγραφή από {sitterName} πέρα από όσες σας έχουν ήδη σταλεί σήμερα, ' +
+    'και η φύλαξη συνεχίζεται κανονικά προς το παρόν χωρίς καμία άλλη ενέργεια.';
+  attack(
+    (root) =>
+      plantSource(
+        root,
+        'el',
+        `{count, plural, offset:1 one {${longOne}} other {# χαμένες καταγραφές από {sitterName}}}`,
+      ),
+    (root) => String(sourceOf(root, 'el')).includes('offset:1'),
+    'FAIL',
+    ['OVER-BUDGET', "'session.checkins_missed' in el", 'is 3 segments', 'Μία ακόμη'],
+  );
+});
+
+test('a `selectordinal` is REFUSED rather than measured against the cardinal categories the registry declares', () => {
+  attack(
+    (root) =>
+      plantSource(
+        root,
+        'en',
+        '{count, selectordinal, one {#st from {sitterName}} two {#nd from {sitterName}} ' +
+          'few {#rd from {sitterName}} other {#th from {sitterName}}}',
+      ),
+    (root) => String(sourceOf(root, 'en')).includes('selectordinal'),
+    'FAIL',
+    ['PLURAL-ORDINAL', "'count' is a `selectordinal`", 'CARDINAL set'],
+  );
+});
+
+test('a declared branch NOTHING in the domain renders is PLURAL-UNREACHABLE — the mirror of QA-F1', () => {
+  attack(
+    (root) =>
+      plantSource(
+        root,
+        'el',
+        '{count, plural, one {# χαμένη καταγραφή από {sitterName}} ' +
+          'many {# χαμένων καταγραφών από {sitterName}} ' +
+          'other {# χαμένες καταγραφές από {sitterName}}}',
+      ),
+    (root) => String(sourceOf(root, 'el')).includes('many {'),
+    'FAIL',
+    ['PLURAL-UNREACHABLE', "renders the plural branch 'many'"],
+  );
+});
+
+test('a category branch SHADOWED by an explicit branch is named and NOT refused — PLURAL-COVERAGE still requires it', () => {
+  attack(
+    (root) =>
+      plantSource(
+        root,
+        'en',
+        '{count, plural, =1 {One missed check-in from {sitterName}} ' +
+          'one {# missed check-in from {sitterName}} ' +
+          'other {# missed check-ins from {sitterName}}}',
+      ),
+    (root) => String(sourceOf(root, 'en')).includes('=1 {'),
+    'PASS',
+    ['plural branch [one] is SHADOWED', 'declares explicit branch(es) [=1]'],
+  );
+});
+
+test('QA-F2: the half-integer fallback takes the LONGEST half-integer in the declared domain, not the first', () => {
+  // The expectation is derived from `Intl`, never from the gate's own output:
+  // the `ru` `other` branch is unreachable with integers, and the longest
+  // FORMATTED half-integer in [0, 999] is what the rule in § contract §5 says
+  // is measured. At `6b685c5` the gate took 0.5 — the first — and printed a
+  // headroom two units wider than its own rule gives.
+  const rules = new Intl.PluralRules('ru');
+  const fmt = new Intl.NumberFormat('ru');
+  let longest = 0;
+  for (let n = 0; n <= 999; n += 1) {
+    const v = n + 0.5;
+    if (rules.select(v) !== 'other') continue;
+    longest = Math.max(longest, fmt.format(v).length);
+  }
+  assert.ok(longest > fmt.format(0.5).length, 'the first half-integer must not be the longest');
+  const run = runGate([]);
+  assert.equal(run.banner, 'PASS', run.out);
+  const line = run.out.split('\n').find((l) => l.includes('worst binding') && l.includes('.5'));
+  assert.ok(line !== undefined, `no half-integer worst binding was printed:\n${run.out}`);
+  const bound = /"count":([0-9.]+)/.exec(line);
+  assert.ok(bound !== null, line);
+  assert.equal(fmt.format(Number(bound[1])).length, longest, line);
+});

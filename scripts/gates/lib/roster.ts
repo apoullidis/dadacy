@@ -323,8 +323,11 @@ export const ROSTER: readonly RosterEntry[] = [
     // false — `70` is the SINGLE-segment UCS-2 figure (a concatenated segment
     // holds 67, so <=2 segments is <=134 units, not 140) and "UCS-2 for el/ru"
     // is wrong in both directions, since ten Greek capitals ARE in GSM-7 and
-    // three `en` strings are UCS-2 because of an em dash. Recorded and routed
-    // as decisions.md OD-180, not taken. The gate itself measures the encoding
+    // FOUR `en` strings are UCS-2 because of an em dash (T-046 rework 1,
+    // QA-F3: this comment said "three"; the measurement in T-046 § Published
+    // contract §4 and in QA-2 is four — call_112.label, helpline.116111.label,
+    // helpline.1466.label, helpline.199.label). Recorded and routed as
+    // decisions.md OD-180, not taken. The gate itself measures the encoding
     // per string and prints the correct budgets on every run.
     name: 'gate:sms-segments',
     spec: 'the SMS segment-count assertion',

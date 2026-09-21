@@ -40,7 +40,7 @@
         "count": {
           "kind": "plural",
           "max": 999,
-          "why": "No specification bounds the number of missed check-ins in one sit, so this is an ENGINEERING BOUND and not a measured fact: the assertion covers counts up to 999. The gate builds one candidate per declared CLDR plural category from [0, 999] and its half-integers and takes the longest FORMATTED form per category, so the Russian four-category message is measured on all four branches. The measured headroom is printed on every run; at 999 no enabled locale reaches its grouping separator, which for `ru` is U+00A0 and is NOT in the GSM-7 alphabet."
+          "why": "No specification bounds the number of missed check-ins in one sit, so this is an ENGINEERING BOUND and not a measured fact: the assertion covers counts up to 999. The gate builds one candidate per BRANCH THE MESSAGE DECLARES — every CLDR category branch AND every explicit `=N` branch, which ICU matches first — from [0, 999] and its half-integers, and takes the longest FORMATTED form per branch, so the Russian four-category message is measured on all four branches. Per BRANCH and not per category is T-046 rework 1 (QA-F1): a candidate set built from the category list alone never binds an explicit `=0` branch, and a `=0` branch is ordinary idiom for a ladder rung. The measured headroom is printed on every run; at 999 no enabled locale reaches its grouping separator, which for `ru` is U+00A0 and is NOT in the GSM-7 alphabet."
         },
         "sitterName": {
           "kind": "text",

@@ -46,7 +46,7 @@
  * three segments, and the naive reading calls it two. Measured, both ways, in
  * `tools/sms-segments.test.ts`.
  *
- * THREE MORE PLACES THE OBVIOUS ANSWER IS WRONG, each measured rather than
+ * FOUR MORE PLACES THE OBVIOUS ANSWER IS WRONG, each measured rather than
  * assumed:
  *
  *  1. "`el`/`ru` are UCS-2" IS AN ASSUMPTION. Ten Greek capitals — Δ Φ Γ Λ Ω Π
@@ -69,6 +69,16 @@
  *     is measured is stated in § the worst case below and is DECLARED IN
  *     COMMITTED DATA, so the claim carries its bound.
  *
+ *  4. AND A PLURAL'S BRANCHES ARE NOT ITS CLDR CATEGORIES. ICU matches an
+ *     EXPLICIT `=0` / `=1` branch BEFORE any category rule, applies `offset:`
+ *     before selecting one, and `selectordinal` uses the ORDINAL category set.
+ *     A candidate set built from the registry's category list alone leaves
+ *     whole branches unbound — T-046's rework-1 finding (QA-F1): a Greek
+ *     template with a long `=0` branch compiled, shipped and sent THREE
+ *     SEGMENTS while this gate printed `1 segment(s), headroom 69` and exited
+ *     0. Candidates are built from THE MESSAGE'S OWN BRANCH STRUCTURE — see
+ *     `candidatesFor`. ("THREE MORE PLACES" above is now four.)
+ *
  * ─────────────────────────────────────────────────────────────────────────────
  * FIVE READINGS, FROM ARTEFACTS THAT ARE NOT EACH OTHER (PROTOCOL §5.1: "a
  * check must not be derived from the same reading as the thing it checks").
@@ -88,8 +98,9 @@
  *      BYTE-IDENTICAL to the source render (COMPILED-DRIFT); plus the strict
  *      key set and the enabled locale set (TIER-DRIFT, LOCALE-DRIFT).
  *
- *   C  THE PINS IN THIS FILE — the strict key set, the locale set and the SMS
- *      corpus as they stood on 2026-09-21, written HERE, in source that
+ *   C  THE PINS IN THIS FILE — the strict key set, the locale set, the SMS
+ *      corpus AND THE DECLARED WORST CASE as they stood on 2026-09-21 (four
+ *      pins, not three), written HERE, in source that
  *      `channels.json` and `tiers.json` cannot edit. They are the answer to "if
  *      it checked nothing, would it say so?", because every cheap way to make
  *      this gate assert less is an edit to a file the pins do not live in:
@@ -148,7 +159,7 @@ function finish(banner: string, failures: readonly string[]): never {
 /* ------------------------------------------------------------------- pins */
 
 /**
- * READING C. Three pins, written in this file on 2026-09-21 by T-046, because a
+ * READING C. FOUR pins, written in this file on 2026-09-21 by T-046, because a
  * gate whose expected workload is read entirely out of the files it is checking
  * can be silenced by editing those files (PROTOCOL §5.1). Each is checked in
  * ONE direction — "each of these must STILL be there" — so GROWING the corpus,
@@ -287,7 +298,8 @@ function loadRegistry(root: string, failures: string[]): Registry | undefined {
     if (!Array.isArray(declared) || declared.some((c) => typeof c !== 'string')) {
       failures.push(
         `INPUT locale-registry.json: '${code}' has no \`pluralCategories\` array. The worst case ` +
-          'over a plural message is computed per declared category; without the list there is no ' +
+          'over a plural message is computed per declared BRANCH, and this list is what says which ' +
+          'category branches the message must declare (PLURAL-COVERAGE); without it there is no ' +
           'worst case to compute and the assertion would quietly cover fewer branches.',
       );
       continue;
@@ -526,8 +538,19 @@ function loadPipelineChannels(root: string): ReadonlyMap<string, string> {
 
 interface ParamShape {
   readonly kind: 'plural' | 'select' | 'text';
-  /** For `select`, the branch names the message declares. */
+  /**
+   * The branch names the message declares, VERBATIM as ICU spells them. For a
+   * `select` that is the branch set; for a `plural` it is the CLDR categories
+   * AND the explicit value branches — `=0`, `=1` — which ICU matches BEFORE
+   * any category rule. Reading the categories and dropping the `=N` keys is
+   * QA-F1: a branch the gate never binds is a branch the product sends
+   * unmeasured.
+   */
   readonly options: readonly string[];
+  /** For a `plural`: the ICU `offset:`, 0 when absent. The category is selected on `n - offset`. */
+  readonly offset: number;
+  /** For a `plural`: `selectordinal` rather than `plural`. Refused — see `candidatesFor`. */
+  readonly ordinal: boolean;
 }
 
 /** The parameters a message takes, and what kind each is, from its ICU AST. */
@@ -538,18 +561,30 @@ function shapeOf(
   for (const el of elements) {
     switch (el.type) {
       case TYPE.plural:
-        into.set(el.value, { kind: 'plural', options: Object.keys(el.options) });
+        into.set(el.value, {
+          kind: 'plural',
+          options: Object.keys(el.options),
+          offset: el.offset,
+          ordinal: el.pluralType === 'ordinal',
+        });
         for (const opt of Object.values(el.options)) shapeOf(opt.value, into);
         break;
       case TYPE.select:
-        into.set(el.value, { kind: 'select', options: Object.keys(el.options) });
+        into.set(el.value, {
+          kind: 'select',
+          options: Object.keys(el.options),
+          offset: 0,
+          ordinal: false,
+        });
         for (const opt of Object.values(el.options)) shapeOf(opt.value, into);
         break;
       case TYPE.argument:
       case TYPE.number:
       case TYPE.date:
       case TYPE.time:
-        if (!into.has(el.value)) into.set(el.value, { kind: 'text', options: [] });
+        if (!into.has(el.value)) {
+          into.set(el.value, { kind: 'text', options: [], offset: 0, ordinal: false });
+        }
         break;
       default:
         break;
@@ -561,20 +596,50 @@ function shapeOf(
 /**
  * THE CANDIDATE VALUES FOR ONE PARAMETER, and this is the answer to trap 4.
  *
- *  - A `plural` argument declared `max: M` gets ONE value per CLDR category the
- *    REGISTRY declares for this locale — the same source `gate:plural-
- *    completeness` (T-045) reads, never a hard-coded four. THE DOMAIN IS THE
- *    INTEGERS in [0, M], and for each declared category the gate keeps the
- *    integer whose `Intl.NumberFormat(locale)` form is LONGEST in UTF-16 code
- *    units. HALF-INTEGERS ARE A FALLBACK, used only for a category NO INTEGER
- *    in the domain selects, and the run NAMES every category measured that way.
- *    They are not decoration: Russian's `other` category is unreachable with
- *    integers, so an integer-only candidate set would leave a committed branch
- *    of the message unrendered and the gate would quietly cover three branches
- *    of four while reporting four.
+ * THE RULE, IN ONE SENTENCE: the candidate set is built from THE MESSAGE'S OWN
+ * BRANCH STRUCTURE, so that every branch the message declares is rendered and
+ * measured — not from a category list the message is assumed to follow.
+ *
+ * That sentence is a rewrite (T-046 rework 1, QA-F1). The first version built
+ * one candidate per REGISTRY-declared CLDR category and nothing else, which
+ * left a whole family of branches bound by nothing:
+ *
+ *   - an EXPLICIT `=N` branch. ICU matches `=0 {No missed check-ins}` BEFORE
+ *     any category rule, and `Intl.PluralRules.select(0)` is `other`, so the
+ *     `other` candidate (the longest integer, 100) rendered the `other` branch
+ *     and the `=0` branch was never bound, never rendered and never measured.
+ *     A Greek template with a long `=0` branch compiled, shipped, and sent
+ *     THREE SEGMENTS while this gate printed `1 segment(s), headroom 69`.
+ *   - an `offset:`, which ICU subtracts BEFORE selecting the category, so a
+ *     candidate chosen on `select(n)` lands in a different branch than the one
+ *     it was chosen for.
+ *   - a `selectordinal`, whose categories are the ORDINAL set and not the
+ *     cardinal one `locale-registry.json` declares.
+ *
+ * So:
+ *
+ *  - A `plural` argument declared `max: M` gets ONE value per BRANCH IT
+ *    DECLARES — every CLDR category branch and every explicit `=N` branch.
+ *    THE DOMAIN IS THE INTEGERS in [0, M], each mapped to the branch ICU would
+ *    actually render it with (`branchOf` below), and for each branch the gate
+ *    keeps the value whose `Intl.NumberFormat(locale)` form is LONGEST in
+ *    UTF-16 code units. HALF-INTEGERS ARE A FALLBACK, used only for a branch NO
+ *    INTEGER in the domain reaches, and the run NAMES every branch measured
+ *    that way — at the LONGEST half-integer in the domain, not the first one
+ *    found (QA-F2). They are not decoration: Russian's `other` category is
+ *    unreachable with integers, so an integer-only candidate set would leave a
+ *    committed branch of the message unrendered and the gate would quietly
+ *    cover three branches of four while reporting four.
  *  - A `select` argument gets every branch name the message declares, so no
- *    gendered form is skipped.
+ *    gendered form is skipped. It always did; the plural is now its equal.
  *  - Anything else gets the literal strings declared in `channels.json`.
+ *
+ * A declared branch that NOTHING in the domain renders is `PLURAL-UNREACHABLE`
+ * — the mirror the fix needs, so a branch form nobody anticipated here is
+ * refused rather than silently skipped. The one exception is a category branch
+ * SHADOWED by an explicit branch (`=1` beside `one` in `en`, where 1 is the
+ * only value CLDR gives `one`): ICU can never render it, so it is named on the
+ * run and not measured. PLURAL-COVERAGE still requires the branch to be there.
  */
 function candidatesFor(
   param: string,
@@ -596,56 +661,114 @@ function candidatesFor(
       );
       return [];
     }
+    if (shape.ordinal) {
+      failures.push(
+        `PLURAL-ORDINAL ${where}: '${param}' is a \`selectordinal\`. Its branches are the ORDINAL ` +
+          'CLDR categories, and locale-registry.json declares the CARDINAL set — the one ' +
+          'gate:plural-completeness (T-045) reads. This gate refuses rather than measuring a ' +
+          'message against the wrong category set, or inventing an ordinal list from the runtime ' +
+          'instead of from the registry. No catalogue message uses `selectordinal` today.',
+      );
+      return [];
+    }
     const rules = new Intl.PluralRules(locale);
     const fmt = new Intl.NumberFormat(locale);
+    const isExplicit = (branch: string): boolean => /^=\d+$/.test(branch);
+    /**
+     * THE BRANCH ICU WOULD ACTUALLY RENDER `v` WITH, selected the way ICU
+     * selects one: an explicit `=N` branch beats every category rule; the
+     * category is chosen on `n - offset`; a category with no branch falls
+     * through to `other`. Everything below groups by THIS, not by
+     * `rules.select`, which is the whole of the QA-F1 fix.
+     */
+    const branchOf = (v: number): string => {
+      const exact = `=${String(v)}`;
+      if (shape.options.includes(exact)) return exact;
+      const cat = rules.select(v - shape.offset);
+      return shape.options.includes(cat) ? cat : 'other';
+    };
     const best = new Map<string, number>();
     const consider = (v: number): void => {
-      const cat = rules.select(v);
-      if (!categories.includes(cat)) return;
-      const current = best.get(cat);
+      const branch = branchOf(v);
+      const current = best.get(branch);
       if (current === undefined || fmt.format(v).length > fmt.format(current).length) {
-        best.set(cat, v);
+        best.set(branch, v);
       }
     };
     // Pass 1 — the declared domain: the INTEGERS in [0, max].
     for (let n = 0; n <= declared.max; n += 1) consider(n);
-    // Pass 2 — half-integers, ONLY for categories no integer reached.
+    // Pass 1b — an explicit `=N` OUTSIDE [0, max] is still a branch this
+    // message renders, so it is bound at its own value. Measuring it is
+    // conservative: an extra binding can only widen the worst case.
+    const explicitBranches = shape.options.filter(isExplicit);
+    for (const branch of explicitBranches) {
+      if (!best.has(branch)) best.set(branch, Number(branch.slice(1)));
+    }
+    if (explicitBranches.length > 0) {
+      console.log(
+        `      note ${where}: the plural on '${param}' declares explicit branch(es) ` +
+          `[${explicitBranches.join(', ')}], which ICU matches BEFORE any CLDR category rule. ` +
+          'Each is bound at its own value and rendered, because a branch the gate never binds is ' +
+          'a branch the product sends unmeasured (T-046 rework 1, QA-F1).',
+      );
+    }
+    // Pass 2 — half-integers, ONLY for a branch no integer reached, and the
+    // LONGEST one in the domain rather than the first found (QA-F2): the guard
+    // is on what PASS 1 reached, so pass 2 keeps competing within the branch.
+    const reachedByInteger = new Set(best.keys());
     const fromHalves: string[] = [];
-    if (categories.some((c) => !best.has(c))) {
+    if (shape.options.some((b) => !reachedByInteger.has(b))) {
       for (let n = 0; n <= declared.max; n += 1) {
         const v = n + 0.5;
-        if (!categories.includes(rules.select(v))) continue;
-        if (best.has(rules.select(v))) continue;
+        if (reachedByInteger.has(branchOf(v))) continue;
         consider(v);
       }
-      for (let n = 0; n <= declared.max; n += 1) {
-        const v = n + 0.5;
-        const cat = rules.select(v);
-        if (best.get(cat) === v && !fromHalves.includes(cat)) fromHalves.push(cat);
+      for (const branch of shape.options) {
+        if (!reachedByInteger.has(branch) && best.has(branch)) fromHalves.push(branch);
       }
     }
     if (fromHalves.length > 0) {
       console.log(
-        `      note ${where}: CLDR categor${fromHalves.length === 1 ? 'y' : 'ies'} ` +
+        `      note ${where}: plural branch${fromHalves.length === 1 ? '' : 'es'} ` +
           `[${fromHalves.join(', ')}] ${fromHalves.length === 1 ? 'is' : 'are'} unreachable with ` +
           `any integer in [0, ${String(declared.max)}], so ${fromHalves.length === 1 ? 'it was' : 'they were'} ` +
-          'measured with a half-integer. The branch is in the catalogue, so it is rendered and ' +
-          'measured rather than skipped.',
+          'measured with the LONGEST half-integer in that domain. The branch is in the catalogue, ' +
+          'so it is rendered and measured rather than skipped.',
       );
     }
     const values: number[] = [];
-    for (const cat of categories) {
-      const v = best.get(cat);
+    for (const branch of shape.options) {
+      const v = best.get(branch);
       if (v === undefined) {
+        // Two causes, and they are not the same defect. A CATEGORY branch every
+        // one of whose values is matched by an explicit branch first is dead
+        // copy ICU can never render — PLURAL-COVERAGE still requires it to be
+        // present, so refusing it here would be a trap. Anything else is a
+        // branch this gate could not reach, and that is the mirror of QA-F1.
+        const shadowed =
+          !isExplicit(branch) &&
+          [...Array(declared.max + 1).keys()].some(
+            (n) =>
+              rules.select(n - shape.offset) === branch ||
+              rules.select(n + 0.5 - shape.offset) === branch,
+          );
+        if (shadowed) {
+          console.log(
+            `      note ${where}: plural branch [${branch}] is SHADOWED — CLDR selects it, but ` +
+              'every value that selects it is matched by an explicit `=N` branch first, so ICU ' +
+              'never renders it. Not measured, because it cannot be sent.',
+          );
+          continue;
+        }
         failures.push(
           `PLURAL-UNREACHABLE ${where}: no value in [0, ${String(declared.max)}] or its ` +
-            `half-integers selects the CLDR category '${cat}', which locale-registry.json ` +
-            `declares for '${locale}'. That branch of the message was therefore never rendered ` +
-            'and its length was never measured — the worst case would be understated.',
+            `half-integers renders the plural branch '${branch}' of '${param}'. That branch of ` +
+            'the message was therefore never rendered and its length was never measured — the ' +
+            'worst case would be understated.',
         );
         continue;
       }
-      values.push(v);
+      if (!values.includes(v)) values.push(v);
     }
     if (!shape.options.includes('other')) {
       failures.push(
