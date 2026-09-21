@@ -60,8 +60,17 @@ const RULE = '='.repeat(78);
  * (25 blocking + 4 advisory). Measured in both directions in
  * tasks/state/EP-0/T-046.md § Evidence 5: at floor 24, A6's own mutation is a
  * GATE PASS and the refusal is silently lost.
+ *
+ * 25 -> 26 on 2026-09-21 (T-008), when gate:otel-contract was ADDED as a new
+ * PROGRAMME gate. This one is an ADDITION, not a promotion, so unlike the three
+ * above it moves the TOTAL as well: F0's pin in scripts/negative-tests/
+ * pr-gates.sh goes 29 -> 30 (26 blocking + 4 advisory) because the gate joins
+ * the blocking matrix without leaving the advisory one. Case A6's expected
+ * reason moved with the floor. Measured in both directions in
+ * tasks/state/EP-1/T-008.md § Evidence 5: at floor 25, A6's own mutation is a
+ * GATE PASS and the refusal is silently lost.
  */
-const MIN_BLOCKING = 25;
+const MIN_BLOCKING = 26;
 
 /**
  * Two flags, and they exist so this program can be ATTACKED cheaply rather than

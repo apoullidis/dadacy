@@ -141,6 +141,13 @@ const SUITES: readonly Suite[] = [
     why: 'gate:app-images: every Dockerfile an overlay service builds, plus the suite’s own working-tree verdict (T-035, T-036, T-156)',
   },
   {
+    id: 'otel-contract',
+    file: 'scripts/negative-tests/otel-contract.sh',
+    cases: 29,
+    state: 'GREEN',
+    why: "gate:otel-contract: a served operation with no data_class entry, a malformed registry BANNERING instead of crashing, the collector allowlist, a dashboard naming a route or class nothing serves, and the one line apps/core's adapter may never write (T-008)",
+  },
+  {
     id: 'schema-typecheck',
     file: 'scripts/negative-tests/schema-typecheck.sh',
     cases: 16,

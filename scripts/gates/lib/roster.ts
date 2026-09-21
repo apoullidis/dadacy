@@ -180,6 +180,12 @@ export const ROSTER: readonly RosterEntry[] = [
     why: 'static checks over EVERY Dockerfile an overlay service builds and over compose.yml + every overlay (DOCKER.md §5, §3). The scope of each check is published in state/EP-1/T-036.md § Published contract, with the negative case that falsifies it; this gate is static and still cannot look inside an image — anchor image properties on docker image inspect and on the build',
   },
   {
+    name: 'gate:otel-contract',
+    spec: PROGRAMME,
+    cls: 'BLOCKING',
+    why: "SD §QD-5's instrumentation contract held against the artefacts that consume it: every OpenAPI operation has a route -> data_class entry, the OTel Collector is an ALLOWLIST (SA §TS-10 rule 1) carrying every contract field, the three dashboards name only metrics/labels/label VALUES this pipeline produces, and apps/core's adapter never reads the raw request URL. IT CONTAINS NO PII PATTERN AND RUNS NOTHING — gate:pii-canary (T-119) is the leak canary and state/EP-1/T-008.md § contract §5 states this ticket's own mechanism at its true width",
+  },
+  {
     name: 'gate:constraint-suite:static',
     spec: PROGRAMME,
     cls: 'BLOCKING',

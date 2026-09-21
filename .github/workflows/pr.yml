@@ -54,6 +54,7 @@ jobs:
           - gate:size-limit
           - gate:egress-boundary
           - gate:app-images
+          - gate:otel-contract
           - gate:constraint-suite:static
           - gate:migration-lint
           - gate:semgrep

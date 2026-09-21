@@ -28,6 +28,7 @@
     "gate:toolbox": "node scripts/gates/toolbox.ts",
     "gate:egress-boundary": "node scripts/gates/egress-boundary.ts",
     "gate:app-images": "node scripts/gates/app-images.ts",
+    "gate:otel-contract": "node scripts/gates/otel-contract.ts",
     "gate:semgrep": "node scripts/gates/semgrep.ts",
     "gate:contract-drift": "node scripts/gates/contract-drift.ts",
     "gate:constraint-suite": "node scripts/gates/constraint-suite.ts",

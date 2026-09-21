@@ -468,8 +468,30 @@ if (expressions < FLOOR.expressions) {
 }
 
 // ---------------------------------------------------------------- R5
+/**
+ * Comments are removed BEFORE either R5 check reads the source, and for both
+ * directions of the rule.
+ *
+ * The FORBID direction needs it because the comments in
+ * `apps/core/src/observability/install.ts` name `request.url` on purpose, to
+ * explain why it is never read. The REQUIRE direction needs it for the
+ * opposite reason, and that one is a measured defect, not a precaution:
+ * `scripts/negative-tests/otel-contract.sh` case R5a commented the call out
+ * and this gate stayed GREEN, because `// installObservability(app);` still
+ * matches a regex over the raw text. That is OD-26 / OD-28's family — "every
+ * forbid-check reads the comment-stripped source while the require-checks read
+ * the raw source" — reproduced in a seventh place by its own suite before
+ * anyone else had to find it.
+ */
+const stripComments = (source: string): string =>
+  source
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n')
+    .map((line) => line.replace(/\/\/.*$/, ''))
+    .join('\n');
+
 try {
-  const server = read(CORE_SERVER);
+  const server = stripComments(read(CORE_SERVER));
   if (!/installObservability\s*\(/.test(server)) {
     failures.push(
       `R5 apps/core/src/server.ts does not call installObservability(). The contract is emitted by nothing, and every claim about it is about code that never runs.`,
@@ -483,14 +505,7 @@ try {
     failures.push(`R5 apps/core/src/observability contains no TypeScript file.`);
   }
   for (const file of obsFiles) {
-    const source = read(path.join(CORE_OBS_DIR, file));
-    // Comments carry the word `request.url` on purpose — they explain why it is
-    // never read — so the check runs over the source with comments removed.
-    const live = source
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-      .split('\n')
-      .map((line) => line.replace(/\/\/.*$/, ''))
-      .join('\n');
+    const live = stripComments(read(path.join(CORE_OBS_DIR, file)));
     for (const pattern of [/\brequest\.url\b/, /\breq\.url\b/, /\brequest\.originalUrl\b/]) {
       if (pattern.test(live)) {
         failures.push(

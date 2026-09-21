@@ -265,7 +265,7 @@ mut "$ROSTER" "    cls: 'BLOCKING'," "    cls: 'PENDING',
     owner: 'nobody',
     unblocks: 'never'," &&
   run_case "A6 one BLOCKING gate demoted: the floor bites" FAIL \
-    'the floor is 25' 'A gate was demoted or deleted' -- node "$PR" --roster-only
+    'the floor is 26' 'A gate was demoted or deleted' -- node "$PR" --roster-only
 
 echo
 echo "=== A(bis). the CLASS assertion — a hook cannot pass, or fail wrongly ==="
@@ -593,7 +593,7 @@ echo
 echo "=== F. gate:workflow — the mirrored, never-executed YAML ==="
 WF=.github/workflows/pr.yml
 wf() { node scripts/gates/workflow.ts; }
-# The `W7: 29 concrete` reason is not decoration: 29 is 25 blocking + 4 advisory
+# The `W7: 30 concrete` reason is not decoration: 30 is 26 blocking + 4 advisory
 # matrix values, so it is the assertion that BOTH `pnpm run ${{ matrix.gate }}`
 # steps were expanded and every value checked. Before rework 1 this number would
 # have been 0 — W7's pattern excluded `$`, `{` and `}` and skipped both lines.
@@ -603,12 +603,15 @@ wf() { node scripts/gates/workflow.ts; }
 # one; then 23 blocking + 6 advisory until later the same day, when T-044
 # supplied gate:safety-review-currency and it moved the same way; then 24
 # blocking + 5 advisory until 2026-09-21, when T-046 supplied gate:sms-segments
-# and it moved the same way again. The TOTAL is unchanged at 29 across all
-# three, which is why this line and not the pin has had to move: a promotion
-# shifts a gate between the two matrices.
+# and it moved the same way again. The TOTAL was unchanged at 29 across all
+# three, which is why this line and not the pin had to move each time: a
+# promotion shifts a gate between the two matrices. T-008 is the first change
+# that moves the TOTAL — gate:otel-contract is an ADDITION, a new PROGRAMME
+# gate joining the blocking matrix without leaving the advisory one — so on
+# 2026-09-21 the pin itself went 29 -> 30.
 CASE="F0"
 run_case "F0 CONTROL: pr.yml is structurally valid and mirrors the roster" PASS \
-  'GATE PASS' 'W7: 29 concrete' -- wf
+  'GATE PASS' 'W7: 30 concrete' -- wf
 
 CASE="F1"
 mut "$WF" '          - gate:unit-tests
