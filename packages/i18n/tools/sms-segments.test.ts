@@ -1414,3 +1414,20 @@ test('T-176 IF THE CHECK DID NOTHING, WOULD IT SAY SO? a probe that observes no 
     rmSync(regressed.dir, { recursive: true, force: true });
   }
 });
+
+test('T-176: PLURAL-COVERAGE is asserted PER ELEMENT — a missing CLDR category in the FIRST of two elements is refused', () => {
+  // T-046 read one element per parameter, so a category missing from an
+  // element other than the last one was only caught when it happened to be the
+  // one read. Here the FIRST element has no `one` branch and the last one does.
+  attack(
+    (root) =>
+      plantOnly(
+        root,
+        'el',
+        '{count, plural, other {# χαμένες}} από {sitterName}. {count, plural, one {Χρειάζεται} other {Χρειάζονται}} έλεγχο.',
+      ),
+    (root) => String(sourceOf(root, 'el')).includes('{count, plural, other {# χαμένες}}'),
+    'FAIL',
+    ['PLURAL-COVERAGE', "a plural element on 'count' has no 'one' branch"],
+  );
+});
