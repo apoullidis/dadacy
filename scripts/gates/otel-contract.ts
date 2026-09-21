@@ -41,6 +41,12 @@
  *     script awareness. It proves the contract has nowhere for free text to
  *     sit; it does not prove that nothing in this system ever emitted any.
  *     `T-119` (`gate:pii-canary`) is the ticket that widens this.
+ *   - R3 COMPARES KEY SETS AND NOTHING ELSE. The collector's `redaction`
+ *     processor filters attribute KEYS; a PII value inside an allowlisted key
+ *     passes both it and this check. That is the design (the VALUE domain of
+ *     every allowlisted key is closed in `packages/observability`, which R1,
+ *     R2 and R6 are about), but it is stated here because "the allowlist is
+ *     checked" reads wider than it is.
  *   - It runs nothing. No collector, no Jaeger, no request. The end-to-end
  *     half is `packages/observability/tools/canary.ts`, which needs the `otel`
  *     profile and therefore cannot live in `gate:pr` (`svc: none`,
