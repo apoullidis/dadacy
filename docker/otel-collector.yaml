@@ -1,0 +1,102 @@
+# THE OTel COLLECTOR — profile `otel`, T-008.
+#
+# SA §TS-10 rule 1 names three redaction points and this is the SECOND of them:
+#
+#   1. a structured logger that accepts only an allowlisted field set
+#      (NOT BUILT — SD §SEC-I5's logger is not this ticket; see
+#      state/EP-1/T-008.md § Published contract § What is not claimed);
+#   2. an OTel Collector redaction processor           <- this file;
+#   3. Sentry's `beforeSend` scrubber                  <- packages/observability/src/sentry.ts.
+#
+# WHY THIS LAYER EXISTS WHEN THE EMITTER ALREADY REFUSES A BAD ATTRIBUTE.
+# `packages/observability` can only bound what it emits. This process bounds
+# what ARRIVES — from any sender, in any language, including one nobody has
+# written yet, and including an OpenTelemetry SDK that someone adds later and
+# which would put full request URLs and database statements on spans by
+# default. The two layers are independent, which is the point: a bug in one is
+# not a bug in the other.
+#
+# `allow_all_keys: false` MAKES THIS AN ALLOWLIST. Adding an attribute to the
+# contract means adding it here AND to `REQUEST_FIELDS`/`JOB_FIELDS`/
+# `PROVIDER_FIELDS` in packages/observability/src/contract.ts, and
+# `pnpm gate:otel-contract` check R3 fails if the two sets disagree — it
+# derives the expected set from contract.ts and reads this file, so neither is
+# checked against itself.
+#
+# `summary: debug` IS LOAD-BEARING EVIDENCE, NOT DIAGNOSTICS. It makes the
+# processor record, on the span it just cleaned, the NUMBER and the NAMES of
+# the attribute keys it removed. That is what lets the canary distinguish
+# "the attribute was redacted" from "the span never arrived" — two outcomes a
+# simple absence check reads as one (PROTOCOL §5.1: if the check did nothing,
+# would it say so?). Key NAMES only; no value is ever recorded.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  redaction:
+    allow_all_keys: false
+    allowed_keys:
+      # SD §QD-5's request tuple.
+      - trace_id
+      - route
+      - module
+      - actor_role
+      - status
+      - duration_ms
+      - data_class
+      # SD §QD-5's job tuple (`duration_ms` shared with the request tuple).
+      - queue
+      - job_id
+      - attempt
+      - outcome
+      # SD §QD-5's provider-call tuple (`status`, `duration_ms` shared).
+      - provider
+      - operation
+      - breaker_state
+      # SD §INT's provider_health gauge.
+      - state
+      # Resource identity. Without it Jaeger cannot name the service, and the
+      # trace is unfindable rather than clean.
+      - service.name
+      # The processor's own summary, which `summary: debug` writes.
+      - redaction.redacted.count
+      - redaction.redacted.keys
+      - redaction.masked.count
+      - redaction.masked.keys
+      - redaction.ignored.count
+    summary: debug
+  batch:
+    timeout: 200ms
+    send_batch_size: 128
+
+exporters:
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+  debug:
+    verbosity: detailed
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [redaction, batch]
+      exporters: [otlp/jaeger]
+    metrics:
+      # Jaeger stores traces, not metrics. `provider_health` therefore lands in
+      # this collector's own log, which is where it is asserted from locally.
+      # Grafana Cloud is its destination in the cloud (SA §TS-10) and nothing
+      # here is deployed (DOCKER.md §10).
+      receivers: [otlp]
+      processors: [redaction, batch]
+      exporters: [debug]
+  telemetry:
+    logs:
+      level: info

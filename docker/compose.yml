@@ -350,9 +350,25 @@ services:
     image: otel/opentelemetry-collector-contrib:0.140.0
     profiles: ['otel']
     networks: [kinvara-int]
+    # T-008. The config is the SECOND of SA §TS-10 rule 1's three redaction
+    # points, and it is an ALLOWLIST (`allow_all_keys: false`). Read
+    # docker/otel-collector.yaml before changing anything here.
+    command: ['--config=/etc/kinvara/otel-collector.yaml']
+    volumes:
+      - ./otel-collector.yaml:/etc/kinvara/otel-collector.yaml:ro
     expose:
       - '4317' # OTLP gRPC
       - '4318' # OTLP HTTP
+    healthcheck:
+      # The collector image has no shell and no curl. Its OTLP/HTTP receiver
+      # answers a malformed POST with 400 and a valid empty payload with 200,
+      # so a TCP connect is the strongest probe available without adding a
+      # tool to a pinned upstream image. `nc` is absent too; Go's own
+      # `--feature-gates` healthcheck extension is deprecated in 0.140.0, so
+      # `svc up --wait` is left to depend on jaeger's healthcheck and on the
+      # canary's own retry loop instead. Stated, not assumed:
+      # state/EP-1/T-008.md § Evidence 2.
+      disable: true
     mem_limit: 192m
     cpus: 0.5
 
@@ -361,7 +377,9 @@ services:
     profiles: ['otel']
     networks: [kinvara-int]
     expose:
-      - '16686' # UI
+      - '4317' # OTLP gRPC — the collector exports here
+      - '4318' # OTLP HTTP
+      - '16686' # UI and query API
     mem_limit: 320m
     cpus: 0.5
 
@@ -398,6 +416,14 @@ services:
       # because T-141's register route runs in this container and may not
       # edit this file (T-017 § contract 8).
       HIBP_API_BASE: ${HIBP_API_BASE:-http://hibp-fake:4100}
+      # T-008. The collector is on profile `otel`. `OTEL_SDK_DISABLED` is the
+      # switch an app without the `otel` profile uses: unset, `core` exports to
+      # a collector that is not there, every export fails and the failures are
+      # counted and printed (packages/observability/src/otlp.ts), which is
+      # noisy but honest. Set it to `true` when running `api` without `otel`.
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
+      OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME_CORE:-kinvara-core}
+      OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-}
     mem_limit: 768m
     cpus: 1.0
     stop_grace_period: 30s # SIGTERM must drain in-flight requests (T-018)
