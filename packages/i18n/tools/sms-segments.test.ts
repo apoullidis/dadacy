@@ -720,6 +720,52 @@ test('a decomposed (non-NFC) SMS string is refused: the decomposed form costs mo
   );
 });
 
+test('narrowing the declared plural bound does NOT make the gate green — the bound itself is pinned', () => {
+  attack(
+    (root) =>
+      editChannel(root, SMS_KEY, {
+        worst_case: {
+          count: { kind: 'plural', max: 9, why: 'planted — narrower than the pin' },
+          sitterName: {
+            kind: 'text',
+            values: ['Konstantina Papadopoulou-Hadjigeorgiou'],
+            why: 'planted',
+          },
+        },
+      }),
+    (root) =>
+      (
+        (readJson(root, 'channels.json')['channels'] as Record<string, Record<string, unknown>>)[
+          SMS_KEY
+        ]?.['worst_case'] as Record<string, Record<string, unknown>>
+      )['count']?.['max'] === 9,
+    'FAIL',
+    ['WORST-CASE-NARROWED', 'worst_case.count', 'the declared plural bound is 9'],
+  );
+});
+
+test('replacing the declared names with short ones does NOT make the gate green: the pin is on LENGTH', () => {
+  attack(
+    (root) =>
+      editChannel(root, SMS_KEY, {
+        worst_case: {
+          count: { kind: 'plural', max: 999, why: 'planted' },
+          sitterName: { kind: 'text', values: ['A', 'B', 'C'], why: 'planted — three of them' },
+        },
+      }),
+    (root) =>
+      (
+        (
+          (readJson(root, 'channels.json')['channels'] as Record<string, Record<string, unknown>>)[
+            SMS_KEY
+          ]?.['worst_case'] as Record<string, Record<string, unknown>>
+        )['sitterName']?.['values'] as unknown[]
+      ).length === 3,
+    'FAIL',
+    ['WORST-CASE-NARROWED', 'worst_case.sitterName', 'the longest declared value is 1'],
+  );
+});
+
 /* ─────────────────────────────────────────────── the command's own surface ── */
 
 test('an unrecognised argument exits 2 before any reading, with no banner', () => {

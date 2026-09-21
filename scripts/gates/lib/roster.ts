@@ -316,10 +316,20 @@ export const ROSTER: readonly RosterEntry[] = [
     // DECLARED in packages/i18n/channels.json, because before T-046 "every
     // Critical/Transactional SMS template" named a set nobody had defined and
     // the obvious gate would have been green over nothing.
+    //
+    // The `why` below is UNCHANGED and is NOT mine to edit: T-005 § contract §8
+    // as amended (OD-176) grants a promoting ticket `cls` and the dropping of
+    // owner/unblocks, and "no other field". T-046 measured two of its clauses
+    // false — `70` is the SINGLE-segment UCS-2 figure (a concatenated segment
+    // holds 67, so <=2 segments is <=134 units, not 140) and "UCS-2 for el/ru"
+    // is wrong in both directions, since ten Greek capitals ARE in GSM-7 and
+    // three `en` strings are UCS-2 because of an em dash. Recorded and routed
+    // as decisions.md OD-180, not taken. The gate itself measures the encoding
+    // per string and prints the correct budgets on every run.
     name: 'gate:sms-segments',
     spec: 'the SMS segment-count assertion',
     cls: 'BLOCKING',
-    why: 'every SMS-declared Critical/Transactional template at ≤2 segments per locale — ≤306 GSM-7 septets or ≤134 UCS-2 code units, the CONCATENATED budgets, with the encoding measured per string and not inferred from the locale (PM §MVP-N1 AC3, SA §TS-12, §C7)',
+    why: 'every Critical/Transactional SMS template at ≤2 segments per locale, UCS-2 at 70 chars for `el`/`ru` (PM §MVP-N1 AC3, SA §TS-12, §C7)',
   },
   {
     name: 'gate:pii-canary',

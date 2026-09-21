@@ -97,6 +97,7 @@
  *        - re-tier it out of `safety_critical`             -> STRICT-ESCAPE
  *        - disable `el` in the registry                    -> LOCALE-DISABLED
  *        - empty `channels.json`'s sms set entirely        -> NO-SMS-CORPUS
+ *        - narrow the declared worst case it is measured at -> WORST-CASE-NARROWED
  *
  *   D  `review.json` § `pipeline.assignments[<key>].channel` (T-049) — a file
  *      this gate does not own and this ticket did not write. ONE DIRECTION
@@ -108,7 +109,7 @@
  *
  * USAGE:  node packages/i18n/tools/sms-segments.ts [--root <dir>]
  *
- * `--root` points readings A, C(partly) and D at another package root (the
+ * `--root` points readings A, C and D at another package root (the
  * Vitest cases build one in a temporary directory). READING B IS THEN NOT RUN —
  * the compiled catalogue reachable from this script belongs to `packages/i18n`
  * and not to that root — AND THE BANNER SAYS SO on both the pass and the fail
@@ -178,6 +179,31 @@ const STRICT_KEYS_PINNED: readonly string[] = [
 
 /** Every locale enabled on 2026-09-21. */
 const LOCALES_PINNED: readonly string[] = ['en', 'el', 'ru'];
+
+/**
+ * THE DECLARED BOUND ITSELF, pinned — because the cheapest remaining way to
+ * make this gate assert LESS is not to remove a template, it is to NARROW the
+ * worst case it is measured at. Dropping `count`'s `max` to 9 and deleting two
+ * of the three declared names leaves the corpus intact, the pair count intact
+ * and the gate green over a much weaker claim.
+ *
+ * Checked in ONE direction, like every other pin: each entry must still be AT
+ * LEAST this wide. Widening a bound is free; narrowing one costs an edit here
+ * in the same commit. `text` pins the length of the LONGEST declared value,
+ * not the number of them, because three one-character names would satisfy a
+ * count and measure nothing.
+ */
+const WORST_CASE_FLOOR: Readonly<
+  Record<
+    string,
+    {
+      readonly plural?: Readonly<Record<string, number>>;
+      readonly text?: Readonly<Record<string, number>>;
+    }
+  >
+> = {
+  'session.checkins_missed': { plural: { count: 999 }, text: { sitterName: 35 } },
+};
 
 /**
  * READING D's one-directional rule, as data. A copy-review channel in
@@ -656,6 +682,8 @@ interface Rendered {
   readonly text: string;
   readonly binding: Readonly<Record<string, unknown>>;
   readonly measurement: Measurement;
+  /** Every parameter the message takes, whether or not it was bound. Reading C uses it. */
+  readonly params: ReadonlySet<string>;
 }
 
 /**
@@ -758,7 +786,7 @@ function worstRender(
         m.segments > worst.measurement.segments ||
         (m.segments === worst.measurement.segments && m.headroom < worst.measurement.headroom)
       ) {
-        worst = { text, binding: { ...acc }, measurement: m };
+        worst = { text, binding: { ...acc }, measurement: m, params: new Set(names) };
       }
       return;
     }
@@ -919,6 +947,7 @@ async function main(argv: readonly string[]): Promise<void> {
   );
   let asserted = 0;
   const sourceRenders = new Map<string, Rendered>();
+  const observedParams = new Map<string, Set<string>>();
   for (const locale of enabled) {
     const categories = registry.pluralCategories.get(locale) ?? [];
     for (const key of smsKeys) {
@@ -929,6 +958,9 @@ async function main(argv: readonly string[]): Promise<void> {
       const rendered = worstRender(source, locale, entry, categories, where, failures);
       if (rendered === undefined) continue;
       asserted += 1;
+      const seen = observedParams.get(key) ?? new Set<string>();
+      for (const name of rendered.params) seen.add(name);
+      observedParams.set(key, seen);
       sourceRenders.set(`${locale}\u0000${key}`, rendered);
       const m = rendered.measurement;
       console.log(
@@ -972,7 +1004,7 @@ async function main(argv: readonly string[]): Promise<void> {
   }
 
   // ---------------------------------------------------------- C. the pins
-  checkPins(strictKeys, enabled, smsKeys, failures);
+  checkPins(strictKeys, enabled, smsKeys, channels, observedParams, failures);
 
   // ------------------------------------------------- B. the compiled artefact
   if (explicitRoot) {
@@ -991,8 +1023,50 @@ function checkPins(
   strictKeys: readonly string[],
   enabled: readonly string[],
   smsKeys: readonly string[],
+  channels: ReadonlyMap<string, ChannelEntry>,
+  observedParams: ReadonlyMap<string, ReadonlySet<string>>,
   failures: string[],
 ): void {
+  for (const [key, floor] of Object.entries(WORST_CASE_FLOOR)) {
+    if (!smsKeys.includes(key)) continue; // SMS-ESCAPE already named it
+    const declared = channels.get(key)?.worstCase;
+    if (declared === undefined) continue;
+    // The floor binds a parameter the message STILL TAKES. A placeholder
+    // deleted from the copy is a content change, not a narrowed bound, and
+    // review of the diff is the control for it (§ contract §6).
+    const takes = observedParams.get(key) ?? new Set<string>();
+    for (const [param, min] of Object.entries(floor.plural ?? {})) {
+      if (!takes.has(param)) continue;
+      const spec = declared.get(param);
+      if (spec === undefined || spec.kind !== 'plural' || spec.max < min) {
+        failures.push(
+          `WORST-CASE-NARROWED '${key}'.worst_case.${param}: the declared plural bound is ` +
+            `${spec === undefined || spec.kind !== 'plural' ? 'absent' : String(spec.max)}, ` +
+            `below the ${String(min)} pinned in this gate on 2026-09-21. Narrowing the worst ` +
+            'case is the cheapest way to keep this gate green over a weaker claim: the corpus, ' +
+            'the pair count and the banner are all unchanged and only the bound moves. Widening ' +
+            'is free; narrowing costs an edit to WORST_CASE_FLOOR in the same commit.',
+        );
+      }
+    }
+    for (const [param, min] of Object.entries(floor.text ?? {})) {
+      if (!takes.has(param)) continue;
+      const spec = declared.get(param);
+      const longest =
+        spec === undefined || spec.kind !== 'text'
+          ? 0
+          : spec.values.reduce((n, v) => Math.max(n, v.length), 0);
+      if (longest < min) {
+        failures.push(
+          `WORST-CASE-NARROWED '${key}'.worst_case.${param}: the longest declared value is ` +
+            `${String(longest)} UTF-16 code unit(s), below the ${String(min)} pinned in this ` +
+            'gate on 2026-09-21. The pin is on the LENGTH of the longest value, not on how many ' +
+            'are declared, because three one-character names would satisfy a count and measure ' +
+            'nothing.',
+        );
+      }
+    }
+  }
   for (const key of SMS_KEYS_PINNED) {
     if (!smsKeys.includes(key)) {
       failures.push(
