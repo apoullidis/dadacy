@@ -1353,3 +1353,36 @@ test('T-176 THE CHECK IS NOT THE RANKING: regressing the ranking to `format(v)` 
     rmSync(control.dir, { recursive: true, force: true });
   }
 });
+
+test('T-176 MEMBER FIVE, found by asking the model its own question: a `select` parameter that is also PRINTED needs a declared worst case', () => {
+  // The candidate set assumed a `select` parameter's value set is its BRANCH
+  // NAMES. True of what it SELECTS; false of what it PRINTS. Measured at
+  // `b58b713` before the fix: the gate printed `69 unit(s) 1 segment(s),
+  // headroom 65` and exited 0 while ICU sent 214 units — FOUR segments — at a
+  // 150-character `tone`.
+  attack(
+    (root) => {
+      plantSelectOnly(
+        root,
+        'en',
+        '{tone, select, other {Missed check-in}} — {tone} — from {sitterName}',
+      );
+      editChannel(root, SMS_KEY, { worst_case: SELECT_WORST_CASE });
+    },
+    (root) => String(sourceOf(root, 'en')).includes('— {tone} —'),
+    'FAIL',
+    ['PARAM-UNDECLARED', "'tone' selects a branch AND is printed", 'they bound nothing about'],
+  );
+});
+
+test('T-176 and its converse: a `select` parameter that is NEVER printed needs no declaration, because its branch names determine the render', () => {
+  attack(
+    (root) => {
+      plantSelectOnly(root, 'en', '{tone, select, urgent {Urgent} other {Missed}} {sitterName}');
+      editChannel(root, SMS_KEY, { worst_case: SELECT_WORST_CASE });
+    },
+    (root) => String(sourceOf(root, 'en')).includes('urgent {Urgent}'),
+    'PASS',
+    ['"tone":"urgent"', 'asserted 3 (locale, key) pair(s)'],
+  );
+});

@@ -962,6 +962,28 @@ function candidatesFor(
     return [...best.values()];
   }
   if (shape.kind === 'select') {
+    // MEMBER FIVE, found by asking T-176's own question of T-176's own model:
+    // WHAT ELSE DOES THE CANDIDATE SET ASSUME? It assumed a `select`
+    // parameter's value set is its BRANCH NAMES. That is true of what the
+    // parameter SELECTS and false of what it PRINTS: `{tone, select, other
+    // {Missed check-in}} — {tone}` renders whatever string the product passes,
+    // and nothing here bounds it. MEASURED on a fixture root at b58b713: the
+    // gate printed `69 unit(s) 1 segment(s), headroom 65` and EXITED 0 while
+    // ICU sent 214 units = FOUR SEGMENTS at a 150-character `tone`. So a
+    // printed `select` parameter needs a declared worst case exactly as any
+    // other printed parameter does — and one that is never printed does not,
+    // because its branch names then determine the render completely, which is
+    // now a stated property rather than an accident.
+    if (shape.plain > 0 && (declared === undefined || declared.kind !== 'text')) {
+      failures.push(
+        `PARAM-UNDECLARED ${where}: '${param}' selects a branch AND is printed, and ` +
+          'channels.json declares no worst-case value for it. The branch names bound what it ' +
+          'SELECTS; they bound nothing about what it PRINTS, and the product passes a runtime ' +
+          'string. Declare it as `{ "kind": "text", "values": [...] }` — the declared values are ' +
+          'bound in addition to the branch names.',
+      );
+      return [];
+    }
     const rules = new Intl.PluralRules(locale);
     const best = new Map<string, string>();
     for (const v of domainOf(shape, declared)) {
