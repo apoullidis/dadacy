@@ -76,11 +76,19 @@
  *     whole branches unbound — T-046's rework-1 finding (QA-F1): a Greek
  *     template with a long `=0` branch compiled, shipped and sent THREE
  *     SEGMENTS while this gate printed `1 segment(s), headroom 69` and exited
- *     0. Candidates are built from a parameter's BRANCHING ELEMENT — see
- *     `candidatesFor`, which also states the bound: it is the LAST such element
- *     per parameter, so an explicit `=N` in an EARLIER element is still
- *     unmeasured (T-176 owns it; narrowed under OE-43 (B)).
- *     ("THREE MORE PLACES" above is now four.)
+ *     0.
+ *
+ *  5. AND A PARAMETER'S BRANCHES ARE NOT ONE ELEMENT'S BRANCHES. This line
+ *     said, at c140093, that candidates come from "the LAST such element per
+ *     parameter, so an explicit `=N` in an EARLIER element is still unmeasured
+ *     (T-176 owns it)". THAT GAP IS CLOSED. A message is read as a list of
+ *     BRANCHING SITES and a parameter's candidate set is one value per BRANCH
+ *     SIGNATURE across all of its sites — for `select` as well as `plural`, and
+ *     a `select` worst case declared in `channels.json` is now honoured. See
+ *     § the worst case below, which also states what the model still assumes
+ *     and — the part that matters — how it is checked against ICU rather than
+ *     against itself.
+ *     ("THREE MORE PLACES" above is now five.)
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * FIVE READINGS, FROM ARTEFACTS THAT ARE NOT EACH OTHER (PROTOCOL §5.1: "a
