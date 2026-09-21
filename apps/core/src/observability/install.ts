@@ -18,8 +18,14 @@
  * `req.url` or `request.originalUrl` in comment-stripped source), and
  * state/EP-1/T-008.md § Evidence 5 measured how far the narrow claim carries:
  * FOUR independent edits, across three files and two packages, are needed
- * before a planted value reaches Jaeger — and the first of the four is caught
- * here, by the route registry, with the path discarded.
+ * before a planted value reaches Jaeger THROUGH THE REQUEST OBSERVER, WHICH IS
+ * THE ONLY PATH THIS FILE USES — and the first of the four is caught here, by
+ * the route registry, with the path discarded. The qualifier is load-bearing
+ * and was added in T-008 rework 1 (QA-F4): the `Exporter` this function
+ * returns has a `record()` that validates NOTHING (`otlp.ts`), so ONE edit
+ * calling it directly from here would put arbitrary bytes on the allowlisted
+ * `route` key. That is a construction rather than a Tuesday and PROTOCOL §5.1
+ * says to bound it, not chase it — this is the bound.
  *
  * The no-PII claim itself, at the width this build can evidence, is
  * state/EP-1/T-008.md § Published contract §5. `T-119` widens it.

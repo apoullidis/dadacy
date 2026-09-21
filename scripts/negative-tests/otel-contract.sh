@@ -18,11 +18,14 @@
 # that reason, and cases R2a-R2c are what prove the banner is printed rather
 # than the process dying.
 #
-# THIS SUITE MUTATES SEVEN TRACKED FILES AND DELETES NONE (OD-119, T-156). Each
-# is copied to a temp directory before anything runs and restored by an EXIT /
-# INT / TERM trap (OD-160, T-168), so an interrupt leaves the tree as it found
-# it. It also REFUSES A DIRTY TREE at startup, because a mutation restored from
-# a backup would silently overwrite an edit made before the run.
+# THIS SUITE MUTATES THE TRACKED FILES IN `TRACKED` — EIGHT of them — AND
+# DELETES NONE (OD-119, T-156). The count is PRINTED from `${#TRACKED[@]}` at
+# startup rather than restated here, because the hand-written one said SEVEN
+# while the array held eight and all eight were mutated (T-008 rework 1,
+# QA-F3). Each is copied to a temp directory before anything runs and restored
+# by an EXIT / INT / TERM trap (OD-160, T-168), so an interrupt leaves the tree
+# as it found it. It also REFUSES A DIRTY TREE at startup, because a mutation
+# restored from a backup would silently overwrite an edit made before the run.
 set -uo pipefail
 cd "$(dirname "$0")/../.."
 
@@ -51,6 +54,7 @@ BK="$(mktemp -d)"
 for f in "${TRACKED[@]}"; do
   cp "$f" "$BK/$(echo "$f" | tr '/' '_')"
 done
+echo "backed up ${#TRACKED[@]} tracked file(s) to a temp dir; none is deleted by any case"
 
 restore() {
   for f in "${TRACKED[@]}"; do
@@ -59,7 +63,17 @@ restore() {
   rm -f "$PLANTED"
   return 0
 }
-cleanup() { restore; rm -rf "$BK"; }
+# IDEMPOTENT ON PURPOSE. The INT/TERM traps call `cleanup` and then `exit`,
+# which fires the EXIT trap, which called `cleanup` a SECOND time against a
+# backup directory that had already been removed — printing one
+# `cp: cannot stat` line per tracked file AFTER a restore that had in fact
+# succeeded (T-008 rework 1, QA-F3). The backup directory's existence is the
+# flag: once it is gone, the restore has already run.
+cleanup() {
+  [[ -d "$BK" ]] || return 0
+  restore
+  rm -rf "$BK"
+}
 trap 'cleanup' EXIT
 trap 'cleanup; echo; echo "INTERRUPTED — tree restored"; exit 130' INT
 trap 'cleanup; echo; echo "TERMINATED — tree restored"; exit 143' TERM

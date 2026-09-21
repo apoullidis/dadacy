@@ -548,6 +548,9 @@ for (const note of notes) console.log(`  note: ${note}`);
 console.log(
   '  NOT COVERED: any value this run did not plant; any value transformed (hashed, folded, transliterated) before reaching a span; any path not exercised above; anything that is not an OTel span in jaeger. T-119 (gate:pii-canary) is the ticket that widens the first two.',
 );
+console.log(
+  '  AND TWO BOUNDS ON THE SENTINEL SET ITSELF (T-008 rework 1, QA-F6): only TWO of the seven sentinels have any emitter-side channel to a span in this build — path (via route) and traceparent (via traceIdFrom); query, body, header and cookie cannot reach a span at all today and are guards against a future auto-instrumentation SDK, and leak tests the COLLECTOR, not the emitter. And the P0 delta control reads limit=500&lookback=1h, so a jaeger holding 500 or more kinvara-core traces in that window saturates the delta and makes this canary permanently RED — it fails safe, and T-119 must not reuse that control unchanged.',
+);
 
 if (harness !== undefined) {
   console.error(`\nHARNESS ERROR  span canary — ${harness}`);
