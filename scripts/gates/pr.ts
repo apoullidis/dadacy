@@ -52,8 +52,16 @@ const RULE = '='.repeat(78);
  * advisory). Measured in both directions in tasks/state/EP-0/T-044.md
  * § Evidence 6: at floor 23, A6's own mutation is a GATE PASS and the refusal
  * is silently lost.
+ *
+ * 24 -> 25 on 2026-09-21 (T-046), when gate:sms-segments was supplied and
+ * promoted PENDING -> BLOCKING. Case A6's expected reason moved with it; F0's
+ * `W7: 29 concrete` pin did NOT, for the same reason as last time — a
+ * promotion moves a gate between the two matrices and leaves the total alone
+ * (25 blocking + 4 advisory). Measured in both directions in
+ * tasks/state/EP-0/T-046.md § Evidence 5: at floor 24, A6's own mutation is a
+ * GATE PASS and the refusal is silently lost.
  */
-const MIN_BLOCKING = 24;
+const MIN_BLOCKING = 25;
 
 /**
  * Two flags, and they exist so this program can be ATTACKED cheaply rather than

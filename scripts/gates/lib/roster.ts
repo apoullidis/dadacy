@@ -310,13 +310,16 @@ export const ROSTER: readonly RosterEntry[] = [
       'T-045 reads the registry and the gate fails on a `ru` catalogue supplying only `one`/`other`.',
   },
   {
+    // T-046 supplied it (frontend-developer), so this entry moved PENDING ->
+    // BLOCKING and lost its owner/unblocks fields, as T-005 § Published
+    // contract §8 (as amended, OD-176) requires. The corpus it asserts over is
+    // DECLARED in packages/i18n/channels.json, because before T-046 "every
+    // Critical/Transactional SMS template" named a set nobody had defined and
+    // the obvious gate would have been green over nothing.
     name: 'gate:sms-segments',
     spec: 'the SMS segment-count assertion',
-    cls: 'PENDING',
-    why: 'every Critical/Transactional SMS template at ≤2 segments per locale, UCS-2 at 70 chars for `el`/`ru` (PM §MVP-N1 AC3, SA §TS-12, §C7)',
-    owner: 'T-046 — frontend-developer (blocked_by T-040)',
-    unblocks:
-      'T-046 supplies the assertion; it fails on a Greek template exceeding 2 segments and passes at the limit.',
+    cls: 'BLOCKING',
+    why: 'every SMS-declared Critical/Transactional template at ≤2 segments per locale — ≤306 GSM-7 septets or ≤134 UCS-2 code units, the CONCATENATED budgets, with the encoding measured per string and not inferred from the locale (PM §MVP-N1 AC3, SA §TS-12, §C7)',
   },
   {
     name: 'gate:pii-canary',

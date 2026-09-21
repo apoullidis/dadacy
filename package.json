@@ -47,7 +47,7 @@
     "gate:prohibited-claims": "node scripts/gates/not-yet-supplied.ts gate:prohibited-claims",
     "gate:safety-review-currency": "node packages/i18n/tools/safety-review-currency.ts",
     "gate:plural-completeness": "node scripts/gates/not-yet-supplied.ts gate:plural-completeness",
-    "gate:sms-segments": "node scripts/gates/not-yet-supplied.ts gate:sms-segments",
+    "gate:sms-segments": "node packages/i18n/tools/sms-segments.ts",
     "gate:pii-canary": "node scripts/gates/not-yet-supplied.ts gate:pii-canary",
     "gate:pr": "node scripts/gates/pr.ts",
     "gate:heavy": "node scripts/gates/not-yet-supplied.ts gate:heavy"
