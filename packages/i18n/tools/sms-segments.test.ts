@@ -803,7 +803,7 @@ test('a --root run says SOURCE READING ONLY on the FAIL path too', () => {
   );
 });
 
-/* ──────── the worst case covers EVERY BRANCH THE MESSAGE DECLARES (QA-F1) ── */
+/* ─── the worst case covers every branch OF ONE BRANCHING ELEMENT (QA-F1) ─── */
 
 /**
  * T-046 rework 1. `qa-verification` falsified the sentence this whole gate
@@ -818,6 +818,19 @@ test('a --root run says SOURCE READING ONLY on the FAIL path too', () => {
  * Every case in this block would be GREEN under the old rule and is RED (or
  * names its branch) under the new one, which is the only property that makes
  * them worth committing.
+ *
+ * WHAT THESE CASES DO NOT COVER, said here because this is where a reader looks
+ * for the width of the fix (T-046, narrowed under stakeholder ruling OE-43 (B)):
+ * `shapeOf` keys the shape by PARAMETER NAME, so a parameter branched on by
+ * MORE THAN ONE plural or `select` element keeps only the LAST element's
+ * branches. An explicit `=0` in an earlier element is unmeasured and
+ * PLURAL-UNREACHABLE cannot see it either — measured by qa-verification at
+ * 5e6938e (`el` prints 2 segments, ICU sends 4) — and the `select` form of the
+ * same defect is measured in T-046 § Narrowing (OE-43 (B)) §3 (the gate prints
+ * `48 unit(s) 1 segment(s)` and PASSES while ICU sends 176 units = 3 segments).
+ * There is deliberately NO case for either here: the gap is open and owned by
+ * T-176. A case would have to be red, and it would be red against the
+ * committed gate.
  */
 const GREEK_ZERO_BRANCH =
   'Καμία χαμένη καταγραφή από {sitterName} σήμερα. Όλα τα check-in ολοκληρώθηκαν κανονικά ' +

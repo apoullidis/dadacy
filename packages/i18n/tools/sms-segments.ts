@@ -76,8 +76,11 @@
  *     whole branches unbound — T-046's rework-1 finding (QA-F1): a Greek
  *     template with a long `=0` branch compiled, shipped and sent THREE
  *     SEGMENTS while this gate printed `1 segment(s), headroom 69` and exited
- *     0. Candidates are built from THE MESSAGE'S OWN BRANCH STRUCTURE — see
- *     `candidatesFor`. ("THREE MORE PLACES" above is now four.)
+ *     0. Candidates are built from a parameter's BRANCHING ELEMENT — see
+ *     `candidatesFor`, which also states the bound: it is the LAST such element
+ *     per parameter, so an explicit `=N` in an EARLIER element is still
+ *     unmeasured (T-176 owns it; narrowed under OE-43 (B)).
+ *     ("THREE MORE PLACES" above is now four.)
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * FIVE READINGS, FROM ARTEFACTS THAT ARE NOT EACH OTHER (PROTOCOL §5.1: "a
@@ -544,7 +547,9 @@ interface ParamShape {
    * AND the explicit value branches — `=0`, `=1` — which ICU matches BEFORE
    * any category rule. Reading the categories and dropping the `=N` keys is
    * QA-F1: a branch the gate never binds is a branch the product sends
-   * unmeasured.
+   * unmeasured. BOUND: this is ONE element's branch set. `shapeOf` overwrites
+   * per parameter name, so for a parameter branched on TWICE this holds the
+   * LAST element's branches only — see `candidatesFor`'s bound and T-176.
    */
   readonly options: readonly string[];
   /** For a `plural`: the ICU `offset:`, 0 when absent. The category is selected on `n - offset`. */
@@ -596,9 +601,49 @@ function shapeOf(
 /**
  * THE CANDIDATE VALUES FOR ONE PARAMETER, and this is the answer to trap 4.
  *
- * THE RULE, IN ONE SENTENCE: the candidate set is built from THE MESSAGE'S OWN
- * BRANCH STRUCTURE, so that every branch the message declares is rendered and
- * measured — not from a category list the message is assumed to follow.
+ * THE RULE, IN ONE SENTENCE, AT THE WIDTH IT IS ACTUALLY MEASURED: the
+ * candidate set is built from ONE BRANCHING ELEMENT PER PARAMETER — the LAST
+ * one `shapeOf` sees — rather than from a category list the message is assumed
+ * to follow. Every branch OF THAT ELEMENT is rendered and measured.
+ *
+ * THAT SENTENCE USED TO SAY "the message's own branch structure, so that every
+ * branch the message declares is rendered and measured". IT IS NARROWED HERE
+ * (T-046, stakeholder ruling OE-43 (B), 2026-09-21T15:40Z) BECAUSE IT WAS
+ * FALSIFIED, and the gap is real and is NOT closed on this branch:
+ *
+ *   `shapeOf` does `into.set(el.value, …)` unconditionally, so a parameter that
+ *   appears in MORE THAN ONE plural/select element keeps only the LAST
+ *   element's `options`. A branch declared only by an EARLIER element — in
+ *   practice an explicit `=0` — is not in `shape.options` at all, so it is
+ *   never a candidate, never rendered and never measured. `PLURAL-UNREACHABLE`
+ *   cannot see it either, because that loop iterates the SAME `shape.options`:
+ *   the mirror is blind to exactly what the enumeration is blind to, which is
+ *   PROTOCOL §5.1's "a check must not be derived from the same reading as the
+ *   thing it checks".
+ *
+ *   MEASURED, by qa-verification on its own roots at 5e6938e: an `el` message
+ *   pluralising `count` twice with the `=0` in the FIRST element makes this
+ *   gate print `86 unit(s) 2 segment(s), headroom 48` and exit 0, while ICU
+ *   renders 219 units = FOUR SEGMENTS at count=0. The `ru` equivalent prints
+ *   74 and sends 202 = four segments.
+ *
+ *   AND IT IS NOT ONLY `plural`. `shapeOf` overwrites the same way for
+ *   `select`, and `select` has no PLURAL-COVERAGE analogue, so it is the MORE
+ *   exposed of the two: measured in T-046 § Narrowing (OE-43 (B)) §3, an `el`
+ *   message selecting twice on `tone` with the long branch in the first element
+ *   makes this gate print `48 unit(s) 1 segment(s), headroom 86` and exit 0
+ *   while ICU sends 176 units = THREE SEGMENTS.
+ *
+ *   WHAT IS SAFE, also measured, because the bound is only useful if it is
+ *   narrow: the REVERSE element order is safe; a mismatch in CLDR CATEGORY
+ *   branches between the two elements is caught by PLURAL-COVERAGE; and the
+ *   same branch NAME present in both elements is caught (OVER-BUDGET). THE
+ *   LIVE HOLE IS SPECIFICALLY AN EXPLICIT `=N` BRANCH IN ANY ELEMENT OTHER
+ *   THAN THE LAST. Today's corpus is one key with one plural element and
+ *   cannot reach it.
+ *
+ *   OWNED BY T-176 (blocked_by T-046), which takes the per-message model. Do
+ *   not widen this comment back without widening the code first.
  *
  * That sentence is a rewrite (T-046 rework 1, QA-F1). The first version built
  * one candidate per REGISTRY-declared CLDR category and nothing else, which
@@ -618,8 +663,10 @@ function shapeOf(
  *
  * So:
  *
- *  - A `plural` argument declared `max: M` gets ONE value per BRANCH IT
- *    DECLARES — every CLDR category branch and every explicit `=N` branch.
+ *  - A `plural` argument declared `max: M` gets ONE value per BRANCH OF THE
+ *    LAST ELEMENT THAT BRANCHES ON IT — every CLDR category branch and every
+ *    explicit `=N` branch of that element (see the bound above for what an
+ *    earlier element costs).
  *    THE DOMAIN IS THE INTEGERS in [0, M], each mapped to the branch ICU would
  *    actually render it with (`branchOf` below), and for each branch the gate
  *    keeps the value whose `Intl.NumberFormat(locale)` form is LONGEST in
@@ -630,13 +677,23 @@ function shapeOf(
  *    unreachable with integers, so an integer-only candidate set would leave a
  *    committed branch of the message unrendered and the gate would quietly
  *    cover three branches of four while reporting four.
- *  - A `select` argument gets every branch name the message declares, so no
- *    gendered form is skipped. It always did; the plural is now its equal.
+ *  - A `select` argument gets every branch name of THE LAST ELEMENT THAT
+ *    SELECTS ON IT, so no gendered form of that element is skipped. It always
+ *    did; the plural is now its equal — INCLUDING IN THE BOUND ABOVE, AND
+ *    `select` IS THE MORE EXPOSED OF THE TWO, because there is no
+ *    PLURAL-COVERAGE analogue to catch a branch-set mismatch between two
+ *    `select` elements. Measured (T-046 § Narrowing (OE-43 (B)) §3): an `el`
+ *    message selecting twice on `tone`, with the long branch in the FIRST
+ *    element, makes this gate print `48 unit(s) 1 segment(s), headroom 86` and
+ *    exit 0 while ICU sends 176 units = THREE SEGMENTS. T-176 owns it.
  *  - Anything else gets the literal strings declared in `channels.json`.
  *
- * A declared branch that NOTHING in the domain renders is `PLURAL-UNREACHABLE`
- * — the mirror the fix needs, so a branch form nobody anticipated here is
- * refused rather than silently skipped. The one exception is a category branch
+ * A branch OF THAT ELEMENT that nothing in the domain renders is
+ * `PLURAL-UNREACHABLE` — the mirror, so a branch form nobody anticipated here
+ * is refused rather than silently skipped. IT IS A MIRROR OF THE ENUMERATION
+ * AND NOT OF THE MESSAGE: it iterates the same `shape.options`, so it cannot
+ * see a branch an earlier element declared, and it is not a backstop for the
+ * multi-element gap above. The one exception is a category branch
  * SHADOWED by an explicit branch (`=1` beside `one` in `en`, where 1 is the
  * only value CLDR gives `one`): ICU can never render it, so it is named on the
  * run and not measured. PLURAL-COVERAGE still requires the branch to be there.
