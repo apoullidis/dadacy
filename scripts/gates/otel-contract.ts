@@ -300,9 +300,10 @@ if (allowedKeys.length < FLOOR.allowedKeys) {
  *
  * MEASURED, and the translation is named rather than assumed. On the running
  * collector the connector emits OTLP metrics `kinvara.calls` (Sum, monotonic)
- * and `kinvara.duration` (Histogram, `Unit: ms`) — read from
- * `docker logs kinvara-t-008-otel-collector-1` at commit `b29c9e4`,
- * 2026-09-21, and pasted in state/EP-1/T-008.md § Evidence 6. The names below
+ * and `kinvara.duration` (Histogram, `Unit: ms`) — read with
+ * `docker logs kinvara-t-008-otel-collector-1 | grep -E '^     -> Name: '` on
+ * 2026-09-21, against `docker/otel-collector.yaml` as committed at `0a8ab83`
+ * and unchanged since; pasted in state/EP-1/T-008.md § Evidence 6. The names below
  * are those OTLP names under the OpenTelemetry **Prometheus naming
  * convention** (a monotonic Sum gains `_total`; a histogram with `Unit: ms`
  * gains `_milliseconds` and the `_bucket`/`_sum`/`_count` suffixes; `.` maps
