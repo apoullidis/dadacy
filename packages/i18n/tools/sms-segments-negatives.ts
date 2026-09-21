@@ -79,11 +79,32 @@ function json(mutate: (doc: Record<string, unknown>) => void): (s: string) => st
   };
 }
 
-/** Append `n` non-GSM-7 Greek characters to the Greek SMS template. */
+/** Append `n` non-GSM-7 Greek characters to the Greek SMS template's SOURCE. */
 function padGreek(n: number): (s: string) => string {
   return json((doc) => {
     doc['checkins_missed'] = `${String(doc['checkins_missed'])}${PAD.repeat(n)}`;
   });
+}
+
+/**
+ * The same pad, applied to the COMMITTED COMPILED AST for the same key.
+ *
+ * BOTH edits are required, and finding that out was reading B working. The
+ * first version of the two acceptance cases padded the catalogue source alone
+ * and the gate refused them with COMPILED-DRIFT — correctly: the source said
+ * 134 units and the compiled function that actually ships still said 65, so the
+ * measurement would have been about a string nobody sends. The compiled AST is
+ * edited here by hand rather than by running `pnpm --filter @kinvara/i18n
+ * build`, because a full build rewrites every file under `compiled/` and this
+ * harness restores exactly the files it planted in.
+ */
+function padCompiledGreek(n: number): (s: string) => string {
+  return (s) => {
+    const anchor = "  { type: 1, value: 'sitterName' },\n]";
+    if (!s.includes(anchor))
+      throw new Error('the compiled el AST does not have the shape expected');
+    return s.replace(anchor, `${anchor.slice(0, -1)}  { type: 0, value: '${PAD.repeat(n)}' },\n]`);
+  };
 }
 
 function buildCases(elWorstUnits: number, budget: number): readonly Case[] {
@@ -97,8 +118,13 @@ function buildCases(elWorstUnits: number, budget: number): readonly Case[] {
         `Greek template is padded by ${String(toLimit)} non-GSM-7 character(s) so its worst-case ` +
         `render is exactly ${String(budget)} UCS-2 code units — two concatenated segments at 67 ` +
         'units each, with ZERO headroom. A gate built on the single-segment figure of 70 would ' +
-        'call 140 units two segments; this one calls 135 three.',
-      edits: [{ file: CATALOGUE_EL, plant: padGreek(toLimit) }],
+        'call 140 units two segments; this one calls 135 three. The compiled artefact is padded ' +
+        'in the same case because reading B compares the two renders byte for byte — see ' +
+        'padCompiledGreek above.',
+      edits: [
+        { file: CATALOGUE_EL, plant: padGreek(toLimit) },
+        { file: COMPILED_EL, plant: padCompiledGreek(toLimit) },
+      ],
       expect: 'PASS',
       mustInclude: [`UCS-2  ${String(budget)} unit(s) 2 segment(s), headroom 0 unit(s)`],
       mustExclude: ['GATE FAIL', 'CRASH', 'OVER-BUDGET'],
@@ -110,7 +136,10 @@ function buildCases(elWorstUnits: number, budget: number): readonly Case[] {
         'EXCEEDING two segments. One character more than the case above. The refusal names the ' +
         'key, the locale, the measured encoding, the unit count, the segment count, the budget ' +
         'and the worst binding that produced it.',
-      edits: [{ file: CATALOGUE_EL, plant: padGreek(overLimit) }],
+      edits: [
+        { file: CATALOGUE_EL, plant: padGreek(overLimit) },
+        { file: COMPILED_EL, plant: padCompiledGreek(overLimit) },
+      ],
       expect: 'FAIL',
       mustInclude: [
         `OVER-BUDGET '${KEY}' in el`,
