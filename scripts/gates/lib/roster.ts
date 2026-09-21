@@ -317,22 +317,45 @@ export const ROSTER: readonly RosterEntry[] = [
     // Critical/Transactional SMS template" named a set nobody had defined and
     // the obvious gate would have been green over nothing.
     //
-    // The `why` below is UNCHANGED and is NOT mine to edit: T-005 § contract §8
-    // as amended (OD-176) grants a promoting ticket `cls` and the dropping of
-    // owner/unblocks, and "no other field". T-046 measured two of its clauses
-    // false — `70` is the SINGLE-segment UCS-2 figure (a concatenated segment
-    // holds 67, so <=2 segments is <=134 units, not 140) and "UCS-2 for el/ru"
-    // is wrong in both directions, since ten Greek capitals ARE in GSM-7 and
-    // FOUR `en` strings are UCS-2 because of an em dash (T-046 rework 1,
-    // QA-F3: this comment said "three"; the measurement in T-046 § Published
-    // contract §4 and in QA-2 is four — call_112.label, helpline.116111.label,
-    // helpline.1466.label, helpline.199.label). Recorded and routed as
-    // decisions.md OD-180, not taken. The gate itself measures the encoding
-    // per string and prints the correct budgets on every run.
+    // THE `why` BELOW WAS CORRECTED BY T-046 (rework 1b), under T-005 § contract
+    // §8 as amended — OD-176's SIXTH GRANTED EDIT, as clarified by the
+    // orchestrator 2026-09-21T13:15Z: a ticket PROMOTING A HOOK may correct its
+    // OWN entry's `why` when the correction is a fact its own published contract
+    // measures, at any delivery made while the amendment is in force, INCLUDING
+    // A REWORK. No other entry and no other field.
+    //
+    // The old text, quoted so the diff is not the only record of it:
+    //
+    //   every Critical/Transactional SMS template at ≤2 segments per locale,
+    //   UCS-2 at 70 chars for `el`/`ru` (PM §MVP-N1 AC3, SA §TS-12, §C7)
+    //
+    // Two of its clauses were MEASURED false by the ticket that supplied this
+    // gate, and this entry's text is what gate:pr PRINTS as the gate's
+    // description on every run:
+    //
+    //  1. `70` is the SINGLE-segment UCS-2 figure. A concatenated segment
+    //     carries a 6-octet UDH — 48 bits, 3 UTF-16 code units — so it holds 67
+    //     and <=2 segments is <=134 units, not 140. The GSM-7 pair is 153/306,
+    //     not 160/320. A gate built on 70 admits a THREE-segment message: 140
+    //     units is 3. Measured both ways on the real Greek template — it passes
+    //     at exactly 134 and fails at 135 (T-046 § Evidence 3).
+    //  2. "UCS-2 for el/ru" is an assumption and it is wrong in BOTH
+    //     directions. Ten Greek capitals — Δ Φ Γ Λ Ω Π Ψ Σ Θ Ξ — are in the
+    //     GSM-7 basic alphabet, so a 200-character all-Greek-capital string
+    //     measures 2 segments while the locale rule calls it 3 and REJECTS
+    //     VALID COPY; and FOUR `en` strings are UCS-2 because of an em dash
+    //     (call_112.label, helpline.116111.label, helpline.1466.label,
+    //     helpline.199.label), so the rule is lenient there. QA-F3 is that this
+    //     comment said "three" when the measurement, in T-046 § Published
+    //     contract §4 and in QA-2, is four.
+    //
+    // The authority is in T-046 § Published contract §4 (the arithmetic) and §2
+    // (the declared corpus); decisions.md OD-180 is the row that carried this
+    // defect while the bound forbade the edit.
     name: 'gate:sms-segments',
     spec: 'the SMS segment-count assertion',
     cls: 'BLOCKING',
-    why: 'every Critical/Transactional SMS template at ≤2 segments per locale, UCS-2 at 70 chars for `el`/`ru` (PM §MVP-N1 AC3, SA §TS-12, §C7)',
+    why: 'every Critical/Transactional SMS template — the corpus DECLARED in packages/i18n/channels.json — at ≤2 segments per locale, which is ≤134 UCS-2 code units or ≤306 GSM-7 septets because a concatenated segment pays a 6-octet UDH (70/160 are the SINGLE-segment figures), with the encoding MEASURED per string and never inferred from the locale (PM §MVP-N1 AC3, SA §TS-12, §C7)',
   },
   {
     name: 'gate:pii-canary',
