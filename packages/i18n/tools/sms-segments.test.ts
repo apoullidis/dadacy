@@ -1386,3 +1386,31 @@ test('T-176 and its converse: a `select` parameter that is NEVER printed needs n
     ['"tone":"urgent"', 'asserted 3 (locale, key) pair(s)'],
   );
 });
+
+test('T-176 IF THE CHECK DID NOTHING, WOULD IT SAY SO? a probe that observes no branch at all turns the gate RED, not green', () => {
+  // PROTOCOL §5.1: "if your check did nothing at all, would it say so?" The
+  // probe is the one part of this gate whose failure mode could be silence, so
+  // it is broken deliberately: `observe` is made to find no sentinel. Both
+  // `covered` and `reachable` then come back empty, and EVERY declared branch
+  // of the committed corpus is refused as unreachable — a diagnosis, not a
+  // pass. This is the one direction the whole model must not fail in.
+  const regressed = regressedGate([
+    ['    const parts = out.split(SENTINEL);', '    const parts = [out];'],
+  ]);
+  try {
+    attackWith(
+      regressed.file,
+      () => undefined,
+      () => true,
+      'FAIL',
+      [
+        'PLURAL-UNREACHABLE',
+        "renders the plural branch 'other'",
+        '0 of 2 declared branch(es)',
+        '0 of 4 declared branch(es)',
+      ],
+    );
+  } finally {
+    rmSync(regressed.dir, { recursive: true, force: true });
+  }
+});

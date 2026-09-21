@@ -653,8 +653,14 @@ function loadPipelineChannels(root: string): ReadonlyMap<string, string> {
  *     it covers every site's branches but not every joint value pair;
  *   * the declared domain is a DECLARATION (`channels.json`), not a measurement;
  *   * `text` parameters are the declared literals and nothing verifies that the
- *     product cannot produce a longer one;
- *   * the SHADOWED exemption below is still decided with `Intl.PluralRules`.
+ *     product cannot produce a longer one — and that now includes a PRINTED
+ *     `select` parameter, which must be declared (member five, OD-184);
+ *   * the SHADOWED exemption uses `Intl.PluralRules` to decide WHICH category a
+ *     value belongs to, but it fires only when ICU WAS OBSERVED taking an
+ *     explicit `=N` branch of the same element — so a probe that observed
+ *     nothing cannot shadow anything. That conjunct is not decoration: the
+ *     check-less attack found the exemption without it, where a deliberately
+ *     dead probe made every branch look shadowed and the gate PASSED.
  */
 
 /** One `plural` or `select` ELEMENT, in AST traversal order. Not one per parameter. */
@@ -1286,10 +1292,25 @@ function worstRender(
     // matched by an explicit branch first is dead copy ICU can never render —
     // PLURAL-COVERAGE still requires it to be present, so refusing it would be
     // a trap. Anything else is a branch the declared domain cannot reach.
+    //
+    // THE LAST CONJUNCT IS THE ONE THAT MATTERS, and it is here because the
+    // check-less attack found the exemption without it (PROTOCOL §5.1: "if your
+    // check did nothing at all, would it say so?"). Shadowing was decided from
+    // `Intl.PluralRules` alone — "CLDR selects this category somewhere in the
+    // domain" — which is a SECOND READING OF THE LOCALE DATA and not a reading
+    // of what ICU did. With the probe deliberately broken so that it observed
+    // no branch at all, EVERY branch of the committed corpus came back unlit,
+    // every one satisfied that test, and the gate printed four SHADOWED notes
+    // and PASSED. A dead check must be red, so the exemption now also requires
+    // that ICU WAS OBSERVED selecting an explicit `=N` branch of this same
+    // element somewhere in the domain — which is the only thing that can
+    // shadow a category, and which a dead probe cannot produce.
     const domain = domains.get(site.param) ?? [];
+    const explicitWasSelected = [...reachable].some((k) => k.startsWith(`${String(site.id)}:=`));
     const shadowed =
       site.kind === 'plural' &&
       !/^=\d+$/.test(branch) &&
+      explicitWasSelected &&
       domain.some((v) => typeof v === 'number' && rules.select(v - site.offset) === branch);
     if (shadowed) {
       console.log(
