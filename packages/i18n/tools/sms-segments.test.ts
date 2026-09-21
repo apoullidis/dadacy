@@ -831,6 +831,20 @@ test('a --root run says SOURCE READING ONLY on the FAIL path too', () => {
  * There is deliberately NO case for either here: the gap is open and owned by
  * T-176. A case would have to be red, and it would be red against the
  * committed gate.
+ *
+ * AND THREE NARROWER BOUNDS ON THE CASES BELOW, because a passing case reads as
+ * a coverage claim and each of these is one step narrower than its title:
+ *
+ *  - the `offset:` case proves the `one` branch is REACHED. It does not prove
+ *    the candidate is the WORST one: `#` renders `v - offset` while the
+ *    ranking is on `format(v)`, so the gate understates by up to the digit-count
+ *    difference between `max` and `max - offset`. T-176.
+ *  - "the pin is on LENGTH" means LENGTH AND NOT SCRIPT. Replacing the declared
+ *    Greek name with a 38-character LATIN one keeps `WORST_CASE_FLOOR`
+ *    satisfied and retires the cross-script measurement; no case here catches
+ *    that, and the warning lives beside the names in channels.json.
+ *  - an explicit `=N` OUTSIDE the declared [0, max] is bound at its own value.
+ *    That sub-case is reasoned, not planted: no committed message has one.
  */
 const GREEK_ZERO_BRANCH =
   'Καμία χαμένη καταγραφή από {sitterName} σήμερα. Όλα τα check-in ολοκληρώθηκαν κανονικά ' +

@@ -206,6 +206,14 @@ const LOCALES_PINNED: readonly string[] = ['en', 'el', 'ru'];
  * in the same commit. `text` pins the length of the LONGEST declared value,
  * not the number of them, because three one-character names would satisfy a
  * count and measure nothing.
+ *
+ * BOUND, DECLARED HERE AS WELL AS IN § contract §5 BECAUSE THIS IS WHERE THE
+ * PIN LIVES: it pins LENGTH, NOT SCRIPT. Swapping the declared Greek name for a
+ * 38-character LATIN one keeps this floor satisfied and keeps the gate green,
+ * while quietly retiring the cross-script measurement — `en` would become GSM-7
+ * with ~240 units of headroom, and "an English SMS naming a Greek sitter is
+ * UCS-2" would stop being measured by anything. The same warning is in
+ * channels.json beside the declared names, which is where that edit is made.
  */
 const WORST_CASE_FLOOR: Readonly<
   Record<
@@ -670,7 +678,13 @@ function shapeOf(
  *    THE DOMAIN IS THE INTEGERS in [0, M], each mapped to the branch ICU would
  *    actually render it with (`branchOf` below), and for each branch the gate
  *    keeps the value whose `Intl.NumberFormat(locale)` form is LONGEST in
- *    UTF-16 code units. HALF-INTEGERS ARE A FALLBACK, used only for a branch NO
+ *    UTF-16 code units. BOUND ON THAT RANKING, WITH AN `offset:`: `#` renders
+ *    `v − offset`, but the ranking is on `format(v)`, so the two disagree and
+ *    the gate takes the first of a tie. IT UNDERSTATES, by up to the difference
+ *    in digit count between `max` and `max − offset` — measured by
+ *    qa-verification: a planted `en` message with `offset:100` is measured at
+ *    `count=100` -> 171 units while the product at `count=999` sends 173
+ *    characters. No committed message uses `offset:`; T-176 owns it. HALF-INTEGERS ARE A FALLBACK, used only for a branch NO
  *    INTEGER in the domain reaches, and the run NAMES every branch measured
  *    that way — at the LONGEST half-integer in the domain, not the first one
  *    found (QA-F2). They are not decoration: Russian's `other` category is
@@ -745,6 +759,11 @@ function candidatesFor(
       return shape.options.includes(cat) ? cat : 'other';
     };
     const best = new Map<string, number>();
+    // RANKS ON `format(v)`. With an `offset:` the message renders `v − offset`,
+    // so this ranking is on the wrong quantity and UNDERSTATES by up to the
+    // digit-count difference between `max` and `max − offset` (T-046, declared
+    // in § contract §5 and owned by T-176). Left as it is deliberately:
+    // changing it is an executable change and this delivery is a narrowing.
     const consider = (v: number): void => {
       const branch = branchOf(v);
       const current = best.get(branch);

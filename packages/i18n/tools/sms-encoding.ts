@@ -24,6 +24,33 @@
  * 320 and not 140. A gate built on 70 and 160 is wrong in the direction that
  * LETS A THREE-SEGMENT MESSAGE THROUGH. Both sides of both boundaries are
  * asserted in `tools/sms-segments.test.ts`.
+ *
+ * ───────────────────────────────────────────────────────────────────────────
+ * WHAT THIS ARITHMETIC DOES NOT MODEL — declared HERE because this file is
+ * where the segment count is computed and is therefore the point of use.
+ * (T-046; also in its § Published contract §6 and § Evidence 10, and routed as
+ * decisions.md OD-181.)
+ *
+ * THE GSM-7 EXTENSION-CHARACTER SEGMENT-BOUNDARY STRADDLE. An extension
+ * character — \f ^ { } \ [ ~ ] | € — is ESC + code and CANNOT BE SPLIT across
+ * a concatenated segment boundary: a 153-septet segment whose last septet would
+ * be the ESC pushes the whole pair into the next segment. `segmentsFor` is
+ * ceil(units / 153) over a total septet count and cannot see that. MEASURED:
+ * the body `152 x "x" + "€" + 152 x "x"` is 306 septets, this module reports
+ * TWO segments, and packing it honestly gives THREE.
+ *
+ * IT IS WRONG IN THE DIRECTION THAT ADMITS A THREE-SEGMENT MESSAGE, which is
+ * the direction this whole module exists to close, so it is stated rather than
+ * glossed. DISTANCE, measured not asserted: the longest GSM-7 committed
+ * catalogue string is `en common.dossier.verified` at 115 septets against 306,
+ * and NO RENDERED string in the corpus contains a GSM-7 extension character at
+ * all — the only ones anywhere in the three catalogues are `{` and `}`, which
+ * are ICU syntax and are consumed by the parser before anything is measured.
+ *
+ * `docker/fakes/telephony/server.mjs`'s `segmentSms()` — the independent
+ * implementation this one is cross-checked against — HAS THE IDENTICAL GAP, so
+ * fixing either alone converts that agreement into a disagreement. OD-181 routes
+ * BOTH to one ticket for that reason. Do not fix this one on its own.
  */
 
 /**
