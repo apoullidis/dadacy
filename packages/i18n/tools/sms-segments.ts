@@ -442,7 +442,14 @@ function loadChannels(
       }
       let bad = false;
       for (const [param, spec] of Object.entries(wc)) {
-        if (param === '//') continue;
+        // ANY key beginning with `//` is a comment, not a declared parameter —
+        // the same convention `tiers.json` and this file's own top level use.
+        // T-046 skipped the literal `'//'` ONLY, so a SECOND comment key was
+        // INPUT-refused as a malformed declared parameter, and its own `select`
+        // disclosure had to be appended into the existing `//` value instead of
+        // being given a key of its own. A declaration whose comments cannot be
+        // split is a declaration people stop annotating (T-176, member 4).
+        if (param.startsWith('//')) continue;
         if (!isRecord(spec)) {
           failures.push(`INPUT channels.json: '${key}'.worst_case.${param} is not an object`);
           bad = true;
@@ -547,18 +554,108 @@ function loadPipelineChannels(root: string): ReadonlyMap<string, string> {
 
 /* ------------------------------------------------------- the worst case */
 
-interface ParamShape {
-  readonly kind: 'plural' | 'select' | 'text';
-  /**
-   * The branch names the message declares, VERBATIM as ICU spells them. For a
-   * `select` that is the branch set; for a `plural` it is the CLDR categories
-   * AND the explicit value branches — `=0`, `=1` — which ICU matches BEFORE
-   * any category rule. Reading the categories and dropping the `=N` keys is
-   * QA-F1: a branch the gate never binds is a branch the product sends
-   * unmeasured. BOUND: this is ONE element's branch set. `shapeOf` overwrites
-   * per parameter name, so for a parameter branched on TWICE this holds the
-   * LAST element's branches only — see `candidatesFor`'s bound and T-176.
-   */
+/**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * THE MODEL (T-176), AND WHY IT IS A MODEL RATHER THAN FOUR PATCHES.
+ *
+ * T-046 shipped with a worst case built from a per-PARAMETER branch set, and
+ * two QA passes found four members of ONE defect family by asking the same
+ * question each time: WHAT ELSE DOES THE CANDIDATE SET ASSUME? Each member was
+ * a different answer to that question —
+ *
+ *   1. that a parameter is branched on by exactly ONE element (`shapeOf` did
+ *      `into.set(name, …)` unconditionally, so a message branching twice on one
+ *      parameter kept only the LAST element's branches: a green gate, exit 0,
+ *      printing `2 segment(s)` over a Greek message ICU sends as FOUR);
+ *   2. the same for `select`, which was MORE exposed because there is no
+ *      PLURAL-COVERAGE analogue and because a `select` worst_case declaration
+ *      was ignored outright (`48 unit(s) 1 segment(s)`, exit 0, against 176
+ *      units = three segments);
+ *   3. that the longest `Intl.NumberFormat(v)` form is the longest RENDER, when
+ *      `#` renders `v − offset`;
+ *   4. (in the declaration's parser) that a comment key is spelled exactly `//`.
+ *
+ * Patching four members leaves the fifth. So the model is stated once, in terms
+ * of what it actually assumes, and then CHECKED AGAINST ICU RATHER THAN AGAINST
+ * ITSELF:
+ *
+ *   THE READING. A message is a list of BRANCHING SITES — one per `plural` or
+ *   `select` ELEMENT, not per parameter — collected from the parsed AST,
+ *   including sites nested inside another site's branch and inside an ICU tag.
+ *   A parameter's model is the whole list of sites that branch on it.
+ *
+ *   THE REDUCTION. For a parameter, two values that make EVERY site on it
+ *   select the same branch produce the same message SHAPE, so only the longest
+ *   of them can be the worst case. The candidate set is therefore ONE VALUE PER
+ *   DISTINCT BRANCH SIGNATURE — the tuple of branches all its sites select —
+ *   and not one value per branch of one element. With a single site that is
+ *   exactly T-046's rule, so nothing about the committed corpus moves; with two
+ *   sites it is the fix for members 1 and 2 at once, because `=0 in the first
+ *   element` is a signature no other value produces.
+ *
+ *   THE RANKING inside a signature class is on the STRINGS THE MESSAGE INSERTS
+ *   — `format(v − offset)` for each distinct `offset:` among the sites, plus
+ *   `format(v)` where the parameter is also printed plainly — and not on
+ *   `format(v)` alone. That is member 3, closed by construction rather than by
+ *   special case.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * AND THE PART THAT MATTERS MOST: THE CHECK IS NOT DERIVED FROM THE READING.
+ *
+ * T-046's mirror (`PLURAL-UNREACHABLE`) iterated the SAME per-parameter map the
+ * enumeration did, so it was blind to exactly what the enumeration was blind to
+ * — PROTOCOL §5.1's own failure mode, "a check must not be derived from the
+ * same reading as the thing it checks". A reduction verified against the map it
+ * was computed from rebuilds that trap one level up, so this one is verified
+ * against ICU:
+ *
+ *   THE PROBE. A SENTINEL CLONE of the parsed AST is built in which every
+ *   branch body of every site is prefixed with a unique `\u0001<site>:<branch>`
+ *   literal, and it is formatted by the SAME `intl-messageformat` evaluator with
+ *   the SAME binding. The output then NAMES the branches ICU actually selected.
+ *   Nothing in it comes from `branchAt`, from the signature, or from the
+ *   candidate map: it is ICU reporting on itself.
+ *
+ *   THE SWEEP. Every parameter that has a site is then swept across its WHOLE
+ *   declared domain — not its candidate set — while the others are held at each
+ *   of their candidates, and both the probe and the real message are rendered:
+ *
+ *     REACHABLE  = every (site, branch) the sweep observed ICU select.
+ *     COVERED    = every (site, branch) the MEASURED product observed.
+ *     SWEEP-WORST= the worst real render the sweep found.
+ *
+ *   CANDIDATE-INCOMPLETE fires on REACHABLE \ COVERED: ICU renders a branch
+ *   somewhere in the declared domain that no binding this gate measured ever
+ *   rendered. That is the refusal the old mirror could not make, and it does not
+ *   know or care WHY the reduction missed it — a fifth member of this family
+ *   turns the gate red without anyone having anticipated it.
+ *
+ *   CANDIDATE-UNDERSTATED fires when SWEEP-WORST is worse than the product's
+ *   worst: the reduction kept the wrong representative of a signature class.
+ *   The reported measurement is the worse of the two, so the budget is never
+ *   asserted against the optimistic one.
+ *
+ *   PLURAL-UNREACHABLE / SELECT-UNREACHABLE now fire on branches the sweep
+ *   never lit at all — a branch the catalogue declares and the declared domain
+ *   cannot render — rather than on `shape.options` minus `best.keys()`.
+ *
+ * WHAT THIS STILL ASSUMES, stated rather than discovered — see § Published
+ * contract §6 for the full list with its measurements:
+ *   * the sweep varies ONE parameter at a time (others at their candidates), so
+ *     it covers every site's branches but not every joint value pair;
+ *   * the declared domain is a DECLARATION (`channels.json`), not a measurement;
+ *   * `text` parameters are the declared literals and nothing verifies that the
+ *     product cannot produce a longer one;
+ *   * the SHADOWED exemption below is still decided with `Intl.PluralRules`.
+ */
+
+/** One `plural` or `select` ELEMENT, in AST traversal order. Not one per parameter. */
+interface BranchSite {
+  /** Stable index in traversal order; the probe's sentinels are keyed by it. */
+  readonly id: number;
+  readonly param: string;
+  readonly kind: 'plural' | 'select';
+  /** The branch names this ELEMENT declares, verbatim as ICU spells them (`=0`, `one`, …). */
   readonly options: readonly string[];
   /** For a `plural`: the ICU `offset:`, 0 when absent. The category is selected on `n - offset`. */
   readonly offset: number;
@@ -566,151 +663,171 @@ interface ParamShape {
   readonly ordinal: boolean;
 }
 
-/** The parameters a message takes, and what kind each is, from its ICU AST. */
-function shapeOf(
-  elements: readonly MessageFormatElement[],
-  into: Map<string, ParamShape>,
-): Map<string, ParamShape> {
-  for (const el of elements) {
+interface ParamShape {
+  readonly kind: 'plural' | 'select' | 'text';
+  /** EVERY branching element on this parameter, in source order. Empty for `text`. */
+  readonly sites: readonly BranchSite[];
+  /** The UNION of every site's branch names. Never one element's set. */
+  readonly options: readonly string[];
+  /** How many times the parameter is printed plainly (`{p}`, `{p, number}`, …). */
+  readonly plain: number;
+}
+
+const SENTINEL = '\u0001';
+const siteKey = (site: BranchSite, branch: string): string => `${String(site.id)}:${branch}`;
+
+/**
+ * ONE traversal that does both halves of the reading, so they cannot drift: it
+ * collects the sites AND writes the probe's sentinels into a clone of the same
+ * AST, in the same order. `TYPE.tag` children are traversed — T-046's `shapeOf`
+ * did not, so a parameter reachable only inside `<b>{who}</b>` was invisible to
+ * the shape (it then failed loudly as RENDER-FAILED rather than silently, but
+ * it was invisible).
+ */
+function collectSites(
+  probe: MessageFormatElement[],
+  sites: BranchSite[],
+  plains: Map<string, number>,
+): void {
+  for (const el of probe) {
     switch (el.type) {
       case TYPE.plural:
-        into.set(el.value, {
-          kind: 'plural',
+      case TYPE.select: {
+        const site: BranchSite = {
+          id: sites.length,
+          param: el.value,
+          kind: el.type === TYPE.plural ? 'plural' : 'select',
           options: Object.keys(el.options),
-          offset: el.offset,
-          ordinal: el.pluralType === 'ordinal',
-        });
-        for (const opt of Object.values(el.options)) shapeOf(opt.value, into);
+          offset: el.type === TYPE.plural ? el.offset : 0,
+          ordinal: el.type === TYPE.plural && el.pluralType === 'ordinal',
+        };
+        sites.push(site);
+        for (const [name, opt] of Object.entries(el.options)) {
+          opt.value = [
+            { type: TYPE.literal, value: `${SENTINEL}${siteKey(site, name)}${SENTINEL}` },
+            ...opt.value,
+          ];
+          collectSites(opt.value as MessageFormatElement[], sites, plains);
+        }
         break;
-      case TYPE.select:
-        into.set(el.value, {
-          kind: 'select',
-          options: Object.keys(el.options),
-          offset: 0,
-          ordinal: false,
-        });
-        for (const opt of Object.values(el.options)) shapeOf(opt.value, into);
-        break;
+      }
       case TYPE.argument:
       case TYPE.number:
       case TYPE.date:
       case TYPE.time:
-        if (!into.has(el.value)) {
-          into.set(el.value, { kind: 'text', options: [], offset: 0, ordinal: false });
-        }
+        plains.set(el.value, (plains.get(el.value) ?? 0) + 1);
+        break;
+      case TYPE.tag:
+        collectSites(el.children as MessageFormatElement[], sites, plains);
         break;
       default:
         break;
     }
   }
-  return into;
+}
+
+/** The parameters a message takes, each with EVERY element that branches on it. */
+function shapeOf(
+  sites: readonly BranchSite[],
+  plains: ReadonlyMap<string, number>,
+  failures: string[],
+  where: string,
+): Map<string, ParamShape> {
+  const byParam = new Map<string, BranchSite[]>();
+  for (const site of sites) {
+    const list = byParam.get(site.param) ?? [];
+    list.push(site);
+    byParam.set(site.param, list);
+  }
+  const out = new Map<string, ParamShape>();
+  for (const [param, list] of byParam) {
+    const kinds = new Set(list.map((s) => s.kind));
+    if (kinds.size > 1) {
+      failures.push(
+        `PARAM-KIND-CONFLICT ${where}: '${param}' is branched on as BOTH a plural and a select ` +
+          'in the same message. The declared worst case can only be one of the two, so this gate ' +
+          'refuses rather than picking one and measuring the message against the wrong domain.',
+      );
+    }
+    const options: string[] = [];
+    for (const site of list) {
+      for (const name of site.options) if (!options.includes(name)) options.push(name);
+    }
+    out.set(param, {
+      kind: list[0]?.kind ?? 'text',
+      sites: list,
+      options,
+      plain: plains.get(param) ?? 0,
+    });
+  }
+  for (const [param, count] of plains) {
+    if (!out.has(param)) out.set(param, { kind: 'text', sites: [], options: [], plain: count });
+  }
+  return out;
+}
+
+/** The branch THIS SITE selects for `v`, selected the way ICU selects one. */
+function branchAt(site: BranchSite, v: unknown, rules: Intl.PluralRules): string {
+  if (site.kind === 'select') {
+    const name = String(v);
+    return site.options.includes(name) ? name : 'other';
+  }
+  const n = typeof v === 'number' ? v : Number(v);
+  const exact = `=${String(n)}`;
+  if (site.options.includes(exact)) return exact;
+  const cat = rules.select(n - site.offset);
+  return site.options.includes(cat) ? cat : 'other';
+}
+
+const signatureOf = (shape: ParamShape, v: unknown, rules: Intl.PluralRules): string =>
+  shape.sites.map((s) => `${String(s.id)}=${branchAt(s, v, rules)}`).join('|');
+
+/** The WHOLE declared domain of a parameter — what the sweep verifies the reduction against. */
+function domainOf(shape: ParamShape, declared: DeclaredParam | undefined): readonly unknown[] {
+  if (shape.kind === 'plural') {
+    if (declared === undefined || declared.kind !== 'plural') return [];
+    const out: number[] = [];
+    for (let n = 0; n <= declared.max; n += 1) out.push(n);
+    for (const site of shape.sites) {
+      for (const branch of site.options) {
+        if (!/^=\d+$/.test(branch)) continue;
+        const v = Number(branch.slice(1));
+        if (!out.includes(v)) out.push(v);
+      }
+    }
+    for (let n = 0; n <= declared.max; n += 1) out.push(n + 0.5);
+    return out;
+  }
+  if (shape.kind === 'select') {
+    const out: string[] = [...shape.options];
+    if (declared !== undefined && declared.kind === 'text') {
+      for (const v of declared.values) if (!out.includes(v)) out.push(v);
+    }
+    return out;
+  }
+  return declared !== undefined && declared.kind === 'text' ? declared.values : [];
 }
 
 /**
- * THE CANDIDATE VALUES FOR ONE PARAMETER, and this is the answer to trap 4.
+ * THE CANDIDATE VALUES FOR ONE PARAMETER: one per distinct BRANCH SIGNATURE.
  *
- * THE RULE, IN ONE SENTENCE, AT THE WIDTH IT IS ACTUALLY MEASURED: the
- * candidate set is built from ONE BRANCHING ELEMENT PER PARAMETER — the LAST
- * one `shapeOf` sees — rather than from a category list the message is assumed
- * to follow. Every branch OF THAT ELEMENT is rendered and measured.
+ * The signature is the tuple of branches every site on this parameter selects,
+ * so two values in the same class make the message take the same shape
+ * everywhere and only the longest of them can be the worst case. This is the
+ * whole of T-176's reading; `worstRender`'s sweep is what checks it.
  *
- * THAT SENTENCE USED TO SAY "the message's own branch structure, so that every
- * branch the message declares is rendered and measured". IT IS NARROWED HERE
- * (T-046, stakeholder ruling OE-43 (B), 2026-09-21T15:40Z) BECAUSE IT WAS
- * FALSIFIED, and the gap is real and is NOT closed on this branch:
+ * Integers first, then half-integers ONLY for a signature no integer produced —
+ * kept from T-046 (QA-F2) because a half-integer is a value the product cannot
+ * send, and it exists only so that a branch integers cannot reach (Russian's
+ * `other`) is measured rather than skipped. Within a class the value kept is
+ * the one whose INSERTED STRINGS are longest: `format(v − offset)` per distinct
+ * `offset:` among the sites, plus `format(v)` where the parameter is also
+ * printed plainly. Ties go to the larger value.
  *
- *   `shapeOf` does `into.set(el.value, …)` unconditionally, so a parameter that
- *   appears in MORE THAN ONE plural/select element keeps only the LAST
- *   element's `options`. A branch declared only by an EARLIER element — in
- *   practice an explicit `=0` — is not in `shape.options` at all, so it is
- *   never a candidate, never rendered and never measured. `PLURAL-UNREACHABLE`
- *   cannot see it either, because that loop iterates the SAME `shape.options`:
- *   the mirror is blind to exactly what the enumeration is blind to, which is
- *   PROTOCOL §5.1's "a check must not be derived from the same reading as the
- *   thing it checks".
- *
- *   MEASURED, by qa-verification on its own roots at 5e6938e: an `el` message
- *   pluralising `count` twice with the `=0` in the FIRST element makes this
- *   gate print `86 unit(s) 2 segment(s), headroom 48` and exit 0, while ICU
- *   renders 219 units = FOUR SEGMENTS at count=0. The `ru` equivalent prints
- *   74 and sends 202 = four segments.
- *
- *   AND IT IS NOT ONLY `plural`. `shapeOf` overwrites the same way for
- *   `select`, and `select` has no PLURAL-COVERAGE analogue, so it is the MORE
- *   exposed of the two: measured in T-046 § Narrowing (OE-43 (B)) §3, an `el`
- *   message selecting twice on `tone` with the long branch in the first element
- *   makes this gate print `48 unit(s) 1 segment(s), headroom 86` and exit 0
- *   while ICU sends 176 units = THREE SEGMENTS.
- *
- *   WHAT IS SAFE, also measured, because the bound is only useful if it is
- *   narrow: the REVERSE element order is safe; a mismatch in CLDR CATEGORY
- *   branches between the two elements is caught by PLURAL-COVERAGE; and the
- *   same branch NAME present in both elements is caught (OVER-BUDGET). THE
- *   LIVE HOLE IS SPECIFICALLY AN EXPLICIT `=N` BRANCH IN ANY ELEMENT OTHER
- *   THAN THE LAST. Today's corpus is one key with one plural element and
- *   cannot reach it.
- *
- *   OWNED BY T-176 (blocked_by T-046), which takes the per-message model. Do
- *   not widen this comment back without widening the code first.
- *
- * That sentence is a rewrite (T-046 rework 1, QA-F1). The first version built
- * one candidate per REGISTRY-declared CLDR category and nothing else, which
- * left a whole family of branches bound by nothing:
- *
- *   - an EXPLICIT `=N` branch. ICU matches `=0 {No missed check-ins}` BEFORE
- *     any category rule, and `Intl.PluralRules.select(0)` is `other`, so the
- *     `other` candidate (the longest integer, 100) rendered the `other` branch
- *     and the `=0` branch was never bound, never rendered and never measured.
- *     A Greek template with a long `=0` branch compiled, shipped, and sent
- *     THREE SEGMENTS while this gate printed `1 segment(s), headroom 69`.
- *   - an `offset:`, which ICU subtracts BEFORE selecting the category, so a
- *     candidate chosen on `select(n)` lands in a different branch than the one
- *     it was chosen for.
- *   - a `selectordinal`, whose categories are the ORDINAL set and not the
- *     cardinal one `locale-registry.json` declares.
- *
- * So:
- *
- *  - A `plural` argument declared `max: M` gets ONE value per BRANCH OF THE
- *    LAST ELEMENT THAT BRANCHES ON IT — every CLDR category branch and every
- *    explicit `=N` branch of that element (see the bound above for what an
- *    earlier element costs).
- *    THE DOMAIN IS THE INTEGERS in [0, M], each mapped to the branch ICU would
- *    actually render it with (`branchOf` below), and for each branch the gate
- *    keeps the value whose `Intl.NumberFormat(locale)` form is LONGEST in
- *    UTF-16 code units. BOUND ON THAT RANKING, WITH AN `offset:`: `#` renders
- *    `v − offset`, but the ranking is on `format(v)`, so the two disagree and
- *    the gate takes the first of a tie. IT UNDERSTATES, by up to the difference
- *    in digit count between `max` and `max − offset` — measured by
- *    qa-verification: a planted `en` message with `offset:100` is measured at
- *    `count=100` -> 171 units while the product at `count=999` sends 173
- *    characters. No committed message uses `offset:`; T-176 owns it. HALF-INTEGERS ARE A FALLBACK, used only for a branch NO
- *    INTEGER in the domain reaches, and the run NAMES every branch measured
- *    that way — at the LONGEST half-integer in the domain, not the first one
- *    found (QA-F2). They are not decoration: Russian's `other` category is
- *    unreachable with integers, so an integer-only candidate set would leave a
- *    committed branch of the message unrendered and the gate would quietly
- *    cover three branches of four while reporting four.
- *  - A `select` argument gets every branch name of THE LAST ELEMENT THAT
- *    SELECTS ON IT, so no gendered form of that element is skipped. It always
- *    did; the plural is now its equal — INCLUDING IN THE BOUND ABOVE, AND
- *    `select` IS THE MORE EXPOSED OF THE TWO, because there is no
- *    PLURAL-COVERAGE analogue to catch a branch-set mismatch between two
- *    `select` elements. Measured (T-046 § Narrowing (OE-43 (B)) §3): an `el`
- *    message selecting twice on `tone`, with the long branch in the FIRST
- *    element, makes this gate print `48 unit(s) 1 segment(s), headroom 86` and
- *    exit 0 while ICU sends 176 units = THREE SEGMENTS. T-176 owns it.
- *  - Anything else gets the literal strings declared in `channels.json`.
- *
- * A branch OF THAT ELEMENT that nothing in the domain renders is
- * `PLURAL-UNREACHABLE` — the mirror, so a branch form nobody anticipated here
- * is refused rather than silently skipped. IT IS A MIRROR OF THE ENUMERATION
- * AND NOT OF THE MESSAGE: it iterates the same `shape.options`, so it cannot
- * see a branch an earlier element declared, and it is not a backstop for the
- * multi-element gap above. The one exception is a category branch
- * SHADOWED by an explicit branch (`=1` beside `one` in `en`, where 1 is the
- * only value CLDR gives `one`): ICU can never render it, so it is named on the
- * run and not measured. PLURAL-COVERAGE still requires the branch to be there.
+ * A `select` parameter's domain is the UNION of every site's branch names AND
+ * any values `channels.json` declares for it — T-046 returned one element's
+ * branch names and ignored the declaration outright, so a declared value was
+ * never bound and the file said so in a `why` nobody could rely on.
  */
 function candidatesFor(
   param: string,
@@ -721,7 +838,6 @@ function candidatesFor(
   where: string,
   failures: string[],
 ): readonly unknown[] {
-  if (shape.kind === 'select') return shape.options;
   if (shape.kind === 'plural') {
     if (declared === undefined || declared.kind !== 'plural') {
       failures.push(
@@ -732,7 +848,8 @@ function candidatesFor(
       );
       return [];
     }
-    if (shape.ordinal) {
+    for (const site of shape.sites) {
+      if (!site.ordinal) continue;
       failures.push(
         `PLURAL-ORDINAL ${where}: '${param}' is a \`selectordinal\`. Its branches are the ORDINAL ` +
           'CLDR categories, and locale-registry.json declares the CARDINAL set — the one ' +
@@ -744,127 +861,91 @@ function candidatesFor(
     }
     const rules = new Intl.PluralRules(locale);
     const fmt = new Intl.NumberFormat(locale);
-    const isExplicit = (branch: string): boolean => /^=\d+$/.test(branch);
-    /**
-     * THE BRANCH ICU WOULD ACTUALLY RENDER `v` WITH, selected the way ICU
-     * selects one: an explicit `=N` branch beats every category rule; the
-     * category is chosen on `n - offset`; a category with no branch falls
-     * through to `other`. Everything below groups by THIS, not by
-     * `rules.select`, which is the whole of the QA-F1 fix.
-     */
-    const branchOf = (v: number): string => {
-      const exact = `=${String(v)}`;
-      if (shape.options.includes(exact)) return exact;
-      const cat = rules.select(v - shape.offset);
-      return shape.options.includes(cat) ? cat : 'other';
+    // RANKS ON THE STRINGS THE MESSAGE INSERTS, not on `format(v)`: `#` renders
+    // `v − offset`, and T-046 ranked on the unadjusted value and understated by
+    // up to the digit-count difference between `max` and `max − offset`. Each
+    // distinct offset is counted once; where the parameter is also printed
+    // plainly, `format(v)` is counted too.
+    const offsets = [...new Set(shape.sites.map((s) => s.offset))];
+    const widthOf = (v: number): number => {
+      let width = offsets.reduce((n, o) => n + fmt.format(v - o).length, 0);
+      if (shape.plain > 0) width += fmt.format(v).length;
+      return width;
     };
     const best = new Map<string, number>();
-    // RANKS ON `format(v)`. With an `offset:` the message renders `v − offset`,
-    // so this ranking is on the wrong quantity and UNDERSTATES by up to the
-    // digit-count difference between `max` and `max − offset` (T-046, declared
-    // in § contract §5 and owned by T-176). Left as it is deliberately:
-    // changing it is an executable change and this delivery is a narrowing.
     const consider = (v: number): void => {
-      const branch = branchOf(v);
-      const current = best.get(branch);
-      if (current === undefined || fmt.format(v).length > fmt.format(current).length) {
-        best.set(branch, v);
+      const sig = signatureOf(shape, v, rules);
+      const current = best.get(sig);
+      if (current === undefined) {
+        best.set(sig, v);
+        return;
       }
+      // Strictly greater INSERTED width wins; a tie keeps the first value
+      // found, because a tie is by construction the same inserted width.
+      if (widthOf(v) > widthOf(current)) best.set(sig, v);
     };
-    // Pass 1 — the declared domain: the INTEGERS in [0, max].
-    for (let n = 0; n <= declared.max; n += 1) consider(n);
-    // Pass 1b — an explicit `=N` OUTSIDE [0, max] is still a branch this
-    // message renders, so it is bound at its own value. Measuring it is
-    // conservative: an extra binding can only widen the worst case.
-    const explicitBranches = shape.options.filter(isExplicit);
-    for (const branch of explicitBranches) {
-      if (!best.has(branch)) best.set(branch, Number(branch.slice(1)));
+    // Pass 1 — the declared domain: the INTEGERS in [0, max], plus any explicit
+    // `=N` branch OUTSIDE it, which is still a branch this message renders.
+    // Measuring it is conservative: an extra binding can only widen the worst case.
+    for (const v of domainOf(shape, declared)) {
+      if (typeof v === 'number' && Number.isInteger(v)) consider(v);
     }
-    if (explicitBranches.length > 0) {
-      console.log(
-        `      note ${where}: the plural on '${param}' declares explicit branch(es) ` +
-          `[${explicitBranches.join(', ')}], which ICU matches BEFORE any CLDR category rule. ` +
-          'Each is bound at its own value and rendered, because a branch the gate never binds is ' +
-          'a branch the product sends unmeasured (T-046 rework 1, QA-F1).',
-      );
-    }
-    // Pass 2 — half-integers, ONLY for a branch no integer reached, and the
-    // LONGEST one in the domain rather than the first found (QA-F2): the guard
-    // is on what PASS 1 reached, so pass 2 keeps competing within the branch.
     const reachedByInteger = new Set(best.keys());
-    const fromHalves: string[] = [];
-    if (shape.options.some((b) => !reachedByInteger.has(b))) {
-      for (let n = 0; n <= declared.max; n += 1) {
-        const v = n + 0.5;
-        if (reachedByInteger.has(branchOf(v))) continue;
-        consider(v);
-      }
-      for (const branch of shape.options) {
-        if (!reachedByInteger.has(branch) && best.has(branch)) fromHalves.push(branch);
-      }
+    // Pass 2 — half-integers, ONLY for a signature no integer reached.
+    for (const v of domainOf(shape, declared)) {
+      if (typeof v !== 'number' || Number.isInteger(v)) continue;
+      if (reachedByInteger.has(signatureOf(shape, v, rules))) continue;
+      consider(v);
     }
+    const fromHalves = [...best.entries()].filter(([sig]) => !reachedByInteger.has(sig));
     if (fromHalves.length > 0) {
+      const branches = new Set<string>();
+      for (const [, v] of fromHalves) {
+        for (const site of shape.sites) branches.add(branchAt(site, v, rules));
+      }
       console.log(
-        `      note ${where}: plural branch${fromHalves.length === 1 ? '' : 'es'} ` +
-          `[${fromHalves.join(', ')}] ${fromHalves.length === 1 ? 'is' : 'are'} unreachable with ` +
-          `any integer in [0, ${String(declared.max)}], so ${fromHalves.length === 1 ? 'it was' : 'they were'} ` +
-          'measured with the LONGEST half-integer in that domain. The branch is in the catalogue, ' +
-          'so it is rendered and measured rather than skipped.',
+        `      note ${where}: plural branch${branches.size === 1 ? '' : 'es'} ` +
+          `[${[...branches].join(', ')}] on '${param}' ${branches.size === 1 ? 'is' : 'are'} ` +
+          `unreachable with any integer in the declared domain, so ${branches.size === 1 ? 'it was' : 'they were'} ` +
+          `measured at ${fromHalves.map(([, v]) => String(v)).join(', ')} — the longest ` +
+          'half-integer of that signature. The branch is in the catalogue, so it is rendered and ' +
+          'measured rather than skipped. A half-integer is an INSTRUMENT, not a value the ' +
+          'product can send.',
       );
     }
-    const values: number[] = [];
-    for (const branch of shape.options) {
-      const v = best.get(branch);
-      if (v === undefined) {
-        // Two causes, and they are not the same defect. A CATEGORY branch every
-        // one of whose values is matched by an explicit branch first is dead
-        // copy ICU can never render — PLURAL-COVERAGE still requires it to be
-        // present, so refusing it here would be a trap. Anything else is a
-        // branch this gate could not reach, and that is the mirror of QA-F1.
-        const shadowed =
-          !isExplicit(branch) &&
-          [...Array(declared.max + 1).keys()].some(
-            (n) =>
-              rules.select(n - shape.offset) === branch ||
-              rules.select(n + 0.5 - shape.offset) === branch,
-          );
-        if (shadowed) {
-          console.log(
-            `      note ${where}: plural branch [${branch}] is SHADOWED — CLDR selects it, but ` +
-              'every value that selects it is matched by an explicit `=N` branch first, so ICU ' +
-              'never renders it. Not measured, because it cannot be sent.',
-          );
-          continue;
-        }
+    // PLURAL-COVERAGE is asserted PER SITE, not per parameter. T-046 asserted it
+    // against one element's branch set, so a second element missing a category
+    // was only caught when it happened to be the last one read.
+    for (const site of shape.sites) {
+      if (!site.options.includes('other')) {
         failures.push(
-          `PLURAL-UNREACHABLE ${where}: no value in [0, ${String(declared.max)}] or its ` +
-            `half-integers renders the plural branch '${branch}' of '${param}'. That branch of ` +
-            'the message was therefore never rendered and its length was never measured — the ' +
-            'worst case would be understated.',
+          `PLURAL-COVERAGE ${where}: a plural element on '${param}' declares no \`other\` ` +
+            'branch. ICU requires one and the worst case cannot be computed without it.',
         );
-        continue;
       }
-      if (!values.includes(v)) values.push(v);
-    }
-    if (!shape.options.includes('other')) {
-      failures.push(
-        `PLURAL-COVERAGE ${where}: the plural on '${param}' declares no \`other\` branch. ICU ` +
-          'requires one and the worst case cannot be computed without it.',
-      );
-    }
-    for (const cat of categories) {
-      if (cat === 'other') continue;
-      if (!shape.options.includes(cat)) {
+      for (const cat of categories) {
+        if (cat === 'other' || site.options.includes(cat)) continue;
         failures.push(
-          `PLURAL-COVERAGE ${where}: the plural on '${param}' has no '${cat}' branch, which ` +
-            `locale-registry.json declares for '${locale}'. gate:plural-completeness (T-045) ` +
-            'refuses this as a translation defect; it is refused HERE as well because a missing ' +
-            'branch makes the worst case unmeasurable, and the two gates must not each assume ' +
-            'the other caught it.',
+          `PLURAL-COVERAGE ${where}: a plural element on '${param}' has no '${cat}' branch, ` +
+            `which locale-registry.json declares for '${locale}'. gate:plural-completeness ` +
+            '(T-045) refuses this as a translation defect; it is refused HERE as well because a ' +
+            'missing branch makes the worst case unmeasurable, and the two gates must not each ' +
+            'assume the other caught it.',
         );
       }
     }
-    return values;
+    return [...best.values()];
+  }
+  if (shape.kind === 'select') {
+    const rules = new Intl.PluralRules(locale);
+    const best = new Map<string, string>();
+    for (const v of domainOf(shape, declared)) {
+      const name = String(v);
+      const sig = signatureOf(shape, name, rules);
+      const current = best.get(sig);
+      if (current === undefined || name.length > current.length) best.set(sig, name);
+    }
+    return [...best.values()];
   }
   if (declared === undefined || declared.kind !== 'text') {
     failures.push(
@@ -885,10 +966,17 @@ interface Rendered {
   readonly params: ReadonlySet<string>;
 }
 
+/** The cap on the independent verification sweep. Exceeded is a refusal, never a sample. */
+const MAX_VERIFICATION_RENDERS = 250_000;
+
 /**
  * The worst rendering of one (key, locale) pair over the whole declared
  * substitution product. The product is enumerated in full — never sampled — and
  * a product larger than MAX_SUBSTITUTIONS_PER_PAIR is a refusal.
+ *
+ * AND THEN IT IS CHECKED AGAINST ICU, not against itself: see the model note at
+ * the top of this section. The sweep is what makes `CANDIDATE-INCOMPLETE`,
+ * `CANDIDATE-UNDERSTATED` and the two `*-UNREACHABLE` refusals possible.
  */
 function worstRender(
   source: string,
@@ -898,7 +986,7 @@ function worstRender(
   where: string,
   failures: string[],
 ): Rendered | undefined {
-  let ast: readonly MessageFormatElement[];
+  let ast: MessageFormatElement[];
   try {
     ast = parse(source);
   } catch (err) {
@@ -908,7 +996,11 @@ function worstRender(
     );
     return undefined;
   }
-  const shape = shapeOf(ast, new Map<string, ParamShape>());
+  const probeAst = structuredClone(ast);
+  const sites: BranchSite[] = [];
+  const plains = new Map<string, number>();
+  collectSites(probeAst, sites, plains);
+  const shape = shapeOf(sites, plains, failures, where);
 
   const names = [...shape.keys()].sort();
   const axes: { name: string; values: readonly unknown[] }[] = [];
@@ -949,49 +1041,245 @@ function worstRender(
   }
 
   let formatter: IntlMessageFormat;
+  let probe: IntlMessageFormat;
   try {
     formatter = new IntlMessageFormat(source, locale);
+    probe = new IntlMessageFormat(probeAst, locale);
   } catch (err) {
     failures.push(`MALFORMED ${where}: ${err instanceof Error ? err.message : String(err)}`);
     return undefined;
   }
 
   let worst: Rendered | undefined;
+  const render = (acc: Record<string, unknown>): Rendered | undefined => {
+    let text: string;
+    try {
+      const out = formatter.format(acc);
+      text = typeof out === 'string' ? out : String(out);
+    } catch (err) {
+      failures.push(
+        `RENDER-FAILED ${where} with ${JSON.stringify(acc)}: ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      );
+      return undefined;
+    }
+    return { text, binding: { ...acc }, measurement: measure(text), params: new Set(names) };
+  };
+  // WORST means: most segments; then, at equal segments, LEAST HEADROOM — not
+  // most units. The two differ and the difference is the point. An English
+  // message carrying a Greek sitter's name is 66 UCS-2 units with 68 units of
+  // headroom; the same message with a Latin name is 66 GSM-7 septets with 240.
+  // Same segment count, same unit count, four times the room — so "most units"
+  // would report the comfortable binding as the worst case and hide that one
+  // non-GSM-7 character costs the whole message the UCS-2 budget.
+  const worseThan = (a: Rendered, b: Rendered | undefined): boolean =>
+    b === undefined ||
+    a.measurement.segments > b.measurement.segments ||
+    (a.measurement.segments === b.measurement.segments &&
+      a.measurement.headroom < b.measurement.headroom);
+
+  /** ICU's own report of which branches it selected, read out of the sentinel render. */
+  const observe = (acc: Record<string, unknown>, into: Set<string>): void => {
+    let out: string;
+    try {
+      const formatted = probe.format(acc);
+      out = typeof formatted === 'string' ? formatted : String(formatted);
+    } catch {
+      return; // the real render reports the failure; the probe is not a second voice for it
+    }
+    // Split rather than match: a regular expression over a control character is
+    // banned by `no-control-regex`, and the sentinel must be a character no
+    // catalogue string can contain.
+    const parts = out.split(SENTINEL);
+    for (let i = 1; i < parts.length; i += 2) {
+      const hit = parts[i];
+      if (hit !== undefined) into.add(hit);
+    }
+  };
+
+  const covered = new Set<string>();
   const bind = (index: number, acc: Record<string, unknown>): void => {
     const axis = axes[index];
     if (axis === undefined) {
-      let text: string;
-      try {
-        const out = formatter.format(acc);
-        text = typeof out === 'string' ? out : String(out);
-      } catch (err) {
-        failures.push(
-          `RENDER-FAILED ${where} with ${JSON.stringify(acc)}: ` +
-            `${err instanceof Error ? err.message : String(err)}`,
-        );
-        return;
-      }
-      const m = measure(text);
-      // WORST means: most segments; then, at equal segments, LEAST HEADROOM —
-      // not most units. The two differ and the difference is the point. An
-      // English message carrying a Greek sitter's name is 66 UCS-2 units with
-      // 68 units of headroom; the same message with a Latin name is 66 GSM-7
-      // septets with 240. Same segment count, same unit count, four times the
-      // room — so "most units" would report the comfortable binding as the
-      // worst case and hide that one non-GSM-7 character costs the whole
-      // message the UCS-2 budget.
-      if (
-        worst === undefined ||
-        m.segments > worst.measurement.segments ||
-        (m.segments === worst.measurement.segments && m.headroom < worst.measurement.headroom)
-      ) {
-        worst = { text, binding: { ...acc }, measurement: m, params: new Set(names) };
-      }
+      const r = render(acc);
+      if (r === undefined) return;
+      observe(acc, covered);
+      if (worseThan(r, worst)) worst = r;
       return;
     }
     for (const value of axis.values) bind(index + 1, { ...acc, [axis.name]: value });
   };
   bind(0, {});
+  if (worst === undefined) return undefined;
+
+  // ───────────────────────────── the independent check (PROTOCOL §5.1)
+  const branching = axes.filter((a) => (shape.get(a.name)?.sites.length ?? 0) > 0);
+  const domains = new Map<string, readonly unknown[]>();
+  for (const axis of branching) {
+    const s = shape.get(axis.name);
+    if (s === undefined) continue;
+    domains.set(axis.name, domainOf(s, entry.worstCase.get(axis.name)));
+  }
+  let sweepBindings = 0;
+  for (const axis of branching) {
+    const others = axes.filter((a) => a.name !== axis.name);
+    sweepBindings +=
+      (domains.get(axis.name)?.length ?? 0) * others.reduce((n, a) => n * a.values.length, 1);
+  }
+  const declaredBranches: { site: BranchSite; branch: string }[] = [];
+  for (const site of sites) {
+    for (const branch of site.options) declaredBranches.push({ site, branch });
+  }
+  if (sweepBindings > MAX_VERIFICATION_RENDERS) {
+    failures.push(
+      `VERIFICATION-EXPLOSION ${where}: checking the candidate set against ICU over the declared ` +
+        `domain would take ${String(sweepBindings)} render(s), over the ` +
+        `${String(MAX_VERIFICATION_RENDERS)} cap. This gate refuses rather than sampling the ` +
+        'domain, because an unverified reduction is exactly the defect T-176 exists to close. ' +
+        'Narrow the declared domain, or split the message.',
+    );
+    return worst;
+  }
+  if (declaredBranches.length > 0 && sweepBindings === 0) {
+    failures.push(
+      `VERIFICATION-VACUOUS ${where}: the message declares ${String(declaredBranches.length)} ` +
+        'branch(es) and the candidate set was checked against ICU over 0 binding(s). A check ' +
+        'that examined nothing must say so rather than pass (PROTOCOL §5.1).',
+    );
+    return worst;
+  }
+  const reachable = new Set<string>();
+  let sweepWorst: Rendered | undefined;
+  let sweepRenderFailures = 0;
+  let firstSweepRenderFailure: string | undefined;
+  const quietRender = (acc: Record<string, unknown>): Rendered | undefined => {
+    try {
+      const out = formatter.format(acc);
+      const text = typeof out === 'string' ? out : String(out);
+      return { text, binding: { ...acc }, measurement: measure(text), params: new Set(names) };
+    } catch (err) {
+      sweepRenderFailures += 1;
+      firstSweepRenderFailure ??= `${JSON.stringify(acc)}: ${err instanceof Error ? err.message : String(err)}`;
+      return undefined;
+    }
+  };
+  /**
+   * The sweep runs in TWO PHASES, and the split is the same one T-046 made for
+   * the candidate set: a HALF-INTEGER IS AN INSTRUMENT, NOT PART OF THE DOMAIN.
+   * A count of missed check-ins is an integer and `100.5` is not, so a
+   * half-integer is admitted only when it makes ICU render a branch NO INTEGER
+   * IN THE DOMAIN REACHES — and "no integer reaches it" is decided from what
+   * ICU was OBSERVED to select in phase 1, not from `signatureOf`. Were it
+   * decided from `signatureOf`, this check would be reading the same map the
+   * reduction does, which is the whole defect T-176 exists to close.
+   */
+  const sweep = (
+    axis: { name: string; values: readonly unknown[] },
+    values: readonly unknown[],
+    admit: ((lit: ReadonlySet<string>) => boolean) | undefined,
+  ): void => {
+    const others = axes.filter((a) => a.name !== axis.name);
+    const walk = (index: number, acc: Record<string, unknown>): void => {
+      const other = others[index];
+      if (other === undefined) {
+        for (const v of values) {
+          const binding = { ...acc, [axis.name]: v };
+          const lit = new Set<string>();
+          observe(binding, lit);
+          if (admit !== undefined && !admit(lit)) continue;
+          for (const key of lit) reachable.add(key);
+          const r = quietRender(binding);
+          if (r !== undefined && worseThan(r, sweepWorst)) sweepWorst = r;
+        }
+        return;
+      }
+      for (const value of other.values) walk(index + 1, { ...acc, [other.name]: value });
+    };
+    walk(0, {});
+  };
+  const isHalf = (v: unknown): boolean => typeof v === 'number' && !Number.isInteger(v);
+  for (const axis of branching) {
+    sweep(
+      axis,
+      (domains.get(axis.name) ?? []).filter((v) => !isHalf(v)),
+      undefined,
+    );
+  }
+  const reachedByInteger = new Set(reachable);
+  for (const axis of branching) {
+    const halves = (domains.get(axis.name) ?? []).filter(isHalf);
+    if (halves.length === 0) continue;
+    sweep(axis, halves, (lit) => [...lit].some((key) => !reachedByInteger.has(key)));
+  }
+  if (sweepRenderFailures > 0) {
+    failures.push(
+      `RENDER-FAILED ${where}: ${String(sweepRenderFailures)} binding(s) of the declared domain ` +
+        `could not be rendered at all. The first was ${firstSweepRenderFailure ?? 'unknown'}`,
+    );
+  }
+
+  const rules = new Intl.PluralRules(locale);
+  let missed = 0;
+  for (const { site, branch } of declaredBranches) {
+    const key = siteKey(site, branch);
+    if (covered.has(key)) continue;
+    if (reachable.has(key)) {
+      missed += 1;
+      failures.push(
+        `CANDIDATE-INCOMPLETE ${where}: ICU renders branch '${branch}' of the ` +
+          `${site.kind} element #${String(site.id)} on '${site.param}' for a value in the ` +
+          'declared domain, and NO binding this gate measured ever rendered it — so that branch ' +
+          "of the message was never measured and the worst case is understated. This is ICU's " +
+          'own report of which branch it selected, not this gate re-reading its own candidate ' +
+          'map (PROTOCOL §5.1). The candidate set, not the catalogue, is what is wrong.',
+      );
+      continue;
+    }
+    // Not reachable at all. A CATEGORY branch every one of whose values is
+    // matched by an explicit branch first is dead copy ICU can never render —
+    // PLURAL-COVERAGE still requires it to be present, so refusing it would be
+    // a trap. Anything else is a branch the declared domain cannot reach.
+    const domain = domains.get(site.param) ?? [];
+    const shadowed =
+      site.kind === 'plural' &&
+      !/^=\d+$/.test(branch) &&
+      domain.some((v) => typeof v === 'number' && rules.select(v - site.offset) === branch);
+    if (shadowed) {
+      console.log(
+        `      note ${where}: plural branch [${branch}] of the element on '${site.param}' is ` +
+          'SHADOWED — CLDR selects it, but every value that selects it is matched by an ' +
+          'explicit `=N` branch first, so ICU never renders it. Not measured, because it ' +
+          'cannot be sent.',
+      );
+      continue;
+    }
+    missed += 1;
+    failures.push(
+      `${site.kind === 'plural' ? 'PLURAL' : 'SELECT'}-UNREACHABLE ${where}: no value in the ` +
+        `declared domain of '${site.param}' makes ICU render branch '${branch}' of the ` +
+        `${site.kind} element #${String(site.id)}. That branch of the message is therefore never ` +
+        'rendered and its length is never measured — the worst case would be understated.',
+    );
+  }
+  if (sweepWorst !== undefined && worseThan(sweepWorst, worst)) {
+    failures.push(
+      `CANDIDATE-UNDERSTATED ${where}: the candidate set's worst binding ` +
+        `${JSON.stringify(worst.binding)} measures ${String(worst.measurement.units)} ` +
+        `${worst.measurement.encoding} unit(s) / ${String(worst.measurement.segments)} ` +
+        `segment(s), but sweeping the declared domain against ICU found ` +
+        `${JSON.stringify(sweepWorst.binding)} at ${String(sweepWorst.measurement.units)} ` +
+        `unit(s) / ${String(sweepWorst.measurement.segments)} segment(s). The reduction kept the ` +
+        'wrong representative of a branch signature. The budget below is asserted against the ' +
+        'WORSE of the two, so this refusal is about the model and not about the copy.',
+    );
+    worst = sweepWorst;
+  }
+  console.log(
+    `      verified ${String(sweepBindings)} binding(s) of the declared domain against ICU's own ` +
+      `branch selection: ${String(declaredBranches.length - missed)} of ` +
+      `${String(declaredBranches.length)} declared branch(es) at ${String(sites.length)} ` +
+      `branching element(s) rendered by the measured set`,
+  );
   return worst;
 }
 
