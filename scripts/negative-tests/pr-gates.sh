@@ -78,12 +78,33 @@ BACKED=(
   eslint.config.mjs
   eslint.config.typed.mjs
   package.json
-  packages/policy/package.json
-  packages/contracts/package.json
-  packages/domain-types/package.json
-  packages/i18n/package.json
-  packages/integration-kit/package.json
 )
+
+# EVERY WORKSPACE MANIFEST THAT DECLARES `test`, DERIVED — NOT A HAND LIST.
+#
+# It used to be five paths typed out here and the same five typed out again in
+# case C4. T-008 added `packages/observability`, which declares `test`, and C4
+# — "THE ZERO-PACKAGE CASE: no package declares `test`" — silently stopped
+# producing the state it names: five manifests were stripped, one was not, V4
+# could not fire, and the case read `UNRUN-TESTS` for the five instead. It went
+# MISBEHAVED rather than green, so nothing was lost; but a hand list that does
+# not see a newly committed package is OD-170's shape, and the fix is the
+# instrument, not another line. `git ls-files` is outside both the case and the
+# gate it attacks (PROTOCOL §5.1).
+TEST_PKGS=()
+while IFS= read -r f; do
+  grep -q '"test":' "$f" && TEST_PKGS+=("$f")
+done < <(git ls-files 'packages/*/package.json' 'apps/*/package.json')
+BACKED+=(${TEST_PKGS+"${TEST_PKGS[@]}"})
+
+# The set as it stands right now. C4 asserts this is EMPTY after its mutation.
+still_declares_test() {
+  local f found=""
+  while IFS= read -r f; do
+    grep -q '"test":' "$f" && found="$found $f"
+  done < <(git ls-files 'packages/*/package.json' 'apps/*/package.json')
+  printf '%s' "$found"
+}
 # Paths a case CREATES. If any is tracked the suite refuses to start.
 PLANTED=(
   packages/qa-t005-probe
@@ -434,9 +455,20 @@ mkdir -p packages/qa-t005-probe/src &&
     'VACUOUS-PACKAGE packages/qa-t005-probe' 'cannot have run anything' -- dry
 
 CASE="C4"
-for p in policy contracts domain-types i18n integration-kit; do
-  node scripts/negative-tests/mutate.mjs "packages/$p/package.json" '"test":' '"tset":' || true
+# The SETUP is asserted before the effect is judged. A case whose mutation did
+# not reach the state it names is a no-op reporting a verdict (PROTOCOL §5.1),
+# and that is exactly what happened here when a sixth test-declaring package
+# was added without this loop seeing it.
+c4_stripped=0
+for f in ${TEST_PKGS+"${TEST_PKGS[@]}"}; do
+  node scripts/negative-tests/mutate.mjs "$f" '"test":' '"tset":' && c4_stripped=$((c4_stripped + 1))
 done
+c4_left="$(still_declares_test)"
+if [ "$c4_stripped" -eq 0 ] || [ -n "$c4_left" ]; then
+  printf '!! %-58s %s\n' "$CASE" \
+    "HARNESS ERROR: the zero-package state was not reached ($c4_stripped stripped; still declaring \`test\`:$c4_left)"
+  harness=$((harness + 1))
+fi
 run_case "C4 THE ZERO-PACKAGE CASE: no package declares \`test\`" FAIL \
   'NO-TEST-PACKAGES' 'A test stage with nothing in it' -- dry
 
