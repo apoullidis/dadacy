@@ -8,9 +8,21 @@
  * `request.routeOptions.url` IS THE TEMPLATE, NOT THE URL. Fastify sets it to
  * the string the route was registered with (`/v1/auth/login`), and leaves it
  * undefined when nothing matched. `request.url` — the string the client sent,
- * query string and all — is never read here, by anything, at all. That single
- * fact is what makes "no PII on a span" a property of the code rather than a
- * hope about callers.
+ * query string and all — is never read here, by anything, at all.
+ *
+ * WHAT THAT SINGLE FACT BUYS, AT ITS TRUE WIDTH: it makes "THE CLIENT'S URL
+ * NEVER BECOMES THE ROUTE ATTRIBUTE" a property of the code rather than a hope
+ * about callers. It is NOT the same sentence as "no PII on a span", and an
+ * earlier revision of this comment said that wider one. `gate:otel-contract`
+ * R5 is what holds this file to the narrow claim (it fails on `request.url`,
+ * `req.url` or `request.originalUrl` in comment-stripped source), and
+ * state/EP-1/T-008.md § Evidence 5 measured how far the narrow claim carries:
+ * FOUR independent edits, across three files and two packages, are needed
+ * before a planted value reaches Jaeger — and the first of the four is caught
+ * here, by the route registry, with the path discarded.
+ *
+ * The no-PII claim itself, at the width this build can evidence, is
+ * state/EP-1/T-008.md § Published contract §5. `T-119` widens it.
  *
  * NEVER FAILS A REQUEST. The hook is wrapped: any throw increments a counter
  * and is swallowed. Telemetry that can 500 a request is worse than no
