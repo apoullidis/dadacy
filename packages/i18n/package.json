@@ -19,10 +19,10 @@
     "gate:sms-segments:negatives": "node tools/sms-segments-negatives.ts"
   },
   "dependencies": {
+    "@formatjs/icu-messageformat-parser": "3.5.17",
     "intl-messageformat": "11.2.14"
   },
   "devDependencies": {
-    "@formatjs/icu-messageformat-parser": "3.5.17",
     "prettier": "3.9.6",
     "vite": "8.2.2",
     "vitest": "5.0.0"

@@ -173,13 +173,13 @@ importers:
 
   packages/i18n:
     dependencies:
+      '@formatjs/icu-messageformat-parser':
+        specifier: 3.5.17
+        version: 3.5.17
       intl-messageformat:
         specifier: 11.2.14
         version: 11.2.14
     devDependencies:
-      '@formatjs/icu-messageformat-parser':
-        specifier: 3.5.17
-        version: 3.5.17
       prettier:
         specifier: 3.9.6
         version: 3.9.6
