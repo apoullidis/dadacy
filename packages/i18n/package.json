@@ -15,7 +15,8 @@
     "test": "node tools/run-tests.ts",
     "test:negatives": "node tools/run-tests-negatives.ts",
     "gate:locale-completeness:negatives": "node tools/locale-completeness-negatives.ts",
-    "gate:safety-review-currency:negatives": "node tools/safety-review-currency-negatives.ts"
+    "gate:safety-review-currency:negatives": "node tools/safety-review-currency-negatives.ts",
+    "gate:sms-segments:negatives": "node tools/sms-segments-negatives.ts"
   },
   "dependencies": {
     "intl-messageformat": "11.2.14"

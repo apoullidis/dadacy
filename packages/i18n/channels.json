@@ -1,0 +1,81 @@
+{
+  "//": "T-046 — THE DELIVERY-CHANNEL DECLARATION, and the SMS corpus `gate:sms-segments` asserts over. PM §MVP-N1 AC3 requires every Critical/Transactional SMS template to be length-audited at <=2 segments per locale. Before this file, 'every Critical/Transactional SMS template' denoted a set NOBODY HAD DEFINED: `tiers.json` carries 14 strict-tier keys and not one of them was marked as an SMS template, so the obvious gate — iterate the SMS templates, count segments — would have been VACUOUSLY GREEN because it iterated nothing. This file is the set, stated rather than inferred. EXACT AND EXHAUSTIVE over the strict tiers, exactly as `tiers.json` is over the whole catalogue: every key tiered `safety_critical` or `transactional` must appear here with `sms` true or false and a non-empty `why`, and a key here that is not strict-tier is refused. There is no third value and no default — a key nobody has decided about is a GATE FAILURE, not a shrug. See `state/EP-0/T-046.md` § Published contract.",
+  "//2": "WHY THE STRICT TIERS AND NOT THE WHOLE CATALOGUE. PM §MVP-N1 AC3(a): 'SMS is reserved for the Critical and time-critical-Transactional tiers only.' `operational` and `marketing` are Push+email and Email-only in AC5's channel table, so they are outside both the cost constraint and this gate. If that ever changes, widen the tier filter here and in `tools/sms-segments.ts` in the same commit — the gate derives the tier set from `TIER_POLICY` (`src/tiers.ts`), never from the literal string 'safety_critical'.",
+  "//3": "THE CROSS-CHECK, so this file cannot quietly disagree with the one that already holds channel data. `review.json` § `pipeline.assignments[<key>].channel` (T-049) records a COPY-REVIEW channel — `screen` / `spoken_by_user` / `voice` / `undetermined` — for each `safety_critical` key. It answers a different question (how must this copy be reviewed: in-context screenshot, or read aloud?) and it has no `sms` value. The gate therefore asserts ONE direction only: a key whose pipeline channel is DETERMINED and is not an outbound message channel must be `sms: false` here. A pipeline channel of `undetermined` constrains nothing here. The asymmetry is deliberate and is the whole value of the check — it is an anchor OUTSIDE this file (PROTOCOL §5.1: a check must not be derived from the same reading as the thing it checks).",
+  "version": 1,
+  "channels": {
+    "safety.emergency.address_prompt": {
+      "sms": false,
+      "why": "Emergency-panel copy on the device. `review.json` § pipeline determines its channel as `spoken_by_user`: the parent READS THIS ALOUD to the 112 operator. It is never sent anywhere (PM §MVP-IS5 AC7 — the emergency panel is never machine-translated and never translated at runtime, because it is rendered, not delivered)."
+    },
+    "safety.emergency.call_112.label": {
+      "sms": false,
+      "why": "The emergency panel's call button label. `review.json` § pipeline determines its channel as `screen`."
+    },
+    "safety.emergency.call_112.script": {
+      "sms": false,
+      "why": "The script the caller speaks to the 112 operator. `review.json` § pipeline determines its channel as `spoken_by_user`."
+    },
+    "safety.helpline.116111.label": {
+      "sms": false,
+      "why": "A labelled panel entry (PROTOCOL §9 item 7: 112 is the only number the SOS flow dials; 199, 116 111 and 1466 are labelled panel entries). `review.json` § pipeline determines its channel as `screen`."
+    },
+    "safety.helpline.1466.label": {
+      "sms": false,
+      "why": "A labelled panel entry. `review.json` § pipeline determines its channel as `screen`."
+    },
+    "safety.helpline.199.label": {
+      "sms": false,
+      "why": "A labelled panel entry. `review.json` § pipeline determines its channel as `screen`."
+    },
+    "safety.sos.confirm": {
+      "sms": false,
+      "why": "The hold-to-send SOS control's own on-screen confirmation copy; `review.json` § pipeline determines its channel as `screen`. PM §MVP-N1 AC5 DOES send an SOS by SMS — but that is a NOTIFICATION TO A RECIPIENT and its template is not in this catalogue. When it is written it is a new key and `sms: true`; see `state/EP-0/T-046.md` § Published contract §7."
+    },
+    "session.checkins_missed": {
+      "sms": true,
+      "why": "PM §MVP-N1 AC5's criticality table, Critical (safety) row: examples 'SOS, MISSED CHECK-IN LADDER, no-show, session anomaly'; channels 'Push + SMS + in-app, immediate, escalating; cannot be disabled'. This key IS the missed-check-in message. `review.json` § pipeline records its channel as `undetermined` — that is T-049's COPY-REVIEW channel (screen/spoken/voice) and answers a different question, so it neither supports nor contradicts this; the gate's cross-check treats `undetermined` as constraining nothing, and says so.",
+      "worst_case": {
+        "//": "THE SUBSTITUTION THE <=2-SEGMENT CLAIM IS BOUNDED BY. An ICU template has no single length — this one is a plural with a parameterised name — so `gate:sms-segments` measures the MAXIMUM rendered length over a declared, committed substitution set, and the claim it proves is bounded by exactly this block. A restatement of the claim that drops this bound is the R2 defect (PROTOCOL §5.3).",
+        "count": {
+          "kind": "plural",
+          "max": 999,
+          "why": "No specification bounds the number of missed check-ins in one sit, so this is an ENGINEERING BOUND and not a measured fact: the assertion covers counts up to 999. The gate builds one candidate per declared CLDR plural category from [0, 999] and its half-integers and takes the longest FORMATTED form per category, so the Russian four-category message is measured on all four branches. The measured headroom is printed on every run; at 999 no enabled locale reaches its grouping separator, which for `ru` is U+00A0 and is NOT in the GSM-7 alphabet."
+        },
+        "sitterName": {
+          "kind": "text",
+          "values": [
+            "Konstantina Papadopoulou-Hadjigeorgiou",
+            "Κωνσταντίνα Παπαδοπούλου-Χατζηγεωργίου",
+            "Константина Пападопулу-Хадзигеоргиу"
+          ],
+          "why": "No specification bounds a sitter's display name and no column constrains one yet (`db/migrations` has no name column at 9dd95f8), so this is an ENGINEERING BOUND: three realistic long Cypriot names, 38/38/35 UTF-16 code units, one per script the product serves. All three are substituted into EVERY locale's message, because a name is not translated — an English SMS naming a Greek sitter is UCS-2, and that is measured here rather than assumed. Whoever adds the display-name column takes the obligation to re-measure against its real ceiling: `state/EP-0/T-046.md` § Published contract §7."
+        }
+      }
+    },
+    "common.dossier.verified": {
+      "sms": false,
+      "why": "Trust Dossier copy rendered on a surface. PM §MVP-N1 AC5, Transactional row: 'Push + email; SMS for cancellations inside 24h' — this is not a cancellation and not a notification."
+    },
+    "common.fallback.not_translated": {
+      "sms": false,
+      "why": "The in-page 'not yet available in your language' notice required by SA §TS-12.1 for the two non-strict tiers. It is rendered on a page, never delivered."
+    },
+    "session.staffed_hours.commitment": {
+      "sms": false,
+      "why": "The Staffed-Hours commitment page's body copy (PM §MVP-N1 AC5, Transactional: Push + email)."
+    },
+    "booking.count.upcoming": {
+      "sms": false,
+      "why": "An on-screen count on the booking surfaces (PM §MVP-N1 AC5, Transactional: Push + email)."
+    },
+    "booking.cancel.fee_notice": {
+      "sms": false,
+      "why": "The fee notice shown IN-APP to the person cancelling, at the moment of cancelling ('Cancelling now costs ...'). PM §MVP-N1 AC5 does send an SMS for CANCELLATIONS INSIDE 24H — that is a notification to the OTHER party and its template is not in this catalogue. When it is written it is a new key and `sms: true`; see `state/EP-0/T-046.md` § Published contract §7."
+    },
+    "legal.terms.accept": {
+      "sms": false,
+      "why": "An acceptance checkbox label on a legal surface (PM §MVP-N1 AC5, Transactional: Push + email)."
+    }
+  }
+}
