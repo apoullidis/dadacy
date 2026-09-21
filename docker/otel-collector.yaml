@@ -75,6 +75,29 @@ processors:
     timeout: 200ms
     send_batch_size: 128
 
+connectors:
+  # SPAN -> METRIC. The three dashboards of SD §QD-5 are RED/golden-signal
+  # boards, and a golden-signal board needs rates and latency quantiles, not
+  # individual spans. This connector derives them from the spans that already
+  # pass the allowlist above, so the metric dimensions CANNOT be wider than the
+  # span attributes — a dashboard label that is not a contract field has
+  # nowhere to come from. `pnpm gate:otel-contract` check R4 reads this
+  # `dimensions` list and refuses a dashboard query that groups by anything
+  # else.
+  spanmetrics:
+    namespace: kinvara
+    histogram:
+      explicit:
+        buckets: [10ms, 50ms, 100ms, 250ms, 500ms, 1s, 2s, 5s]
+    dimensions:
+      - name: route
+      - name: module
+      - name: actor_role
+      - name: data_class
+      - name: status
+    exemplars:
+      enabled: false
+
 exporters:
   otlp/jaeger:
     endpoint: jaeger:4317
@@ -87,14 +110,18 @@ service:
   pipelines:
     traces:
       receivers: [otlp]
+      # REDACTION RUNS BEFORE spanmetrics, deliberately: a dimension the
+      # connector reads is an attribute the allowlist has already passed, so a
+      # rogue attribute cannot become a metric label even for one hop.
       processors: [redaction, batch]
-      exporters: [otlp/jaeger]
+      exporters: [otlp/jaeger, spanmetrics]
     metrics:
-      # Jaeger stores traces, not metrics. `provider_health` therefore lands in
-      # this collector's own log, which is where it is asserted from locally.
-      # Grafana Cloud is its destination in the cloud (SA §TS-10) and nothing
-      # here is deployed (DOCKER.md §10).
-      receivers: [otlp]
+      # Jaeger stores traces, not metrics. `provider_health` and the
+      # span-derived golden signals therefore land in this collector's own log,
+      # which is where they are asserted from locally. Grafana Cloud is their
+      # destination in the cloud (SA §TS-10) and nothing here is deployed
+      # (DOCKER.md §10).
+      receivers: [otlp, spanmetrics]
       processors: [redaction, batch]
       exporters: [debug]
   telemetry:

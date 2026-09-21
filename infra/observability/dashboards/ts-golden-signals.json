@@ -1,0 +1,199 @@
+{
+  "uid": "kinvara-ts-golden",
+  "title": "T&S \u2014 golden signals per safety endpoint",
+  "tags": ["kinvara", "trust-and-safety", "golden-signals"],
+  "description": "SA \u00a7TS-10 rule 4: golden signals on a dedicated dashboard visible on the T&S live board. SCOPED BY MODULE, NOT BY ENDPOINT, and that is deliberate: the safety endpoints are not served yet, and a board naming a route nobody serves is refused by gate:otel-contract R4. The per-endpoint breakdown is owed by whichever ticket first serves a safety endpoint. See infra/observability/dashboards/README.md.",
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "editable": false,
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "templating": {
+    "list": []
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Traffic \u2014 requests/s by route",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_KINVARA}"
+      },
+      "description": "Golden signal 1 of 4. EMPTY TODAY: module=session has no served route yet (EP-5).",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (route) (rate(kinvara_calls_total{module=\"session\"}[5m]))",
+          "legendFormat": "{{route}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_KINVARA}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "id": 2,
+      "title": "Errors \u2014 5xx/s by route",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_KINVARA}"
+      },
+      "description": "Golden signal 2 of 4. EMPTY TODAY: module=session has no served route yet (EP-5).",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (route) (rate(kinvara_calls_total{module=\"session\",status=~\"5..\"}[5m]))",
+          "legendFormat": "{{route}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_KINVARA}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "id": 3,
+      "title": "Latency \u2014 p95 by route",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_KINVARA}"
+      },
+      "description": "Golden signal 3 of 4. EMPTY TODAY: module=session has no served route yet (EP-5).",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (route, le) (rate(kinvara_duration_milliseconds_bucket{module=\"session\"}[5m])))",
+          "legendFormat": "{{route}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_KINVARA}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "id": 4,
+      "title": "Saturation \u2014 in-flight, as served rate against the 99.95% target",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_KINVARA}"
+      },
+      "description": "Golden signal 4 of 4. SA \u00a7TS-10 puts the 99.95% safety-endpoint target under EXTERNAL synthetic checks from two regions, which compose cannot run; this panel is the internal view only and is not that measurement.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (route) (rate(kinvara_duration_milliseconds_count{module=\"session\"}[5m]))",
+          "legendFormat": "{{route}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_KINVARA}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "id": 5,
+      "title": "INSTRUMENTATION HEALTH \u2014 spans the contract REFUSED",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 24,
+        "h": 6
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_KINVARA}"
+      },
+      "description": "A non-zero `refused` line means a route is being served that has no entry in ROUTE_REGISTRY, so its span was stamped UNCLASSIFIED and its path discarded. gate:otel-contract R1 makes that unreachable for an operation in the OpenAPI document; this panel covers a route registered outside it.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(kinvara_calls_total{data_class=\"UNCLASSIFIED\"}[5m]))",
+          "legendFormat": "refused",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_KINVARA}"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (route) (rate(kinvara_calls_total{route=\"(unmatched)\"}[5m]))",
+          "legendFormat": "unmatched",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_KINVARA}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "options": {}
+    }
+  ]
+}

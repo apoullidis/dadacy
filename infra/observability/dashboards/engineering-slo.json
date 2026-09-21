@@ -1,0 +1,206 @@
+{
+  "uid": "kinvara-eng-slo",
+  "title": "Engineering SLO",
+  "tags": ["kinvara", "engineering", "slo"],
+  "description": "SD \u00a7QD-5's engineering SLO board. Availability and latency by module, plus SD \u00a7INT's provider_health gauge. NEVER DEPLOYED \u2014 see README.md.",
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "editable": false,
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "templating": {
+    "list": []
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Availability by module \u2014 1 \u2212 (5xx / all)",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_KINVARA}"
+      },
+      "description": "The internal availability view. The 99.95% safety target is measured EXTERNALLY (SA \u00a7TS-10) and this is not that number.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "1 - (sum by (module) (rate(kinvara_calls_total{status=~\"5..\"}[5m])) / sum by (module) (rate(kinvara_calls_total[5m])))",
+          "legendFormat": "{{module}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_KINVARA}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "id": 2,
+      "title": "Latency p50 / p95 / p99 \u2014 all served routes",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_KINVARA}"
+      },
+      "description": "Span-derived, so it measures what core answered, not what a client experienced.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(kinvara_duration_milliseconds_bucket[5m])))",
+          "legendFormat": "p50",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_KINVARA}"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(kinvara_duration_milliseconds_bucket[5m])))",
+          "legendFormat": "p95",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_KINVARA}"
+          }
+        },
+        {
+          "refId": "C",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(kinvara_duration_milliseconds_bucket[5m])))",
+          "legendFormat": "p99",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_KINVARA}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "id": 3,
+      "title": "provider_health \u2014 circuit-breaker state per provider (SD \u00a7INT)",
+      "type": "stat",
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_KINVARA}"
+      },
+      "description": "1 for the state the breaker is in, 0 for the others. Discharges T-142 \u00a7 contract (rework 1) \u00a78. The gauge READS breaker.state at snapshot time rather than trusting the last onStateChange call, because an open breaker whose 30 s have passed reads half_open with NO hook having fired.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (provider, state) (provider_health)",
+          "legendFormat": "{{provider}} {{state}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_KINVARA}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "id": 4,
+      "title": "Request rate by actor_role",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_KINVARA}"
+      },
+      "description": "actor_role is anonymous for every request today: apps/core has no request-scoped principal yet (T-135 \u00a7 contract \u00a76).",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (actor_role) (rate(kinvara_calls_total[5m]))",
+          "legendFormat": "{{actor_role}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_KINVARA}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "id": 5,
+      "title": "Traffic by data_class \u2014 what classification the served surface carries",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 24,
+        "h": 6
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_KINVARA}"
+      },
+      "description": "A C1 line appearing where no C1 route is expected is a routing defect, not a traffic story.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (data_class) (rate(kinvara_calls_total[5m]))",
+          "legendFormat": "{{data_class}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_KINVARA}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "options": {}
+    }
+  ]
+}

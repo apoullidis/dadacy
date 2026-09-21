@@ -1,0 +1,154 @@
+{
+  "uid": "kinvara-finance-recon",
+  "title": "Finance reconciliation",
+  "tags": ["kinvara", "finance", "reconciliation"],
+  "description": "SD \u00a7QD-5's finance reconciliation board. EMPTY TODAY IN EVERY PANEL: no payment route is served and no Stripe adapter exists (EP-6). It is authored now so the ticket that builds the adapter has a board to fill rather than a board to invent. NEVER DEPLOYED \u2014 see README.md.",
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "editable": false,
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "templating": {
+    "list": []
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Payment request rate by route",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_KINVARA}"
+      },
+      "description": "EMPTY TODAY: module=payment has no served route (EP-6).",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (route) (rate(kinvara_calls_total{module=\"payment\"}[5m]))",
+          "legendFormat": "{{route}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_KINVARA}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "id": 2,
+      "title": "Payment capture failure rate \u2014 SD \u00a7QD-5 pages above 2% in 10 min",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_KINVARA}"
+      },
+      "description": "The THRESHOLD is T-009's, not this board's: SD \u00a7QD-5's paging table is wired to a route and a threshold by T-009. This panel is the measurement the alert would read.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(kinvara_calls_total{module=\"payment\",status=~\"5..\"}[10m])) / sum(rate(kinvara_calls_total{module=\"payment\"}[10m]))",
+          "legendFormat": "capture failure rate",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_KINVARA}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "id": 3,
+      "title": "Stripe breaker state (SD \u00a7INT)",
+      "type": "stat",
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_KINVARA}"
+      },
+      "description": "EMPTY TODAY: no adapter registers a stripe breaker (EP-6).",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (state) (provider_health{provider=\"stripe\"})",
+          "legendFormat": "{{state}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_KINVARA}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "id": 4,
+      "title": "Upstream call latency p95 \u2014 payment module",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_KINVARA}"
+      },
+      "description": "EMPTY TODAY: module=payment has no served route (EP-6).",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(kinvara_duration_milliseconds_bucket{module=\"payment\"}[5m])))",
+          "legendFormat": "p95",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_KINVARA}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "options": {}
+    }
+  ]
+}
