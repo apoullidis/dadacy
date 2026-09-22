@@ -100,6 +100,8 @@ PLANTED=(
   docker/compose.yml.t131
   infra/compose.rogue.yml
   docker/app-runtime/pid1.mjs
+  docker/app-runtime/pid1.tar
+  docker/qa-pid1.cfg
 )
 command -v git >/dev/null 2>&1 || {
   echo "HARNESS ERROR: git is not on PATH. This suite refuses to delete anything"
@@ -1799,6 +1801,189 @@ mut "$ENTRY" "$SHADOW_AT" '  var GROUP_DRAIN_MS = 60_000;
 mut "$ENTRY" "$SHADOW_AT" '  const shadowPad = 0, GROUP_DRAIN_MS = 60_000;
   let signalledAt = null;' \
   && run_case "168 a multi-declarator const shadows the constant" FAIL "GROUP_DRAIN_MS is declared 2 time(s)"
+
+# T-182 helpers. Both plant UNTRACKED files listed in PLANTED above: a tar
+# docker would extract over the script, and a file a compose `configs:` entry
+# mounts over it. Each is a COPY of the shipping entrypoint with a 60 s wait, so
+# the hazard each case names is real rather than symbolic.
+mk_pid1_tar() {
+  rm -rf "$BK/tarsrc" && mkdir -p "$BK/tarsrc/app-runtime" \
+    && cp "$ENTRY" "$BK/tarsrc/app-runtime/entrypoint.mjs" \
+    && node scripts/negative-tests/mutate.mjs "$BK/tarsrc/app-runtime/entrypoint.mjs" \
+         "$DRAIN_LINE" 'const GROUP_DRAIN_MS = 60_000;' \
+    && tar -cf docker/app-runtime/pid1.tar -C "$BK/tarsrc" app-runtime
+}
+mk_pid1_cfg() {
+  cp "$ENTRY" docker/qa-pid1.cfg \
+    && node scripts/negative-tests/mutate.mjs docker/qa-pid1.cfg "$DRAIN_LINE" \
+         'const GROUP_DRAIN_MS = 60_000;'
+}
+
+# --- T-182: §7 RESOLVES WHAT PID 1 ACTUALLY RUNS, PER APPLICATION SERVICE ---
+# Until T-182 §7 read the IMAGE ENTRYPOINT of each application stage and called
+# it PID 1. qa-verification measured seven ways to decide PID 1 that the stage's
+# ENTRYPOINT does not mention, and each was GATE PASS at 2b5d833 (T-180 § QA
+# verification §3b E1/E3 and rework 1 §4 F5/F6/F7/X1). §7 now RESOLVES the
+# process from every input that can change what it executes, and refuses what it
+# cannot resolve — so these cases are one reading attacked from nine directions,
+# not nine rules. Every FAIL case here is exit=0 GATE PASS under the 2b5d833
+# gate (the KINVARA_GATE_IMPL differential, state/EP-1/T-182.md § Evidence).
+echo; echo "=== cases 169-192 (T-182): §7 resolves PID 1 per SERVICE — compose entrypoint:/command:, init:, stop_signal:, NODE_OPTIONS, mounts, working_dir, a rewriting RUN, an ADDed archive ==="
+CORE_HEAD='  core:
+    image: kinvara/core:dev
+'
+CORE_ENV='      HIBP_API_BASE: ${HIBP_API_BASE:-http://hibp-fake:4100}'
+COPY_RUNTIME='COPY --chown=10001:10001 docker/app-runtime/ ./app-runtime/'
+SM_HEAD='  stripe-mock:
+    image: stripe/stripe-mock:v0.194.0
+'
+# 169. THE TUESDAY (QA-F3's E1): one compose line replaces PID 1 with a copy of
+#      the entrypoint that waits 60 s, and `COPY docker/app-runtime/` already
+#      puts the copy in the image — no Dockerfile edit at all. §7 now reads the
+#      copy, so the floor it holds the graces against is the copy's 60 s.
+cp "$ENTRY" "$PID1" && mut "$PID1" "$DRAIN_LINE" 'const GROUP_DRAIN_MS = 60_000;' \
+  && mut "$BASE" "$CORE_HEAD" "$CORE_HEAD    entrypoint: ['node', '/srv/kinvara/app-runtime/pid1.mjs']
+" \
+  && run_case "169 a compose entrypoint: override -> a 60 s copy" FAIL "BELOW the floor of 65000 ms"
+# 170. THE CONTROL for 169: the SAME key pointed at the file the image runs
+#      anyway is RESOLVED, read and green. The refusal is about resolution, not
+#      about the presence of an entrypoint: key.
+mut "$BASE" "$CORE_HEAD" "$CORE_HEAD    entrypoint: ['node', '/srv/kinvara/app-runtime/entrypoint.mjs']
+" \
+  && run_case "170 a compose entrypoint: -> the real entrypoint (stay green)" PASS
+# 171. The same key as a STRING. Compose reads that as SHELL form, so /bin/sh is
+#      PID 1 — the thing §6 refuses in the Dockerfile and nothing read in compose.
+cp "$ENTRY" "$PID1" && mut "$BASE" "$CORE_HEAD" "$CORE_HEAD    entrypoint: node /srv/kinvara/app-runtime/pid1.mjs
+" \
+  && run_case "171 a compose entrypoint: STRING (shell form)" FAIL "SHELL form"
+# 172. QA's F5: a bind mount over the script. The image is untouched and the
+#      file PID 1 runs is whatever the host puts there.
+cp "$ENTRY" "$PID1" && mut "$BASE" "$CORE_HEAD" "$CORE_HEAD    volumes:
+      - type: bind
+        source: ./app-runtime/pid1.mjs
+        target: /srv/kinvara/app-runtime/entrypoint.mjs
+        read_only: true
+" \
+  && run_case "172 a compose volumes: mount over PID 1's script" FAIL "covers PID 1's script"
+# 173. THE CONTROL for 172: a mount on the same service that does NOT cover the
+#      script is green — the rule is the coverage, not the key.
+mut "$BASE" "$CORE_HEAD" "$CORE_HEAD    volumes:
+      - type: bind
+        source: ./app-runtime
+        target: /qa/app-runtime
+        read_only: true
+" \
+  && run_case "173 a compose volumes: mount elsewhere (stay green)" PASS
+# 174. QA's F6: a NODE_OPTIONS preload. QA MEASURED it running INSIDE PID 1 of
+#      kinvara/core:dev, so this is code PID 1 runs from a file §7 never read.
+mut "$BASE" "$CORE_ENV" "$CORE_ENV
+      NODE_OPTIONS: --enable-source-maps --import /srv/kinvara/app-runtime/pre.mjs" \
+  && run_case "174 compose NODE_OPTIONS --import preload" FAIL "makes node run code from another file"
+# 175. THE CONTROL for 174: the value the image already sets loads nothing.
+mut "$BASE" "$CORE_ENV" "$CORE_ENV
+      NODE_OPTIONS: --enable-source-maps" \
+  && run_case "175 compose NODE_OPTIONS=--enable-source-maps (stay green)" PASS
+# 176. The same preload from the IMAGE's own ENV, which app.Dockerfile:232
+#      already declares — so this is an edit to a line that exists.
+mut "$DF" '    NODE_OPTIONS=--enable-source-maps' '    NODE_OPTIONS="--enable-source-maps --require /srv/kinvara/app-runtime/pre.cjs"' \
+  && run_case "176 Dockerfile ENV NODE_OPTIONS --require preload" FAIL "makes node run code from another file"
+# 177. QA's E3: a node flag whose VALUE is a separate argument. §7 used to take
+#      the first non-flag argument, which is the flag's value, and read THAT.
+cp "$ENTRY" "$PID1" && mut "$PID1" "$DRAIN_LINE" 'const GROUP_DRAIN_MS = 60_000;' \
+  && mut "$DF" "$EP_LINE" 'ENTRYPOINT ["node", "--import", "/srv/kinvara/app-runtime/entrypoint.mjs", "/srv/kinvara/app-runtime/pid1.mjs"]' \
+  && run_case "177 node --import <real> <60 s copy>" FAIL "makes node run code from another file"
+# 178. THE CONTROL for 177 and 191: an INERT flag before the script is read past.
+mut "$DF" "$EP_LINE" 'ENTRYPOINT ["node", "--enable-source-maps", "/srv/kinvara/app-runtime/entrypoint.mjs"]' \
+  && run_case "178 node --enable-source-maps <real> (stay green)" PASS
+# 179. T-180 § contract 4's third family member, declared and never planted: a
+#      RUN that rewrites the script AFTER the COPY that puts it there.
+mut "$DF" "$COPY_RUNTIME" "$COPY_RUNTIME
+RUN sed -i 's/GROUP_DRAIN_MS = 25_000/GROUP_DRAIN_MS = 60_000/' /srv/kinvara/app-runtime/entrypoint.mjs" \
+  && run_case "179 a RUN rewrites the script after its COPY" FAIL "runs AFTER the COPY that puts it there"
+# 180. T-180 § contract 4's fourth member: an ADDed archive docker extracts over
+#      the script. Its contents are not in the repository in a readable form.
+mk_pid1_tar && mut "$DF" "$COPY_RUNTIME" "$COPY_RUNTIME
+ADD docker/app-runtime/pid1.tar /srv/kinvara/" \
+  && run_case "180 an ADDed tar extracted over the script" FAIL "ADDs an ARCHIVE"
+# 181. QA's X1: stop_signal: SIGQUIT. PID 1 handles SIGTERM and SIGINT only, so
+#      nothing is forwarded, nothing drains, and docker SIGKILLs at the grace —
+#      measured ExitCode=137 at 30.13 s in a container.
+mut "$BASE" "$CORE_HEAD" "$CORE_HEAD    stop_signal: SIGQUIT
+" \
+  && run_case "181 stop_signal: SIGQUIT — nothing forwards it" FAIL "installs handlers for SIGTERM and SIGINT only"
+# 182. THE CONTROL for 181: the two signals PID 1 does handle are allowed.
+mut "$BASE" "$CORE_HEAD" "$CORE_HEAD    stop_signal: SIGTERM
+" \
+  && run_case "182 stop_signal: SIGTERM (stay green)" PASS
+# 183. QA's F7: init: true makes docker-init PID 1 and entrypoint.mjs its child,
+#      so the process this rule reads is not PID 1 at all.
+mut "$BASE" "$CORE_HEAD" "$CORE_HEAD    init: true
+" \
+  && run_case "183 init: true — docker-init becomes PID 1" FAIL "docker-init is PID 1"
+# 184. THE EIGHTH ROUTE, planted by T-182 rather than inherited: a compose
+#      configs: entry whose target IS the script. A different compose key from
+#      volumes:, the same effect, named by nobody in T-180's family — and it is
+#      refused by the resolution's mount step without a rule of its own.
+mk_pid1_cfg && mut "$BASE" '
+volumes:
+' '
+configs:
+  qa_pid1:
+    file: ./qa-pid1.cfg
+
+volumes:
+' && mut "$BASE" "$CORE_HEAD" "$CORE_HEAD    configs:
+      - source: qa_pid1
+        target: /srv/kinvara/app-runtime/entrypoint.mjs
+" \
+  && run_case "184 EIGHTH ROUTE: a configs: target over PID 1's script" FAIL "covers PID 1's script"
+# 185. THE CONTROL for 172/184: the same mount on a service that is NOT an
+#      application service is nothing to do with this rule.
+mut "$BASE" "$SM_HEAD" "$SM_HEAD    volumes:
+      - type: bind
+        source: ./app-runtime
+        target: /srv/kinvara/app-runtime
+        read_only: true
+" \
+  && run_case "185 the same mount on stripe-mock (stay green)" PASS
+# 186. env_file: can set NODE_OPTIONS, and this gate does not read env files.
+mut "$BASE" "$CORE_HEAD" "$CORE_HEAD    env_file: ['./.env.example']
+" \
+  && run_case "186 env_file: on an application service" FAIL "does not read env files"
+# 187. working_dir: moves the WORKDIR a RELATIVE ENTRYPOINT resolves against, so
+#      one compose line repoints PID 1 without touching the Dockerfile's argv.
+mut "$DF" "$EP_LINE" 'ENTRYPOINT ["node", "app-runtime/entrypoint.mjs"]' \
+  && mut "$BASE" "$CORE_HEAD" "$CORE_HEAD    working_dir: /srv
+" \
+  && run_case "187 working_dir: moves a relative ENTRYPOINT" FAIL "cannot map it to a repository file"
+# 188. THE CONTROL for 187: the same relative ENTRYPOINT with no working_dir
+#      resolves against the image's own WORKDIR and is green.
+mut "$DF" "$EP_LINE" 'ENTRYPOINT ["node", "app-runtime/entrypoint.mjs"]' \
+  && run_case "188 the same relative ENTRYPOINT, no working_dir (stay green)" PASS
+# 189. D13 (qa-verification's second pass on T-180): the line the value used to
+#      be read from, put inside a COMMENT, with the real declaration written so
+#      the line match misses it. The gate reported 25 000 while PID 1 waited
+#      60 s; the value now comes from the declaration the code uses.
+mut "$ENTRY" "$DRAIN_LINE" '/* the wait, as a line match reads it:
+const GROUP_DRAIN_MS = 25_000;
+*/
+const GROUP_DRAIN_MS =
+  60_000;' \
+  && run_case "189 D13: the matched line is a comment, the real wait is 60 s" FAIL "BELOW the floor of 65000 ms"
+# 190. THE CONTROL for 189: the same declaration spread over two lines, with the
+#      value unchanged, is green — 189's red is the value, not the formatting.
+mut "$ENTRY" "$DRAIN_LINE" 'const GROUP_DRAIN_MS =
+  25_000;' \
+  && run_case "190 the declaration across two lines, 25_000 (stay green)" PASS
+# 191. The one declaration must be a top-level const: a `let` is re-assignable,
+#      so holding a grace against its initial value would prove nothing.
+mut "$ENTRY" "$DRAIN_LINE" 'let GROUP_DRAIN_MS = 25_000;' \
+  && run_case "191 GROUP_DRAIN_MS declared with let" FAIL "must be declared as a TOP-LEVEL"
+# 192. QA's E4 refined: a flag with a separate value that this rule does not
+#      model is refused AS A FLAG now, naming it, rather than by failing to map
+#      the file that turned out to be its value.
+mut "$DF" "$EP_LINE" 'ENTRYPOINT ["node", "--title", "kinvara", "/srv/kinvara/app-runtime/entrypoint.mjs"]' \
+  && run_case "192 a node flag this rule does not model (--title)" FAIL "is not one this rule models"
 
 echo
 run_case "99 tree restored" PASS

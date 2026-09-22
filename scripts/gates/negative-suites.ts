@@ -147,7 +147,15 @@ const SUITES: readonly Suite[] = [
     // 158 -> 161, 2026-09-22, T-180 rework 1: cases 166-168 (QA-F4, a same-named
     // let/var/multi-declarator const shadowing GROUP_DRAIN_MS). No case removed,
     // renamed, re-classed or re-planted — T-180 § Rework 1.
-    cases: 161,
+    // 161 -> 185, 2026-09-22, T-182: twenty-four cases (169-192) for §7's PID-1
+    // RESOLUTION — a compose entrypoint: (list and string), a mount over the
+    // script (volumes: and configs:), a NODE_OPTIONS preload from compose and
+    // from the image's ENV, a code-loading and an unmodelled node flag, a RUN
+    // that rewrites the script, an ADDed archive, stop_signal:, init:,
+    // working_dir:, env_file:, D13 and a non-const declaration — with seven
+    // controls. No case removed, renamed, re-classed or re-planted, so
+    // OD-176(d)'s four conditions are not engaged — T-182 § Evidence.
+    cases: 185,
     state: 'GREEN',
     why: 'gate:app-images: every Dockerfile an overlay service builds, plus the suite’s own working-tree verdict (T-035, T-036, T-156)',
   },
