@@ -129,12 +129,14 @@ docker inspect "${CONTAINER}" >/dev/null 2>&1 || {
   echo "no container ${CONTAINER}. Run: scripts/svc up ${TICKET} <profiles> --verify --build" >&2; exit 1; }
 
 # The container's REAL grace, as docker will enforce it. The fallback is docker's
-# own default for a container created with no StopTimeout. T-179: every
-# APPLICATION service in the composed files now declares stop_grace_period
-# (gate:app-images §7), so for a container `svc up` created from them this
-# branch is not taken. It stays: it is still the true value for a container
-# created any other way (a hand-run `docker run` of an app image), and this
-# script judges the container in front of it, not the compose file.
+# documented default for a container created with no StopTimeout (not measured
+# in this repository). T-179: every APPLICATION service in the composed files
+# now declares stop_grace_period (gate:app-images §7), so for a container
+# `svc up` created from them this branch SHOULD not be reached — derived from
+# compose passing a declared grace through as the stop timeout, not observed in
+# a container. It stays: it is still the right value for a container created
+# any other way (a hand-run `docker run` of an app image), and this script
+# judges the container in front of it, not the compose file.
 GRACE="$(docker inspect "${CONTAINER}" --format '{{.Config.StopTimeout}}')"
 [[ "${GRACE}" == "<no value>" || -z "${GRACE}" ]] && GRACE=10
 
