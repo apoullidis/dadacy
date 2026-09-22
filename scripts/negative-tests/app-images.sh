@@ -99,6 +99,7 @@ PLANTED=(
   docker/compose.yml.t130
   docker/compose.yml.t131
   infra/compose.rogue.yml
+  docker/app-runtime/pid1.mjs
 )
 command -v git >/dev/null 2>&1 || {
   echo "HARNESS ERROR: git is not on PATH. This suite refuses to delete anything"
@@ -642,13 +643,25 @@ repoint_web() {   # $1 = the dockerfile to point compose.verify.yml's web at
         PNPM_VERSION: \${KINVARA_PNPM_VERSION:?derived from .tool-versions by scripts/svc}
         APP: web"
 }
+# T-180: all THREE plants below gained `WORKDIR` + `COPY docker/app-runtime/` and
+# an ENTRYPOINT at the copied entrypoint.mjs. §7 now reads GROUP_DRAIN_MS from
+# the file each application stage's ENTRYPOINT runs, and REFUSES a PID 1 it
+# cannot map to a repository file, so the old `/x.mjs` (which nothing COPYs)
+# turned case 45 red for a reason that has nothing to do with pins. The edit is
+# the same in all three because 43/44/45 are one differential: 45 is the
+# control for 43-44 only while the three differ by the pins alone. Names,
+# classes and expected reasons are unchanged; against the gate as at 36a41d1
+# the three verdicts are unchanged (T-180 § Evidence); the unedited plant is
+# kept as case 165, expecting §7's refusal (T-179 QA-4's four conditions).
 cat > docker/next.Dockerfile <<'DF'
 ARG NODE_VERSION=24.20.0
 ARG PNPM_VERSION=11.25.0
 FROM node:24.20.0-alpine AS runtime
 USER 10001:10001
+WORKDIR /srv/kinvara
+COPY docker/app-runtime/ ./app-runtime/
 HEALTHCHECK CMD ["node", "/x.mjs"]
-ENTRYPOINT ["node", "/x.mjs"]
+ENTRYPOINT ["node", "/srv/kinvara/app-runtime/entrypoint.mjs"]
 DF
 repoint_web docker/next.Dockerfile && run_case "43 a 2nd Dockerfile with literal pins (OD-25 verbatim)" FAIL
 cat > docker/next.Dockerfile <<'DF'
@@ -657,8 +670,10 @@ ARG PNPM_VERSION
 FROM node:${NODE_VERSION}-alpine AS runtime
 ENV KINVARA_PNPM_HINT=11.25.0
 USER 10001:10001
+WORKDIR /srv/kinvara
+COPY docker/app-runtime/ ./app-runtime/
 HEALTHCHECK CMD ["node", "/x.mjs"]
-ENTRYPOINT ["node", "/x.mjs"]
+ENTRYPOINT ["node", "/srv/kinvara/app-runtime/entrypoint.mjs"]
 DF
 repoint_web docker/next.Dockerfile && run_case "44 a 2nd Dockerfile, PNPM literal only" FAIL
 # The control: the same second Dockerfile with nothing written down must PASS,
@@ -668,8 +683,10 @@ ARG NODE_VERSION
 ARG PNPM_VERSION
 FROM node:${NODE_VERSION}-alpine AS runtime
 USER 10001:10001
+WORKDIR /srv/kinvara
+COPY docker/app-runtime/ ./app-runtime/
 HEALTHCHECK CMD ["node", "/x.mjs"]
-ENTRYPOINT ["node", "/x.mjs"]
+ENTRYPOINT ["node", "/srv/kinvara/app-runtime/entrypoint.mjs"]
 DF
 repoint_web docker/next.Dockerfile && run_case "45 the same 2nd Dockerfile, pins derived (must stay green)" PASS
 
@@ -1703,6 +1720,68 @@ printf 'services:\n  qa-nonapp:\n    image: busybox:1\n    networks: [kinvara-in
   && printf 'services: {}\n' > "$VERIFY" && printf 'services: {}\n' > "$DEV" \
   && landed grep -q qa-nonapp "$BASE" \
   && run_case "155 zero application services composed anywhere" FAIL "judged ZERO application services"
+
+# --- T-180: §7 HOLDS THE ONE USE OF GROUP_DRAIN_MS, AND FINDS THE ENTRYPOINT
+#     FROM §6 ----------------------------------------------------------------
+# Until T-180, §7 read the constant's declaration at a FIXED path and nothing
+# else. qa-verification (T-179 QA-2, `g02`/`g03`/`g12`) changed the REAL wait
+# three ways with the gate green: a multiplier at the use site, an environment
+# override there, and app.Dockerfile's ENTRYPOINT pointed at a copy. T-180 fixes
+# the deadline at the first forwarded signal in ONE statement, and §7 holds
+# that statement's shape (by syntax tree, so a comment or a string is not a
+# use) and reads the file the resolved ENTRYPOINT actually runs.
+USE_LINE='deadline = signalledAt + GROUP_DRAIN_MS;'
+EP_LINE='ENTRYPOINT ["node", "/srv/kinvara/app-runtime/entrypoint.mjs"]'
+PID1=docker/app-runtime/pid1.mjs
+# 156. g02: a multiplier where the constant is used.
+mut "$ENTRY" "$USE_LINE" 'deadline = signalledAt + GROUP_DRAIN_MS * 2;' \
+  && run_case "156 g02: GROUP_DRAIN_MS * 2 at the use site" FAIL "the one use of GROUP_DRAIN_MS is"
+# 157. g03: an environment override where the constant is used.
+mut "$ENTRY" "$USE_LINE" 'deadline = signalledAt + Number(process.env.KINVARA_GROUP_DRAIN_MS ?? GROUP_DRAIN_MS);' \
+  && run_case "157 g03: an env override at the use site" FAIL "the one use of GROUP_DRAIN_MS is"
+# 158. A SECOND read — the shape the code had before T-180, where the timeout
+#      log line read the constant too.
+mut "$ENTRY" 'the first forwarded signal (the deadline), exiting anyway`,' 'the first forwarded signal (the deadline, ${String(GROUP_DRAIN_MS)}ms), exiting anyway`,' \
+  && run_case "158 GROUP_DRAIN_MS read a second time (a log line)" FAIL "is used in code at 2 place(s)"
+# 159. The ORIGIN moved back: the deadline counted from "now" at the use site,
+#      not from the first signal. (Not modelled: the SAME statement moved to
+#      child.on('exit') — see T-180 § Published contract.)
+mut "$ENTRY" "$USE_LINE" 'deadline = Date.now() + GROUP_DRAIN_MS;' \
+  && run_case "159 the deadline counted from Date.now() again" FAIL "the one use of GROUP_DRAIN_MS is"
+# 160. THE CONTROL for 156-159: a mention in a COMMENT and in a STRING is not a
+#      use. A text count would red this; the syntax-tree count must not.
+mut "$ENTRY" "$DRAIN_LINE" "$DRAIN_LINE // GROUP_DRAIN_MS, mentioned
+const GROUP_DRAIN_NOTE = 'GROUP_DRAIN_MS is read once';" \
+  && run_case "160 GROUP_DRAIN_MS in a comment and a string (stay green)" PASS
+# 161. g12: ENTRYPOINT pointed at a COPY whose wait is 60 s. Before T-180 §7
+#      read the fixed path and stayed green.
+cp "$ENTRY" "$PID1" && mut "$PID1" "$DRAIN_LINE" 'const GROUP_DRAIN_MS = 60_000;' \
+  && mut "$DF" "$EP_LINE" 'ENTRYPOINT ["node", "/srv/kinvara/app-runtime/pid1.mjs"]' \
+  && run_case "161 g12: ENTRYPOINT repointed at a 60 s copy" FAIL "BELOW the floor of 65000 ms"
+# 162. THE CONTROL for 161: the same repoint to an IDENTICAL copy is green, so
+#      161's red is the wait read from the copy, not a fixed-path check.
+cp "$ENTRY" "$PID1" && mut "$DF" "$EP_LINE" 'ENTRYPOINT ["node", "/srv/kinvara/app-runtime/pid1.mjs"]' \
+  && run_case "162 ENTRYPOINT repointed at an identical copy (stay green)" PASS
+# 163. An ENTRYPOINT that is not `node <script>`: §7 cannot tell which file is
+#      PID 1, and refuses rather than falling back to a path.
+mut "$DF" "$EP_LINE" 'ENTRYPOINT ["/srv/kinvara/app-runtime/entrypoint.mjs"]' \
+  && run_case "163 ENTRYPOINT without node: no script to read" FAIL "is not \`node <script>\`"
+# 164. A script no COPY from the build context puts in the image.
+mut "$DF" "$EP_LINE" 'ENTRYPOINT ["node", "/usr/local/lib/pid1.mjs"]' \
+  && run_case "164 ENTRYPOINT at a path no COPY provides" FAIL "cannot map it to a repository file"
+
+# 165. Case 45's plant as it was before T-180: a second application Dockerfile
+#      whose ENTRYPOINT runs /x.mjs, which no COPY provides. §7 cannot read the
+#      wait of a PID 1 it cannot find, and refuses (T-179 QA-4 condition iii).
+cat > docker/next.Dockerfile <<'DF'
+ARG NODE_VERSION
+ARG PNPM_VERSION
+FROM node:${NODE_VERSION}-alpine AS runtime
+USER 10001:10001
+HEALTHCHECK CMD ["node", "/x.mjs"]
+ENTRYPOINT ["node", "/x.mjs"]
+DF
+repoint_web docker/next.Dockerfile && run_case "165 case 45's pre-T-180 plant: PID 1 /x.mjs, never COPY'd" FAIL "cannot map it to a repository file"
 
 echo
 run_case "99 tree restored" PASS

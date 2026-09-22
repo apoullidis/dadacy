@@ -139,9 +139,25 @@ const SUITES: readonly Suite[] = [
     // 136 -> 148, 2026-09-22, T-179: twelve cases (144-155) for gate:app-images
     // §7, the stop-grace rule. No case removed, renamed or re-classed; case 87's
     // PLANT gained one line (stop_grace_period) — T-179 § Evidence.
-    cases: 148,
+    // 148 -> 158, 2026-09-22, T-180: ten cases (156-165) — §7 holds the ONE use
+    // of GROUP_DRAIN_MS and derives the entrypoint from §6's ENTRYPOINT. No case
+    // removed, renamed or re-classed; the PLANTS of 43/44/45 each gained the same
+    // WORKDIR + COPY docker/app-runtime/ lines and an ENTRYPOINT at the copy, and
+    // 45's old plant is case 165 — T-180 § Evidence.
+    cases: 158,
     state: 'GREEN',
     why: 'gate:app-images: every Dockerfile an overlay service builds, plus the suite’s own working-tree verdict (T-035, T-036, T-156)',
+  },
+  {
+    // T-180. Runs docker/app-runtime/entrypoint.mjs as a process (no Docker, no
+    // services) against a temp-dir fixture app: WHERE the group-drain deadline
+    // counts from, and that PID 1 does not wait when no signal was forwarded.
+    // About 27 s: the three deadline cases run concurrently.
+    id: 'entrypoint-lifecycle',
+    file: 'scripts/negative-tests/entrypoint-lifecycle.sh',
+    cases: 6,
+    state: 'GREEN',
+    why: "PID 1's group-drain deadline counts from the FIRST forwarded signal, a second signal does not move it, and with NO signal forwarded PID 1 exits at once with the app's status (T-180, TL-A1 on T-179)",
   },
   {
     id: 'otel-contract',

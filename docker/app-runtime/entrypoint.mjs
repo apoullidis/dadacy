@@ -49,13 +49,18 @@
  *     T-151). That is not a coincidence to preserve by hand:
  *     gate:app-images §7 refuses any APPLICATION service — derived, not
  *     listed — whose grace, in any composed file, is below GROUP_DRAIN_MS
- *     (read from THIS file) plus a 5 s exit margin. THAT DOES NOT MAKE THE
- *     WAIT FIT THE GRACE (tech-lead TL-A1 on T-179, measured): the wait's
- *     deadline starts at the DIRECT CHILD'S EXIT, not at SIGTERM, so the
- *     worst case is the app's own drain time PLUS GROUP_DRAIN_MS, and no fixed
- *     margin covers that. Moving the deadline to the first forwarded signal
- *     is the successor ticket the orchestrator cut from TL-A1. A process that
- *     ignores SIGTERM drops every in-flight request at deploy time.
+ *     (read from THIS file) plus a 5 s exit margin. Since T-180 that relation
+ *     IS the property: the group wait's deadline is fixed at the FIRST
+ *     FORWARDED SIGNAL (runReal), so once the application has exited this
+ *     process never outlives SIGTERM by more than GROUP_DRAIN_MS plus one
+ *     100 ms poll, however long the application took to drain. Until T-180 it
+ *     counted from the direct child's exit, and tech-lead measured an 8 s
+ *     drain SIGKILLed (137) at a 30 s grace with the gate green (TL-A1 on
+ *     T-179; red-before and green-after in state/EP-1/T-180.md). What the
+ *     deadline does NOT bound is the application itself: an app still
+ *     draining at the grace is SIGKILLed by docker, which is then true. A
+ *     process that ignores SIGTERM drops every in-flight request at deploy
+ *     time.
  *   * The process must be PID 1's own child or PID 1 itself: a shell-form CMD
  *     puts /bin/sh at PID 1, and sh does not forward signals to its child.
  *     This file is exec'd directly for that reason.
@@ -88,7 +93,11 @@
  *     leader; `process.kill(-pgid, sig)` then reaches every process in it,
  *     including a shell's grandchild. And after the direct child exits, this
  *     process WAITS FOR THE GROUP TO EMPTY before exiting, because PID 1
- *     exiting kills whatever is left.
+ *     exiting kills whatever is left — but only if a signal was forwarded,
+ *     and never past first-signal + GROUP_DRAIN_MS (T-180). If the
+ *     application ends ON ITS OWN, with no signal forwarded, this process
+ *     exits at once with its status and does not wait (see child.on('exit')
+ *     in runReal for why).
  *
  *     That wait is not belt-and-braces. Measured in node:24.20.0-alpine: for
  *     a compound script, busybox ash does not exec its child, TAKES the
@@ -105,32 +114,34 @@
  *     reparented to PID 1, and this process does not reap a child it never
  *     spawned — so the moment it finishes draining it becomes a ZOMBIE,
  *     `kill(-pgid, 0)` still SUCCEEDS on a zombie, and waitForGroup below
- *     therefore polls the full GROUP_DRAIN_MS and exits 128+signum. So a
- *     CLEAN drain behind a true compound script costs 25 s and reports 143
- *     every time. Because ash dies at the signal, that wait starts at about
- *     SIGTERM, so it ends inside the 30 s stop_grace_period all five
- *     application services declare, and gate:app-images §7 holds the graces
- *     at >= GROUP_DRAIN_MS + 5 s (T-179: it reads the CONSTANT GROUP_DRAIN_MS
- *     from here; a multiplier or env override where it is USED, or an
- *     ENTRYPOINT pointed at another file, is not read — QA-7). The 143 is
+ *     therefore polls until the deadline — first forwarded signal +
+ *     GROUP_DRAIN_MS — and exits 128+signum. So a CLEAN drain behind a true
+ *     compound script keeps the container up until that deadline and reports
+ *     143 every time. The deadline is inside the stop_grace_period all five
+ *     application services declare, because gate:app-images §7 holds every
+ *     grace at >= GROUP_DRAIN_MS + 5 s, reading the constant from this file
+ *     and holding the one statement that uses it (T-179, T-180). The 143 is
  *     still a false crash signal. The application does drain.
  *
- *     THE ZOMBIE IS NOT ONLY A SHELL-PATH EFFECT (tech-lead TL-A1 on T-179,
- *     measured with this file as PID 1 in node:24.20.0-alpine,
- *     --stop-timeout 30, a SIMPLE start line): an application that spawns a
- *     helper into its group and exits without waiting for it leaves that
- *     helper to be reparented here and zombify, so the full wait runs ON THE
- *     ARGV PATH too. And there the wait starts when the APP exits, not at
- *     SIGTERM: app drain 1 s -> `docker stop` 26.25 s, exit 0; app drain 8 s
- *     -> 30.15 s and ExitCode=137 (SIGKILL) after both processes had logged a
- *     clean exit — with gate:app-images green. No work is lost (the grace
- *     would kill anything still running anyway), but 137 is the same false
- *     crash signal as the 143 above. The fix — the deadline counted from the
- *     first forwarded signal — is a change to PID 1 and is the successor
- *     ticket cut from TL-A1, not a comment. What IS bounded: `VAR=value cmd
- *     args` is not a compound script — ash execs it, so the direct child IS
- *     the application (measured, § Rework 1 R1.5) — and no app in this
- *     repository declares a compound start script.
+ *     THE ZOMBIE IS NOT ONLY A SHELL-PATH EFFECT (tech-lead TL-A1 on T-179):
+ *     an application that spawns a helper into its group and exits without
+ *     waiting for it leaves that helper to be reparented here and zombify, so
+ *     the full wait runs ON THE ARGV PATH too, with no shell anywhere. Since
+ *     T-180 that wait also ends at first-signal + GROUP_DRAIN_MS, so it is
+ *     inside the grace however long the app drained, and on this path the
+ *     status reported is the application's own (it is the direct child).
+ *     Before T-180 the wait started when the APP exited, and an 8 s drain
+ *     was SIGKILLed (137) at the 30 s grace after every process had logged a
+ *     clean exit. Both readings, red at main 36a41d1 and green after, in the
+ *     real image: state/EP-1/T-180.md § Evidence E1/E4. WHAT IS STILL LEFT,
+ *     AND IS NOT T-180's: a zombie is still counted as alive, so a clean
+ *     drain that leaves one keeps the container up until the deadline rather
+ *     than exiting when the drain ends — and on the shell path reports 143.
+ *     Reading /proc/<pid>/stat and treating state Z as gone would end both;
+ *     it is a second mechanism change (OD-196's trigger). What IS bounded:
+ *     `VAR=value cmd args` is not a compound script — ash execs it, so the
+ *     direct child IS the application (measured, T-151 § Rework 1 R1.5) — and
+ *     no app in this repository declares a compound start script.
  *
  * WHAT THIS PROCESS CAN AND CANNOT REPORT. On path 1 the direct child is the
  * application, so its exit status IS the application's and a clean drain
@@ -179,9 +190,12 @@ const log = (...a) => process.stderr.write(`[${APP}] ${a.join(' ')}\n`);
  */
 const SIMPLE_COMMAND = /^[A-Za-z0-9_@.:/+,-]+(?: [A-Za-z0-9_@.:/+=,-]+)*$/;
 
-/** How long to wait for the child's process group to empty — counted from the
- *  DIRECT CHILD'S EXIT (waitForGroup is only called from child.on('exit')),
- *  not from the forwarded signal (tech-lead TL-A1 on T-179).
+/** How long after the FIRST FORWARDED SIGNAL this process may wait for the
+ *  child's process group to empty (T-180). The deadline is fixed when that
+ *  signal arrives, in the one statement in runReal that reads this constant;
+ *  a later signal does not move it, and if no signal is ever forwarded there
+ *  is no deadline and no wait. Until T-180 it counted from the direct child's
+ *  exit instead (tech-lead TL-A1 on T-179).
  *
  *  EVERY APPLICATION SERVICE'S GRACE IS HELD ABOVE THIS NUMBER, BY A GATE THAT
  *  READS IT FROM HERE (T-179). gate:app-images §7 parses the one
@@ -195,16 +209,21 @@ const SIMPLE_COMMAND = /^[A-Za-z0-9_@.:/+,-]+(?: [A-Za-z0-9_@.:/+=,-]+)*$/;
  *  (at main 39f01f2 `web` and `admin` declared none and took compose's 10 s
  *  default — tech-lead TL-1 on T-151). So: RAISE THIS LITERAL AND THE GATE GOES
  *  RED until the graces move with it (negative case 148); write it as anything
- *  but one numeric literal and the gate refuses to guess (case 151). ONLY this
- *  literal is read: scaling or overriding it where waitForGroup uses it is not
- *  (QA-7), so change the wait HERE or not at all. WHAT THE GATE DOES NOT
- *  GIVE: a wait that fits the grace. The deadline starts at the child's exit,
- *  so the worst case is the app's drain time + this, and on the argv path an
- *  app that leaves a helper in its group reaches the full wait (TL-A1, see the
- *  header: 8 s drain -> SIGKILL, 137). The successor ticket cut from TL-A1
- *  moves the deadline to the first forwarded signal; §7 is then exactly the
- *  right property. scripts/verify/sigterm-drain.sh reads each container's real
- *  StopTimeout, and assertion D judges against that number. */
+ *  but one numeric literal and the gate refuses to guess (case 151). AND THE
+ *  GATE HOLDS WHERE IT IS USED (T-180): this identifier may appear in code on
+ *  exactly two lines — this declaration and `deadline = signalledAt +
+ *  GROUP_DRAIN_MS;` in runReal — so a multiplier or an environment override
+ *  at the use site, or a second use, reds the gate (cases 156-158; QA-7's
+ *  g02/g03 on T-179). §7 also finds THIS FILE from the ENTRYPOINT the image
+ *  stage resolves (§6), not from a fixed path, so pointing app.Dockerfile at a
+ *  copy is read too (case 159; g12). WHAT THE GATE GIVES, now that the
+ *  deadline counts from the first forwarded signal: once the application has
+ *  exited, this process is gone by first-signal + GROUP_DRAIN_MS + one poll,
+ *  which is inside every application service's grace. WHAT IT DOES NOT: that
+ *  the application itself exits inside the grace — that is the app's drain,
+ *  and docker's SIGKILL at the grace is the truthful outcome if it does not.
+ *  scripts/verify/sigterm-drain.sh reads each container's real StopTimeout,
+ *  and assertion D judges against that number. */
 const GROUP_DRAIN_MS = 25_000;
 
 // --- MODE SELECTION ---------------------------------------------------------
@@ -253,14 +272,28 @@ function runReal(script) {
     process.exit(1);
   });
 
-  let forwarded = null;
+  // THE DEADLINE IS FIXED BY THE FIRST FORWARDED SIGNAL AND BY NOTHING ELSE
+  // (T-180, from tech-lead's TL-A1 on T-179). Both stay null until a signal
+  // arrives; the first one sets them; a second signal is forwarded but moves
+  // neither. `deadline === null` is therefore also the one record of "was a
+  // signal forwarded at all", so there is no second flag that could disagree
+  // with it — and no path on which the wait runs against a null or NaN
+  // deadline, because the only caller of waitForGroup is behind that check.
+  let signalledAt = null;
+  let deadline = null;
   // Forward, do not swallow. The child owns its own drain. The signal goes to
   // the GROUP so that a shell's grandchild gets it too; `child.kill` is the
   // fallback for the one case a group kill can fail (the group is already
   // gone), and it would be wrong to treat that as fatal.
   for (const sig of ['SIGTERM', 'SIGINT']) {
     process.on(sig, () => {
-      forwarded = sig;
+      if (deadline === null) {
+        signalledAt = Date.now();
+        // THE ONE READ OF GROUP_DRAIN_MS. gate:app-images §7 holds this
+        // statement's exact text (T-180), so scaling or overriding the wait
+        // here reds the gate rather than changing it past the graces.
+        deadline = signalledAt + GROUP_DRAIN_MS;
+      }
       try {
         process.kill(-child.pid, sig);
       } catch {
@@ -271,7 +304,16 @@ function runReal(script) {
 
   child.on('exit', (code, sig) => {
     const status = sig !== null ? 128 + (sig === 'SIGTERM' ? 15 : 2) : (code ?? 1);
-    if (forwarded === null) return void process.exit(status);
+    // NO SIGNAL WAS FORWARDED: the application ended on its own — a crash or
+    // a normal completion. Exit NOW, with its status, and do NOT wait for its
+    // process group (T-180's decision; this is also what the code did before
+    // T-180). Nobody asked for a drain, so there is no deadline to count from
+    // and no grace period running; waiting would only delay a restart by up
+    // to GROUP_DRAIN_MS and hide the crash behind a quiet container. Anything
+    // the application left in its group dies with this process, which is the
+    // application's own choice: it exited without waiting for it. Falsified
+    // by scripts/negative-tests/entrypoint-lifecycle.sh case L02/L03.
+    if (deadline === null) return void process.exit(status);
     if (sig !== null) {
       // The direct child was killed by the signal we forwarded. On the shell
       // path that is the shell, not the app, so this process must not claim
@@ -281,7 +323,7 @@ function runReal(script) {
           `group, and reporting ${String(status)} because this process cannot see the application's own exit status`,
       );
     }
-    waitForGroup(child.pid, status);
+    waitForGroup(child.pid, status, signalledAt, deadline);
   });
 }
 
@@ -289,9 +331,14 @@ function runReal(script) {
  * PID 1 exiting kills everything left in the container, so a drain that
  * outlives the direct child must outlive this process too. `kill(-pgid, 0)`
  * sends no signal; it throws ESRCH exactly when the group is empty.
+ *
+ * `deadline` was fixed when the FIRST signal was forwarded (runReal above), so
+ * however long the direct child took to exit, this never waits past it — and
+ * if the child exits after it, the first poll ends the wait. It does NOT cut
+ * the direct child short: the wait only begins once the child has exited, and
+ * an application still draining at the grace is docker's to SIGKILL, truthfully.
  */
-function waitForGroup(pgid, status) {
-  const deadline = Date.now() + GROUP_DRAIN_MS;
+function waitForGroup(pgid, status, signalledAt, deadline) {
   const poll = () => {
     try {
       process.kill(-pgid, 0);
@@ -300,7 +347,8 @@ function waitForGroup(pgid, status) {
     }
     if (Date.now() >= deadline) {
       log(
-        `process group ${String(pgid)} still alive after ${String(GROUP_DRAIN_MS)}ms, exiting anyway`,
+        `process group ${String(pgid)} still alive ${String(Date.now() - signalledAt)}ms after ` +
+          `the first forwarded signal (the deadline), exiting anyway`,
       );
       return void process.exit(status);
     }

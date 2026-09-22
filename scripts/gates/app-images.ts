@@ -64,6 +64,7 @@ import path from 'node:path';
 import { REPO_ROOT, finish, toolVersions } from './lib/run.ts';
 import { composedFiles } from './lib/composed-files.ts';
 import { parseCompose } from './lib/compose-parse.ts';
+import ts from 'typescript';
 
 /**
  * EVERY compose file a ticket-scoped project is composed from — DERIVED FROM
@@ -556,6 +557,12 @@ interface BuildUse {
   readonly target: string;
   /** `build.args`, verbatim from the YAML: compose does no substitution here. */
   readonly args: Record<string, unknown>;
+  /**
+   * The build context, repo-root-relative, resolved against the compose file's
+   * directory as Docker does. §7 needs it to map the ENTRYPOINT's in-image
+   * script back to the repository file a COPY put there (T-180).
+   */
+  readonly context: string;
 }
 const buildUses: BuildUse[] = [];
 /**
@@ -596,6 +603,18 @@ const allBuilds: { readonly where: string; readonly dockerfile: string }[] = [];
  * both invisible in.
  */
 const stagesChecked: string[] = [];
+/**
+ * Every EXEC-FORM ENTRYPOINT §6 resolved for an application stage, with the
+ * stage chain it was resolved over. §7 derives the file it reads GROUP_DRAIN_MS
+ * from THESE, not from a fixed path (T-180, closing QA-7's `g12` on T-179: an
+ * ENTRYPOINT repointed at a copy of the entrypoint escaped a constant path).
+ */
+const entrypointsResolved: {
+  readonly dockerfile: string;
+  readonly target: string;
+  readonly argv: readonly unknown[];
+  readonly chain: readonly Stage[];
+}[] = [];
 
 /**
  * Resolve a `build.dockerfile` the way Docker does: relative to `context:`,
@@ -767,6 +786,7 @@ for (const rel of BUILD_DECLARING_FILES) {
       dockerfile: df,
       target,
       args: isRecord(build['args']) ? build['args'] : {},
+      context: path.normalize(path.join(path.dirname(rel), ctx)),
     });
   }
 }
@@ -1267,6 +1287,8 @@ for (const [rel, users] of [...dockerfilesInUse].sort(([a], [b]) => a.localeComp
           `${where}: ENTRYPOINT [] in stage '${entrypoint.stage}' RESETS the entrypoint. ` +
             `Docker treats an empty array as clearing it, so the image has none.`,
         );
+      } else {
+        entrypointsResolved.push({ dockerfile: rel, target, argv: parsed, chain });
       }
     }
 
@@ -1367,47 +1389,65 @@ for (const [rel, users] of [...dockerfilesInUse].sort(([a], [b]) => a.localeComp
 //    (T-179, from tech-lead's TL-1 on T-151).
 //
 //    THE PROPERTY IS A RELATIONSHIP BETWEEN TWO FILES, NOT A NUMBER IN ONE.
-//    `docker/app-runtime/entrypoint.mjs` is PID 1 in every image
-//    `docker/app.Dockerfile` builds, and once its DIRECT CHILD EXITS after a
-//    forwarded SIGTERM it may wait up to GROUP_DRAIN_MS for the application's
-//    process group to empty (`waitForGroup`, called only from
-//    child.on('exit') — the deadline counts from the child's exit, NOT from
-//    the signal; tech-lead TL-A1). Docker SIGKILLs the container
+//    The file each application stage's ENTRYPOINT runs —
+//    `docker/app-runtime/entrypoint.mjs` in every image `docker/app.Dockerfile`
+//    builds today — is PID 1, and after it forwards SIGTERM and its direct
+//    child exits it waits for the application's process group to empty, until
+//    a DEADLINE FIXED AT THE FIRST FORWARDED SIGNAL: first signal +
+//    GROUP_DRAIN_MS (T-180). Docker SIGKILLs the container
 //    `stop_grace_period` after the SIGTERM. If the grace is not longer than
-//    the wait, a drain still inside the wait is killed and the container
-//    reports 137 — or, on the shell path, 143 even inside the grace — a FALSE
-//    CRASH SIGNAL to compose, T-003's ECS health and T-009's paging (OD-196).
-//    At main 39f01f2 `web` and `admin` declared no grace at all, so they took
-//    compose's 10 s default against a 25 s wait: 15 s short, with this gate
-//    green.
+//    that deadline, a drain still inside the wait is killed and the container
+//    reports 137 — a FALSE CRASH SIGNAL to compose, T-003's ECS health and
+//    T-009's paging (OD-196). At main 39f01f2 `web` and `admin` declared no
+//    grace at all, so they took compose's 10 s default against a 25 s wait:
+//    15 s short, with this gate green.
 //
-//    So the floor is READ, not restated: the CONSTANT GROUP_DRAIN_MS is parsed
-//    out of the shipping entrypoint, and raising it past a declared grace reds
-//    this gate (case 148). A literal `30s` checked against a literal `30s` would
-//    stay green the day someone raised GROUP_DRAIN_MS. The bound, measured by
-//    qa-verification on T-179 (QA-7): what is read is the constant's own
-//    literal, NOT how it is used — a multiplier or an environment override at
-//    the point of use changes the real wait with this gate green — and the
-//    entrypoint's path is FIXED here (ENTRYPOINT_FILE), not derived from
-//    app.Dockerfile's ENTRYPOINT, so pointing the image at another file escapes
-//    it too. The two numbers now live in two
-//    files owned for two different reasons, which is PROTOCOL §5.1's "anchor
-//    one of them outside".
+//    UNTIL T-180 THE DEADLINE COUNTED FROM THE DIRECT CHILD'S EXIT
+//    (`waitForGroup` computed it from child.on('exit')), so this relation held
+//    between two numbers without bounding the real wait: tech-lead measured an
+//    app that drained 8 s and left a helper in its group SIGKILLed at a 30 s
+//    grace (137) with this gate green (TL-A1 on T-179). Counting from the
+//    first signal makes the relation the property; the relation itself is
+//    unchanged. Red-before in the real image: state/EP-1/T-180.md § Evidence.
 //
-//    EXIT_MARGIN_MS IS A CHOSEN FLOOR, NOT A MEASUREMENT. It is meant to cover
-//    one poll (100 ms), the process exit and docker noticing — tech-lead
-//    measured about 0.25 s for those (one run, this host, TL-A1). 5 s is the
-//    headroom T-151 § contract §2 already published. AS BUILT IT ALSO HAS TO
-//    ABSORB THE APP'S OWN DRAIN TIME, because the wait starts at the child's
-//    exit, and NO FIXED MARGIN IS ENOUGH for that: measured by tech-lead with
-//    the real entrypoint and a simple start line, an app that drained in 8 s
-//    and left a helper in its group was SIGKILLed at 30 s (137) with this
-//    gate green. So this rule guarantees the relationship between the two
-//    NUMBERS, not that the wait fits the grace. The fix is in the mechanism —
-//    count the deadline from the first forwarded signal — and is the
-//    successor ticket cut from TL-A1; once it lands this rule is exactly the
-//    right property, unchanged. Lowering the margin is a decision to make in
-//    this file, in review — not a thing an edit elsewhere does.
+//    So the floor is READ, not restated, and T-180 widened what is read:
+//      * the FILE is derived from the ENTRYPOINT §6 resolves for each
+//        application stage (`node <script>`, mapped back through the last
+//        COPY/ADD from the build context that puts the script there), not
+//        from a fixed path — so pointing the image at a copy reads the copy
+//        (case 161; QA-7's `g12` on T-179). A PID 1 this cannot map is
+//        REFUSED, never replaced by a default (cases 163-165);
+//      * the CONSTANT is one numeric literal on one `const` line (T-179;
+//        raising it past a declared grace reds this gate, case 148);
+//      * and its ONE USE is held: GROUP_DRAIN_MS may appear in code at exactly
+//        one place, the statement `deadline = signalledAt + GROUP_DRAIN_MS;`,
+//        counted in the file's syntax tree so comments and strings are not
+//        uses. A multiplier or an environment override there, a second read,
+//        or the deadline counted from Date.now() reds this gate (cases
+//        156-159; QA-7's `g02`/`g03`), and a mention in a comment or a string
+//        does not (case 160).
+//    A literal `30s` checked against a literal `30s` would stay green the day
+//    someone raised GROUP_DRAIN_MS. The two numbers live in two files owned for
+//    two different reasons, which is PROTOCOL §5.1's "anchor one of them
+//    outside".
+//
+//    WHAT THE USE-SITE CHECK DOES NOT HOLD (T-180, stated rather than chased):
+//    WHERE that statement sits — the same text moved into child.on('exit')
+//    would count from the child's exit again with this gate green — nor what
+//    waitForGroup then does with `deadline` or `signalledAt`. It holds the one
+//    statement that fixes the deadline. The origin itself is held by
+//    scripts/negative-tests/entrypoint-lifecycle.sh, which RUNS the file
+//    (case L02 is tech-lead's probe shape; it is red at 36a41d1).
+//
+//    EXIT_MARGIN_MS IS A CHOSEN FLOOR, NOT A MEASUREMENT. It covers what comes
+//    after the deadline: one poll (100 ms), the process exit and docker
+//    noticing — tech-lead measured about 0.25 s for those (one run, this host,
+//    TL-A1 on T-179). 5 s is the headroom T-151 § contract §2 published. Since
+//    T-180 it no longer has to absorb the app's own drain time, because the
+//    deadline no longer starts after it. It does not bound the APPLICATION: an
+//    app still draining at the grace is docker's to SIGKILL, and 137 is then
+//    true. Lowering the margin is a decision to make in this file, in review —
+//    not a thing an edit elsewhere does.
 //
 //    WHICH SERVICES ARE "APPLICATION SERVICES" IS DERIVED, NEVER LISTED — a
 //    hand list of five names is T-005's Deviation 6, and a sixth service would
@@ -1452,46 +1492,256 @@ for (const [rel, users] of [...dockerfilesInUse].sort(([a], [b]) => a.localeComp
 //    whether compose truncates or rounds. A GROUP_DRAIN_MS spelled as anything
 //    but one numeric literal on one `const` line is REFUSED, not guessed at
 //    (case 151). A second, differently named constant doing the same job is a
-//    construction this gate does not model.
+//    construction this gate does not model. The COPY mapping reads COPY/ADD
+//    only (T-180): a RUN that rewrites the script after the COPY puts it there
+//    is not seen — the same bound §1c states for the devDependency guard.
 // ---------------------------------------------------------------------------
-const ENTRYPOINT_FILE = 'docker/app-runtime/entrypoint.mjs';
 const EXIT_MARGIN_MS = 5_000;
-let groupDrainMs: number | null = null;
-let groupDrainAt = '';
-{
-  const text = read(ENTRYPOINT_FILE);
+/**
+ * THE ONE STATEMENT THAT MAY READ GROUP_DRAIN_MS (T-180). The entrypoint fixes
+ * its group-wait deadline when the FIRST signal is forwarded, and this is the
+ * only place the constant may be used. Holding its exact shape is what closes
+ * QA-7's `g02` (a multiplier at the use site) and `g03` (an environment
+ * override there) on T-179: before T-180 this gate read the declaration and
+ * nothing else, so either one changed the real wait with the gate green.
+ */
+const DEADLINE_STATEMENT = 'deadline = signalledAt + GROUP_DRAIN_MS;';
+
+/** The WORKDIR in effect at the end of `chain`, and where a COPY/ADD put `imagePath`. */
+function copySourceOf(
+  chain: readonly Stage[],
+  context: string,
+  imagePath: string,
+): { readonly file: string } | { readonly why: string } {
+  let workdir = '/';
+  let last: { readonly file: string } | { readonly why: string } | null = null;
+  const abs = (p: string): string => path.posix.resolve(workdir, p);
+  for (const stage of chain) {
+    for (const line of stage.lines) {
+      const wd = /^WORKDIR\s+(.+)$/i.exec(line);
+      if (wd !== null) {
+        workdir = abs((wd[1] ?? '').trim());
+        continue;
+      }
+      const cp = /^(?:COPY|ADD)\s+(.*)$/i.exec(line);
+      if (cp === null) continue;
+      let rest = (cp[1] ?? '').trim();
+      const flags: string[] = [];
+      for (let m = /^(--\S+)\s+(.*)$/.exec(rest); m !== null; m = /^(--\S+)\s+(.*)$/.exec(rest)) {
+        flags.push(m[1] ?? '');
+        rest = m[2] ?? '';
+      }
+      let parts: string[];
+      if (rest.startsWith('[')) {
+        let j: unknown;
+        try {
+          j = JSON.parse(rest);
+        } catch {
+          j = null;
+        }
+        parts = Array.isArray(j) ? j.map((x) => String(x)) : [];
+      } else {
+        parts = rest.split(/\s+/).filter((x) => x !== '');
+      }
+      if (parts.length < 2) continue;
+      const dest = parts[parts.length - 1] ?? '';
+      const srcs = parts.slice(0, -1);
+      const destAbs = abs(dest);
+      const destIsDir = dest.endsWith('/') || srcs.length > 1;
+      const fromStage = flags.some((f) => /^--from=/i.test(f));
+      for (const src of srcs) {
+        const underDest = imagePath.startsWith(`${destAbs}/`);
+        const asFile = destIsDir ? `${destAbs}/${path.posix.basename(src)}` : destAbs;
+        const covers = underDest || imagePath === asFile || imagePath === destAbs;
+        if (!covers) continue;
+        if (fromStage) {
+          last = { why: `'${line}' in stage '${stage.name}' puts it there FROM ANOTHER STAGE` };
+          continue;
+        }
+        if (/[$*?[\]]/.test(src + dest)) {
+          last = {
+            why: `'${line}' in stage '${stage.name}' puts it there through a variable or a glob`,
+          };
+          continue;
+        }
+        const srcRepo = path.normalize(path.join(context, src));
+        if (srcRepo.startsWith('..') || path.isAbsolute(srcRepo)) {
+          last = { why: `'${line}' copies from outside the repository` };
+          continue;
+        }
+        const srcAbs = path.join(REPO_ROOT, srcRepo);
+        const srcIsDir = fs.existsSync(srcAbs) && fs.statSync(srcAbs).isDirectory();
+        if (srcIsDir && underDest) {
+          last = { file: path.join(srcRepo, imagePath.slice(destAbs.length + 1)) };
+        } else if (!srcIsDir && imagePath === asFile) {
+          last = { file: srcRepo };
+        }
+      }
+    }
+  }
+  return last ?? { why: 'no COPY or ADD in the stage chain puts it there' };
+}
+
+/**
+ * Which REPOSITORY file each application stage's PID 1 runs, derived from the
+ * ENTRYPOINT §6 resolved for it (T-180; QA-7's `g12` on T-179). The script is
+ * the first non-flag argument after `node`, resolved against the stage's final
+ * WORKDIR and mapped back through the last COPY/ADD that puts it there. Any
+ * step this cannot follow is a REFUSAL, never a fallback to a fixed path —
+ * a fallback is exactly the route `g12` took.
+ */
+const entrypointFiles = new Map<string, string[]>();
+for (const ep of entrypointsResolved) {
+  const where = `${ep.dockerfile} stage '${ep.target}'`;
+  const argv = ep.argv.map((a) => String(a));
+  const bin = argv[0] ?? '';
+  const script = argv.slice(1).find((a) => !a.startsWith('-'));
+  if (!/(^|\/)node$/.test(bin) || script === undefined) {
+    failures.push(
+      `${where}: ENTRYPOINT ${JSON.stringify(ep.argv)} is not \`node <script>\`, so the ` +
+        `stop-grace rule (§7) cannot tell which file is PID 1 and read GROUP_DRAIN_MS from ` +
+        `it. Refusing rather than reading a file this gate chose.`,
+    );
+    continue;
+  }
+  let workdir = '/';
+  for (const st of ep.chain) {
+    for (const l of st.lines) {
+      const wd = /^WORKDIR\s+(.+)$/i.exec(l);
+      if (wd !== null) workdir = path.posix.resolve(workdir, (wd[1] ?? '').trim());
+    }
+  }
+  const imagePath = path.posix.resolve(workdir, script);
+  const contexts = [
+    ...new Set(
+      buildUses
+        .filter((u) => u.dockerfile === ep.dockerfile && u.target === ep.target)
+        .map((u) => u.context),
+    ),
+  ];
+  for (const context of contexts.length === 0 ? ['.'] : contexts) {
+    const src = copySourceOf(ep.chain, context, imagePath);
+    if ('why' in src) {
+      failures.push(
+        `${where}: PID 1 runs ${imagePath}, and the stop-grace rule (§7) cannot map it to a ` +
+          `repository file: ${src.why}. §7 reads GROUP_DRAIN_MS from the file the image ` +
+          `actually runs, and refuses rather than falling back to a fixed path (T-180).`,
+      );
+      continue;
+    }
+    entrypointFiles.set(src.file, [...(entrypointFiles.get(src.file) ?? []), where]);
+  }
+}
+if (entrypointsResolved.length === 0) {
+  failures.push(
+    `the stop-grace rule (§7) resolved no exec-form ENTRYPOINT for any application stage, ` +
+      `so it has no PID 1 to read GROUP_DRAIN_MS from (see §6's failures above).`,
+  );
+}
+
+/**
+ * GROUP_DRAIN_MS as ONE numeric literal on ONE `const` line (T-179), used in
+ * code at exactly ONE place, the DEADLINE_STATEMENT (T-180). Comments and
+ * strings are not code: uses are counted as identifiers in the file's syntax
+ * tree, so a mention in a docblock or a log string is not a use.
+ */
+function readGroupDrain(file: string): { readonly ms: number; readonly at: string } | null {
+  const text = read(file);
   if (text === null) {
     failures.push(
-      `${ENTRYPOINT_FILE} does not exist, so the stop-grace rule (§7) cannot read ` +
+      `${file} does not exist, so the stop-grace rule (§7) cannot read ` +
         `GROUP_DRAIN_MS — the wait every application service's grace must cover. Refusing ` +
         `rather than checking the graces against a number this gate made up.`,
     );
-  } else {
-    const lines = text.split('\n');
-    const hits: { readonly line: number; readonly rhs: string }[] = [];
-    lines.forEach((l, i) => {
-      const m = /^[ \t]*const[ \t]+GROUP_DRAIN_MS[ \t]*=[ \t]*([^;]*);/.exec(l);
-      if (m) hits.push({ line: i + 1, rhs: (m[1] ?? '').trim() });
-    });
-    const hit = hits[0];
-    if (hits.length !== 1 || hit === undefined) {
-      failures.push(
-        `${ENTRYPOINT_FILE}: expected exactly ONE 'const GROUP_DRAIN_MS = <number>;' line ` +
-          `and found ${String(hits.length)}. The stop-grace rule (§7) reads the group wait ` +
-          `from there; it will not pick one of several, or check against none.`,
-      );
-    } else if (!/^\d[\d_]*$/.test(hit.rhs)) {
-      failures.push(
-        `${ENTRYPOINT_FILE}:${String(hit.line)}: GROUP_DRAIN_MS = ${hit.rhs} is not a single ` +
-          `numeric literal, so the stop-grace rule (§7) cannot read the group wait. Write it ` +
-          `as one literal (e.g. 25_000); an expression is refused rather than evaluated.`,
-      );
-    } else {
-      groupDrainMs = Number(hit.rhs.replaceAll('_', ''));
-      groupDrainAt = `${ENTRYPOINT_FILE}:${String(hit.line)}`;
-    }
+    return null;
   }
+  const lines = text.split('\n');
+  const hits: { readonly line: number; readonly rhs: string }[] = [];
+  lines.forEach((l, i) => {
+    const m = /^[ \t]*const[ \t]+GROUP_DRAIN_MS[ \t]*=[ \t]*([^;]*);/.exec(l);
+    if (m) hits.push({ line: i + 1, rhs: (m[1] ?? '').trim() });
+  });
+  const hit = hits[0];
+  if (hits.length !== 1 || hit === undefined) {
+    failures.push(
+      `${file}: expected exactly ONE 'const GROUP_DRAIN_MS = <number>;' line ` +
+        `and found ${String(hits.length)}. The stop-grace rule (§7) reads the group wait ` +
+        `from there; it will not pick one of several, or check against none.`,
+    );
+    return null;
+  }
+  if (!/^\d[\d_]*$/.test(hit.rhs)) {
+    failures.push(
+      `${file}:${String(hit.line)}: GROUP_DRAIN_MS = ${hit.rhs} is not a single ` +
+        `numeric literal, so the stop-grace rule (§7) cannot read the group wait. Write it ` +
+        `as one literal (e.g. 25_000); an expression is refused rather than evaluated.`,
+    );
+    return null;
+  }
+  const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const refs: ts.Identifier[] = [];
+  const visit = (n: ts.Node): void => {
+    if (ts.isIdentifier(n) && n.text === 'GROUP_DRAIN_MS') refs.push(n);
+    ts.forEachChild(n, visit);
+  };
+  visit(sf);
+  const lineOf = (n: ts.Node): number => sf.getLineAndCharacterOfPosition(n.getStart(sf)).line + 1;
+  const uses = refs.filter((r) => !(ts.isVariableDeclaration(r.parent) && r.parent.name === r));
+  if (uses.length !== 1) {
+    failures.push(
+      `${file}: GROUP_DRAIN_MS is used in code at ${String(uses.length)} place(s)` +
+        (uses.length === 0 ? '' : ` (line ${uses.map((u) => String(lineOf(u))).join(', ')})`) +
+        `; it must be used at exactly one, \`${DEADLINE_STATEMENT}\`, where the deadline is ` +
+        `fixed at the first forwarded signal. A second read is a second wait this rule does ` +
+        `not hold (T-180).`,
+    );
+    return null;
+  }
+  const use = uses[0];
+  const add = use?.parent;
+  const assign = add?.parent;
+  const shaped =
+    use !== undefined &&
+    add !== undefined &&
+    assign !== undefined &&
+    ts.isBinaryExpression(add) &&
+    add.operatorToken.kind === ts.SyntaxKind.PlusToken &&
+    add.right === use &&
+    ts.isIdentifier(add.left) &&
+    add.left.text === 'signalledAt' &&
+    ts.isBinaryExpression(assign) &&
+    assign.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+    assign.right === add &&
+    ts.isIdentifier(assign.left) &&
+    assign.left.text === 'deadline' &&
+    ts.isExpressionStatement(assign.parent);
+  if (!shaped) {
+    const stmt = use === undefined ? '' : (lines[lineOf(use) - 1] ?? '').trim();
+    failures.push(
+      `${file}:${String(use === undefined ? 0 : lineOf(use))}: the one use of GROUP_DRAIN_MS is ` +
+        `\`${stmt}\`, not \`${DEADLINE_STATEMENT}\`. The stop-grace rule (§7) holds the ` +
+        `grace against the constant, so a multiplier or an override where it is used would ` +
+        `change the real wait with this gate green (T-180; QA-7 g02/g03 on T-179).`,
+    );
+    return null;
+  }
+  return { ms: Number(hit.rhs.replaceAll('_', '')), at: `${file}:${String(hit.line)}` };
 }
+
+let groupDrainMs: number | null = null;
+const groupDrainReads: string[] = [];
+let groupDrainUnread = entrypointFiles.size === 0;
+for (const [file, stages] of [...entrypointFiles].sort(([a], [b]) => a.localeCompare(b))) {
+  const r = readGroupDrain(file);
+  if (r === null) {
+    groupDrainUnread = true;
+    continue;
+  }
+  groupDrainReads.push(`${String(r.ms)} ms at ${r.at} (PID 1 of ${stages.join(', ')})`);
+  groupDrainMs = Math.max(groupDrainMs ?? 0, r.ms);
+}
+if (groupDrainUnread) groupDrainMs = null;
+const groupDrainAt = groupDrainReads.join('; ');
 const graceFloorMs = groupDrainMs === null ? null : groupDrainMs + EXIT_MARGIN_MS;
 
 /**
@@ -1585,10 +1835,10 @@ for (const name of [...graceWhy.keys()].sort()) {
       if (mustDeclare.some((c) => c.rel === rel)) {
         failures.push(
           `${rel}: application service '${name}' (${why}) declares no stop_grace_period, ` +
-            `so it takes compose's 10 s default. Its PID 1 is ${ENTRYPOINT_FILE}, which may ` +
-            `wait GROUP_DRAIN_MS${groupDrainMs === null ? '' : ` = ${String(groupDrainMs)} ms`} ` +
-            `for the app's process group after SIGTERM; docker's SIGKILL would land inside ` +
-            `that wait and the container would report 143 for a clean drain (T-179, TL-1). ` +
+            `so it takes compose's 10 s default. Its PID 1 (${groupDrainAt === '' ? 'unread' : groupDrainAt}) may ` +
+            `wait until GROUP_DRAIN_MS${groupDrainMs === null ? '' : ` = ${String(groupDrainMs)} ms`} ` +
+            `after the first forwarded SIGTERM for the app's process group; docker's SIGKILL would land inside ` +
+            `that wait and the container would report 137 for a clean drain (T-179, TL-1; T-180). ` +
             `Declare stop_grace_period${graceFloorMs === null ? '' : ` of at least ${String(Math.ceil(graceFloorMs / 1000))}s`} ` +
             `${inBase ? `in ${BASE_FILE}, which every project applies` : `in ${rel}, which adds this service and may be the only file that does`}.`,
         );
@@ -1614,7 +1864,7 @@ for (const name of [...graceWhy.keys()].sort()) {
           `${String(raw)}, BELOW the floor of ${String(graceFloorMs)} ms = GROUP_DRAIN_MS ` +
           `${String(groupDrainMs)} ms (${groupDrainAt}) + ${String(EXIT_MARGIN_MS)} ms exit ` +
           `margin. docker's SIGKILL would land inside PID 1's group wait, and a clean drain ` +
-          `would report 143 (T-179, TL-1). Raise the grace, or lower the wait, in the same ` +
+          `would report 137 (T-179, TL-1; T-180). Raise the grace, or lower the wait, in the same ` +
           `change.` +
           (wholeSecondsMs !== ms
             ? ` (Judged as ${String(wholeSecondsMs / 1000)} s: docker's StopTimeout is whole seconds.)`
@@ -1637,7 +1887,7 @@ console.log(
   `  stop_grace_period floor (§7)    ` +
     (graceFloorMs === null
       ? '(unreadable — see the failure above)'
-      : `${String(graceFloorMs)} ms = GROUP_DRAIN_MS ${String(groupDrainMs)} ms read from ${groupDrainAt} + ${String(EXIT_MARGIN_MS)} ms exit margin`),
+      : `${String(graceFloorMs)} ms = GROUP_DRAIN_MS ${String(groupDrainMs)} ms + ${String(EXIT_MARGIN_MS)} ms exit margin; read ${groupDrainAt}, its one use \`${DEADLINE_STATEMENT}\` held (T-180)`),
 );
 console.log(
   `  app services held to it (§7)    ${String(graceWhy.size)}: ${graceSeen.join(' ')}` +
