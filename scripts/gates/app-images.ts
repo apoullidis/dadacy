@@ -1411,14 +1411,18 @@ for (const [rel, users] of [...dockerfilesInUse].sort(([a], [b]) => a.localeComp
 //    unchanged. Red-before in the real image: state/EP-1/T-180.md § Evidence.
 //
 //    So the floor is READ, not restated, and T-180 widened what is read:
-//      * the FILE is derived from the ENTRYPOINT §6 resolves for each
-//        application stage (`node <script>`, mapped back through the last
-//        COPY/ADD from the build context that puts the script there), not
-//        from a fixed path — so pointing the image at a copy reads the copy
-//        (case 161; QA-7's `g12` on T-179). An IMAGE ENTRYPOINT this cannot
-//        map is REFUSED, never replaced by a default (cases 163-165). What
-//        is read is the IMAGE's ENTRYPOINT, not each container's PID 1: see
-//        the family bound under WHAT IS NOT CLAIMED;
+//      * the FILE is derived from WHAT PID 1 ACTUALLY RUNS, FOR EACH
+//        APPLICATION SERVICE, IN EACH COMPOSED FILE (T-182) — resolved from
+//        the image ENTRYPOINT/CMD §6 resolved for the stage compose builds,
+//        compose's own `entrypoint:`/`command:`, `init:`, `working_dir:`, the
+//        NODE_OPTIONS in effect, anything mounted over the resolved path, and
+//        the COPY/ADD that puts the script there plus anything later in the
+//        chain that rewrites it — and either mapped back to a repository file
+//        or REFUSED. §7b's docblock below lists the nine inputs, each with the
+//        case that falsifies it. T-180 derived it from the image ENTRYPOINT of
+//        each application STAGE, which a compose `entrypoint:` replaces
+//        silently: measured GATE PASS with a 60 s copy of the entrypoint
+//        really running as `core`'s PID 1 (qa-verification on T-180, QA-F3);
 //      * the CONSTANT is one numeric literal on one `const` line (T-179;
 //        raising it past a declared grace reds this gate, case 148);
 //      * and its ONE USE is held: GROUP_DRAIN_MS is DECLARED exactly once in
@@ -1498,24 +1502,23 @@ for (const [rel, users] of [...dockerfilesInUse].sort(([a], [b]) => a.localeComp
 //    (case 151). A second, differently named constant doing the same job is a
 //    construction this gate does not model.
 //
-//    ONE FAMILY OF BOUNDS (T-180 rework 1; qa-verification QA-F3 and §3b):
-//    THE SCRIPT PID 1 ACTUALLY RUNS CAN BE DECIDED SOMEWHERE §7 DOES NOT READ.
-//    Its members, each measured green by qa-verification at 86be68a unless
-//    marked otherwise:
-//      * a compose `entrypoint:` on an application service — THE LIKELY ONE.
-//        It replaces PID 1 in the container, and since `COPY docker/app-runtime/`
-//        copies the whole directory, a 60 s copy beside entrypoint.mjs plus one
-//        compose line is green while `core` really waits 60 s. The printed
-//        `PID 1 of <Dockerfile> stage '<target>'` names the IMAGE's
-//        ENTRYPOINT, and is wrong for such a service in the same way.
-//        Refusing `entrypoint:` on application services is a separate ticket;
-//      * a node flag whose value is a separate argument, taken for the script:
-//        `node --import <real> <copy>` reads <real>;
-//      * a RUN that rewrites the script after the COPY puts it there (COPY/ADD
-//        are the only instructions the mapping reads — the same bound §1c
-//        states for the devDependency guard; not planted);
-//      * an ADD of a local tar archive that docker extracts over the script
-//        (not planted).
+//    THAT FAMILY OF BOUNDS IS CLOSED (T-182), AND THESE ARE THE FOUR THINGS
+//    LEFT — the residue, at its measured width, each a construction rather
+//    than a Tuesday (PROTOCOL §5.1):
+//      * a RUN that rewrites the script WITHOUT NAMING IT: `runWritesPath`
+//        reads the in-image path, the basename as a token, and a glob in the
+//        script's own directory that matches it, and nothing else. `cd
+//        /srv/kinvara/app-runtime && sed -i s/25/60/ $(ls)` is not caught;
+//      * a PID 1 decided inside the BASE image rather than in this repository.
+//        §6 refuses a stage whose ancestry sets no ENTRYPOINT, and §7 refuses
+//        anything but `node <script>`, so what is left is a base image whose
+//        own `node` on PATH is not node. Nothing here reads the base image;
+//      * ECS. A task definition's `entryPoint`, `command`, `environment` or
+//        `stopTimeout` is not read here at all — T-003's obligation, and the
+//        reason T-182 was sequenced before it;
+//      * a flag typed at a shell (`docker run --entrypoint …`). This gate
+//        reads composed files, and evidence comes from a composed project
+//        (DOCKER.md §5), so a one-off invocation is outside it.
 // ---------------------------------------------------------------------------
 const EXIT_MARGIN_MS = 5_000;
 /**
@@ -1801,7 +1804,10 @@ for (const { svcs } of composedServices) {
 // ---------------------------------------------------------------------------
 
 /** The image's resolved ENTRYPOINT argv and stage chain, per (dockerfile, target). */
-const stageOfBuild = new Map<string, { readonly argv: readonly string[]; readonly chain: readonly Stage[] }>();
+const stageOfBuild = new Map<
+  string,
+  { readonly argv: readonly string[]; readonly chain: readonly Stage[] }
+>();
 const stageKey = (df: string, target: string): string => `${df}\u0000${target}`;
 for (const ep of entrypointsResolved) {
   stageOfBuild.set(stageKey(ep.dockerfile, ep.target), {
@@ -1859,7 +1865,9 @@ const flagVerdict = (arg: string): 'inert' | 'loads-code' | 'unmodelled' =>
       : 'unmodelled';
 
 /** The script `node` would run, or why this gate will not guess. */
-function nodeScriptOf(argv: readonly string[]): { readonly script: string } | { readonly why: string } {
+function nodeScriptOf(
+  argv: readonly string[],
+): { readonly script: string } | { readonly why: string } {
   const bin = argv[0] ?? '';
   if (!/(^|\/)node$/.test(bin)) {
     return {
@@ -1948,7 +1956,9 @@ function composeEnv(
   } else if (Array.isArray(env)) {
     for (const entry of env) {
       if (typeof entry !== 'string') {
-        return { why: `declares an environment: entry ${JSON.stringify(entry)} this gate cannot read` };
+        return {
+          why: `declares an environment: entry ${JSON.stringify(entry)} this gate cannot read`,
+        };
       }
       const i = entry.indexOf('=');
       const k = i < 0 ? entry : entry.slice(0, i);
@@ -1969,10 +1979,13 @@ function composeEnv(
 }
 
 /** Every in-container path this service mounts something over, or why it cannot be read. */
-function mountTargets(svc: Record<string, unknown>): { readonly targets: string[] } | { readonly why: string } {
+function mountTargets(
+  svc: Record<string, unknown>,
+): { readonly targets: string[] } | { readonly why: string } {
   const targets: string[] = [];
   const push = (t: unknown, what: string): string | null => {
-    if (typeof t !== 'string' || t === '') return `declares ${what} with a target this gate cannot read`;
+    if (typeof t !== 'string' || t === '')
+      return `declares ${what} with a target this gate cannot read`;
     if (t.includes('${')) return `declares ${what} with an INTERPOLATED target '${t}'`;
     targets.push(path.posix.normalize(t));
     return null;
@@ -1996,7 +2009,10 @@ function mountTargets(svc: Record<string, unknown>): { readonly targets: string[
   const tmpfs = svc['tmpfs'];
   if (tmpfs !== undefined) {
     for (const t of Array.isArray(tmpfs) ? tmpfs : [tmpfs]) {
-      const why = push(typeof t === 'string' ? t.split(':')[0] : t, `a tmpfs: entry ${JSON.stringify(t)}`);
+      const why = push(
+        typeof t === 'string' ? t.split(':')[0] : t,
+        `a tmpfs: entry ${JSON.stringify(t)}`,
+      );
       if (why !== null) return { why };
     }
   }
@@ -2016,7 +2032,8 @@ function mountTargets(svc: Record<string, unknown>): { readonly targets: string[
         const t = c['target'];
         if (t === undefined) {
           const src = c['source'];
-          if (typeof src !== 'string') return { why: `declares a ${key}: entry ${JSON.stringify(c)}` };
+          if (typeof src !== 'string')
+            return { why: `declares a ${key}: entry ${JSON.stringify(c)}` };
           targets.push(path.posix.normalize(`${root}${src}`));
         } else {
           const why = push(t, `a ${key}: entry ${JSON.stringify(t)}`);
@@ -2048,14 +2065,17 @@ function resolvePid1(
     const e = src['environment'];
     if (isRecord(e)) Object.assign(envMerged, e);
   }
-  if (Object.keys(envMerged).length > 0 && !Array.isArray(own['environment']) && !Array.isArray(fromBase['environment'])) {
+  if (
+    Object.keys(envMerged).length > 0 &&
+    !Array.isArray(own['environment']) &&
+    !Array.isArray(fromBase['environment'])
+  ) {
     svc['environment'] = envMerged;
   }
 
   const img = composedServices.find((c) => c.rel === rel)?.svcs;
   const image = img === undefined ? null : imageOf(img, name);
-  const build =
-    buildOfService.get(name) ?? (image === null ? undefined : buildOfImage.get(image));
+  const build = buildOfService.get(name) ?? (image === null ? undefined : buildOfImage.get(image));
   if (build === undefined) {
     return {
       why:
@@ -2146,7 +2166,9 @@ function resolvePid1(
   const wdCompose = svc['working_dir'];
   if (wdCompose !== undefined) {
     if (typeof wdCompose !== 'string' || wdCompose.includes('${')) {
-      return { why: `declares working_dir: as ${JSON.stringify(wdCompose)}, which this gate cannot read` };
+      return {
+        why: `declares working_dir: as ${JSON.stringify(wdCompose)}, which this gate cannot read`,
+      };
     }
     workdir = path.posix.resolve('/', wdCompose);
   }
@@ -2155,7 +2177,9 @@ function resolvePid1(
   // (7) anything mounted over that path.
   const mounts = mountTargets(svc);
   if ('why' in mounts) {
-    return { why: `${mounts.why}, so this gate cannot tell whether PID 1's own script is mounted over` };
+    return {
+      why: `${mounts.why}, so this gate cannot tell whether PID 1's own script is mounted over`,
+    };
   }
   for (const t of mounts.targets) {
     if (imagePath === t || imagePath.startsWith(`${t.replace(/\/$/, '')}/`)) {
@@ -2200,10 +2224,16 @@ for (const name of [...graceWhy.keys()].sort()) {
     const init = svcHere['init'];
     if (init === true || init === 'true') {
       failures.push(
-        `${rel}: application service '${name}' declares init: true, so docker-init is PID 1 and ` +
-          `${'docker/app-runtime/entrypoint.mjs'.replace('docker/', 'docker/')} becomes its CHILD. The group wait this rule holds the grace ` +
-          `against belongs to a process that is no longer PID 1, and the printed "PID 1 of …" ` +
-          `would be wrong. Refusing rather than reasoning about tini's reaping (T-182).`,
+        `${rel}: application service '${name}' declares init: true, so /sbin/docker-init is PID 1 ` +
+          `and the entrypoint this rule reads is its CHILD. MEASURED, both directions, same ` +
+          `image and app (T-182 § Evidence E6): the group wait gets SHORTER, because tini reaps ` +
+          `the leftover child — 4.12 s and ExitCode=0 against 25.18 s and ExitCode=0 without it, ` +
+          `so tech-lead's judgement on that axis holds. What also changes is the SIGNAL ` +
+          `DISPOSITION: the entrypoint is no longer a namespace init, so a signal it installs no ` +
+          `handler for KILLS it instead of being ignored — SIGQUIT ended the container in 2.17 s ` +
+          `with ExitCode=131 and no drain, where without init: true it was still running 35 s ` +
+          `later. That is a different lifecycle from the one §7 holds the grace against, so it is ` +
+          `refused here and argued in review, not assumed harmless.`,
       );
     }
     // (8) stop_signal: — PID 1 handles SIGTERM and SIGINT and nothing else.
@@ -2299,8 +2329,7 @@ function readGroupDrain(file: string): { readonly ms: number; readonly at: strin
   if (!ts.isVariableDeclaration(declaration)) return null; // unreachable: `decls` filtered on it
   const list = declaration.parent;
   const statement = ts.isVariableDeclarationList(list) ? list.parent : undefined;
-  const isConst =
-    ts.isVariableDeclarationList(list) && (list.flags & ts.NodeFlags.Const) !== 0;
+  const isConst = ts.isVariableDeclarationList(list) && (list.flags & ts.NodeFlags.Const) !== 0;
   if (
     !isConst ||
     statement === undefined ||
@@ -2354,8 +2383,7 @@ function readGroupDrain(file: string): { readonly ms: number; readonly at: strin
     assign.left.text === 'deadline' &&
     ts.isExpressionStatement(assign.parent);
   if (!shaped) {
-    const stmt =
-      use === undefined ? '' : (text.split('\n')[lineOf(use) - 1] ?? '').trim();
+    const stmt = use === undefined ? '' : (text.split('\n')[lineOf(use) - 1] ?? '').trim();
     failures.push(
       `${file}:${String(use === undefined ? 0 : lineOf(use))}: the one use of GROUP_DRAIN_MS is ` +
         `\`${stmt}\`, not \`${DEADLINE_STATEMENT}\`. The stop-grace rule (§7) holds the ` +
@@ -2376,7 +2404,9 @@ for (const [file, stages] of [...entrypointFiles].sort(([a], [b]) => a.localeCom
     groupDrainUnread = true;
     continue;
   }
-  groupDrainReads.push(`${String(r.ms)} ms at ${r.at} (PID 1 of ${[...new Set(stages)].join(', ')})`);
+  groupDrainReads.push(
+    `${String(r.ms)} ms at ${r.at} (PID 1 of ${[...new Set(stages)].join(', ')})`,
+  );
   groupDrainMs = Math.max(groupDrainMs ?? 0, r.ms);
 }
 if (groupDrainUnread) groupDrainMs = null;
@@ -2484,6 +2514,14 @@ console.log(
     (graceFloorMs === null
       ? '(unreadable — see the failure above)'
       : `${String(graceFloorMs)} ms = GROUP_DRAIN_MS ${String(groupDrainMs)} ms + ${String(EXIT_MARGIN_MS)} ms exit margin; read ${groupDrainAt}, its one use \`${DEADLINE_STATEMENT}\` held (T-180)`),
+);
+console.log(
+  `  PID 1 resolved, per service (§7b, T-182)  ${String(pid1Resolved.length)} of ` +
+    `${String(pid1Attempted)} (composed file, application service) pair(s): ` +
+    `${pid1Resolved.join(' ')}` +
+    `  (from the image ENTRYPOINT/CMD, compose entrypoint:/command:/init:/working_dir:/` +
+    `stop_signal:/env_file:, NODE_OPTIONS, every mount target, and the COPY/ADD that puts the ` +
+    `script there — anything unresolved is REFUSED, never defaulted)`,
 );
 console.log(
   `  app services held to it (§7)    ${String(graceWhy.size)}: ${graceSeen.join(' ')}` +

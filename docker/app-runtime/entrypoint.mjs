@@ -227,13 +227,18 @@ const SIMPLE_COMMAND = /^[A-Za-z0-9_@.:/+,-]+(?: [A-Za-z0-9_@.:/+=,-]+)*$/;
  *  (cases 156-159; QA-7's g02/g03 on T-179). §7 also finds THIS FILE from the
  *  ENTRYPOINT the image stage resolves (§6), not from a fixed path, so
  *  pointing app.Dockerfile at a copy reads the copy (case 161; g12), and an
- *  image ENTRYPOINT it cannot map is refused (cases 163-165). IT READS THE
- *  IMAGE's ENTRYPOINT, NOT THE CONTAINER's PID 1: a compose `entrypoint:` on a
- *  service replaces PID 1 and §7 does not read it, so a 60 s copy of this file
- *  run that way is green (qa-verification on T-180, QA-F3; the refusal is a
- *  separate ticket). Nor does it read a RUN that rewrites this file after the
- *  COPY, or a node flag's separate value taken for the script
- *  (`node --import <this> <copy>`). WHAT THE GATE GIVES, now
+ *  image ENTRYPOINT it cannot map is refused (cases 163-165). AND SINCE T-182
+ *  IT READS WHAT PID 1 ACTUALLY RUNS FOR EACH APPLICATION SERVICE, not only
+ *  the image's ENTRYPOINT: a compose `entrypoint:`/`command:` (list or string),
+ *  `init: true`, `working_dir:`, a mount over this path (`volumes:`,
+ *  `configs:`, `secrets:`, `tmpfs:`), a NODE_OPTIONS preload from compose or
+ *  from this image's own ENV, a node flag that loads code or takes a separate
+ *  value, `env_file:`, a RUN that rewrites this file after its COPY, an ADDed
+ *  archive, and a `stop_signal:` this process installs no handler for are each
+ *  REFUSED, with a case apiece (169-192). Every one of them was GREEN before
+ *  T-182, and the first was not theoretical: one compose line made a 60 s copy
+ *  of this file `core`'s real PID 1 (qa-verification on T-180, QA-F3).
+ *  WHAT THE GATE GIVES, now
  *  that the deadline counts from the first forwarded signal: if the
  *  application has exited by the deadline, this process is gone within about
  *  one poll of first-signal + GROUP_DRAIN_MS, inside every application
@@ -305,6 +310,18 @@ function runReal(script) {
   // the GROUP so that a shell's grandchild gets it too; `child.kill` is the
   // fallback for the one case a group kill can fail (the group is already
   // gone), and it would be wrong to treat that as fatal.
+  //
+  // THESE TWO SIGNALS AND NO OTHERS, AND THAT IS NOW AN ASSERTED PROPERTY
+  // (T-182). This process is a namespace init, so a signal it installs no
+  // handler for is IGNORED: with `stop_signal: SIGQUIT` nothing is forwarded,
+  // the application never drains, and docker SIGKILLs at the grace —
+  // ExitCode=137 at 30.13 s, measured in a container (qa-verification on
+  // T-180, X1). gate:app-images §7 therefore REFUSES a `stop_signal:` on an
+  // application service that is not SIGTERM or SIGINT (case 181; its control,
+  // 182, is SIGTERM). Teaching this process to forward any stoppable signal
+  // instead is a change to PID 1 in kinvara/safety-gw:dev — two approvals and
+  // container evidence — and is routed rather than taken here (T-182
+  // § Published contract § Routed).
   for (const sig of ['SIGTERM', 'SIGINT']) {
     process.on(sig, () => {
       if (deadline === null) {
