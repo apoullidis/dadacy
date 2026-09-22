@@ -244,6 +244,22 @@ const SIMPLE_COMMAND = /^[A-Za-z0-9_@.:/+,-]+(?: [A-Za-z0-9_@.:/+=,-]+)*$/;
  *  repository file) and is now refused as the flag it is. And the first was not
  *  theoretical: one compose line made a 60 s copy of this file `core`'s real
  *  PID 1 (qa-verification on T-180, QA-F3).
+ *  AND SINCE T-182's REWORK 1 IT ALSO HOLDS THE OTHER QUESTION — not "which
+ *  file does node run" but "IS THIS PROCESS PID 1 AT ALL, and what is loaded
+ *  into it". qa-verification reached the same hazard as `init: true` through
+ *  `pid: host` (MEASURED: /proc/1/comm = `systemd`, so this file is not PID 1,
+ *  and SIGQUIT then ended the container at ExitCode=131 in 2.19 s with NO
+ *  drain, against still running at 36.36 s without it) and through
+ *  `LD_PRELOAD` (MEASURED: five mappings of the named object inside PID 1's own
+ *  address space), both at gate exit 0. That space is the compose KEY SPACE and
+ *  the LOADERS' env namespaces, so it is closed by two ALLOW-LISTS rather than
+ *  by more refusals: an application service may declare only the compose keys
+ *  §7c classifies, and no variable in `LD_*`/`DYLD_*`/`NODE_*` or `PATH` except
+ *  NODE_OPTIONS and NODE_ENV (§7d). So a key or variable NOBODY HAS NAMED reds
+ *  the gate — cases 196 and 201 plant exactly that — and `pid:`, `user:` and
+ *  `pull_policy: always` are refused as members of the class rather than as
+ *  entries on a list (cases 193-206: TEN refusals and FOUR controls, of which
+ *  the eight inside 193-202 were GREEN at T-182's first head `e1e5bfa`).
  *  WHAT THE GATE GIVES, now
  *  that the deadline counts from the first forwarded signal: if the
  *  application has exited by the deadline, this process is gone within about
