@@ -145,8 +145,11 @@
  *     no app in this repository declares a compound start script.
  *
  * WHAT THIS PROCESS CAN AND CANNOT REPORT. On path 1 the direct child is the
- * application, so its exit status IS the application's and a clean drain
- * shows up as `exit 0`. On path 2, if the shell is the one that dies on the
+ * application, so its EXIT CODE is the application's and a clean drain shows
+ * up as `exit 0`. A death by a SIGNAL is mapped, not passed through: 143 for
+ * SIGTERM and 130 for every other signal, so an OOM SIGKILL or a SIGSEGV is
+ * reported as SIGINT (qa-verification on T-180, QA-F2; T-018's mapping in
+ * child.on('exit'), unchanged here — its fix is a separate ticket). On path 2, if the shell is the one that dies on the
  * forwarded signal, this process cannot observe the application's own status;
  * it says so on stderr and exits 128+signum rather than inventing a 0.
  */

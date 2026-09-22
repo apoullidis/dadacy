@@ -8,7 +8,9 @@
  * was forwarded at all:
  *
  *   L01  control — the group empties on its own condition, long before any
- *        deadline, and the application's status is reported.
+ *        deadline, and the application's exit code is reported. (Every case
+ *        here ends the app by an EXIT CODE; none judges a signal death, which
+ *        PID 1 maps to 130 for any signal but SIGTERM — T-180 QA-F2.)
  *   L02  THE RED-BEFORE CASE (tech-lead TL-A1 on T-179): the app drains 8 s and
  *        exits, leaving a helper in its group. The deadline is the first
  *        forwarded signal + GROUP_DRAIN_MS, not the app's exit + GROUP_DRAIN_MS.
