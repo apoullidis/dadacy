@@ -1415,14 +1415,18 @@ for (const [rel, users] of [...dockerfilesInUse].sort(([a], [b]) => a.localeComp
 //        application stage (`node <script>`, mapped back through the last
 //        COPY/ADD from the build context that puts the script there), not
 //        from a fixed path — so pointing the image at a copy reads the copy
-//        (case 161; QA-7's `g12` on T-179). A PID 1 this cannot map is
-//        REFUSED, never replaced by a default (cases 163-165);
+//        (case 161; QA-7's `g12` on T-179). An IMAGE ENTRYPOINT this cannot
+//        map is REFUSED, never replaced by a default (cases 163-165). What
+//        is read is the IMAGE's ENTRYPOINT, not each container's PID 1: see
+//        the family bound under WHAT IS NOT CLAIMED;
 //      * the CONSTANT is one numeric literal on one `const` line (T-179;
 //        raising it past a declared grace reds this gate, case 148);
-//      * and its ONE USE is held: GROUP_DRAIN_MS may appear in code at exactly
+//      * and its ONE USE is held: GROUP_DRAIN_MS is DECLARED exactly once in
+//        the file's syntax tree (a same-named let/var/const in an inner scope
+//        would shadow it — cases 166-168, T-180 rework 1) and USED at exactly
 //        one place, the statement `deadline = signalledAt + GROUP_DRAIN_MS;`,
-//        counted in the file's syntax tree so comments and strings are not
-//        uses. A multiplier or an environment override there, a second read,
+//        counted as identifiers in the syntax tree so comments and strings are
+//        not uses. A multiplier or an environment override there, a second read,
 //        or the deadline counted from Date.now() reds this gate (cases
 //        156-159; QA-7's `g02`/`g03`), and a mention in a comment or a string
 //        does not (case 160).
@@ -1492,9 +1496,26 @@ for (const [rel, users] of [...dockerfilesInUse].sort(([a], [b]) => a.localeComp
 //    whether compose truncates or rounds. A GROUP_DRAIN_MS spelled as anything
 //    but one numeric literal on one `const` line is REFUSED, not guessed at
 //    (case 151). A second, differently named constant doing the same job is a
-//    construction this gate does not model. The COPY mapping reads COPY/ADD
-//    only (T-180): a RUN that rewrites the script after the COPY puts it there
-//    is not seen — the same bound §1c states for the devDependency guard.
+//    construction this gate does not model.
+//
+//    ONE FAMILY OF BOUNDS (T-180 rework 1; qa-verification QA-F3 and §3b):
+//    THE SCRIPT PID 1 ACTUALLY RUNS CAN BE DECIDED SOMEWHERE §7 DOES NOT READ.
+//    Its members, each measured green by qa-verification at 86be68a unless
+//    marked otherwise:
+//      * a compose `entrypoint:` on an application service — THE LIKELY ONE.
+//        It replaces PID 1 in the container, and since `COPY docker/app-runtime/`
+//        copies the whole directory, a 60 s copy beside entrypoint.mjs plus one
+//        compose line is green while `core` really waits 60 s. The printed
+//        `PID 1 of <Dockerfile> stage '<target>'` names the IMAGE's
+//        ENTRYPOINT, and is wrong for such a service in the same way.
+//        Refusing `entrypoint:` on application services is a separate ticket;
+//      * a node flag whose value is a separate argument, taken for the script:
+//        `node --import <real> <copy>` reads <real>;
+//      * a RUN that rewrites the script after the COPY puts it there (COPY/ADD
+//        are the only instructions the mapping reads — the same bound §1c
+//        states for the devDependency guard; not planted);
+//      * an ADD of a local tar archive that docker extracts over the script
+//        (not planted).
 // ---------------------------------------------------------------------------
 const EXIT_MARGIN_MS = 5_000;
 /**
@@ -1686,6 +1707,23 @@ function readGroupDrain(file: string): { readonly ms: number; readonly at: strin
   };
   visit(sf);
   const lineOf = (n: ts.Node): number => sf.getLineAndCharacterOfPosition(n.getStart(sf)).line + 1;
+  // T-180 rework 1 (QA-F4): EVERY binding of the name, not only the `const`
+  // line the regex above reads. A same-named `let`/`var`, or a `const` with a
+  // second declarator (`const pad = 0, GROUP_DRAIN_MS = 60_000;`), inside a
+  // function SHADOWS the constant, and the held statement then reads the
+  // shadow — green, before this count (cases 166-168). A parameter, a
+  // destructured binding or a function of that name is not a
+  // VariableDeclaration, so it counts as a use below and is refused there.
+  const decls = refs.filter((r) => ts.isVariableDeclaration(r.parent) && r.parent.name === r);
+  if (decls.length !== 1) {
+    failures.push(
+      `${file}: GROUP_DRAIN_MS is declared ${String(decls.length)} time(s) in the syntax tree ` +
+        `(line ${decls.map((d) => String(lineOf(d))).join(', ')}); exactly one declaration is ` +
+        `allowed. A same-named let/var/const in an inner scope shadows the constant, and the ` +
+        `held statement would read the shadow (T-180 rework 1, QA-F4).`,
+    );
+    return null;
+  }
   const uses = refs.filter((r) => !(ts.isVariableDeclaration(r.parent) && r.parent.name === r));
   if (uses.length !== 1) {
     failures.push(

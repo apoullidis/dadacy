@@ -1730,7 +1730,7 @@ printf 'services:\n  qa-nonapp:\n    image: busybox:1\n    networks: [kinvara-in
 # the deadline at the first forwarded signal in ONE statement, and §7 holds
 # that statement's shape (by syntax tree, so a comment or a string is not a
 # use) and reads the file the resolved ENTRYPOINT actually runs.
-echo; echo "=== cases 156-165 (T-180, QA-7 on T-179): §7 holds GROUP_DRAIN_MS's ONE use and reads the file the resolved ENTRYPOINT runs ==="
+echo; echo "=== cases 156-168 (T-180, QA-7 on T-179): §7 holds GROUP_DRAIN_MS's ONE use and reads the file the resolved ENTRYPOINT runs ==="
 USE_LINE='deadline = signalledAt + GROUP_DRAIN_MS;'
 EP_LINE='ENTRYPOINT ["node", "/srv/kinvara/app-runtime/entrypoint.mjs"]'
 PID1=docker/app-runtime/pid1.mjs
@@ -1783,6 +1783,22 @@ HEALTHCHECK CMD ["node", "/x.mjs"]
 ENTRYPOINT ["node", "/x.mjs"]
 DF
 repoint_web docker/next.Dockerfile && run_case "165 case 45's pre-T-180 plant: PID 1 /x.mjs, never COPY'd" FAIL "cannot map it to a repository file"
+
+# 166-168. T-180 rework 1 (QA-F4): a same-named binding in runReal SHADOWS the
+#      constant, and the held statement then reads the shadow. The `const` line
+#      regex sees only a line that STARTS `const GROUP_DRAIN_MS`, and the use
+#      count dropped every declaration name, so all three were green at 86be68a.
+#      §7 now requires exactly ONE declaration of the name in the syntax tree.
+SHADOW_AT='  let signalledAt = null;'
+mut "$ENTRY" "$SHADOW_AT" '  let GROUP_DRAIN_MS = 60_000;
+  let signalledAt = null;' \
+  && run_case "166 a same-named let in runReal shadows the constant" FAIL "GROUP_DRAIN_MS is declared 2 time(s)"
+mut "$ENTRY" "$SHADOW_AT" '  var GROUP_DRAIN_MS = 60_000;
+  let signalledAt = null;' \
+  && run_case "167 a same-named var in runReal shadows the constant" FAIL "GROUP_DRAIN_MS is declared 2 time(s)"
+mut "$ENTRY" "$SHADOW_AT" '  const shadowPad = 0, GROUP_DRAIN_MS = 60_000;
+  let signalledAt = null;' \
+  && run_case "168 a multi-declarator const shadows the constant" FAIL "GROUP_DRAIN_MS is declared 2 time(s)"
 
 echo
 run_case "99 tree restored" PASS

@@ -144,7 +144,10 @@ const SUITES: readonly Suite[] = [
     // removed, renamed or re-classed; the PLANTS of 43/44/45 each gained the same
     // WORKDIR + COPY docker/app-runtime/ lines and an ENTRYPOINT at the copy, and
     // 45's old plant is case 165 — T-180 § Evidence.
-    cases: 158,
+    // 158 -> 161, 2026-09-22, T-180 rework 1: cases 166-168 (QA-F4, a same-named
+    // let/var/multi-declarator const shadowing GROUP_DRAIN_MS). No case removed,
+    // renamed, re-classed or re-planted — T-180 § Rework 1.
+    cases: 161,
     state: 'GREEN',
     why: 'gate:app-images: every Dockerfile an overlay service builds, plus the suite’s own working-tree verdict (T-035, T-036, T-156)',
   },

@@ -97,8 +97,8 @@
  *     exiting kills whatever is left — but only if a signal was forwarded,
  *     and never past first-signal + GROUP_DRAIN_MS (T-180). If the
  *     application ends ON ITS OWN, with no signal forwarded, this process
- *     exits at once with its status and does not wait (see child.on('exit')
- *     in runReal for why).
+ *     exits at once with `status` and does not wait (see child.on('exit')
+ *     in runReal for why, and for what `status` is on a signal death).
  *
  *     That wait is not belt-and-braces. Measured in node:24.20.0-alpine: for
  *     a compound script, busybox ash does not exec its child, TAKES the
@@ -211,15 +211,22 @@ const SIMPLE_COMMAND = /^[A-Za-z0-9_@.:/+,-]+(?: [A-Za-z0-9_@.:/+=,-]+)*$/;
  *  default — tech-lead TL-1 on T-151). So: RAISE THIS LITERAL AND THE GATE GOES
  *  RED until the graces move with it (negative case 148); write it as anything
  *  but one numeric literal and the gate refuses to guess (case 151). AND THE
- *  GATE HOLDS WHERE IT IS USED (T-180): apart from this declaration, the
- *  identifier may be used in code (counted in the syntax tree, so comments
+ *  GATE HOLDS WHERE IT IS USED (T-180): it may be declared nowhere else — a
+ *  same-named let/var/const in an inner scope would shadow it (cases 166-168,
+ *  T-180 rework 1) — and the identifier may be used in code (counted in the syntax tree, so comments
  *  and strings do not count) exactly once, as `deadline = signalledAt +
  *  GROUP_DRAIN_MS;` in runReal — so a multiplier or an environment override
  *  there, a second use, or the deadline counted from Date.now() reds the gate
  *  (cases 156-159; QA-7's g02/g03 on T-179). §7 also finds THIS FILE from the
  *  ENTRYPOINT the image stage resolves (§6), not from a fixed path, so
- *  pointing app.Dockerfile at a copy reads the copy (case 161; g12), and a
- *  PID 1 it cannot map is refused (cases 163-165). WHAT THE GATE GIVES, now
+ *  pointing app.Dockerfile at a copy reads the copy (case 161; g12), and an
+ *  image ENTRYPOINT it cannot map is refused (cases 163-165). IT READS THE
+ *  IMAGE's ENTRYPOINT, NOT THE CONTAINER's PID 1: a compose `entrypoint:` on a
+ *  service replaces PID 1 and §7 does not read it, so a 60 s copy of this file
+ *  run that way is green (qa-verification on T-180, QA-F3; the refusal is a
+ *  separate ticket). Nor does it read a RUN that rewrites this file after the
+ *  COPY, or a node flag's separate value taken for the script
+ *  (`node --import <this> <copy>`). WHAT THE GATE GIVES, now
  *  that the deadline counts from the first forwarded signal: if the
  *  application has exited by the deadline, this process is gone within about
  *  one poll of first-signal + GROUP_DRAIN_MS, inside every application
@@ -311,9 +318,13 @@ function runReal(script) {
   child.on('exit', (code, sig) => {
     const status = sig !== null ? 128 + (sig === 'SIGTERM' ? 15 : 2) : (code ?? 1);
     // NO SIGNAL WAS FORWARDED: the application ended on its own — a crash or
-    // a normal completion. Exit NOW, with its status, and do NOT wait for its
-    // process group (T-180's decision; this is also what the code did before
-    // T-180). Nobody asked for a drain, so there is no deadline to count from
+    // a normal completion. Exit NOW, with `status` above, and do NOT wait for
+    // its process group (T-180's decision; this is also what the code did
+    // before T-180). `status` is the application's EXIT CODE when it exited;
+    // when it died by a SIGNAL, the mapping above reports 143 for SIGTERM and
+    // 130 for EVERY other signal — so an OOM SIGKILL or a SIGSEGV reads as
+    // SIGINT (measured by qa-verification on T-180, QA-F2; the mapping is
+    // T-018's, unchanged here, and its fix is a separate ticket). Nobody asked for a drain, so there is no deadline to count from
     // and no grace period running; waiting would only delay a restart by up
     // to GROUP_DRAIN_MS and hide the crash behind a quiet container. Anything
     // the application left in its group dies with this process, which is the
