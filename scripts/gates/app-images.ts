@@ -1423,8 +1423,12 @@ for (const [rel, users] of [...dockerfilesInUse].sort(([a], [b]) => a.localeComp
 //        each application STAGE, which a compose `entrypoint:` replaces
 //        silently: measured GATE PASS with a 60 s copy of the entrypoint
 //        really running as `core`'s PID 1 (qa-verification on T-180, QA-F3);
-//      * the CONSTANT is one numeric literal on one `const` line (T-179;
-//        raising it past a declared grace reds this gate, case 148);
+//      * the CONSTANT is one numeric literal, READ FROM THE DECLARATION THE
+//        CODE USES rather than from a line a text match found (T-182's D13:
+//        until then the value came from a line-anchored regex, so the matched
+//        line could be a COMMENT while the real declaration said 60 000 —
+//        measured, gate green, case 189). Raising it past a declared grace
+//        reds this gate (case 148);
 //      * and its ONE USE is held: GROUP_DRAIN_MS is DECLARED exactly once in
 //        the file's syntax tree (a same-named let/var/const in an inner scope
 //        would shadow it — cases 166-168, T-180 rework 1) and USED at exactly
@@ -1497,10 +1501,12 @@ for (const [rel, users] of [...dockerfilesInUse].sort(([a], [b]) => a.localeComp
 //    against this parser in state/EP-1/T-179.md (`docker compose config`, no
 //    container). Docker's StopTimeout is whole seconds, so the declared value is
 //    FLOORED to a whole second before comparing — the conservative direction
-//    whether compose truncates or rounds. A GROUP_DRAIN_MS spelled as anything
-//    but one numeric literal on one `const` line is REFUSED, not guessed at
-//    (case 151). A second, differently named constant doing the same job is a
-//    construction this gate does not model.
+//    whether compose truncates or rounds. A GROUP_DRAIN_MS that is not ONE
+//    TOP-LEVEL `const` whose initializer is one numeric literal is REFUSED, not
+//    guessed at — an expression (case 151), a `let` (case 191), a second
+//    declaration anywhere in the syntax tree (cases 166-168). A second,
+//    differently named constant doing the same job is a construction this gate
+//    does not model.
 //
 //    THAT FAMILY OF BOUNDS IS CLOSED (T-182), AND THESE ARE THE FOUR THINGS
 //    LEFT — the residue, at its measured width, each a construction rather

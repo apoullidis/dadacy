@@ -206,8 +206,11 @@ const SIMPLE_COMMAND = /^[A-Za-z0-9_@.:/+,-]+(?: [A-Za-z0-9_@.:/+=,-]+)*$/;
  *  exit instead (tech-lead TL-A1 on T-179).
  *
  *  EVERY APPLICATION SERVICE'S GRACE IS HELD ABOVE THIS NUMBER, BY A GATE THAT
- *  READS IT FROM HERE (T-179). gate:app-images §7 parses the one
- *  `const GROUP_DRAIN_MS = <literal>;` line below and refuses any application
+ *  READS IT FROM HERE (T-179). gate:app-images §7 reads the ONE TOP-LEVEL
+ *  `const GROUP_DRAIN_MS` DECLARATION below — the declaration this code uses,
+ *  in the syntax tree, not a line a text match finds (T-182's D13: a line
+ *  match could read a COMMENTED copy and hold the graces against a number
+ *  nothing runs, measured with the gate green) — and refuses any application
  *  service — derived from apps/*, the built-by label, every application build
  *  and every service running one of their images, never a hand list — whose
  *  stop_grace_period in any composed file is below this + 5000 ms. At T-179:
@@ -235,9 +238,12 @@ const SIMPLE_COMMAND = /^[A-Za-z0-9_@.:/+,-]+(?: [A-Za-z0-9_@.:/+=,-]+)*$/;
  *  from this image's own ENV, a node flag that loads code or takes a separate
  *  value, `env_file:`, a RUN that rewrites this file after its COPY, an ADDed
  *  archive, and a `stop_signal:` this process installs no handler for are each
- *  REFUSED, with a case apiece (169-192). Every one of them was GREEN before
- *  T-182, and the first was not theoretical: one compose line made a 60 s copy
- *  of this file `core`'s real PID 1 (qa-verification on T-180, QA-F3).
+ *  REFUSED, with a case apiece (169-192, seven of them controls). Every one of
+ *  those was GREEN before T-182 EXCEPT a flag taking a separate value, which
+ *  was already refused for a different reason (it could not be mapped to a
+ *  repository file) and is now refused as the flag it is. And the first was not
+ *  theoretical: one compose line made a 60 s copy of this file `core`'s real
+ *  PID 1 (qa-verification on T-180, QA-F3).
  *  WHAT THE GATE GIVES, now
  *  that the deadline counts from the first forwarded signal: if the
  *  application has exited by the deadline, this process is gone within about
