@@ -1418,8 +1418,14 @@ for (const [rel, users] of [...dockerfilesInUse].sort(([a], [b]) => a.localeComp
 //        NODE_OPTIONS in effect, anything mounted over the resolved path, and
 //        the COPY/ADD that puts the script there plus anything later in the
 //        chain that rewrites it — and either mapped back to a repository file
-//        or REFUSED. §7b's docblock below lists the nine inputs, each with the
-//        case that falsifies it. T-180 derived it from the image ENTRYPOINT of
+//        or REFUSED. §7b's docblock below lists those nine inputs, each with
+//        the case that falsifies it — and, since T-182's rework 1, the TWO
+//        ALLOW-LISTS that close the question the nine do not answer: which
+//        compose keys an application service may declare at all (§7c), and
+//        which environment variable NAMES may reach PID 1 (§7d). `pid: host`
+//        and `LD_PRELOAD` were green through the nine and are refused by
+//        those (qa-verification QA-1, cases 193-206).
+//        T-180 derived it from the image ENTRYPOINT of
 //        each application STAGE, which a compose `entrypoint:` replaces
 //        silently: measured GATE PASS with a 60 s copy of the entrypoint
 //        really running as `core`'s PID 1 (qa-verification on T-180, QA-F3);
