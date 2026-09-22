@@ -166,6 +166,17 @@ const SUITES: readonly Suite[] = [
     why: 'does the generated db/schema.ts typecheck when a module imports it (T-150, T-168, OD-93, OD-97, OD-161a)',
   },
   {
+    // T-006. Attacks gate:heavy, its two new sub-gates, and the SERVICE half of
+    // gate:pr's class judgement. NO SERVICES, deliberately: a suite that needed
+    // the socket or a database could not be a member of this gate, and a
+    // committed suite no gate runs is OD-152.
+    id: 'heavy-gates',
+    file: 'scripts/negative-tests/heavy-gates.sh',
+    cases: 36,
+    state: 'GREEN',
+    why: "gate:heavy: the roster held against SD §QD-4's heavy row, the cross-file anchor on the PR roster's SERVICE class, the evidence anchors, the receipt coverage rule, and gate:workflow's W8 (T-006)",
+  },
+  {
     id: 'db-introspect',
     file: 'scripts/negative-tests/db-introspect.sh',
     cases: 65,
@@ -173,7 +184,7 @@ const SUITES: readonly Suite[] = [
     why: 'db:introspect:check: the closed type map, canonical order, RLS policies, the pgboss exclusion (T-138, T-150, T-152, T-145)',
     owner: 'T-165 — tech-lead, PARKED awaiting stakeholder ruling OE-37',
     unblocks:
-      "T-146's 0006 created schema `pgboss` with twelve relations; every K36-K49 case was written when it did not exist, so `!! 25 of 65 cases misbehaved` on `main` (OD-154, measured twice: tech-lead 2026-09-17 at 3b4e570, qa-verification 2026-09-18 at 3c54c71). T-165 re-cuts the plants to add to 0006's schema and takes the admitted counts from the catalogue. It ALSO needs the `db` profile, so its home is gate:heavy (T-006) even once green: `scripts/svc run <ticket> -- bash scripts/negative-tests/db-introspect.sh`.",
+      "T-146's 0006 created schema `pgboss` with twelve relations; every K36-K49 case was written when it did not exist, so `!! 25 of 65 cases misbehaved` on `main` (OD-154, measured twice: tech-lead 2026-09-17 at 3b4e570, qa-verification 2026-09-18 at 3c54c71). T-165 re-cuts the plants to add to 0006's schema and takes the admitted counts from the catalogue. It ALSO needs the `db` profile, so its home is gate:heavy (T-006) even once green — AND SINCE T-006 IT IS THERE: `gate:db-introspect-suite` is rostered BLOCKED in scripts/gates/lib/heavy-roster.ts against the exact footer below, so the count is re-measured against a real database on every heavy run and this gate's digest pin is no longer the only thing watching it. Run it with `scripts/svc run <ticket> -- pnpm -w gate:db-introspect-suite`.",
     // RE-MEASURED 2026-09-20 on the rebase onto main 6582596. T-168 added
     // EXIT/INT/TERM traps to this suite (9b35d3e), so the digest moved and this
     // gate went RED — the tripwire firing, exactly as § contract 6 said it
