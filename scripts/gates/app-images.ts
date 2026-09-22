@@ -1796,17 +1796,40 @@ for (const { svcs } of composedServices) {
 //           instruction in the stage chain that writes it again (an ADDed
 //           archive or URL, or a RUN that names it).
 //
-//     WHY THIS IS FAIL-CLOSED RATHER THAN A LIST: every step above either
-//     RESOLVES or REFUSES. An input this gate does not model can therefore
-//     only reach a green run by being invisible in every one of the nine, and
-//     the ninth is where a new spelling of "something else is at that path"
-//     lands. An EIGHTH route planted by this ticket — a compose `configs:`
-//     entry whose `target:` is the script, a key nobody in T-180's family
-//     named — is refused by (7) without a rule of its own, which is the
-//     property this shape is for. What is NOT claimed is in § Published
-//     contract, and it is specific: a RUN that rewrites the file without
-//     naming it, and anything that changes PID 1 from inside the application
-//     image's own base image.
+//     THE NINE ABOVE ANSWER ONE QUESTION — "WHICH FILE DOES NODE RUN". They
+//     are a resolution and every step either resolves or refuses, so a new
+//     spelling of "something else is at that path" lands in (7) and a new
+//     spelling of "node is started differently" lands in (2)/(4): the EIGHTH
+//     route this ticket planted — a compose `configs:` entry whose `target:`
+//     is the script, a key nobody in T-180's family named — is refused by (7)
+//     without a rule of its own, which is the property that shape is for.
+//
+//     WHAT THEY DO NOT ANSWER IS A SECOND QUESTION: "WHAT IS PID 1, AND WHAT
+//     CODE IS LOADED INTO IT." `init:` was always in that class (3);
+//     qa-verification then reached the identical condition through `pid:` and
+//     `LD_PRELOAD`, both invisible in all nine and both GREEN (QA-1). That
+//     class is not a list of hazards — it is the KEY SPACE and the ENVIRONMENT
+//     namespace — so it is closed by two allow-lists rather than by more deny
+//     entries:
+//
+//       (10) §7c — an application service may declare only compose keys this
+//            gate has classified as MODELLED or as NEUTRAL (with the argument
+//            written beside each). Anything else is REFUSED, so a tenth key is
+//            impossible rather than uncaught.
+//       (11) §7d — a variable in a LOADER's own namespace (`LD_*`/`DYLD_*` per
+//            ld.so(8), `NODE_*` per node(1)), or `PATH`, is REFUSED, from
+//            compose `environment:` and from the image's own ENV. Only
+//            NODE_OPTIONS (read, token by token) and NODE_ENV (loads nothing)
+//            are admitted, so a new spelling inside either namespace is
+//            refused without this gate knowing it exists.
+//
+//     So the fail-closed claim is now: an input that changes what PID 1 runs
+//     is refused by the resolution, and an input that changes what PID 1 IS
+//     reaches a green run only by being spelled OUTSIDE the composed file —
+//     which is where § Published contract §3's residue lives, and it is
+//     specific: a RUN that rewrites the file without naming it, anything
+//     decided inside the application image's own base image, ECS, and a flag
+//     typed at a shell.
 // ---------------------------------------------------------------------------
 
 /** The image's resolved ENTRYPOINT argv and stage chain, per (dockerfile, target). */
@@ -2053,6 +2076,214 @@ function mountTargets(
   return { targets };
 }
 
+// --- 7c. THE KEY SPACE, AS AN ALLOW-LIST (T-182 rework 1, QA-1) ------------
+//
+//     TWO QUESTIONS, NOT ONE LIST. Every one of the nine inputs above answers
+//     "WHICH FILE does node run". qa-verification found a second question they
+//     do not answer — "WHAT IS PID 1, and what code is loaded into it" — and
+//     two compose keys that decide it while being invisible in all nine:
+//
+//       * `pid:`. MEASURED (T-182 § Rework 1 M1, reproducing QA-1): `pid: host`
+//         on `core` puts the HOST's /sbin/init at PID 1 (`/proc/1/comm` =
+//         `systemd`), so entrypoint.mjs is not PID 1 at all; `docker kill -s
+//         QUIT` then ends the container at ExitCode=131 in 2.19 s with no
+//         drain, against STILL RUNNING at 36.36 s without the flag. That is
+//         the same signature as `init: true`, which (3) refuses — reached
+//         through a key nothing here read.
+//       * `LD_PRELOAD`, through `environment:`. MEASURED: five mappings of the
+//         named object inside PID 1's OWN address space (`grep -c libz
+//         /proc/1/maps`), zero without it. That is (5)'s `--require` hazard by
+//         way of the dynamic loader instead of node, and it is the shape a
+//         native APM agent, a profiler or jemalloc actually uses.
+//
+//     TWO MORE DENY ENTRIES WOULD HAVE BEEN THE WRONG ANSWER, for the reason
+//     this ticket was cut in the first place: seven patches for seven members
+//     is a failed ticket even if every case is green. The second question's
+//     space is not a list of hazards — it is THE KEY SPACE ITSELF, and compose
+//     has ~80 service keys. So this is an ALLOW-LIST:
+//
+//       an application service may declare ONLY keys this gate has classified,
+//       as MODELLED (§7 resolves or refuses on the value) or as NEUTRAL (it
+//       cannot change what PID 1 is, what it executes, or what is loaded into
+//       it — the argument is beside each). ANYTHING ELSE IS REFUSED and the
+//       pair is UNRESOLVED.
+//
+//     A tenth spelling is then IMPOSSIBLE rather than merely uncaught: a key
+//     nobody has thought of fails closed, and admitting one is a decision made
+//     in this file, in review, with its argument written down. The allow-list
+//     earned its keep immediately — it refused three keys nobody in this family
+//     had named (`pull_policy:`, `user:`, `userns_mode:`), and `pull_policy:`
+//     turned out to be MODELLED rather than neutral (below).
+//
+//     WHAT IT DOES NOT CLOSE, stated rather than implied: a value inside an
+//     allow-listed key (`environment:` is allow-listed, and LD_PRELOAD lives
+//     in it) — which is why §7d below is a second, name-derived rule, and why
+//     the two together are the claim rather than either alone.
+
+/**
+ * Keys §7 reads. Each either resolves (and its case is in § Published contract
+ * §1) or refuses. `image`/`build`/`pull_policy` decide WHICH IMAGE, and
+ * therefore which stage's ENTRYPOINT §6 resolved; the rest are inputs (2)-(9).
+ */
+const PID1_MODELLED_KEYS: readonly string[] = [
+  'image',
+  'build',
+  'pull_policy',
+  'entrypoint',
+  'command',
+  'init',
+  'working_dir',
+  'environment',
+  'env_file',
+  'volumes',
+  'tmpfs',
+  'configs',
+  'secrets',
+  'stop_signal',
+  'stop_grace_period',
+];
+
+/**
+ * Keys that cannot change what PID 1 is, what it executes, or what code is
+ * loaded into it. The argument for each is here because that is the thing a
+ * reviewer has to check when a key is added:
+ *
+ *   profiles      selects WHETHER the service starts, never what it runs.
+ *   labels        metadata; read by scripts/svc, never by exec.
+ *   networks      the namespace the process joins after exec (and the egress
+ *                 boundary's own subject — gate:egress-boundary).
+ *   expose        documentation of a port; publishes nothing.
+ *   ports         host publishing; §3's no-ports rule owns it. Not in the exec
+ *                 path.
+ *   depends_on    start ordering.
+ *   healthcheck   a SEPARATE process docker runs in the container; it cannot
+ *                 replace PID 1 (and §5 owns its presence).
+ *   restart       what docker does AFTER PID 1 exits.
+ *   mem_limit     cgroup limits. A container killed for memory is an OOM kill,
+ *   cpus          not a different PID 1; §4 owns the budgets.
+ *
+ * NOT here and deliberately: `user:` (it changes the uid PID 1 runs as, and §5
+ * reads USER in the Dockerfile only, so a compose `user:` would be an unread
+ * route), `pid:`, `init:` handled above, `privileged:`, `cap_add:`,
+ * `security_opt:`, `userns_mode:`, `ipc:`, `uts:`, `sysctls:`, `ulimits:`,
+ * `runtime:`, `platform:`, `extends:` (refused earlier, by its own
+ * pre-existing rule). Each of those either changes PID 1 or changes the
+ * process's privileges around it, and none is modelled.
+ */
+const PID1_NEUTRAL_KEYS: readonly string[] = [
+  'profiles',
+  'labels',
+  'networks',
+  'expose',
+  'ports',
+  'depends_on',
+  'healthcheck',
+  'restart',
+  'mem_limit',
+  'cpus',
+];
+
+/**
+ * A measured note for a refused key, so the message says what was measured
+ * rather than only that the key is unclassified. Message quality only: the
+ * MECHANISM is the allow-list above, and a key with no note here is refused
+ * exactly as loudly (case 197 plants one).
+ */
+const PID1_KEY_NOTES: Readonly<Record<string, string>> = {
+  pid:
+    ` MEASURED (T-182 § Rework 1 M1, reproducing qa-verification's QA-1): with \`pid: host\` the ` +
+    `HOST's /sbin/init is PID 1 inside the container (/proc/1/comm = systemd), so ` +
+    `docker/app-runtime/entrypoint.mjs is not PID 1 and forwards nothing; SIGQUIT then ended the ` +
+    `container at ExitCode=131 in 2.19 s with NO drain, against still running at 36.36 s without ` +
+    `it — the same signature as \`init: true\`, which this rule already refuses. ` +
+    `\`pid: service:<name>\` and \`pid: container:<id>\` are the same key.`,
+  user:
+    ` §5 reads USER in the Dockerfile; a compose \`user:\` is not read there, so the uid PID 1 ` +
+    `runs as would be decided somewhere no rule looks.`,
+};
+
+/**
+ * §7d — ENVIRONMENT VARIABLE NAMES THAT DECIDE WHAT IS LOADED INTO PID 1.
+ *
+ * `environment:` is allow-listed by §7c because §7 reads NODE_OPTIONS out of
+ * it — so the key-space rule cannot reach LD_PRELOAD, which lives INSIDE it.
+ * This rule is therefore over NAMES, and it is derived from the two loaders'
+ * own documented namespaces rather than from a list of spellings:
+ *
+ *   * the dynamic loader reads `LD_*` (ld.so(8): LD_PRELOAD, LD_AUDIT,
+ *     LD_LIBRARY_PATH, …) and `DYLD_*` on Darwin;
+ *   * node reads `NODE_*` (node(1) ENVIRONMENT: NODE_OPTIONS, NODE_REPL_*,
+ *     NODE_EXTRA_CA_CERTS, …).
+ *
+ * So a new spelling INSIDE either namespace is refused without this gate
+ * knowing it exists, which is the same property §7c gives the key space. Two
+ * names are read rather than refused: NODE_OPTIONS (input (5), resolved token
+ * by token) and NODE_ENV (it selects behaviour in the application, loads
+ * nothing, and every application service declares it).
+ *
+ * PATH is in the family for a measured reason: the image's resolved ENTRYPOINT
+ * is ["node", "/srv/kinvara/app-runtime/entrypoint.mjs"] — `node` with NO
+ * directory — so PATH decides WHICH BINARY is PID 1. Measured on
+ * kinvara/core:dev 7cb5b84358b6: `-e PATH=/nonexistent` and the container
+ * cannot start at all (`exec: "node": executable file not found in $PATH`,
+ * docker run exit 127). The loud direction is docker's; the silent one needs a
+ * second key to put a `node` on the new PATH, and it is refused here either
+ * way rather than argued about.
+ */
+const ENV_LOADER_NAMESPACE = /^(?:LD_|DYLD_|NODE_)/;
+const ENV_FAMILY_READ = new Set(['NODE_OPTIONS']);
+const ENV_FAMILY_INERT = new Set(['NODE_ENV']);
+const envNameVerdict = (k: string): 'ok' | 'loader' | 'path' => {
+  if (k === 'PATH') return 'path';
+  if (ENV_FAMILY_READ.has(k) || ENV_FAMILY_INERT.has(k)) return 'ok';
+  return ENV_LOADER_NAMESPACE.test(k) ? 'loader' : 'ok';
+};
+
+/** Every environment variable NAME this service declares, or why it cannot be read. */
+function composeEnvNames(
+  svc: Record<string, unknown>,
+): { readonly names: string[] } | { readonly why: string } {
+  const env = svc['environment'];
+  if (env === undefined) return { names: [] };
+  if (isRecord(env)) return { names: Object.keys(env) };
+  if (Array.isArray(env)) {
+    const names: string[] = [];
+    for (const entry of env) {
+      if (typeof entry !== 'string') {
+        return {
+          why: `declares an environment: entry ${JSON.stringify(entry)} this gate cannot read`,
+        };
+      }
+      const i = entry.indexOf('=');
+      names.push(i < 0 ? entry : entry.slice(0, i));
+    }
+    return { names };
+  }
+  return { why: `declares environment: as ${JSON.stringify(env)}, which this gate cannot read` };
+}
+
+/** Every environment variable NAME the stage chain assigns (both ENV forms). */
+function dockerfileEnvNames(chain: readonly Stage[]): string[] {
+  const names: string[] = [];
+  for (const stage of chain) {
+    for (const line of stage.lines) {
+      const m = /^ENV\s+(.*)$/i.exec(line);
+      if (m === null) continue;
+      const toks = tokenise((m[1] ?? '').trim());
+      const first = toks[0] ?? '';
+      if (first !== '' && !first.includes('=')) {
+        names.push(first); // the legacy `ENV KEY value with spaces` form
+        continue;
+      }
+      for (const tok of toks) {
+        const i = tok.indexOf('=');
+        if (i > 0) names.push(tok.slice(0, i));
+      }
+    }
+  }
+  return names;
+}
+
 /** PID 1's script, as a repository file, for one (composed file, service). */
 function resolvePid1(
   rel: string,
@@ -2077,6 +2308,37 @@ function resolvePid1(
     !Array.isArray(fromBase['environment'])
   ) {
     svc['environment'] = envMerged;
+  }
+
+  // (10) §7c — THE KEY SPACE. Every key this service declares must be one this
+  // gate has classified. An unclassified key is refused and the pair is
+  // UNRESOLVED, because a key that might decide what PID 1 is makes the rest of
+  // this resolution a statement about a process that may not exist.
+  for (const key of Object.keys(svc).sort()) {
+    if (PID1_MODELLED_KEYS.includes(key) || PID1_NEUTRAL_KEYS.includes(key)) continue;
+    return {
+      why:
+        `declares the compose key '${key}:', which the stop-grace rule (§7) has not classified. ` +
+        `An application service may declare only keys §7 RESOLVES (${PID1_MODELLED_KEYS.join(', ')}) ` +
+        `or has argued cannot change what PID 1 is (${PID1_NEUTRAL_KEYS.join(', ')}).` +
+        (PID1_KEY_NOTES[key] ?? '') +
+        ` This is an ALLOW-LIST and it is deliberate (T-182 rework 1, QA-1): the keys that decide ` +
+        `WHAT PID 1 IS are not a list this gate can enumerate, so an unclassified key fails ` +
+        `closed. If it cannot change PID 1, add it to PID1_NEUTRAL_KEYS in ` +
+        `scripts/gates/app-images.ts with the argument; if it can, §7 must resolve it`,
+    };
+  }
+  // `pull_policy:` decides whether the image PID 1 comes from is BUILT here or
+  // FETCHED. Only the two values that mean "not fetched" are read.
+  const pullPolicy = svc['pull_policy'];
+  if (pullPolicy !== undefined && !['build', 'never'].includes(String(pullPolicy).trim())) {
+    return {
+      why:
+        `declares pull_policy: ${String(pullPolicy)}, so the image that becomes PID 1 may be ` +
+        `FETCHED instead of built from this repository — and §7 resolves PID 1 from the build in ` +
+        `this repository, so a fetched image would be a PID 1 this gate never read. Only ` +
+        `'build' and 'never' are read`,
+    };
   }
 
   const img = composedServices.find((c) => c.rel === rel)?.svcs;
@@ -2157,6 +2419,40 @@ function resolvePid1(
               `then not the file this gate read`
             : `is not a NODE_OPTIONS token this rule models, so what PID 1 loads is not resolved ` +
               `(add it to INERT_NODE_FLAGS in scripts/gates/app-images.ts, in review, if it is inert)`),
+      };
+    }
+  }
+
+  // (11) §7d — the environment variable NAMES that decide what is loaded into
+  // PID 1, from compose and from the image's own ENV, judged by the loaders'
+  // namespaces rather than by a list of spellings.
+  const composeNames = composeEnvNames(svc);
+  if ('why' in composeNames) return composeNames;
+  for (const [source, names] of [
+    ['compose environment:', composeNames.names],
+    [`${build.dockerfile} stage '${build.target}' ENV`, dockerfileEnvNames(stage.chain)],
+  ] as const) {
+    for (const key of names) {
+      const v = envNameVerdict(key);
+      if (v === 'ok') continue;
+      return {
+        why:
+          v === 'path'
+            ? `sets PATH in ${source}, and PID 1's argv[0] is ${JSON.stringify(argv[0] ?? '')} — ` +
+              `so PATH decides WHICH BINARY is PID 1, not this gate. MEASURED on ` +
+              `kinvara/core:dev: with PATH=/nonexistent the container cannot start at all ` +
+              `('exec: "node": executable file not found in $PATH', docker run exit 127). The ` +
+              `silent direction puts a different \`node\` first on the path. Refused rather than ` +
+              `resolved (T-182 rework 1, §7d)`
+            : `sets ${key} in ${source}, which is in a LOADER's own namespace: the dynamic ` +
+              `loader reads LD_*/DYLD_* (ld.so(8)) and node reads NODE_* (node(1) ENVIRONMENT), ` +
+              `so a variable there can put code into PID 1's process without naming a file this ` +
+              `gate reads. MEASURED for LD_PRELOAD on kinvara/core:dev (qa-verification QA-1, ` +
+              `reproduced in T-182 § Rework 1 M2): five mappings of the named object inside PID ` +
+              `1's OWN address space (grep -c libz /proc/1/maps) against zero without it — ` +
+              `NODE_OPTIONS' --require hazard by way of ld.so instead of node. Only ` +
+              `NODE_OPTIONS (resolved token by token, input (5)) and NODE_ENV (it loads nothing) ` +
+              `are read; anything else in those namespaces is refused (T-182 rework 1, §7d)`,
       };
     }
   }
@@ -2525,9 +2821,12 @@ console.log(
   `  PID 1 resolved, per service (§7b, T-182)  ${String(pid1Resolved.length)} of ` +
     `${String(pid1Attempted)} (composed file, application service) pair(s): ` +
     `${pid1Resolved.join(' ')}` +
-    `  (from the image ENTRYPOINT/CMD, compose entrypoint:/command:/init:/working_dir:/` +
+    `  (WHICH FILE: the image ENTRYPOINT/CMD, compose entrypoint:/command:/init:/working_dir:/` +
     `stop_signal:/env_file:, NODE_OPTIONS, every mount target, and the COPY/ADD that puts the ` +
-    `script there — anything unresolved is REFUSED, never defaulted)`,
+    `script there. WHAT PID 1 IS: two ALLOW-LISTS — only these compose keys on an application ` +
+    `service [${[...PID1_MODELLED_KEYS].sort().join(' ')} | ${[...PID1_NEUTRAL_KEYS].sort().join(' ')}], ` +
+    `and no variable in a loader namespace [LD_* DYLD_* NODE_*, PATH] except NODE_OPTIONS and ` +
+    `NODE_ENV. Anything unresolved or unclassified is REFUSED, never defaulted — T-182 rework 1)`,
 );
 console.log(
   `  app services held to it (§7)    ${String(graceWhy.size)}: ${graceSeen.join(' ')}` +
