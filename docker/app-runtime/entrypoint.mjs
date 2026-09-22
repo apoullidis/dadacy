@@ -49,8 +49,13 @@
  *     T-151). That is not a coincidence to preserve by hand:
  *     gate:app-images §7 refuses any APPLICATION service — derived, not
  *     listed — whose grace, in any composed file, is below GROUP_DRAIN_MS
- *     (read from THIS file) plus a 5 s exit margin. A process that ignores
- *     SIGTERM drops every in-flight request at deploy time.
+ *     (read from THIS file) plus a 5 s exit margin. THAT DOES NOT MAKE THE
+ *     WAIT FIT THE GRACE (tech-lead TL-A1 on T-179, measured): the wait's
+ *     deadline starts at the DIRECT CHILD'S EXIT, not at SIGTERM, so the
+ *     worst case is the app's own drain time PLUS GROUP_DRAIN_MS, and no fixed
+ *     margin covers that. Moving the deadline to the first forwarded signal
+ *     is the successor ticket the orchestrator cut from TL-A1. A process that
+ *     ignores SIGTERM drops every in-flight request at deploy time.
  *   * The process must be PID 1's own child or PID 1 itself: a shell-form CMD
  *     puts /bin/sh at PID 1, and sh does not forward signals to its child.
  *     This file is exec'd directly for that reason.
@@ -102,19 +107,30 @@
  *     `kill(-pgid, 0)` still SUCCEEDS on a zombie, and waitForGroup below
  *     therefore polls the full GROUP_DRAIN_MS and exits 128+signum. So a
  *     CLEAN drain behind a true compound script costs 25 s and reports 143
- *     every time. It is inside the 30 s stop_grace_period all five
- *     application services declare, with 5 s to spare, and gate:app-images §7
- *     keeps it inside (T-179: it reads the CONSTANT GROUP_DRAIN_MS from here,
- *     so raising that constant without raising the graces reds the gate; a
- *     multiplier or env override where it is USED, or an ENTRYPOINT pointed at
- *     another file, is not read — QA-7). The 143 is still a false
- *     crash signal; being inside the grace only means it is not ALSO a SIGKILL.
- *     The application does drain. Two bounds on
- *     how far that reaches: no app in this repository declares a compound
- *     start script, and `VAR=value cmd args` is NOT one — ash execs that, so
- *     the direct child IS the application, its exit status is the
- *     application's and the group empties the moment it exits (measured,
- *     § Rework 1 R1.5).
+ *     every time. Because ash dies at the signal, that wait starts at about
+ *     SIGTERM, so it ends inside the 30 s stop_grace_period all five
+ *     application services declare, and gate:app-images §7 holds the graces
+ *     at >= GROUP_DRAIN_MS + 5 s (T-179: it reads the CONSTANT GROUP_DRAIN_MS
+ *     from here; a multiplier or env override where it is USED, or an
+ *     ENTRYPOINT pointed at another file, is not read — QA-7). The 143 is
+ *     still a false crash signal. The application does drain.
+ *
+ *     THE ZOMBIE IS NOT ONLY A SHELL-PATH EFFECT (tech-lead TL-A1 on T-179,
+ *     measured with this file as PID 1 in node:24.20.0-alpine,
+ *     --stop-timeout 30, a SIMPLE start line): an application that spawns a
+ *     helper into its group and exits without waiting for it leaves that
+ *     helper to be reparented here and zombify, so the full wait runs ON THE
+ *     ARGV PATH too. And there the wait starts when the APP exits, not at
+ *     SIGTERM: app drain 1 s -> `docker stop` 26.25 s, exit 0; app drain 8 s
+ *     -> 30.15 s and ExitCode=137 (SIGKILL) after both processes had logged a
+ *     clean exit — with gate:app-images green. No work is lost (the grace
+ *     would kill anything still running anyway), but 137 is the same false
+ *     crash signal as the 143 above. The fix — the deadline counted from the
+ *     first forwarded signal — is a change to PID 1 and is the successor
+ *     ticket cut from TL-A1, not a comment. What IS bounded: `VAR=value cmd
+ *     args` is not a compound script — ash execs it, so the direct child IS
+ *     the application (measured, § Rework 1 R1.5) — and no app in this
+ *     repository declares a compound start script.
  *
  * WHAT THIS PROCESS CAN AND CANNOT REPORT. On path 1 the direct child is the
  * application, so its exit status IS the application's and a clean drain
@@ -163,8 +179,9 @@ const log = (...a) => process.stderr.write(`[${APP}] ${a.join(' ')}\n`);
  */
 const SIMPLE_COMMAND = /^[A-Za-z0-9_@.:/+,-]+(?: [A-Za-z0-9_@.:/+=,-]+)*$/;
 
-/** How long to wait for the child's process group to empty after forwarding a
- *  signal.
+/** How long to wait for the child's process group to empty — counted from the
+ *  DIRECT CHILD'S EXIT (waitForGroup is only called from child.on('exit')),
+ *  not from the forwarded signal (tech-lead TL-A1 on T-179).
  *
  *  EVERY APPLICATION SERVICE'S GRACE IS HELD ABOVE THIS NUMBER, BY A GATE THAT
  *  READS IT FROM HERE (T-179). gate:app-images §7 parses the one
@@ -180,9 +197,13 @@ const SIMPLE_COMMAND = /^[A-Za-z0-9_@.:/+,-]+(?: [A-Za-z0-9_@.:/+=,-]+)*$/;
  *  RED until the graces move with it (negative case 148); write it as anything
  *  but one numeric literal and the gate refuses to guess (case 151). ONLY this
  *  literal is read: scaling or overriding it where waitForGroup uses it is not
- *  (QA-7), so change the wait HERE or not at all. It is
- *  only ever reached on the `/bin/sh -c` path where ash did not exec (see the
- *  header). scripts/verify/sigterm-drain.sh reads each container's real
+ *  (QA-7), so change the wait HERE or not at all. WHAT THE GATE DOES NOT
+ *  GIVE: a wait that fits the grace. The deadline starts at the child's exit,
+ *  so the worst case is the app's drain time + this, and on the argv path an
+ *  app that leaves a helper in its group reaches the full wait (TL-A1, see the
+ *  header: 8 s drain -> SIGKILL, 137). The successor ticket cut from TL-A1
+ *  moves the deadline to the first forwarded signal; §7 is then exactly the
+ *  right property. scripts/verify/sigterm-drain.sh reads each container's real
  *  StopTimeout, and assertion D judges against that number. */
 const GROUP_DRAIN_MS = 25_000;
 

@@ -1368,11 +1368,14 @@ for (const [rel, users] of [...dockerfilesInUse].sort(([a], [b]) => a.localeComp
 //
 //    THE PROPERTY IS A RELATIONSHIP BETWEEN TWO FILES, NOT A NUMBER IN ONE.
 //    `docker/app-runtime/entrypoint.mjs` is PID 1 in every image
-//    `docker/app.Dockerfile` builds, and after forwarding SIGTERM it may wait
-//    up to GROUP_DRAIN_MS for the application's process group to empty
-//    (`waitForGroup`). Docker SIGKILLs the container `stop_grace_period` after
-//    the SIGTERM. If the grace is not longer than the wait, a drain that is
-//    still inside the wait is killed, and the container reports 143 — a FALSE
+//    `docker/app.Dockerfile` builds, and once its DIRECT CHILD EXITS after a
+//    forwarded SIGTERM it may wait up to GROUP_DRAIN_MS for the application's
+//    process group to empty (`waitForGroup`, called only from
+//    child.on('exit') — the deadline counts from the child's exit, NOT from
+//    the signal; tech-lead TL-A1). Docker SIGKILLs the container
+//    `stop_grace_period` after the SIGTERM. If the grace is not longer than
+//    the wait, a drain still inside the wait is killed and the container
+//    reports 137 — or, on the shell path, 143 even inside the grace — a FALSE
 //    CRASH SIGNAL to compose, T-003's ECS health and T-009's paging (OD-196).
 //    At main 39f01f2 `web` and `admin` declared no grace at all, so they took
 //    compose's 10 s default against a 25 s wait: 15 s short, with this gate
@@ -1391,12 +1394,20 @@ for (const [rel, users] of [...dockerfilesInUse].sort(([a], [b]) => a.localeComp
 //    files owned for two different reasons, which is PROTOCOL §5.1's "anchor
 //    one of them outside".
 //
-//    EXIT_MARGIN_MS IS A CHOSEN FLOOR, NOT A MEASUREMENT. What the mechanism
-//    strictly needs past the wait is one poll (100 ms) and a process exit.
-//    5 s is the headroom T-151 § contract §2 already published ("inside the
-//    30 s grace, with 5 s to spare"); holding it as a floor keeps that sentence
-//    true by construction instead of by coincidence. Lowering it is a decision
-//    to make in this file, in review — not a thing an edit elsewhere does.
+//    EXIT_MARGIN_MS IS A CHOSEN FLOOR, NOT A MEASUREMENT. It is meant to cover
+//    one poll (100 ms), the process exit and docker noticing — tech-lead
+//    measured about 0.25 s for those (one run, this host, TL-A1). 5 s is the
+//    headroom T-151 § contract §2 already published. AS BUILT IT ALSO HAS TO
+//    ABSORB THE APP'S OWN DRAIN TIME, because the wait starts at the child's
+//    exit, and NO FIXED MARGIN IS ENOUGH for that: measured by tech-lead with
+//    the real entrypoint and a simple start line, an app that drained in 8 s
+//    and left a helper in its group was SIGKILLed at 30 s (137) with this
+//    gate green. So this rule guarantees the relationship between the two
+//    NUMBERS, not that the wait fits the grace. The fix is in the mechanism —
+//    count the deadline from the first forwarded signal — and is the
+//    successor ticket cut from TL-A1; once it lands this rule is exactly the
+//    right property, unchanged. Lowering the margin is a decision to make in
+//    this file, in review — not a thing an edit elsewhere does.
 //
 //    WHICH SERVICES ARE "APPLICATION SERVICES" IS DERIVED, NEVER LISTED — a
 //    hand list of five names is T-005's Deviation 6, and a sixth service would
