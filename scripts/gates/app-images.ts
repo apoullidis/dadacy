@@ -2105,8 +2105,11 @@ function mountTargets(
 //     TWO MORE DENY ENTRIES WOULD HAVE BEEN THE WRONG ANSWER, for the reason
 //     this ticket was cut in the first place: seven patches for seven members
 //     is a failed ticket even if every case is green. The second question's
-//     space is not a list of hazards — it is THE KEY SPACE ITSELF, and compose
-//     has ~80 service keys. So this is an ALLOW-LIST:
+//     space is not a list of hazards — it is THE KEY SPACE ITSELF, which is far
+//     wider than the fifteen keys §7 reads and grows with compose. (No count of
+//     the compose spec's keys is stated here, because none was taken —
+//     PROTOCOL §5.3 R1, and the argument does not need one.) So this is an
+//     ALLOW-LIST:
 //
 //       an application service may declare ONLY keys this gate has classified,
 //       as MODELLED (§7 resolves or refuses on the value) or as NEUTRAL (it
