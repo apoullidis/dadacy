@@ -1,0 +1,129 @@
+/**
+ * gate:db-introspect-suite — the one committed negative suite that no stage
+ * could run. T-006.
+ *
+ * `scripts/negative-tests/db-introspect.sh` is 65 cases attacking T-138's
+ * parity check. `gate:negative-suites` rosters it NEEDS-SERVICE and pins its
+ * SHA-256 instead of running it, because the PR stage declares `svc: none`
+ * (T-005 § contract §6). Its own entry there says, in terms: "its home is
+ * gate:heavy (T-006) even once green". This is that home.
+ *
+ * IT IS RED, AND THAT IS WHY IT IS `BLOCKED` AND NOT `BLOCKING`. T-146's
+ * migration `0006` created schema `pgboss` with twelve relations; the K36–K49
+ * cases were written before it existed. OD-154, owner T-165 (tech-lead),
+ * PARKED awaiting stakeholder ruling OE-37. The heavy roster pins the exact
+ * failure, so:
+ *
+ *   - if it goes GREEN, gate:heavy fails and demands the promotion — an
+ *     allowance must not outlive its reason;
+ *   - if it goes red in some OTHER way, gate:heavy fails and says so.
+ *
+ * WHAT THIS ADDS OVER THE DIGEST PIN IT SITS BESIDE. The digest in
+ * `gate:negative-suites` detects that the FILE changed; it cannot detect that
+ * `main` moved underneath the suite, which is exactly how OD-154 happened (a
+ * migration merged; the suite was untouched). T-005 § contract §6 names that
+ * gap and says it is gate:heavy's. Running the suite against a real database
+ * is what closes it: the count is re-measured on every heavy run.
+ *
+ * IT NEEDS A FRESH `db` PROJECT, AND THAT IS MEASURED, NOT ASSUMED (OD-189).
+ * Run it a second time against a database it has already run against and case
+ * K18's history attack cannot land — `down --to 0005` / `down --to 0004` then
+ * `up` no longer moves drizzle-kit's table-list order, because the first run
+ * already consumed the catalogue ordering it was going to disturb. The suite
+ * then ABORTS at exit 2 WITH NO FOOTER, which is the one shape a harness must
+ * be able to tell from a refusal: this gate prints `GATE CRASH` for it, and
+ * `gate:heavy` refuses the run rather than reading exit 2 as "the pinned red".
+ * Measured both ways at T-006's head: fresh project → `!! 25 of 65`, exit 1,
+ * 206.3 s; the same project a second time → ABORT, exit 2, 97.7 s, no footer.
+ * So: `./scripts/svc down <ticket>` before the heavy stage's service segment.
+ * DOCKER.md §5 asks that of every evidence run anyway.
+ *
+ * THE SUITE REFUSES A DIRTY TREE, and so this gate does. That is not a
+ * preference — the suite plants migrations and deletes db/schema.ts, and
+ * T-168 gave it EXIT/INT/TERM traps precisely because an interrupted run must
+ * put tracked files back. Commit first; uncommitted work is not evidence
+ * anyway (PROTOCOL §3). This mirrors `gate:pr`'s clean-tree requirement
+ * (T-005 § contract §4) rather than inventing a second convention.
+ */
+import { spawnSync } from 'node:child_process';
+import { REPO_ROOT } from './lib/run.ts';
+
+const NAME = 'gate:db-introspect-suite';
+const SUITE = 'scripts/negative-tests/db-introspect.sh';
+
+const project = process.env['KINVARA_PROJECT'] ?? '';
+const pghost = process.env['PGHOST'] ?? '';
+if (project === '' || pghost === '') {
+  console.error(`GATE NEEDS A SERVICE  ${NAME}`);
+  console.error(
+    `  Needs:   the \`db\` profile. KINVARA_PROJECT=${JSON.stringify(project)} PGHOST=${JSON.stringify(pghost)}`,
+  );
+  console.error(`  Run it:  ./scripts/svc run <ticket> -- pnpm -w ${NAME}`);
+  console.error('');
+  console.error('  The suite is committed and is not a stub. This banner means only that the');
+  console.error('  current invocation has no database to point it at.');
+  process.exit(1);
+}
+
+const dirty = spawnSync('git', ['status', '--porcelain'], {
+  cwd: REPO_ROOT,
+  encoding: 'utf8',
+});
+if ((dirty.stdout ?? '').trim() !== '') {
+  console.error(`GATE FAIL  ${NAME} — 1 problem(s):`);
+  console.error(`  - the working tree is not clean, and ${SUITE} refuses one before it starts.`);
+  console.error('    It plants migrations and deletes db/schema.ts; a dirty tree is how a suite');
+  console.error('    eats an uncommitted edit (OD-119, OD-160). Commit first.');
+  for (const l of (dirty.stdout ?? '').trimEnd().split('\n')) console.error(`      ${l}`);
+  process.exit(1);
+}
+
+console.log(`$ bash ${SUITE}   (project ${project}, PGHOST ${pghost})`);
+const started = Date.now();
+const r = spawnSync('bash', [SUITE], {
+  cwd: REPO_ROOT,
+  encoding: 'utf8',
+  maxBuffer: 256 * 1024 * 1024,
+});
+const text = `${r.stdout ?? ''}${r.stderr ?? ''}`;
+const code = r.error !== undefined ? 127 : (r.status ?? 1);
+const secs = Math.round((Date.now() - started) / 100) / 10;
+
+/**
+ * Three readings again, and the footer is the one that matters: a suite that
+ * crashed before printing a footer exits non-zero too, and OD-27 is the record
+ * of what happens when a harness reads any non-zero as a refusal.
+ */
+const green = /^ALL (\d+) CASES BEHAVED AS EXPECTED$/m.exec(text);
+const red = /^!! (\d+) of (\d+) cases misbehaved$/m.exec(text);
+
+console.log(text.trimEnd().split('\n').slice(-6).join('\n'));
+
+if (green === null && red === null) {
+  console.error(
+    `\nGATE CRASH  ${NAME} — the suite printed NO FOOTER (exit ${String(code)}, ${String(secs)}s).`,
+  );
+  console.error('  Neither "ALL n CASES BEHAVED AS EXPECTED" nor "!! n of m cases misbehaved" is');
+  console.error('  present, so this run is not a verdict — it is a process that died. A crash and');
+  console.error('  a refusal must not look the same (PROTOCOL §5.1, OD-27).');
+  process.exit(70);
+}
+
+if (green !== null) {
+  if (code !== 0) {
+    console.error(
+      `\nGATE FAIL  ${NAME} — the footer is green and the exit status is ${String(code)}; the two disagree.`,
+    );
+    process.exit(1);
+  }
+  console.log(`\nGATE PASS  ${NAME}  (${green[1] ?? '?'} cases, ${String(secs)}s)`);
+  process.exit(0);
+}
+
+console.error(
+  `\nGATE FAIL  ${NAME} — !! ${String(red?.[1])} of ${String(red?.[2])} cases misbehaved  (exit ${String(code)}, ${String(secs)}s)`,
+);
+console.error('  This suite is a known, owned red: OD-154, owner T-165 (tech-lead), PARKED');
+console.error('  awaiting stakeholder ruling OE-37. `gate:heavy` rosters it BLOCKED against the');
+console.error('  exact count above and fails if it changes IN EITHER DIRECTION.');
+process.exit(1);

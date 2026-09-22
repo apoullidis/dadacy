@@ -43,7 +43,13 @@
  *   SERVICE   in SD's PR row, but needs a running service, and `gate:pr`
  *             declares none (DOCKER.md §4/§7: `scripts/dev` has egress and no
  *             services). Executed by `gate:heavy` / `scripts/svc run`. The
- *             command must exist and must refuse in the PR stage.
+ *             command must exist and must refuse in the PR stage WITH ITS OWN
+ *             `GATE NEEDS A SERVICE` BANNER — not PENDING's "not yet
+ *             supplied", which would be false of a gate that is supplied and
+ *             runs one stage over (T-006). scripts/gates/lib/heavy-roster.ts
+ *             refuses a SERVICE entry here that the heavy stage does not
+ *             execute, so this class can no longer name a stage in prose and
+ *             be believed.
  *
  * Why PENDING does not fail gate:pr: `gate:pr` is the Definition-of-Done gate
  * every other ticket in the programme must show green (PROTOCOL §5). A stage
@@ -266,13 +272,26 @@ export const ROSTER: readonly RosterEntry[] = [
 
   // -------------------------------------------------- needs a service (T-006)
   {
+    // T-006 LANDED, and this entry's meaning changed with it although its CLASS
+    // did not. `pnpm gate:drizzle-parity` is no longer a not-yet-supplied hook:
+    // it is scripts/gates/drizzle-parity.ts, which runs T-138's live
+    // `db:introspect:check` wherever a database is attached and prints
+    // `GATE NEEDS A SERVICE` where one is not. It stays SERVICE here because
+    // this stage declares `svc: none` and always will (DOCKER.md §7) — that is
+    // structural, not a debt, and no ticket can pay it off. What T-006
+    // discharged is the DEBT: scripts/gates/lib/heavy-roster.ts rosters it
+    // BLOCKING and `pnpm gate:heavy` executes it against the ticket project's
+    // real database. heavyRosterProblems() refuses a SERVICE entry here that
+    // the heavy roster does not execute, so a second one cannot be added and
+    // then run nowhere.
     name: 'gate:drizzle-parity',
     spec: 'Drizzle introspection parity',
     cls: 'SERVICE',
     why: '`pnpm -w db:introspect:check` migrates a real database and re-introspects it (T-138, T-150, T-152)',
-    owner: 'T-006 (gate:heavy) — the command itself is LIVE and owned by T-138',
+    owner:
+      'T-006 (gate:heavy) — SUPPLIED and EXECUTED there; the command itself is LIVE and owned by T-138',
     unblocks:
-      'run it where a database exists: `scripts/svc run <ticket> -- pnpm -w db:introspect:check`. It cannot run in the PR stage because gate:pr declares `svc: none` (DOCKER.md §7). T-006 puts it in gate:heavy.',
+      'nothing here: it is green where it runs. `pnpm gate:heavy` executes it under `scripts/svc run <ticket> --`. It cannot run in THIS stage because gate:pr declares `svc: none` (DOCKER.md §7), which is structural and permanent.',
   },
 
   // ------------------------------------------------ hooks other agents supply

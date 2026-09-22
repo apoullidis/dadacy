@@ -22,6 +22,13 @@
  *      A PENDING hook that fails without the `GATE NOT YET SUPPLIED` banner
  *      fails this gate too — refused, crashed and not-yet-supplied must stay
  *      three distinguishable outcomes (PROTOCOL §5.1).
+ *      SINCE T-006, `SERVICE` IS JUDGED ON ITS OWN BANNER, `GATE NEEDS A
+ *      SERVICE`, and not on PENDING's. The two classes were always different
+ *      facts — content owed, versus supplied but unrunnable in a stage that
+ *      declares `svc: none` — and until `pnpm gate:heavy` existed to run one,
+ *      nothing turned on the difference. Now something does: a SERVICE gate
+ *      that still prints "NOT YET SUPPLIED" is a gate whose implementation has
+ *      landed and whose hook nobody removed.
  *   4. IT CANNOT PASS VACUOUSLY. Zero gates executed, or a BLOCKING population
  *      of zero, is a FAIL — not a green run over an empty list. That is the
  *      Trivy zero-package defect and OD-3, and it is asserted here as well as
@@ -169,6 +176,7 @@ for (const entry of toRun) {
 
 // ---------------------------------------------------- 3. judge against the class
 const NOT_SUPPLIED = 'GATE NOT YET SUPPLIED';
+const NEEDS_SERVICE = 'GATE NEEDS A SERVICE';
 
 for (const o of outcomes) {
   const { entry, code, text } = o;
@@ -177,7 +185,6 @@ for (const o of outcomes) {
       if (code !== 0) failures.push(`${entry.name} FAILED (exit ${String(code)})`);
       break;
     case 'PENDING':
-    case 'SERVICE':
       if (code === 0) {
         failures.push(
           `${entry.name} is rostered ${entry.cls} but EXITED 0 — ${entry.owner ?? 'its owner'} has supplied it and nobody promoted it to BLOCKING. Move it in scripts/gates/lib/roster.ts.`,
@@ -185,6 +192,26 @@ for (const o of outcomes) {
       } else if (!text.includes(NOT_SUPPLIED)) {
         failures.push(
           `${entry.name} is rostered ${entry.cls} and exited ${String(code)} WITHOUT the "${NOT_SUPPLIED}" banner — a crash and a not-yet-supplied hook must not look the same (PROTOCOL §5.1).`,
+        );
+      }
+      break;
+    case 'SERVICE':
+      // T-006. SERVICE and PENDING were judged by one banner until the heavy
+      // stage existed to run a SERVICE gate. They are now two RESULTS, because
+      // they are two different facts about the world: PENDING means the gate's
+      // CONTENT is owed by a named ticket; SERVICE means the gate is SUPPLIED
+      // AND RUNS, in `pnpm gate:heavy`, and that THIS stage structurally cannot
+      // start the service it needs (gate:pr declares `svc: none`; DOCKER.md §7).
+      // A SERVICE gate printing "NOT YET SUPPLIED" was the register defect
+      // PROTOCOL §5.1 names: a true sentence that became false when T-006
+      // landed, in the output every ticket in the programme pastes.
+      if (code === 0) {
+        failures.push(
+          `${entry.name} is rostered SERVICE but EXITED 0 in a stage that declares \`svc: none\` — either a service is attached to gate:pr, which DOCKER.md §7 forbids, or the gate is not reading for one. Move it in scripts/gates/lib/roster.ts or fix the gate.`,
+        );
+      } else if (!text.includes(NEEDS_SERVICE)) {
+        failures.push(
+          `${entry.name} is rostered SERVICE and exited ${String(code)} WITHOUT the "${NEEDS_SERVICE}" banner — a gate that needs a service, a hook whose content is not yet supplied, and a crash must be three distinguishable outcomes (PROTOCOL §5.1). If it printed "${NOT_SUPPLIED}", its content IS supplied and the hook was left behind; \`pnpm gate:heavy\` (T-006) is what executes it.`,
         );
       }
       break;
@@ -221,7 +248,12 @@ for (const o of outcomes) {
     status = o.code === 0 ? 'PASS' : `FAIL (exit ${String(o.code)})`;
     if (o.code === 0) blockingPassed += 1;
   } else {
-    status = o.code === 0 ? `UNEXPECTED PASS (promote it)` : 'NOT YET SUPPLIED';
+    status =
+      o.code === 0
+        ? `UNEXPECTED PASS (promote it)`
+        : o.entry.cls === 'SERVICE'
+          ? 'NEEDS A SERVICE'
+          : 'NOT YET SUPPLIED';
   }
   const tail = o.entry.cls === 'BLOCKING' ? '' : `  <- ${o.entry.owner ?? '(no owner)'}`;
   console.log(`  ${status.padEnd(22)} ${o.entry.name.padEnd(32)} [${o.entry.cls}]${tail}`);
