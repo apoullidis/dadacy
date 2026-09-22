@@ -120,9 +120,19 @@ RUN test -n "${APP}" || { echo "app.Dockerfile: --build-arg APP is required" >&2
 # stage's full install. Copied here and not in `deps`, so a schema change does
 # not invalidate the install layer.
 COPY db/schema.ts db/schema.ts
-RUN node -e "const p=require('./apps/${APP}/package.json'); process.exit(p.scripts&&p.scripts.build?0:1)" \
-      && pnpm --filter "@kinvara/${APP}" build \
-      || echo "app.Dockerfile: apps/${APP} declares no build script — nothing to build"
+# `if/then/else`, NOT `probe && build || echo` (T-151, decisions.md OD-99). In
+# the `a && b || c` shape `c` runs whenever `b` fails, so a declared build that
+# exited non-zero left this RUN at exit 0 and printed "declares no build
+# script" — a build that failed, reported as a build that was never there.
+# Measured at main 637640e with `apps/core`'s build set to `node -e
+# "process.exit(3)"`: `docker build --target build` EXIT=0 with that line in the
+# log. `if` exits with the status of the branch it took, so a failing build now
+# fails the image build with its own message.
+RUN if node -e "const p=require('./apps/${APP}/package.json'); process.exit(p.scripts&&p.scripts.build?0:1)"; then \
+      pnpm --filter "@kinvara/${APP}" build; \
+    else \
+      echo "app.Dockerfile: apps/${APP} declares no build script — nothing to build"; \
+    fi
 
 # Strip every node_modules from this stage, so what it hands to `runtime` is
 # SOURCE AND BUILD OUTPUT AND NOTHING ELSE. Without it the per-project trees

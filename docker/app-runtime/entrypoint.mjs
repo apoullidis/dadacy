@@ -19,7 +19,9 @@
  * So this file is the image's contract with the app, in two modes:
  *
  *   REAL         the app's package.json declares a `start` script
- *                -> exec `node --run start` in the app directory.
+ *                -> run that command in the app directory, as this process's
+ *                   own direct child, and forward signals to it (see
+ *                   "DELIVERING THE SIGNAL" below).
  *   PLACEHOLDER  it does not
  *                -> run the reference server/worker below, which implements
  *                   the same lifecycle contract.
@@ -47,6 +49,46 @@
  *     puts /bin/sh at PID 1, and sh does not forward signals to its child.
  *     This file is exec'd directly for that reason.
  *   * A second SIGTERM means "stop waiting" and exits non-zero.
+ *
+ * DELIVERING THE SIGNAL — WHY THERE IS NO `node --run` HERE (T-151, OD-100)
+ * ------------------------------------------------------------------------
+ * REAL mode used to run `node --run start`. `node --run` DOES NOT FORWARD
+ * SIGTERM: it exits 143 and orphans its child un-signalled, so the
+ * application was never asked to drain and, PID 1 having exited, the orphan
+ * was killed with it. Measured on the real image at main 637640e
+ * (state/EP-1/T-151.md § Evidence 1): the container exited 143 in 0.18 s and
+ * `core`'s two drain lines never appeared in its log. NO `start` SCRIPT CAN
+ * FIX THAT, because the signal dies above anything the app controls — which
+ * is why the fix is here.
+ *
+ * Two mechanisms, and both are measured, not assumed:
+ *
+ *  1. THE APPLICATION IS THIS PROCESS'S DIRECT CHILD, BY CONSTRUCTION. A
+ *     start script that is a simple command (`node src/main.ts`, `next
+ *     start`) is spawned as argv with no shell and no `--run` in between, so
+ *     `child.kill()` reaches the application itself. Anything a shell is
+ *     actually needed for (a pipe, a `&&`, a redirect, a quote) goes to
+ *     `/bin/sh -c` instead — see 2.
+ *  2. THE CHILD LEADS ITS OWN PROCESS GROUP, AND THE SIGNAL GOES TO THE
+ *     GROUP. `spawn(..., { detached: true })` makes the child a process-group
+ *     leader; `process.kill(-pgid, sig)` then reaches every process in it,
+ *     including a shell's grandchild. And after the direct child exits, this
+ *     process WAITS FOR THE GROUP TO EMPTY before exiting, because PID 1
+ *     exiting kills whatever is left.
+ *
+ *     That wait is not belt-and-braces. Measured in node:24.20.0-alpine: for
+ *     a compound script, busybox ash does not exec its child, TAKES the
+ *     forwarded SIGTERM itself and exits `sig=SIGTERM` while the application
+ *     is still draining — 4 polls later the group was still alive and the app
+ *     then exited 0. Without the wait, PID 1 would have exited first and
+ *     killed it. For a simple command ash DOES exec, which is the second
+ *     reason path 1 exists: it does not depend on that optimisation.
+ *
+ * WHAT THIS PROCESS CAN AND CANNOT REPORT. On path 1 the direct child is the
+ * application, so its exit status IS the application's and a clean drain
+ * shows up as `exit 0`. On path 2, if the shell is the one that dies on the
+ * forwarded signal, this process cannot observe the application's own status;
+ * it says so on stderr and exits 128+signum rather than inventing a 0.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -61,7 +103,20 @@ const HEARTBEAT = process.env.KINVARA_HEARTBEAT ?? '/tmp/kinvara-heartbeat';
 
 const log = (...a) => process.stderr.write(`[${APP}] ${a.join(' ')}\n`);
 
-// --- REAL MODE --------------------------------------------------------------
+/**
+ * A start script this file may run WITHOUT a shell: a command word and plain
+ * arguments, nothing a shell would have to interpret. Deliberately strict —
+ * anything outside this character set goes to `/bin/sh -c`, so a misjudgement
+ * can only ever fall back to the more general path, never the other way.
+ */
+const SIMPLE_COMMAND = /^[A-Za-z0-9_@.:/+=,-]+(?: [A-Za-z0-9_@.:/+=,-]+)*$/;
+
+/** How long to wait for the child's process group to empty after forwarding a
+ *  signal. Inside the 30 s `stop_grace_period` the app services declare in
+ *  docker/compose.yml, so docker's SIGKILL is never what ends the wait. */
+const GROUP_DRAIN_MS = 25_000;
+
+// --- MODE SELECTION ---------------------------------------------------------
 const pkgPath = path.join(APP_DIR, 'package.json');
 let startScript;
 try {
@@ -71,20 +126,96 @@ try {
 }
 
 if (typeof startScript === 'string' && startScript.trim() !== '') {
-  log(`mode=real  running 'node --run start' in ${APP_DIR}`);
-  const child = spawn(process.execPath, ['--run', 'start'], {
-    cwd: APP_DIR,
-    stdio: 'inherit',
-  });
-  // Forward, do not swallow. The child owns its own drain.
-  for (const sig of ['SIGTERM', 'SIGINT']) {
-    process.on(sig, () => child.kill(sig));
-  }
-  child.on('exit', (code, sig) => {
-    process.exit(sig !== null ? 128 + (sig === 'SIGTERM' ? 15 : 2) : (code ?? 1));
-  });
+  runReal(startScript.trim());
 } else {
   runPlaceholder();
+}
+
+// --- REAL MODE --------------------------------------------------------------
+function runReal(script) {
+  // What `node --run` supplied and a bare spawn does not: the workspace's and
+  // the app's own bin directories, so a start script may name a binary
+  // (`next start`) and not only an interpreter.
+  const env = {
+    ...process.env,
+    PATH: [
+      path.join(APP_DIR, 'node_modules', '.bin'),
+      '/srv/kinvara/node_modules/.bin',
+      process.env.PATH ?? '',
+    ]
+      .filter(Boolean)
+      .join(':'),
+  };
+
+  const simple = SIMPLE_COMMAND.test(script);
+  const [file, ...args] = simple ? script.split(' ') : ['/bin/sh', '-c', script];
+  log(
+    simple
+      ? `mode=real  running start (${script}) as a direct child in ${APP_DIR}`
+      : `mode=real  running start via /bin/sh -c (${script}) in ${APP_DIR}`,
+  );
+
+  const child = spawn(file, args, { cwd: APP_DIR, stdio: 'inherit', detached: true, env });
+
+  child.on('error', (err) => {
+    log(`could not start '${script}': ${err.code ?? err.message}, exiting 1`);
+    process.exit(1);
+  });
+
+  let forwarded = null;
+  // Forward, do not swallow. The child owns its own drain. The signal goes to
+  // the GROUP so that a shell's grandchild gets it too; `child.kill` is the
+  // fallback for the one case a group kill can fail (the group is already
+  // gone), and it would be wrong to treat that as fatal.
+  for (const sig of ['SIGTERM', 'SIGINT']) {
+    process.on(sig, () => {
+      forwarded = sig;
+      try {
+        process.kill(-child.pid, sig);
+      } catch {
+        child.kill(sig);
+      }
+    });
+  }
+
+  child.on('exit', (code, sig) => {
+    const status = sig !== null ? 128 + (sig === 'SIGTERM' ? 15 : 2) : (code ?? 1);
+    if (forwarded === null) return void process.exit(status);
+    if (sig !== null) {
+      // The direct child was killed by the signal we forwarded. On the shell
+      // path that is the shell, not the app, so this process must not claim
+      // the app exited cleanly — and must not exit yet either.
+      log(
+        `the start command itself was ended by ${sig}; waiting for its process ` +
+          `group, and reporting ${String(status)} because this process cannot see the application's own exit status`,
+      );
+    }
+    waitForGroup(child.pid, status);
+  });
+}
+
+/**
+ * PID 1 exiting kills everything left in the container, so a drain that
+ * outlives the direct child must outlive this process too. `kill(-pgid, 0)`
+ * sends no signal; it throws ESRCH exactly when the group is empty.
+ */
+function waitForGroup(pgid, status) {
+  const deadline = Date.now() + GROUP_DRAIN_MS;
+  const poll = () => {
+    try {
+      process.kill(-pgid, 0);
+    } catch {
+      return void process.exit(status);
+    }
+    if (Date.now() >= deadline) {
+      log(
+        `process group ${String(pgid)} still alive after ${String(GROUP_DRAIN_MS)}ms, exiting anyway`,
+      );
+      return void process.exit(status);
+    }
+    setTimeout(poll, 100);
+  };
+  poll();
 }
 
 // --- PLACEHOLDER MODE -------------------------------------------------------
