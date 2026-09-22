@@ -43,14 +43,14 @@
  * -------------------------------------------------------------------
  *   * SIGTERM: stop accepting new work, let in-flight work finish, exit 0.
  *     `docker stop` sends SIGTERM and waits `stop_grace_period` before
- *     SIGKILL. THAT IS NOT ONE NUMBER ACROSS THESE FIVE IMAGES, and the
- *     wording here used to say it was (T-151 rework 1 correction, tech-lead
- *     TL-1): docker/compose.yml declares `stop_grace_period: 30s` for `core`,
- *     `worker` and `safety-gw`, and declares NONE for `web` and `admin`,
- *     which therefore get compose's 10 s default; compose.verify.yml
- *     overrides neither. A process that ignores SIGTERM drops every in-flight
- *     request at deploy time — and on `web`/`admin` it has a third of the
- *     time to stop doing so.
+ *     SIGKILL. docker/compose.yml declares `stop_grace_period: 30s` for all
+ *     five application services (`web` and `admin` since T-179; before that
+ *     they declared none and took compose's 10 s default — tech-lead TL-1 on
+ *     T-151). That is not a coincidence to preserve by hand:
+ *     gate:app-images §7 refuses any APPLICATION service — derived, not
+ *     listed — whose grace, in any composed file, is below GROUP_DRAIN_MS
+ *     (read from THIS file) plus a 5 s exit margin. A process that ignores
+ *     SIGTERM drops every in-flight request at deploy time.
  *   * The process must be PID 1's own child or PID 1 itself: a shell-form CMD
  *     puts /bin/sh at PID 1, and sh does not forward signals to its child.
  *     This file is exec'd directly for that reason.
@@ -102,10 +102,12 @@
  *     `kill(-pgid, 0)` still SUCCEEDS on a zombie, and waitForGroup below
  *     therefore polls the full GROUP_DRAIN_MS and exits 128+signum. So a
  *     CLEAN drain behind a true compound script costs 25 s and reports 143
- *     every time. It is inside the 30 s stop_grace_period that `core`,
- *     `worker` and `safety-gw` declare, with 5 s to spare — and OUTSIDE the
- *     10 s that `web` and `admin` get, where docker's SIGKILL would land with
- *     this wait still polling (TL-1). The application does drain. Two bounds on
+ *     every time. It is inside the 30 s stop_grace_period all five
+ *     application services declare, with 5 s to spare, and gate:app-images §7
+ *     keeps it inside (T-179: it reads GROUP_DRAIN_MS from here, so raising the
+ *     wait without raising the graces reds the gate). The 143 is still a false
+ *     crash signal; being inside the grace only means it is not ALSO a SIGKILL.
+ *     The application does drain. Two bounds on
  *     how far that reaches: no app in this repository declares a compound
  *     start script, and `VAR=value cmd args` is NOT one — ash execs that, so
  *     the direct child IS the application, its exit status is the
@@ -162,21 +164,22 @@ const SIMPLE_COMMAND = /^[A-Za-z0-9_@.:/+,-]+(?: [A-Za-z0-9_@.:/+=,-]+)*$/;
 /** How long to wait for the child's process group to empty after forwarding a
  *  signal.
  *
- *  IT IS NOT INSIDE EVERY APP SERVICE'S GRACE PERIOD, and the sentence that
- *  stood here said it was — false for two of the five images (T-151 rework 1
- *  correction, tech-lead TL-1, measured from docker/compose.yml):
+ *  EVERY APPLICATION SERVICE'S GRACE IS HELD ABOVE THIS NUMBER, BY A GATE THAT
+ *  READS IT FROM HERE (T-179). gate:app-images §7 parses the one
+ *  `const GROUP_DRAIN_MS = <literal>;` line below and refuses any application
+ *  service — derived from apps/*, the built-by label, every application build
+ *  and every service running one of their images, never a hand list — whose
+ *  stop_grace_period in any composed file is below this + 5000 ms. At T-179:
  *
- *      core 30s    worker 30s    safety-gw 30s    web (none)    admin (none)
+ *      core 30s    worker 30s    safety-gw 30s    web 30s    admin 30s
  *
- *  so `web` and `admin` take compose's 10 s default, and compose.verify.yml
- *  overrides neither. This wait is therefore inside the grace of the services
- *  that DECLARE one, with 5 s to spare, and outside the 10 s the other two
- *  get. It is only ever reached on the `/bin/sh -c` path where ash did not
- *  exec (see the header) — not the shape `web`/`admin` are likeliest to
- *  write — but the number is not a universal reassurance and must not be read
- *  as one. scripts/verify/sigterm-drain.sh reads each container's real
- *  StopTimeout and falls back to 10, and assertion D judges against that
- *  number rather than against 30. */
+ *  (at main 39f01f2 `web` and `admin` declared none and took compose's 10 s
+ *  default — tech-lead TL-1 on T-151). So: RAISE THIS AND THE GATE GOES RED
+ *  until the graces move with it (negative case 148); write it as anything
+ *  but one numeric literal and the gate refuses to guess (case 151). It is
+ *  only ever reached on the `/bin/sh -c` path where ash did not exec (see the
+ *  header). scripts/verify/sigterm-drain.sh reads each container's real
+ *  StopTimeout, and assertion D judges against that number. */
 const GROUP_DRAIN_MS = 25_000;
 
 // --- MODE SELECTION ---------------------------------------------------------

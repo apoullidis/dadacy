@@ -18,6 +18,9 @@ DF=docker/app.Dockerfile
 BK="$(mktemp -d)"
 PGDF=docker/postgres.Dockerfile
 cp "$VERIFY" "$BK/verify"; cp "$CHAOS" "$BK/chaos"; cp "$BASE" "$BK/base"; cp "$DEV" "$BK/dev"; cp "$DF" "$BK/df"; cp "$PGDF" "$BK/pgdf"; cp scripts/svc "$BK/svc"; cp apps/core/package.json "$BK/corepkg"; cp apps/safety-gw/package.json "$BK/sgwpkg"
+# T-179: the stop-grace rule (§7) reads GROUP_DRAIN_MS out of the shipping entrypoint, so cases 148-151 mutate it.
+ENTRY=docker/app-runtime/entrypoint.mjs
+cp "$ENTRY" "$BK/entry"
 
 # T-156 (decisions.md OD-119) — WHAT THIS SUITE MAY DELETE, AND THE PROOF THAT
 # IT MAY.
@@ -122,7 +125,7 @@ TREE_PREV="$TREE0"
 leaks=0
 
 restore() {
-  cp "$BK/verify" "$VERIFY"; cp "$BK/chaos" "$CHAOS"; cp "$BK/base" "$BASE"; cp "$BK/dev" "$DEV"; cp "$BK/df" "$DF"; cp "$BK/pgdf" "$PGDF"; cp "$BK/svc" scripts/svc; cp "$BK/corepkg" apps/core/package.json
+  cp "$BK/verify" "$VERIFY"; cp "$BK/chaos" "$CHAOS"; cp "$BK/base" "$BASE"; cp "$BK/dev" "$DEV"; cp "$BK/df" "$DF"; cp "$BK/pgdf" "$PGDF"; cp "$BK/svc" scripts/svc; cp "$BK/corepkg" apps/core/package.json; cp "$BK/entry" "$ENTRY"
   rm -rf -- "${PLANTED[@]}"
   [[ -f "$BK/sgwpkg" ]] && cp "$BK/sgwpkg" apps/safety-gw/package.json
   return 0
@@ -1253,12 +1256,18 @@ mk_qa_x && mut "$BASE" '  valkey:
 # 87. The overlay build without the label. GREEN, and correctly: nothing needs
 #     the label to reach this build — the image contract reads it through the
 #     derived Dockerfile set and the universal reads it through apps/*.
+#     T-179: the plant now carries `stop_grace_period: 30s`. It is an application
+#     service added by this overlay, so §7 requires the grace in this file, and
+#     without it this control went red for a reason unrelated to what it is
+#     about (measured: `!! 87 … FAIL (expected PASS)`). Case 147 is this plant
+#     WITHOUT the line, expected FAIL. Name, class and expectation unchanged.
 mk_qa_x && mut "$VERIFY" 'services:' 'services:
   qa-x:
     image: kinvara/qa-x:dev
     networks: [kinvara-int]
     mem_limit: 128m
     cpus: 0.25
+    stop_grace_period: 30s
     build:
       context: ..
       dockerfile: docker/app.Dockerfile
@@ -1590,6 +1599,110 @@ mk_single && mut "$CHAOS" 'services: {}' "services:
       io.kinvara.qa: probe # T-131 rework probe${CR}  safety-gw:${CR}    build:${CR}      context: ..${CR}      dockerfile: docker/rogue-single.Dockerfile" \
   && sep_landed "$CHAOS" "$CR" \
   && run_case "143 OD-45: a lone CR hides a build: in compose.chaos.yml" FAIL "a LONE CR"
+
+echo; echo "=== cases 144-155 (T-179, TL-1 on T-151): every APPLICATION service's stop_grace_period covers PID 1's group wait, READ from entrypoint.mjs (§7) ==="
+# At main 39f01f2 `web` and `admin` declared no stop_grace_period, took compose's
+# 10 s default, and entrypoint.mjs may wait GROUP_DRAIN_MS = 25 s for the app's
+# process group after SIGTERM — so a clean drain on the shell path would be
+# SIGKILLed and report 143, with this gate green. The rule is a RELATIONSHIP
+# (grace >= GROUP_DRAIN_MS + 5 s), the wait is read from the shipping file, and
+# which services are "application services" is derived, never listed. These
+# cases attack each of those three separately; the controls prove each plant is
+# otherwise clean, so a red is the grace rule and nothing else.
+GRACE_LINES="    # PID 1 may wait GROUP_DRAIN_MS for the app's process group after SIGTERM;
+    # gate:app-images §7 holds this above that wait, read from entrypoint.mjs (T-179).
+    stop_grace_period: 30s
+"
+WEB_TAIL="      - '3001'
+    environment:
+      NODE_ENV: \${NODE_ENV:-development}
+      CORE_BASE_URL: \${CORE_BASE_URL:-http://core:3000}
+    mem_limit: 768m
+    cpus: 1.5
+"
+DRAIN_LINE='const GROUP_DRAIN_MS = 25_000;'
+SGW_HEAD='  safety-gw:
+    image: kinvara/safety-gw:dev'
+REPLICA='  worker-2:
+    image: kinvara/worker:dev
+    profiles: [worker]
+    networks: [kinvara-int]
+    mem_limit: 512m
+    cpus: 1.0
+'
+WEB_VERIFY="        APP: web
+        APP_KIND: http
+        APP_PORT: '3001'
+    pull_policy: build"
+# 144. TL-1 itself: web's line removed.
+mut "$BASE" "$WEB_TAIL$GRACE_LINES" "$WEB_TAIL" \
+  && run_case "144 web's stop_grace_period removed (TL-1)" FAIL "'web' (contract-set+app-build+runs kinvara/web:dev) declares no stop_grace_period"
+# 145. A SIXTH application service no hand list would name: a second worker
+#      container running kinvara/worker:dev — no label, no build, no apps/ dir.
+#      It runs the same PID 1 and the same wait. Caught by derivation (c).
+mut "$BASE" "$SGW_HEAD" "$REPLICA$SGW_HEAD" \
+  && run_case "145 a SIXTH service running kinvara/worker:dev, no grace" FAIL "'worker-2' (runs kinvara/worker:dev) declares no stop_grace_period"
+# 146. THE CONTROL for 145: the same plant with the grace declared is green, so
+#      145's red is the grace rule and not some other rule the replica trips.
+mut "$BASE" "$SGW_HEAD" "$REPLICA    stop_grace_period: 30s
+$SGW_HEAD" \
+  && run_case "146 the same sixth service WITH 30s (must stay green)" PASS
+# 147. A SIXTH application, declared only by a --verify build (case 87's plant,
+#      minus the grace). The base file never names it, so the file that adds it
+#      must declare the grace itself. Caught by derivations (a) and (b).
+mk_qa_x && mut "$VERIFY" 'services:' 'services:
+  qa-x:
+    image: kinvara/qa-x:dev
+    networks: [kinvara-int]
+    mem_limit: 128m
+    cpus: 0.25
+    build:
+      context: ..
+      dockerfile: docker/app.Dockerfile
+      target: runtime
+      args:
+        NODE_VERSION: ${KINVARA_NODE_VERSION:?derived from .tool-versions by scripts/svc}
+        PNPM_VERSION: ${KINVARA_PNPM_VERSION:?derived from .tool-versions by scripts/svc}
+        APP: qa-x
+    pull_policy: build' \
+  && run_case "147 a SIXTH app added by the verify overlay, no grace" FAIL "docker/compose.verify.yml: application service 'qa-x'"
+# 148. The wait RAISED past the declared grace. A literal 30s checked against a
+#      literal 30s would stay green here; the floor is read from this file.
+mut "$ENTRY" "$DRAIN_LINE" 'const GROUP_DRAIN_MS = 35_000;' \
+  && run_case "148 GROUP_DRAIN_MS raised to 35_000" FAIL "declares stop_grace_period 30s, BELOW the floor of 40000 ms"
+# 149. The boundary: one millisecond more wait eats into the 5 s exit margin.
+mut "$ENTRY" "$DRAIN_LINE" 'const GROUP_DRAIN_MS = 25_001;' \
+  && run_case "149 GROUP_DRAIN_MS 25_001 (the margin is a floor)" FAIL "BELOW the floor of 30001 ms"
+# 150. THE CONTROL: a SHORTER wait needs no change to any grace.
+mut "$ENTRY" "$DRAIN_LINE" 'const GROUP_DRAIN_MS = 20_000;' \
+  && run_case "150 GROUP_DRAIN_MS lowered to 20_000 (must stay green)" PASS
+# 151. The wait spelled as an expression: REFUSED, not evaluated and not
+#      skipped — a reader that silently found no number would check nothing.
+mut "$ENTRY" "$DRAIN_LINE" 'const GROUP_DRAIN_MS = 25 * 1000;' \
+  && run_case "151 GROUP_DRAIN_MS as an expression" FAIL "is not a single numeric literal"
+# 152. An OVERLAY lowering it: --verify gives web 10s. The base is fine; the
+#      project that applies the overlay is not.
+mut "$VERIFY" "$WEB_VERIFY" "$WEB_VERIFY
+    stop_grace_period: 10s" \
+  && run_case "152 the verify overlay lowers web to 10s" FAIL "docker/compose.verify.yml: application service 'web'"
+# 153. THE CONTROL: an overlay RAISING it is allowed.
+mut "$VERIFY" "$WEB_VERIFY" "$WEB_VERIFY
+    stop_grace_period: 1m" \
+  && run_case "153 the verify overlay raises web to 1m (must stay green)" PASS
+# 154. A unit-less value. `docker compose config` refuses it ("missing unit in
+#      duration", measured in T-179 § Evidence); the gate refuses rather than
+#      reading 30 as seconds.
+mut "$BASE" "$WEB_TAIL$GRACE_LINES" "$WEB_TAIL    stop_grace_period: '30'
+" \
+  && run_case "154 web's grace written '30' (no unit)" FAIL "not a non-negative compose duration"
+# 155. ANTI-VACUITY (PROTOCOL §5.1): if the derivation matched ZERO application
+#      services, the rule would pass while asserting nothing. Every composed file
+#      stripped of every application service: the rule must SAY it judged none.
+#      (Other rules fail here too; the reason asserts THIS one's message.)
+printf 'services:\n  qa-nonapp:\n    image: busybox:1\n    networks: [kinvara-int]\n    mem_limit: 64m\n    cpus: 0.25\nnetworks:\n  kinvara-int:\n    internal: true\n' > "$BASE" \
+  && printf 'services: {}\n' > "$VERIFY" && printf 'services: {}\n' > "$DEV" \
+  && landed grep -q qa-nonapp "$BASE" \
+  && run_case "155 zero application services composed anywhere" FAIL "judged ZERO application services"
 
 echo
 run_case "99 tree restored" PASS

@@ -481,6 +481,9 @@ services:
       CORE_BASE_URL: ${CORE_BASE_URL:-http://core:3000}
     mem_limit: 768m
     cpus: 1.5
+    # PID 1 may wait GROUP_DRAIN_MS for the app's process group after SIGTERM;
+    # gate:app-images §7 holds this above that wait, read from entrypoint.mjs (T-179).
+    stop_grace_period: 30s
 
   admin:
     image: kinvara/admin:dev
@@ -499,3 +502,6 @@ services:
       CORE_BASE_URL: ${CORE_BASE_URL:-http://core:3000}
     mem_limit: 768m
     cpus: 1.5
+    # PID 1 may wait GROUP_DRAIN_MS for the app's process group after SIGTERM;
+    # gate:app-images §7 holds this above that wait, read from entrypoint.mjs (T-179).
+    stop_grace_period: 30s

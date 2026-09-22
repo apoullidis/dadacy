@@ -136,7 +136,10 @@ const SUITES: readonly Suite[] = [
   {
     id: 'app-images',
     file: 'scripts/negative-tests/app-images.sh',
-    cases: 136,
+    // 136 -> 148, 2026-09-22, T-179: twelve cases (144-155) for gate:app-images
+    // §7, the stop-grace rule. No case removed, renamed or re-classed; case 87's
+    // PLANT gained one line (stop_grace_period) — T-179 § Evidence.
+    cases: 148,
     state: 'GREEN',
     why: 'gate:app-images: every Dockerfile an overlay service builds, plus the suite’s own working-tree verdict (T-035, T-036, T-156)',
   },

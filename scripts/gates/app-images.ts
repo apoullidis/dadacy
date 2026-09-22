@@ -1362,6 +1362,263 @@ for (const [rel, users] of [...dockerfilesInUse].sort(([a], [b]) => a.localeComp
   }
 }
 
+// ---------------------------------------------------------------------------
+// 7. EVERY APPLICATION SERVICE'S stop_grace_period COVERS PID 1'S GROUP WAIT
+//    (T-179, from tech-lead's TL-1 on T-151).
+//
+//    THE PROPERTY IS A RELATIONSHIP BETWEEN TWO FILES, NOT A NUMBER IN ONE.
+//    `docker/app-runtime/entrypoint.mjs` is PID 1 in every image
+//    `docker/app.Dockerfile` builds, and after forwarding SIGTERM it may wait
+//    up to GROUP_DRAIN_MS for the application's process group to empty
+//    (`waitForGroup`). Docker SIGKILLs the container `stop_grace_period` after
+//    the SIGTERM. If the grace is not longer than the wait, a drain that is
+//    still inside the wait is killed, and the container reports 143 — a FALSE
+//    CRASH SIGNAL to compose, T-003's ECS health and T-009's paging (OD-196).
+//    At main 39f01f2 `web` and `admin` declared no grace at all, so they took
+//    compose's 10 s default against a 25 s wait: 15 s short, with this gate
+//    green.
+//
+//    So the floor is READ, not restated: GROUP_DRAIN_MS is parsed out of the
+//    shipping entrypoint, and raising it past a declared grace reds this gate
+//    (case 147). A literal `30s` checked against a literal `30s` would stay
+//    green the day someone raised the wait. The two numbers now live in two
+//    files owned for two different reasons, which is PROTOCOL §5.1's "anchor
+//    one of them outside".
+//
+//    EXIT_MARGIN_MS IS A CHOSEN FLOOR, NOT A MEASUREMENT. What the mechanism
+//    strictly needs past the wait is one poll (100 ms) and a process exit.
+//    5 s is the headroom T-151 § contract §2 already published ("inside the
+//    30 s grace, with 5 s to spare"); holding it as a floor keeps that sentence
+//    true by construction instead of by coincidence. Lowering it is a decision
+//    to make in this file, in review — not a thing an edit elsewhere does.
+//
+//    WHICH SERVICES ARE "APPLICATION SERVICES" IS DERIVED, NEVER LISTED — a
+//    hand list of five names is T-005's Deviation 6, and a sixth service would
+//    silently take 10 s. A service is held to this rule when ANY of these holds,
+//    in ANY composed file (the OD-37 set, from scripts/svc):
+//      (a) it is in the image-contract set above (`protectedServices`: an
+//          apps/* directory, anchored outside docker/ per OD-38, or the
+//          io.kinvara.built-by label);
+//      (b) some composed file declares an APPLICATION BUILD for it (the same
+//          `isApplicationBuild` §2 uses — pnpm workspace or an APP arg), i.e.
+//          it is built from the application Dockerfile and so runs this
+//          entrypoint;
+//      (c) its `image:` is one that a service in (a) or (b) declares — a
+//          second container running `kinvara/worker:dev` runs the same PID 1
+//          and has the same wait, whether or not anybody labelled it (case 145).
+//    Services outside all three are NOT held to it, deliberately: postgres
+//    (10s), valkey, fake-telephony and hibp-fake (5s) declare short graces on
+//    purpose and run no entrypoint.mjs. Nothing names them here.
+//
+//    OVER-APPROXIMATION, stated: a service that runs an application image for
+//    some other purpose (a one-shot migrator, say) is held to the floor too.
+//    That is visible and arguable; the other direction is silent.
+//
+//    HOW THE EFFECTIVE GRACE IS JUDGED ACROSS FILES. Compose merges the base
+//    file with whichever overlays a project gets, and an overlay can be applied
+//    without any other. So: (i) every declaration of `stop_grace_period` for an
+//    application service, in EVERY composed file, must meet the floor — an
+//    overlay may raise it, never lower it; and (ii) a service the base file
+//    declares must declare it THERE (the base is always applied), while a
+//    service the base does not declare must declare it in EVERY file that adds
+//    it, because each of those can be the only one applied.
+//
+//    WHAT IS NOT CLAIMED. That docker enforces what compose resolves: this gate
+//    reads source and starts nothing. Compose's own resolution was measured
+//    against this parser in state/EP-1/T-179.md (`docker compose config`, no
+//    container). Docker's StopTimeout is whole seconds, so the declared value is
+//    FLOORED to a whole second before comparing — the conservative direction
+//    whether compose truncates or rounds. A GROUP_DRAIN_MS spelled as anything
+//    but one numeric literal on one `const` line is REFUSED, not guessed at
+//    (case 148). A second, differently named constant doing the same job is a
+//    construction this gate does not model.
+// ---------------------------------------------------------------------------
+const ENTRYPOINT_FILE = 'docker/app-runtime/entrypoint.mjs';
+const EXIT_MARGIN_MS = 5_000;
+let groupDrainMs: number | null = null;
+let groupDrainAt = '';
+{
+  const text = read(ENTRYPOINT_FILE);
+  if (text === null) {
+    failures.push(
+      `${ENTRYPOINT_FILE} does not exist, so the stop-grace rule (§7) cannot read ` +
+        `GROUP_DRAIN_MS — the wait every application service's grace must cover. Refusing ` +
+        `rather than checking the graces against a number this gate made up.`,
+    );
+  } else {
+    const lines = text.split('\n');
+    const hits: { readonly line: number; readonly rhs: string }[] = [];
+    lines.forEach((l, i) => {
+      const m = /^[ \t]*const[ \t]+GROUP_DRAIN_MS[ \t]*=[ \t]*([^;]*);/.exec(l);
+      if (m) hits.push({ line: i + 1, rhs: (m[1] ?? '').trim() });
+    });
+    const hit = hits[0];
+    if (hits.length !== 1 || hit === undefined) {
+      failures.push(
+        `${ENTRYPOINT_FILE}: expected exactly ONE 'const GROUP_DRAIN_MS = <number>;' line ` +
+          `and found ${String(hits.length)}. The stop-grace rule (§7) reads the group wait ` +
+          `from there; it will not pick one of several, or check against none.`,
+      );
+    } else if (!/^\d[\d_]*$/.test(hit.rhs)) {
+      failures.push(
+        `${ENTRYPOINT_FILE}:${String(hit.line)}: GROUP_DRAIN_MS = ${hit.rhs} is not a single ` +
+          `numeric literal, so the stop-grace rule (§7) cannot read the group wait. Write it ` +
+          `as one literal (e.g. 25_000); an expression is refused rather than evaluated.`,
+      );
+    } else {
+      groupDrainMs = Number(hit.rhs.replaceAll('_', ''));
+      groupDrainAt = `${ENTRYPOINT_FILE}:${String(hit.line)}`;
+    }
+  }
+}
+const graceFloorMs = groupDrainMs === null ? null : groupDrainMs + EXIT_MARGIN_MS;
+
+/**
+ * A compose duration in milliseconds, following Go's time.ParseDuration, which
+ * is what compose uses. `docker compose config` REFUSES a bare number ("must be
+ * a string") and a unit-less string ("missing unit in duration"), measured in
+ * state/EP-1/T-179.md — so both are refused here too, never read as seconds.
+ */
+const DURATION_UNIT_MS: Readonly<Record<string, number>> = {
+  ns: 1e-6,
+  us: 1e-3,
+  µs: 1e-3,
+  μs: 1e-3,
+  ms: 1,
+  s: 1_000,
+  m: 60_000,
+  h: 3_600_000,
+};
+const parseDurationMs = (v: unknown): number | null => {
+  if (typeof v !== 'string') return null;
+  const s = v.trim();
+  if (s === '0') return 0;
+  if (!/^\+?(?:(?:\d+(?:\.\d*)?|\.\d+)(?:ns|us|µs|μs|ms|s|m|h))+$/.test(s)) return null;
+  let total = 0;
+  for (const m of s.matchAll(/(\d+(?:\.\d*)?|\.\d+)(ns|us|µs|μs|ms|s|m|h)/g)) {
+    total += Number(m[1]) * (DURATION_UNIT_MS[m[2] ?? ''] ?? Number.NaN);
+  }
+  return Number.isFinite(total) ? total : null;
+};
+
+/** file -> its parsed services, for every composed file that parsed. */
+const composedServices: {
+  readonly rel: string;
+  readonly svcs: Record<string, Record<string, unknown>>;
+}[] = [];
+for (const f of composed.files) {
+  const svcs = servicesOf(f.rel);
+  if (svcs !== null) composedServices.push({ rel: f.rel, svcs });
+}
+const imageOf = (svcs: Record<string, Record<string, unknown>>, name: string): string | null => {
+  const own = svcs[name]?.['image'];
+  if (typeof own === 'string' && own.trim() !== '') return own.trim();
+  const fromBase = base?.[name]?.['image'];
+  return typeof fromBase === 'string' && fromBase.trim() !== '' ? fromBase.trim() : null;
+};
+/** service -> why it is an application service (the derivation, printed). */
+const graceWhy = new Map<string, Set<string>>();
+const markApp = (name: string, why: string): void => {
+  graceWhy.set(name, (graceWhy.get(name) ?? new Set<string>()).add(why));
+};
+const appImages = new Set<string>();
+for (const { svcs } of composedServices) {
+  for (const name of Object.keys(svcs)) {
+    if (protectedServices.has(name)) {
+      markApp(name, 'contract-set');
+      const img = imageOf(svcs, name);
+      if (img !== null) appImages.add(img);
+    }
+  }
+}
+for (const u of buildUses) {
+  markApp(u.service, 'app-build');
+  const svcs = composedServices.find((c) => c.rel === u.file)?.svcs;
+  const img = svcs === undefined ? null : imageOf(svcs, u.service);
+  if (img !== null) appImages.add(img);
+}
+for (const { svcs } of composedServices) {
+  for (const name of Object.keys(svcs)) {
+    const img = imageOf(svcs, name);
+    if (img !== null && appImages.has(img)) markApp(name, `runs ${img}`);
+  }
+}
+
+/** Printed per service: `<file>=<declared>` for every file that declares one. */
+const graceSeen: string[] = [];
+for (const name of [...graceWhy.keys()].sort()) {
+  const why = [...(graceWhy.get(name) ?? [])].join('+');
+  const declaring = composedServices.filter((c) => c.svcs[name] !== undefined);
+  const inBase = base?.[name] !== undefined;
+  const mustDeclare = inBase ? declaring.filter((c) => c.rel === BASE_FILE) : declaring;
+  const seen: string[] = [];
+  for (const { rel, svcs } of declaring) {
+    const svc = svcs[name];
+    if (svc === undefined) continue;
+    const raw = svc['stop_grace_period'];
+    if (raw === undefined) {
+      if (mustDeclare.some((c) => c.rel === rel)) {
+        failures.push(
+          `${rel}: application service '${name}' (${why}) declares no stop_grace_period, ` +
+            `so it takes compose's 10 s default. Its PID 1 is ${ENTRYPOINT_FILE}, which may ` +
+            `wait GROUP_DRAIN_MS${groupDrainMs === null ? '' : ` = ${String(groupDrainMs)} ms`} ` +
+            `for the app's process group after SIGTERM; docker's SIGKILL would land inside ` +
+            `that wait and the container would report 143 for a clean drain (T-179, TL-1). ` +
+            `Declare stop_grace_period${graceFloorMs === null ? '' : ` of at least ${String(Math.ceil(graceFloorMs / 1000))}s`} ` +
+            `${inBase ? `in ${BASE_FILE}, which every project applies` : `in ${rel}, which adds this service and may be the only file that does`}.`,
+        );
+      }
+      continue;
+    }
+    const ms = parseDurationMs(raw);
+    seen.push(`${rel.replace('docker/', '')}=${String(raw)}`);
+    if (ms === null || ms < 0) {
+      failures.push(
+        `${rel}: application service '${name}' declares stop_grace_period ` +
+          `${JSON.stringify(raw)}, which is not a non-negative compose duration ` +
+          `(a string such as '30s' or '1m' — compose refuses a bare number and a unit-less ` +
+          `string). The stop-grace rule (§7) refuses rather than guessing a unit.`,
+      );
+      continue;
+    }
+    if (graceFloorMs === null) continue; // the unreadable wait is already a failure
+    const wholeSecondsMs = Math.floor(ms / 1000) * 1000;
+    if (wholeSecondsMs < graceFloorMs) {
+      failures.push(
+        `${rel}: application service '${name}' (${why}) declares stop_grace_period ` +
+          `${String(raw)}, BELOW the floor of ${String(graceFloorMs)} ms = GROUP_DRAIN_MS ` +
+          `${String(groupDrainMs)} ms (${groupDrainAt}) + ${String(EXIT_MARGIN_MS)} ms exit ` +
+          `margin. docker's SIGKILL would land inside PID 1's group wait, and a clean drain ` +
+          `would report 143 (T-179, TL-1). Raise the grace, or lower the wait, in the same ` +
+          `change.` +
+          (wholeSecondsMs !== ms
+            ? ` (Judged as ${String(wholeSecondsMs / 1000)} s: docker's StopTimeout is whole seconds.)`
+            : ''),
+      );
+    }
+  }
+  graceSeen.push(`${name}[${why}; ${seen.length === 0 ? 'none declared' : seen.join(' ')}]`);
+}
+if (graceWhy.size === 0) {
+  failures.push(
+    `the stop-grace rule (§7) judged ZERO application services. It derives them from ` +
+      `apps/*, the built-by label, every application build and every service running one of ` +
+      `their images, over every composed file — and found none, so it would report a pass ` +
+      `while asserting nothing (PROTOCOL §5.1).`,
+  );
+}
+
+console.log(
+  `  stop_grace_period floor (§7)    ` +
+    (graceFloorMs === null
+      ? '(unreadable — see the failure above)'
+      : `${String(graceFloorMs)} ms = GROUP_DRAIN_MS ${String(groupDrainMs)} ms read from ${groupDrainAt} + ${String(EXIT_MARGIN_MS)} ms exit margin`),
+);
+console.log(
+  `  app services held to it (§7)    ${String(graceWhy.size)}: ${graceSeen.join(' ')}` +
+    `  (derived: contract-set = apps/* ∪ built-by label; app-build; runs <an app image> — T-179)`,
+);
+
 console.log(
   `  pins (from .tool-versions)      ` +
     [...pinValues].map(([arg, v]) => `${arg}=${v}`).join('  ') +
