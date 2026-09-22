@@ -160,7 +160,7 @@ const SUITES: readonly Suite[] = [
     file: 'scripts/negative-tests/entrypoint-lifecycle.sh',
     cases: 6,
     state: 'GREEN',
-    why: "PID 1's group-drain deadline counts from the FIRST forwarded signal, a second signal does not move it, and with NO signal forwarded PID 1 exits at once with the app's status (T-180, TL-A1 on T-179)",
+    why: "PID 1's group-drain deadline counts from the FIRST forwarded signal, a second signal does not move it, and with NO signal forwarded PID 1 exits at once with the app's exit code (T-180, TL-A1 on T-179)",
   },
   {
     id: 'otel-contract',

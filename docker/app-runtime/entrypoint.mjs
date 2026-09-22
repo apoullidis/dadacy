@@ -130,7 +130,11 @@
  *     the full wait runs ON THE ARGV PATH too, with no shell anywhere. Since
  *     T-180 that wait also ends at first-signal + GROUP_DRAIN_MS, so it is
  *     inside the grace however long the app drained, and on this path the
- *     status reported is the application's own (it is the direct child).
+ *     status reported is the application's EXIT CODE (it is the direct
+ *     child) — but a death by a signal is mapped, not passed through: 143 for
+ *     SIGTERM and 130 for every other signal, so an app SIGKILLed or SIGSEGVed
+ *     mid-drain reports 130 (qa-verification on T-180, both paths; see WHAT
+ *     THIS PROCESS CAN AND CANNOT REPORT below).
  *     Before T-180 the wait started when the APP exited, and an 8 s drain
  *     was SIGKILLed (137) at the 30 s grace after every process had logged a
  *     clean exit. Both readings, red at main 36a41d1 and green after, in the
