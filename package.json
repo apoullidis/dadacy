@@ -43,7 +43,7 @@
     "gate:supply-chain": "node scripts/gates/supply-chain.ts",
     "gate:workflow": "node scripts/gates/workflow.ts",
     "gate:pr-gate-suite": "node scripts/gates/pr-gate-suite.ts",
-    "gate:drizzle-parity": "node scripts/gates/not-yet-supplied.ts gate:drizzle-parity",
+    "gate:drizzle-parity": "node scripts/gates/drizzle-parity.ts",
     "gate:locale-completeness": "node packages/i18n/tools/locale-completeness.ts",
     "gate:prohibited-claims": "node scripts/gates/not-yet-supplied.ts gate:prohibited-claims",
     "gate:safety-review-currency": "node packages/i18n/tools/safety-review-currency.ts",
@@ -51,7 +51,11 @@
     "gate:sms-segments": "node packages/i18n/tools/sms-segments.ts",
     "gate:pii-canary": "node scripts/gates/not-yet-supplied.ts gate:pii-canary",
     "gate:pr": "node scripts/gates/pr.ts",
-    "gate:heavy": "node scripts/gates/not-yet-supplied.ts gate:heavy"
+    "gate:lighthouse": "node scripts/gates/not-yet-supplied.ts gate:lighthouse",
+    "gate:axe": "node scripts/gates/not-yet-supplied.ts gate:axe",
+    "gate:playwright-journeys": "node scripts/gates/not-yet-supplied.ts gate:playwright-journeys",
+    "gate:db-introspect-suite": "node scripts/gates/db-introspect-suite.ts",
+    "gate:heavy": "node scripts/gates/heavy.ts"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
