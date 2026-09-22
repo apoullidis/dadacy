@@ -42,9 +42,15 @@
  * THE LIFECYCLE CONTRACT — what a real `start` script must also honour
  * -------------------------------------------------------------------
  *   * SIGTERM: stop accepting new work, let in-flight work finish, exit 0.
- *     `docker stop` sends SIGTERM and waits `stop_grace_period` (30s for the
- *     app services) before SIGKILL. A process that ignores SIGTERM drops
- *     every in-flight request at deploy time.
+ *     `docker stop` sends SIGTERM and waits `stop_grace_period` before
+ *     SIGKILL. THAT IS NOT ONE NUMBER ACROSS THESE FIVE IMAGES, and the
+ *     wording here used to say it was (T-151 rework 1 correction, tech-lead
+ *     TL-1): docker/compose.yml declares `stop_grace_period: 30s` for `core`,
+ *     `worker` and `safety-gw`, and declares NONE for `web` and `admin`,
+ *     which therefore get compose's 10 s default; compose.verify.yml
+ *     overrides neither. A process that ignores SIGTERM drops every in-flight
+ *     request at deploy time — and on `web`/`admin` it has a third of the
+ *     time to stop doing so.
  *   * The process must be PID 1's own child or PID 1 itself: a shell-form CMD
  *     puts /bin/sh at PID 1, and sh does not forward signals to its child.
  *     This file is exec'd directly for that reason.
@@ -96,8 +102,10 @@
  *     `kill(-pgid, 0)` still SUCCEEDS on a zombie, and waitForGroup below
  *     therefore polls the full GROUP_DRAIN_MS and exits 128+signum. So a
  *     CLEAN drain behind a true compound script costs 25 s and reports 143
- *     every time. It is still 5 s inside the 30 s stop_grace_period, so
- *     docker never SIGKILLs it, and the application does drain. Two bounds on
+ *     every time. It is inside the 30 s stop_grace_period that `core`,
+ *     `worker` and `safety-gw` declare, with 5 s to spare — and OUTSIDE the
+ *     10 s that `web` and `admin` get, where docker's SIGKILL would land with
+ *     this wait still polling (TL-1). The application does drain. Two bounds on
  *     how far that reaches: no app in this repository declares a compound
  *     start script, and `VAR=value cmd args` is NOT one — ash execs that, so
  *     the direct child IS the application, its exit status is the
@@ -152,8 +160,23 @@ const log = (...a) => process.stderr.write(`[${APP}] ${a.join(' ')}\n`);
 const SIMPLE_COMMAND = /^[A-Za-z0-9_@.:/+,-]+(?: [A-Za-z0-9_@.:/+=,-]+)*$/;
 
 /** How long to wait for the child's process group to empty after forwarding a
- *  signal. Inside the 30 s `stop_grace_period` the app services declare in
- *  docker/compose.yml, so docker's SIGKILL is never what ends the wait. */
+ *  signal.
+ *
+ *  IT IS NOT INSIDE EVERY APP SERVICE'S GRACE PERIOD, and the sentence that
+ *  stood here said it was — false for two of the five images (T-151 rework 1
+ *  correction, tech-lead TL-1, measured from docker/compose.yml):
+ *
+ *      core 30s    worker 30s    safety-gw 30s    web (none)    admin (none)
+ *
+ *  so `web` and `admin` take compose's 10 s default, and compose.verify.yml
+ *  overrides neither. This wait is therefore inside the grace of the services
+ *  that DECLARE one, with 5 s to spare, and outside the 10 s the other two
+ *  get. It is only ever reached on the `/bin/sh -c` path where ash did not
+ *  exec (see the header) — not the shape `web`/`admin` are likeliest to
+ *  write — but the number is not a universal reassurance and must not be read
+ *  as one. scripts/verify/sigterm-drain.sh reads each container's real
+ *  StopTimeout and falls back to 10, and assertion D judges against that
+ *  number rather than against 30. */
 const GROUP_DRAIN_MS = 25_000;
 
 // --- MODE SELECTION ---------------------------------------------------------
