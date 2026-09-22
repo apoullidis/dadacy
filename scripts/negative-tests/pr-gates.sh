@@ -625,9 +625,9 @@ echo
 echo "=== F. gate:workflow — the mirrored, never-executed YAML ==="
 WF=.github/workflows/pr.yml
 wf() { node scripts/gates/workflow.ts; }
-# The `W7: 30 concrete` reason is not decoration: 30 is 26 blocking + 4 advisory
-# matrix values, so it is the assertion that BOTH `pnpm run ${{ matrix.gate }}`
-# steps were expanded and every value checked. Before rework 1 this number would
+# The `W7: 36 concrete` reason is not decoration: 36 is pr.yml's 26 blocking + 4
+# advisory matrix values plus heavy.yml's 3 + 3, so it is the assertion that ALL
+# FOUR `pnpm run ${{ matrix.gate }}` steps were expanded and every value checked. Before rework 1 this number would
 # have been 0 — W7's pattern excluded `$`, `{` and `}` and skipped both lines.
 # Like MIN_BLOCKING and CASES, it is a pin: raise it when the roster grows.
 # It was 22 blocking + 7 advisory until 2026-09-20, when T-042 supplied
@@ -641,9 +641,18 @@ wf() { node scripts/gates/workflow.ts; }
 # that moves the TOTAL — gate:otel-contract is an ADDITION, a new PROGRAMME
 # gate joining the blocking matrix without leaving the advisory one — so on
 # 2026-09-21 the pin itself went 29 -> 30.
+# T-006 moved it again, 30 -> 36, and for a THIRD reason: it added a SECOND
+# WORKFLOW FILE. .github/workflows/heavy.yml mirrors SD §QD-4's "PR (heavy)"
+# row (3 blocking + 3 advisory legs) and W7 reads every workflow file in the
+# directory, so its six matrix values are expanded and checked too. The PR
+# roster did NOT change size: gate:drizzle-parity stayed SERVICE, and what
+# changed is the banner it prints. Measured in both directions in
+# tasks/state/EP-1/T-006.md § Evidence 6 — at 36 a deleted heavy leg is caught;
+# at the stale 30 the same tree is MISBEHAVED for the wrong reason, which is
+# how a pin that is not moved stops meaning anything.
 CASE="F0"
 run_case "F0 CONTROL: pr.yml is structurally valid and mirrors the roster" PASS \
-  'GATE PASS' 'W7: 30 concrete' -- wf
+  'GATE PASS' 'W7: 36 concrete' -- wf
 
 CASE="F1"
 mut "$WF" '          - gate:unit-tests

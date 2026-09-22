@@ -81,17 +81,23 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm run ${{ matrix.gate }}
 
-  # Rostered gates that are NOT green, each with the ticket that owes it.
-  # `continue-on-error: true` mirrors the local aggregate exactly: `gate:pr`
-  # runs these, asserts they fail with the NOT YET SUPPLIED banner, and does not
-  # let their failure fail the stage — while FAILING if one of them starts
-  # passing without being promoted. They are listed, never omitted: "no gate
-  # silently absent, and no gate silently skipped."
+  # Rostered gates that are NOT green IN THIS STAGE, each with the ticket that
+  # owes it. `continue-on-error: true` mirrors the local aggregate exactly:
+  # `gate:pr` runs these, asserts each fails with ITS OWN banner — `GATE NOT YET
+  # SUPPLIED` for a PENDING hook, `GATE NEEDS A SERVICE` for a SERVICE gate
+  # (T-006 split the two) — and does not let their failure fail the stage, while
+  # FAILING if one of them starts passing without being promoted. They are
+  # listed, never omitted: "no gate silently absent, and no gate silently
+  # skipped."
   #
-  #   gate:drizzle-parity         SERVICE. Needs a database. In a real runner
-  #                               this job would carry a `services: postgres`
-  #                               block pinned to compose's image tag; locally
-  #                               it is gate:heavy's (T-006).
+  #   gate:drizzle-parity         SERVICE, and it is SUPPLIED — the difference
+  #                               from the three below. `pnpm gate:heavy`
+  #                               (T-006) runs it against a real database and
+  #                               .github/workflows/heavy.yml mirrors that job,
+  #                               with the `services: postgres` block a runner
+  #                               would need. It stays here, and stays red here,
+  #                               because THIS stage declares `svc: none` — that
+  #                               is structural and no ticket can pay it off.
   #   gate:prohibited-claims      T-043      gate:plural-completeness    T-045
   #   gate:pii-canary             T-119
   #

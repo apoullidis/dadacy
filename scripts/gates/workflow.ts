@@ -47,6 +47,14 @@
  *   W6  `fetch-depth: 0` on every `actions/checkout`. gate:migration-lint's
  *       R-TRAILER reads `merge-base..HEAD` (T-031 § contract; CONTRACTS.md
  *       addresses this to T-005 by name) and a shallow checkout breaks it.
+ *   W8  DIVERGENCE, both ways, against scripts/gates/lib/heavy-roster.ts, for
+ *       .github/workflows/heavy.yml — SD §QD-4's SECOND PR-stage row, which
+ *       `pnpm gate:heavy` runs (T-006). Same three readings as W4/W5: the
+ *       blocking job's `strategy.matrix.gate` array equals the heavy roster's
+ *       BLOCKING + BLOCKED names, the advisory job's its PENDING + SERVICE
+ *       names, and the class mirror holds. IT INHERITS W4's BOUND EXACTLY: it
+ *       compares those arrays and not the effective matrix, so an `include:`
+ *       leg is invisible to it (OD-173).
  *   W7  every `run:` step that invokes pnpm names a script that EXISTS in
  *       package.json — INCLUDING through a `${{ matrix.<key> }}` expression,
  *       which is expanded against that job's own `strategy.matrix.<key>` values
@@ -98,18 +106,28 @@
  *     gate a reader runs ALONE passes at zero coverage. The one-line floor
  *     belongs in this file and is T-174's, which already owns it by name.
  *   * NOT anything about `merge`, `production` or `migrations` stages of
- *     SD §QD-4. This gate covers the PR row and the files in .github/workflows;
- *     a second workflow file added later is parsed and structurally checked
- *     (W1, W2, W6, W7) but only pr.yml is held against the roster.
+ *     SD §QD-4. This gate covers SD's two PR-stage rows — pr.yml against
+ *     scripts/gates/lib/roster.ts (W4/W5) and heavy.yml against
+ *     scripts/gates/lib/heavy-roster.ts (W8). A THIRD workflow file added
+ *     later is parsed and structurally checked (W1, W2, W6, W7) and is held
+ *     against no roster; that bound is unchanged by T-006, only narrowed from
+ *     "a second workflow file" to "a third", because the second one now has a
+ *     roster of its own.
+ *   * NOT that the heavy stage's `services:` block or its Docker daemon would
+ *     work on a runner. W2 does not read `services:` at all. heavy.yml's own
+ *     header says what a runner would need; nothing here checks it, and
+ *     nothing could without running it.
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
 import { REPO_ROOT, finish } from './lib/run.ts';
 import { ROSTER } from './lib/roster.ts';
+import { HEAVY_ROSTER } from './lib/heavy-roster.ts';
 
 const DIR = '.github/workflows';
 const PR_FILE = 'pr.yml';
+const HEAVY_FILE = 'heavy.yml';
 const JOB_ID = /^[A-Za-z_][A-Za-z0-9_-]*$/;
 
 const failures: string[] = [];
@@ -306,8 +324,8 @@ if (prDoc === undefined) {
 }
 const prJobs = (prDoc['jobs'] ?? {}) as Record<string, Job>;
 
-function matrixGates(jobId: string): string[] | undefined {
-  const job = prJobs[jobId];
+function matrixGates(jobs: Record<string, Job>, jobId: string): string[] | undefined {
+  const job = jobs[jobId];
   const v = job?.strategy?.matrix?.['gate'];
   return Array.isArray(v) ? v.map((x) => String(x)) : undefined;
 }
@@ -319,10 +337,17 @@ const wantAdvisory = ROSTER.filter((e) => e.cls === 'PENDING' || e.cls === 'SERV
   (e) => e.name,
 );
 
-function compare(label: string, jobId: string, want: readonly string[]): void {
-  const got = matrixGates(jobId);
+function compare(
+  file: string,
+  jobs: Record<string, Job>,
+  label: string,
+  jobId: string,
+  want: readonly string[],
+): void {
+  const W = file === PR_FILE ? 'W4' : 'W8';
+  const got = matrixGates(jobs, jobId);
   if (got === undefined) {
-    failures.push(`W4 ${DIR}/${PR_FILE}: job \`${jobId}\` has no strategy.matrix.gate array`);
+    failures.push(`${W} ${DIR}/${file}: job \`${jobId}\` has no strategy.matrix.gate array`);
     return;
   }
   const missing = want.filter((n) => !got.includes(n));
@@ -330,45 +355,78 @@ function compare(label: string, jobId: string, want: readonly string[]): void {
   const dupes = got.filter((n, i) => got.indexOf(n) !== i);
   if (missing.length > 0) {
     failures.push(
-      `W4 ${label}: in the roster but NOT in ${DIR}/${PR_FILE} job \`${jobId}\`: ${missing.join(', ')}. ` +
+      `${W} ${label}: in the roster but NOT in ${DIR}/${file} job \`${jobId}\`: ${missing.join(', ')}. ` +
         'The workflow and the local aggregate have diverged — that is the divergence check T-005 ' +
         'is accepted on.',
     );
   }
   if (extra.length > 0) {
     failures.push(
-      `W4 ${label}: in ${DIR}/${PR_FILE} job \`${jobId}\` but NOT in the roster: ${extra.join(', ')}.`,
+      `${W} ${label}: in ${DIR}/${file} job \`${jobId}\` but NOT in the roster: ${extra.join(', ')}.`,
     );
   }
   if (dupes.length > 0)
-    failures.push(`W4 ${label}: duplicated in the matrix: ${[...new Set(dupes)].join(', ')}`);
+    failures.push(`${W} ${label}: duplicated in the matrix: ${[...new Set(dupes)].join(', ')}`);
   if (missing.length === 0 && extra.length === 0 && dupes.length === 0) {
-    console.log(`  ok  ${label}: ${String(got.length)} gate(s), identical to the roster`);
+    console.log(`  ok  ${file}: ${label}: ${String(got.length)} gate(s), identical to the roster`);
   }
 }
 
-compare('blocking gates', 'blocking', wantBlocking);
-compare('not-yet-supplied gates', 'advisory', wantAdvisory);
+compare(PR_FILE, prJobs, 'blocking gates', 'blocking', wantBlocking);
+compare(PR_FILE, prJobs, 'not-yet-supplied gates', 'advisory', wantAdvisory);
 
-// W5 — the class mirror.
-const blockingCoE = prJobs['blocking']?.['continue-on-error'];
-const advisoryCoE = prJobs['advisory']?.['continue-on-error'];
-if (blockingCoE === true || blockingCoE === 'true') {
+// -------------------------------------------------------------------- W8
+// SD §QD-4's SECOND PR-stage row. Held against its own roster, both ways, with
+// its own class mirror — because a heavy gate that exists locally and not here
+// (or here and not locally) is the same divergence W4 refuses, one row over.
+const heavyDoc = parsedDocs.get(HEAVY_FILE);
+if (heavyDoc === undefined) {
   failures.push(
-    `W5 ${DIR}/${PR_FILE}: job \`blocking\` carries continue-on-error. Every gate in it would then ` +
-      'produce a green check having failed — the exact failure platform-infrastructure.md names first.',
+    `W8 ${DIR}/${HEAVY_FILE} is missing or unparseable — SD §QD-4's "PR (heavy)" row is ` +
+      'mirrored there and there is nothing to hold the heavy roster against',
   );
-}
-if (advisoryCoE !== true && advisoryCoE !== 'true') {
-  failures.push(
-    `W5 ${DIR}/${PR_FILE}: job \`advisory\` does not carry \`continue-on-error: true\`, so the ` +
-      'workflow makes not-yet-supplied hooks blocking where the local aggregate does not. The two ' +
-      'stages must mean the same thing.',
+} else {
+  const heavyJobs = (heavyDoc['jobs'] ?? {}) as Record<string, Job>;
+  compare(
+    HEAVY_FILE,
+    heavyJobs,
+    'heavy blocking gates',
+    'blocking',
+    HEAVY_ROSTER.filter((e) => e.cls === 'BLOCKING' || e.cls === 'BLOCKED').map((e) => e.name),
   );
+  compare(
+    HEAVY_FILE,
+    heavyJobs,
+    'heavy not-yet-supplied gates',
+    'advisory',
+    HEAVY_ROSTER.filter((e) => e.cls === 'PENDING' || e.cls === 'SERVICE').map((e) => e.name),
+  );
+  classMirror(HEAVY_FILE, heavyJobs);
 }
-if (blockingCoE === undefined && advisoryCoE === true) {
-  console.log('  ok  the class mirror: blocking blocks, advisory is continue-on-error');
+
+// W5 — the class mirror. Applied to pr.yml here and to heavy.yml under W8.
+function classMirror(file: string, jobs: Record<string, Job>): void {
+  const W = file === PR_FILE ? 'W5' : 'W8';
+  const blockingCoE = jobs['blocking']?.['continue-on-error'];
+  const advisoryCoE = jobs['advisory']?.['continue-on-error'];
+  if (blockingCoE === true || blockingCoE === 'true') {
+    failures.push(
+      `${W} ${DIR}/${file}: job \`blocking\` carries continue-on-error. Every gate in it would then ` +
+        'produce a green check having failed — the exact failure platform-infrastructure.md names first.',
+    );
+  }
+  if (advisoryCoE !== true && advisoryCoE !== 'true') {
+    failures.push(
+      `${W} ${DIR}/${file}: job \`advisory\` does not carry \`continue-on-error: true\`, so the ` +
+        'workflow makes not-yet-supplied hooks blocking where the local aggregate does not. The two ' +
+        'stages must mean the same thing.',
+    );
+  }
+  if (blockingCoE === undefined && advisoryCoE === true) {
+    console.log(`  ok  ${file}: the class mirror — blocking blocks, advisory is continue-on-error`);
+  }
 }
+classMirror(PR_FILE, prJobs);
 
 console.log(
   `  ok  W7: ${String(runChecked)} concrete \`pnpm <script>\` invocation(s) checked against ` +
