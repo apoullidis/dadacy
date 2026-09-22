@@ -1730,6 +1730,7 @@ printf 'services:\n  qa-nonapp:\n    image: busybox:1\n    networks: [kinvara-in
 # the deadline at the first forwarded signal in ONE statement, and §7 holds
 # that statement's shape (by syntax tree, so a comment or a string is not a
 # use) and reads the file the resolved ENTRYPOINT actually runs.
+echo; echo "=== cases 156-165 (T-180, QA-7 on T-179): §7 holds GROUP_DRAIN_MS's ONE use and reads the file the resolved ENTRYPOINT runs ==="
 USE_LINE='deadline = signalledAt + GROUP_DRAIN_MS;'
 EP_LINE='ENTRYPOINT ["node", "/srv/kinvara/app-runtime/entrypoint.mjs"]'
 PID1=docker/app-runtime/pid1.mjs

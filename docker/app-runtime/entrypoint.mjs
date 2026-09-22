@@ -51,9 +51,10 @@
  *     listed — whose grace, in any composed file, is below GROUP_DRAIN_MS
  *     (read from THIS file) plus a 5 s exit margin. Since T-180 that relation
  *     IS the property: the group wait's deadline is fixed at the FIRST
- *     FORWARDED SIGNAL (runReal), so once the application has exited this
- *     process never outlives SIGTERM by more than GROUP_DRAIN_MS plus one
- *     100 ms poll, however long the application took to drain. Until T-180 it
+ *     FORWARDED SIGNAL (runReal), so if the application has exited by
+ *     first-signal + GROUP_DRAIN_MS the wait ends there, however long the
+ *     application took to drain (scripts/negative-tests/entrypoint-lifecycle.sh
+ *     L02; an app still draining at the deadline is waited for, L04). Until T-180 it
  *     counted from the direct child's exit, and tech-lead measured an 8 s
  *     drain SIGKILLed (137) at a 30 s grace with the gate green (TL-A1 on
  *     T-179; red-before and green-after in state/EP-1/T-180.md). What the
@@ -210,18 +211,23 @@ const SIMPLE_COMMAND = /^[A-Za-z0-9_@.:/+,-]+(?: [A-Za-z0-9_@.:/+=,-]+)*$/;
  *  default — tech-lead TL-1 on T-151). So: RAISE THIS LITERAL AND THE GATE GOES
  *  RED until the graces move with it (negative case 148); write it as anything
  *  but one numeric literal and the gate refuses to guess (case 151). AND THE
- *  GATE HOLDS WHERE IT IS USED (T-180): this identifier may appear in code on
- *  exactly two lines — this declaration and `deadline = signalledAt +
+ *  GATE HOLDS WHERE IT IS USED (T-180): apart from this declaration, the
+ *  identifier may be used in code (counted in the syntax tree, so comments
+ *  and strings do not count) exactly once, as `deadline = signalledAt +
  *  GROUP_DRAIN_MS;` in runReal — so a multiplier or an environment override
- *  at the use site, or a second use, reds the gate (cases 156-158; QA-7's
- *  g02/g03 on T-179). §7 also finds THIS FILE from the ENTRYPOINT the image
- *  stage resolves (§6), not from a fixed path, so pointing app.Dockerfile at a
- *  copy is read too (case 159; g12). WHAT THE GATE GIVES, now that the
- *  deadline counts from the first forwarded signal: once the application has
- *  exited, this process is gone by first-signal + GROUP_DRAIN_MS + one poll,
- *  which is inside every application service's grace. WHAT IT DOES NOT: that
- *  the application itself exits inside the grace — that is the app's drain,
- *  and docker's SIGKILL at the grace is the truthful outcome if it does not.
+ *  there, a second use, or the deadline counted from Date.now() reds the gate
+ *  (cases 156-159; QA-7's g02/g03 on T-179). §7 also finds THIS FILE from the
+ *  ENTRYPOINT the image stage resolves (§6), not from a fixed path, so
+ *  pointing app.Dockerfile at a copy reads the copy (case 161; g12), and a
+ *  PID 1 it cannot map is refused (cases 163-165). WHAT THE GATE GIVES, now
+ *  that the deadline counts from the first forwarded signal: if the
+ *  application has exited by the deadline, this process is gone within about
+ *  one poll of first-signal + GROUP_DRAIN_MS, inside every application
+ *  service's grace (scripts/negative-tests/entrypoint-lifecycle.sh L02). WHAT
+ *  IT DOES NOT: that the application itself exits inside the grace. An app
+ *  still draining at the deadline is waited for and this process exits with
+ *  it (L04); if that is past the grace, docker's SIGKILL is the truthful
+ *  outcome.
  *  scripts/verify/sigterm-drain.sh reads each container's real StopTimeout,
  *  and assertion D judges against that number. */
 const GROUP_DRAIN_MS = 25_000;
@@ -312,7 +318,7 @@ function runReal(script) {
     // to GROUP_DRAIN_MS and hide the crash behind a quiet container. Anything
     // the application left in its group dies with this process, which is the
     // application's own choice: it exited without waiting for it. Falsified
-    // by scripts/negative-tests/entrypoint-lifecycle.sh case L02/L03.
+    // by scripts/negative-tests/entrypoint-lifecycle.sh cases L05/L06.
     if (deadline === null) return void process.exit(status);
     if (sig !== null) {
       // The direct child was killed by the signal we forwarded. On the shell
