@@ -1985,6 +1985,121 @@ mut "$ENTRY" "$DRAIN_LINE" 'let GROUP_DRAIN_MS = 25_000;' \
 mut "$DF" "$EP_LINE" 'ENTRYPOINT ["node", "--title", "kinvara", "/srv/kinvara/app-runtime/entrypoint.mjs"]' \
   && run_case "192 a node flag this rule does not model (--title)" FAIL "is not one this rule models"
 
+# --- T-182 REWORK 1: THE SECOND QUESTION — WHAT PID 1 *IS* (QA-1) ------------
+# Cases 169-192 above all answer "WHICH FILE does node run". qa-verification
+# reached the identical hazard through keys that answer a different question —
+# "what IS PID 1, and what code is loaded into it" — and all three were GATE
+# PASS with §7b printing `14 of 14` pairs resolved: `pid: host` (MEASURED: the
+# host's /sbin/init is PID 1, /proc/1/comm = systemd, and SIGQUIT then ends the
+# container at ExitCode=131 in 2.19 s with no drain, against still running at
+# 36.36 s — the same signature as the `init: true` case 183 refuses),
+# `pid: service:<name>`, and `LD_PRELOAD` through compose `environment:`
+# (MEASURED: five mappings of the named object inside PID 1's own address space,
+# zero without it).
+#
+# THE CLOSURE IS TWO ALLOW-LISTS, NOT TWO MORE DENY ENTRIES (§7c/§7d), so the
+# cases below are not one per hazard: 196 and 201 plant a KEY and a VARIABLE
+# NOBODY IN THIS FAMILY HAS EVER NAMED, and they are refused because they are
+# not on a list rather than because they are on one. That is the property the
+# allow-list buys and it is what these two cases exist to pin. Every FAIL case
+# here is exit=0 GATE PASS under the gate as at e1e5bfa (the KINVARA_GATE_IMPL
+# differential, state/EP-1/T-182.md § Rework 1).
+echo; echo "=== cases 193-206 (T-182 rework 1, QA-1): §7c/§7d — what PID 1 IS. pid:, an unclassified key, user:, pull_policy:, LD_PRELOAD, a NODE_* nobody named, PATH ==="
+# 193. QA-1's decisive plant: `pid: host`. Measured in a container above.
+mut "$BASE" "$CORE_HEAD" "$CORE_HEAD    pid: host
+" \
+  && run_case "193 pid: host — the host's init becomes PID 1" FAIL "the compose key 'pid:'"
+# 194. The sibling spelling. compose resolves it (`docker compose config` with
+#      both profiles, exit 0), and it is the same key, so the same refusal.
+mut "$BASE" "$CORE_HEAD" "$CORE_HEAD    pid: service:postgres
+" \
+  && run_case "194 pid: service:postgres" FAIL "the compose key 'pid:'"
+# 195. THE CONTROL for 193/194, and it is the scope: the same key on a service
+#      that is NOT an application service is nothing to do with this rule.
+mut "$BASE" "$SM_HEAD" "$SM_HEAD    pid: host
+" \
+  && run_case "195 pid: host on stripe-mock (stay green)" PASS
+# 196. THE ALLOW-LIST ITSELF: a compose key NOBODY in this family has named, on
+#      an application service. It is refused because it is not classified — not
+#      because anyone wrote a rule about capabilities. A tenth spelling is
+#      IMPOSSIBLE here rather than uncaught, and this is the case that says so.
+mut "$BASE" "$CORE_HEAD" "$CORE_HEAD    cap_add: ['SYS_ADMIN']
+" \
+  && run_case "196 a compose key §7 has not classified (cap_add:)" FAIL "has not classified"
+# 197. Found BY the allow-list: §5 reads USER in the Dockerfile, so a compose
+#      `user:` decided the uid of PID 1 where no rule looked.
+mut "$BASE" "$CORE_HEAD" "$CORE_HEAD    user: '0:0'
+" \
+  && run_case "197 user: 0:0 on an application service" FAIL "the compose key 'user:'"
+# 198. Also found by the allow-list, and MODELLED rather than neutral once read:
+#      `pull_policy:` decides whether the image PID 1 comes from is built here
+#      or fetched. In compose.yml no other rule requires `build` (§2's rule is
+#      the verify overlay's), so this is the base file's own route.
+mut "$BASE" "$CORE_HEAD" "$CORE_HEAD    pull_policy: always
+" \
+  && run_case "198 pull_policy: always in compose.yml" FAIL "may be FETCHED"
+# 199. THE CONTROL for 196-198: a key the allow-list classifies as NEUTRAL is
+#      green. The rule is the classification, not the presence of a key —
+#      case 170's point, one list over.
+mut "$BASE" "$CORE_HEAD" "$CORE_HEAD    restart: 'no'
+" \
+  && run_case "199 a NEUTRAL key (restart:) on core (stay green)" PASS
+# 200. QA-1's second key: LD_PRELOAD through compose `environment:`. Measured in
+#      PID 1's own /proc/1/maps. This is case 174's hazard by way of the dynamic
+#      loader instead of node, and it is the shape a native APM agent uses.
+mut "$BASE" "$CORE_ENV" "$CORE_ENV
+      LD_PRELOAD: /usr/lib/libz.so.1" \
+  && run_case "200 LD_PRELOAD via compose environment:" FAIL "LOADER's own namespace"
+# 201. §7d's OWN allow-list case, the sibling of 196: a variable NOBODY has
+#      named, refused because NODE_* is a namespace node reads, not because
+#      anyone enumerated this spelling.
+mut "$BASE" "$CORE_ENV" "$CORE_ENV
+      NODE_REPL_EXTERNAL_MODULE: /srv/kinvara/app-runtime/pre.mjs" \
+  && run_case "201 a NODE_* variable §7d does not admit" FAIL "LOADER's own namespace"
+# 202. PATH: the image's ENTRYPOINT is ["node", ...] with no directory, so PATH
+#      decides WHICH BINARY is PID 1 — measured: PATH=/nonexistent and the
+#      container cannot start at all (docker run exit 127).
+mut "$BASE" "$CORE_ENV" "$CORE_ENV
+      PATH: /opt/qa:/usr/local/bin:/usr/bin:/bin" \
+  && run_case "202 PATH via compose environment:" FAIL "WHICH BINARY is PID 1"
+# 203. THE CONTROL for 200-202: a variable in no loader's namespace is green.
+#      §7d refuses a NAMESPACE, not `environment:`.
+mut "$BASE" "$CORE_ENV" "$CORE_ENV
+      KINVARA_T182_PROBE: '1'" \
+  && run_case "203 an env var in no loader namespace (stay green)" PASS
+# 204. qa-verification's A4, caught but uncased: `command:` as a STRING under
+#      the image's exec-form entrypoint. § contract 3 claimed the command: half
+#      was refused too and only the entrypoint: half (171) had a case.
+mut "$BASE" "$CORE_HEAD" "$CORE_HEAD    command: node /srv/kinvara/app-runtime/pid1.mjs
+" \
+  && run_case "204 command: as a STRING (shell form)" FAIL "SHELL form"
+# 205. qa-verification's A5, caught but uncased: the CHAOS overlay declaring an
+#      application service. It is genuinely in the composed set, and the pair
+#      count rises to 15 of 15 when it does.
+cp "$ENTRY" "$PID1" && mut "$PID1" "$DRAIN_LINE" 'const GROUP_DRAIN_MS = 60_000;' \
+  && mut "$CHAOS" 'services: {}' "services:
+  core:
+    entrypoint: ['node', '/srv/kinvara/app-runtime/pid1.mjs']" \
+  && run_case "205 compose.chaos.yml declares core with entrypoint:" FAIL "BELOW the floor of 65000 ms"
+# 206. qa-verification's V6, measured and uncased: the `secrets:` half of the
+#      mount reader (app-images.ts mountTargets). The claim this pins is the
+#      READER's — that a secrets: target over PID 1's script is refused the way
+#      a volumes:/configs: one is; compose's own mount semantics for an absolute
+#      secret target are not measured here.
+mk_pid1_cfg && mut "$BASE" '
+volumes:
+' '
+secrets:
+  qa_pid1_s:
+    file: ./qa-pid1.cfg
+
+volumes:
+' && mut "$BASE" "$CORE_HEAD" "$CORE_HEAD    secrets:
+      - source: qa_pid1_s
+        target: /srv/kinvara/app-runtime/entrypoint.mjs
+" \
+  && run_case "206 a secrets: target over PID 1's script" FAIL "covers PID 1's script"
+
 echo
 run_case "99 tree restored" PASS
 echo

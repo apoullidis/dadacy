@@ -152,10 +152,26 @@ const SUITES: readonly Suite[] = [
     // script (volumes: and configs:), a NODE_OPTIONS preload from compose and
     // from the image's ENV, a code-loading and an unmodelled node flag, a RUN
     // that rewrites the script, an ADDed archive, stop_signal:, init:,
-    // working_dir:, env_file:, D13 and a non-const declaration — with seven
-    // controls. No case removed, renamed, re-classed or re-planted, so
-    // OD-176(d)'s four conditions are not engaged — T-182 § Evidence.
-    cases: 185,
+    // working_dir:, env_file:, D13 and a non-const declaration — SIXTEEN
+    // refusals and EIGHT controls. (This line read "with seven controls" until
+    // 2026-09-22: OD-204, the surviving sibling of a miscount T-182 disclosed
+    // and corrected in entrypoint.mjs's docblock but not here. The split is
+    // counted from the suite's own run_case verdicts — `grep -oE 'run_case
+    // "(169|1[7-9][0-9]|19[0-2]) [^"]*" (PASS|FAIL)'` -> 16 FAIL, 8 PASS — and
+    // the lesson is R2's: a self-found miscount is a measurement, and a
+    // measurement gets its siblings swept.)
+    // 185 -> 199, 2026-09-22, T-182 rework 1 (qa-verification QA-1): fourteen
+    // cases (193-206) for §7c/§7d, the SECOND question — what PID 1 *is*, and
+    // what code is loaded into it. `pid:` (two spellings), an unclassified
+    // compose key, `user:`, `pull_policy:`, LD_PRELOAD, a NODE_* nobody named,
+    // PATH, `command:` as a string, the chaos overlay declaring an application
+    // service, and a `secrets:` target — TEN refusals and FOUR controls. Two of
+    // the ten (196, 201) plant a key and a variable nobody in this family has
+    // named, because the closure is an ALLOW-LIST and that is the property to
+    // pin. No case removed, renamed, re-classed or re-planted in either change,
+    // so OD-176(d)'s four conditions are not engaged — T-182 § Evidence and
+    // § Rework 1.
+    cases: 199,
     state: 'GREEN',
     why: 'gate:app-images: every Dockerfile an overlay service builds, plus the suite’s own working-tree verdict (T-035, T-036, T-156)',
   },
