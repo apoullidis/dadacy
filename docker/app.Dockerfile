@@ -124,10 +124,19 @@ COPY db/schema.ts db/schema.ts
 # the `a && b || c` shape `c` runs whenever `b` fails, so a declared build that
 # exited non-zero left this RUN at exit 0 and printed "declares no build
 # script" — a build that failed, reported as a build that was never there.
-# Measured at main 637640e with `apps/core`'s build set to `node -e
-# "process.exit(3)"`: `docker build --target build` EXIT=0 with that line in the
-# log. `if` exits with the status of the branch it took, so a failing build now
-# fails the image build with its own message.
+# Measured three times, each on its own plant and each attributed to the commit
+# it was taken at (T-151 rework 1, QA-A4 — these lines used to attribute the
+# first of them to main 637640e, which is not where it was taken):
+#   * tech-lead, during T-135, `node -e "process.exit(3)"` — state/EP-2/T-135.md
+#     § E7 N10, which is where OD-99 came from;
+#   * T-151 at main 637640e, `process.exit(7)` — state/EP-1/T-151.md § Evidence
+#     4 N3a;
+#   * T-151's QA at 5664384, `process.exit(5)`, uncached — ibid. § QA-7.
+# All three: `docker build --target build` EXIT=0 with "declares no build
+# script" in the log, on a build script that had exited non-zero. These
+# Dockerfile lines are byte-identical at 637640e and at HEAD, so the property is
+# one property across all three runs. `if` exits with the status of the branch
+# it took, so a failing build now fails the image build with its own message.
 RUN if node -e "const p=require('./apps/${APP}/package.json'); process.exit(p.scripts&&p.scripts.build?0:1)"; then \
       pnpm --filter "@kinvara/${APP}" build; \
     else \

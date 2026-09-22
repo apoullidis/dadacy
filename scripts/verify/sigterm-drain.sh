@@ -35,7 +35,8 @@
 #   (--body)     the CLIENT is slow: headers and a Content-Length go out, then
 #                one byte, and the rest of the body is withheld until after
 #                SIGTERM. The server is mid-request across the signal without
-#                the application needing a slow route of its own.
+#                the application needing a slow route of its own. `--hold` does
+#                not apply to this shape — see usage() below.
 #
 # AND IT REFUSES RATHER THAN REPORTING A FALSE FAIL: given no --path against a
 # service whose /healthz says `mode: real`, the probe exits 2 and this script
@@ -57,7 +58,14 @@ usage: scripts/verify/sigterm-drain.sh <ticket> [service] [options]
   --content-type T          default application/json, with --body
   --expect-status N         status the completed response must carry (default 200)
   --expect-body-contains S  substring the completed body must contain
-  --hold MS                 how long the request is held in flight (default 6000)
+  --hold MS                 server-slow shape ONLY: how long the SERVER is asked
+                            to hold the request (default 6000). It is the `ms=`
+                            of the placeholder's slow route and the floor
+                            assertion A checks the elapsed time against. IT IS
+                            NOT USED IN THE slow-body SHAPE (--body): there the
+                            request is held until SIGTERM arrives and then for a
+                            further fixed 1200 ms, whatever --hold says
+                            (T-151 rework 1, QA-F3)
   --host H / --port N       default: the service name, and 3000
   -h, --help                this text
 USAGE

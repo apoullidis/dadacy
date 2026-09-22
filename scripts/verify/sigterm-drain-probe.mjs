@@ -11,7 +11,14 @@
  * Two assertions, because "exited cleanly" alone would pass for a process that
  * dropped the request and then exited 0:
  *   A. the in-flight request COMPLETES, with the expected status and a body,
- *      and completes AFTER the signal was sent;
+ *      and its RESPONSE SOCKET CLOSED AFTER the signal was sent. Read that
+ *      last clause exactly as it is written: `inflight_completed_at` is taken
+ *      on the socket's `close` event, so A asserts "a valid response was
+ *      received and the socket closed after the signal", NOT "the response was
+ *      produced after the signal" (T-151 rework 1, QA-A2). A request the
+ *      server answered in 2 ms and then held open on keep-alive satisfies it.
+ *      What makes A meaningful is the SHAPE: in `slow-body` the server cannot
+ *      have answered early, because it has not been given the body yet;
  *   B. a NEW connection made after SIGTERM is REFUSED — the process stopped
  *      accepting rather than merely finishing.
  * The exit CODE and the elapsed time are asserted by the host, which is the
@@ -45,6 +52,14 @@
  *                SIGTERM. The server is mid-request-parse across the signal, so
  *                the window exists without the application owning a slow route.
  *                This is how a real app is judged.
+ *
+ * `holdMs` (--hold) BELONGS TO server-slow AND TO NOTHING ELSE (T-151 rework 1,
+ * QA-F3). There it is the `ms=` the placeholder's slow route sleeps for and the
+ * floor assertion A checks the elapsed time against. In `slow-body` the hold is
+ * not a duration the caller picks at all: the request stays in flight until the
+ * host reports SIGTERM sent, and then for POST_SIGNAL_HOLD_MS more. `--hold
+ * 20000` and the default 6000 therefore produce the same measured hold, to
+ * within milliseconds — measured, state/EP-1/T-151.md § Rework 1 R1.7.
  *
  * `slow-body` needs no cooperation from the application beyond a route that
  * reads a body, and the response it asserts is the application's real answer to
@@ -216,7 +231,16 @@ while (!fs.existsSync(`${DIR}/sigterm-sent`) && Date.now() < deadline) {
 }
 out.sigterm_observed_at = Date.now();
 
-await new Promise((r) => setTimeout(r, 1200));
+/**
+ * How long the `slow-body` request stays in flight PAST the signal before the
+ * rest of its body is released. Fixed, and deliberately not `spec.holdMs`: it
+ * has to be long enough that the application has demonstrably begun draining
+ * and short enough to leave the whole run well inside stop_grace_period. See
+ * the header on why --hold does not reach this path.
+ */
+const POST_SIGNAL_HOLD_MS = 1200;
+
+await new Promise((r) => setTimeout(r, POST_SIGNAL_HOLD_MS));
 out.new_connection_after_sigterm = await rawConnect();
 console.log('new TCP connection    ', out.new_connection_after_sigterm);
 
@@ -238,7 +262,14 @@ const okStatus = out.inflight.status === spec.expectStatus;
 const okBody =
   bodyLength > 0 &&
   (spec.expectBodyContains === null || out.inflight.body.includes(spec.expectBodyContains));
+// A SOCKET-CLOSE TIME, NOT A RESPONSE-ARRIVAL TIME (QA-A2) — see the header.
 const okAfter = out.inflight_completed_at > out.sigterm_observed_at;
+// `holdMs` is the server-slow floor only. In slow-body the hold is made by
+// POST_SIGNAL_HOLD_MS above, not by the caller, so there is no floor to check
+// and the option does not apply (QA-F3). Not a shortcut: `spec.holdMs` is read
+// in exactly two places in this file, this assertion and the `held>=` field it
+// prints, and BOTH are inside a `shape === 'slow-body' ? …` guard — which is
+// what makes the bound checkable by grep rather than by reading.
 const okHeld = spec.shape === 'slow-body' ? true : out.inflight.ms >= spec.holdMs;
 const okA = okStatus && okBody && okAfter && okHeld;
 const okB = out.new_connection_after_sigterm === 'ECONNREFUSED';

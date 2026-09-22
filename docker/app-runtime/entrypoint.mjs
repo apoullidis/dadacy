@@ -67,8 +67,11 @@
  *     start script that is a simple command (`node src/main.ts`, `next
  *     start`) is spawned as argv with no shell and no `--run` in between, so
  *     `child.kill()` reaches the application itself. Anything a shell is
- *     actually needed for (a pipe, a `&&`, a redirect, a quote) goes to
- *     `/bin/sh -c` instead — see 2.
+ *     actually needed for — a pipe, a `&&`, a redirect, a quote, and A
+ *     LEADING VARIABLE ASSIGNMENT (`NODE_ENV=production next start`) — goes
+ *     to `/bin/sh -c` instead. SIMPLE_COMMAND below is the exact line between
+ *     the two, and it explains why the first word's character class is not
+ *     the arguments' (T-151 rework 1, QA-F1).
  *  2. THE CHILD LEADS ITS OWN PROCESS GROUP, AND THE SIGNAL GOES TO THE
  *     GROUP. `spawn(..., { detached: true })` makes the child a process-group
  *     leader; `process.kill(-pgid, sig)` then reaches every process in it,
@@ -83,6 +86,23 @@
  *     then exited 0. Without the wait, PID 1 would have exited first and
  *     killed it. For a simple command ash DOES exec, which is the second
  *     reason path 1 exists: it does not depend on that optimisation.
+ *
+ *     AND ON THAT SHELL PATH THE WAIT CANNOT END ON ITS OWN CONDITION. This
+ *     is a standing bound, not a remote edge case (T-151 rework 1, QA-A1;
+ *     re-measured in node:24.20.0-alpine, state/EP-1/T-151.md § Rework 1
+ *     R1.5). Once ash dies on the forwarded signal the application is
+ *     reparented to PID 1, and this process does not reap a child it never
+ *     spawned — so the moment it finishes draining it becomes a ZOMBIE,
+ *     `kill(-pgid, 0)` still SUCCEEDS on a zombie, and waitForGroup below
+ *     therefore polls the full GROUP_DRAIN_MS and exits 128+signum. So a
+ *     CLEAN drain behind a true compound script costs 25 s and reports 143
+ *     every time. It is still 5 s inside the 30 s stop_grace_period, so
+ *     docker never SIGKILLs it, and the application does drain. Two bounds on
+ *     how far that reaches: no app in this repository declares a compound
+ *     start script, and `VAR=value cmd args` is NOT one — ash execs that, so
+ *     the direct child IS the application, its exit status is the
+ *     application's and the group empties the moment it exits (measured,
+ *     § Rework 1 R1.5).
  *
  * WHAT THIS PROCESS CAN AND CANNOT REPORT. On path 1 the direct child is the
  * application, so its exit status IS the application's and a clean drain
@@ -105,11 +125,31 @@ const log = (...a) => process.stderr.write(`[${APP}] ${a.join(' ')}\n`);
 
 /**
  * A start script this file may run WITHOUT a shell: a command word and plain
- * arguments, nothing a shell would have to interpret. Deliberately strict —
- * anything outside this character set goes to `/bin/sh -c`, so a misjudgement
- * can only ever fall back to the more general path, never the other way.
+ * arguments, nothing a shell would have to interpret.
+ *
+ * THE FIRST WORD'S CLASS OMITS `=`; THE ARGUMENTS' KEEPS IT, and that
+ * asymmetry is the whole of the rule (T-151 rework 1, QA-F1). `--port=3000`
+ * is a plain argument and a command word never legitimately contains `=`, but
+ * `NODE_ENV=production next start` is a SHELL VARIABLE ASSIGNMENT — something
+ * only a shell can perform. Until this rework `=` was in both classes, so
+ * that script was classified simple and spawned as a file literally named
+ * `NODE_ENV=production`: ENOENT, "could not start … exiting 1", and the
+ * container never booted. That is the ordinary Next.js production start line,
+ * which is to say `web`/`admin`'s likeliest one. Red-before / green-after in
+ * the real image: state/EP-1/T-151.md § Rework 1 R1.2 and R1.3.
+ *
+ * WHAT IS AND IS NOT CLAIMED. Every character a shell would act on — `$`, a
+ * backtick, `~`, `*`, `?`, `[`, `]`, `{`, `}`, `'`, `"`, `\`, `|`, `&`, `;`,
+ * `<`, `>`, `(`, `)`, `#`, a tab, a double space — is outside BOTH classes,
+ * and `=` is outside the first, so a script containing one takes the
+ * `/bin/sh -c` path. Within these two classes there is nothing left for a
+ * shell to interpret, so a misjudgement can only fall back to the more
+ * general path, never the other way. THE CLAIM IS ABOUT THESE TWO CHARACTER
+ * CLASSES, not about shells in general. What falsifies it is a classification
+ * table over plausible start scripts, run against the regex copied out of
+ * this file: § Rework 1 R1.1.
  */
-const SIMPLE_COMMAND = /^[A-Za-z0-9_@.:/+=,-]+(?: [A-Za-z0-9_@.:/+=,-]+)*$/;
+const SIMPLE_COMMAND = /^[A-Za-z0-9_@.:/+,-]+(?: [A-Za-z0-9_@.:/+=,-]+)*$/;
 
 /** How long to wait for the child's process group to empty after forwarding a
  *  signal. Inside the 30 s `stop_grace_period` the app services declare in
