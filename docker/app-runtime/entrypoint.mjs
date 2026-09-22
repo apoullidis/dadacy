@@ -104,8 +104,10 @@
  *     CLEAN drain behind a true compound script costs 25 s and reports 143
  *     every time. It is inside the 30 s stop_grace_period all five
  *     application services declare, with 5 s to spare, and gate:app-images §7
- *     keeps it inside (T-179: it reads GROUP_DRAIN_MS from here, so raising the
- *     wait without raising the graces reds the gate). The 143 is still a false
+ *     keeps it inside (T-179: it reads the CONSTANT GROUP_DRAIN_MS from here,
+ *     so raising that constant without raising the graces reds the gate; a
+ *     multiplier or env override where it is USED, or an ENTRYPOINT pointed at
+ *     another file, is not read — QA-7). The 143 is still a false
  *     crash signal; being inside the grace only means it is not ALSO a SIGKILL.
  *     The application does drain. Two bounds on
  *     how far that reaches: no app in this repository declares a compound
@@ -174,9 +176,11 @@ const SIMPLE_COMMAND = /^[A-Za-z0-9_@.:/+,-]+(?: [A-Za-z0-9_@.:/+=,-]+)*$/;
  *      core 30s    worker 30s    safety-gw 30s    web 30s    admin 30s
  *
  *  (at main 39f01f2 `web` and `admin` declared none and took compose's 10 s
- *  default — tech-lead TL-1 on T-151). So: RAISE THIS AND THE GATE GOES RED
- *  until the graces move with it (negative case 148); write it as anything
- *  but one numeric literal and the gate refuses to guess (case 151). It is
+ *  default — tech-lead TL-1 on T-151). So: RAISE THIS LITERAL AND THE GATE GOES
+ *  RED until the graces move with it (negative case 148); write it as anything
+ *  but one numeric literal and the gate refuses to guess (case 151). ONLY this
+ *  literal is read: scaling or overriding it where waitForGroup uses it is not
+ *  (QA-7), so change the wait HERE or not at all. It is
  *  only ever reached on the `/bin/sh -c` path where ash did not exec (see the
  *  header). scripts/verify/sigterm-drain.sh reads each container's real
  *  StopTimeout, and assertion D judges against that number. */

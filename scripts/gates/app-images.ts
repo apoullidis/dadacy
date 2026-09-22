@@ -1378,10 +1378,16 @@ for (const [rel, users] of [...dockerfilesInUse].sort(([a], [b]) => a.localeComp
 //    compose's 10 s default against a 25 s wait: 15 s short, with this gate
 //    green.
 //
-//    So the floor is READ, not restated: GROUP_DRAIN_MS is parsed out of the
-//    shipping entrypoint, and raising it past a declared grace reds this gate
-//    (case 147). A literal `30s` checked against a literal `30s` would stay
-//    green the day someone raised the wait. The two numbers now live in two
+//    So the floor is READ, not restated: the CONSTANT GROUP_DRAIN_MS is parsed
+//    out of the shipping entrypoint, and raising it past a declared grace reds
+//    this gate (case 148). A literal `30s` checked against a literal `30s` would
+//    stay green the day someone raised GROUP_DRAIN_MS. The bound, measured by
+//    qa-verification on T-179 (QA-7): what is read is the constant's own
+//    literal, NOT how it is used — a multiplier or an environment override at
+//    the point of use changes the real wait with this gate green — and the
+//    entrypoint's path is FIXED here (ENTRYPOINT_FILE), not derived from
+//    app.Dockerfile's ENTRYPOINT, so pointing the image at another file escapes
+//    it too. The two numbers now live in two
 //    files owned for two different reasons, which is PROTOCOL §5.1's "anchor
 //    one of them outside".
 //
@@ -1406,6 +1412,10 @@ for (const [rel, users] of [...dockerfilesInUse].sort(([a], [b]) => a.localeComp
 //      (c) its `image:` is one that a service in (a) or (b) declares — a
 //          second container running `kinvara/worker:dev` runs the same PID 1
 //          and has the same wait, whether or not anybody labelled it (case 145).
+//          COMPARED AS LITERAL TEXT (QA-7): the same image spelled differently —
+//          `docker.io/kinvara/worker:dev`, or `${VAR:-kinvara/worker:dev}` —
+//          is not recognised. A copied image line is caught; a re-spelled one
+//          is not.
 //    Services outside all three are NOT held to it, deliberately: postgres
 //    (10s), valkey, fake-telephony and hibp-fake (5s) declare short graces on
 //    purpose and run no entrypoint.mjs. Nothing names them here.
@@ -1430,7 +1440,7 @@ for (const [rel, users] of [...dockerfilesInUse].sort(([a], [b]) => a.localeComp
 //    FLOORED to a whole second before comparing — the conservative direction
 //    whether compose truncates or rounds. A GROUP_DRAIN_MS spelled as anything
 //    but one numeric literal on one `const` line is REFUSED, not guessed at
-//    (case 148). A second, differently named constant doing the same job is a
+//    (case 151). A second, differently named constant doing the same job is a
 //    construction this gate does not model.
 // ---------------------------------------------------------------------------
 const ENTRYPOINT_FILE = 'docker/app-runtime/entrypoint.mjs';
@@ -1478,6 +1488,10 @@ const graceFloorMs = groupDrainMs === null ? null : groupDrainMs + EXIT_MARGIN_M
  * is what compose uses. `docker compose config` REFUSES a bare number ("must be
  * a string") and a unit-less string ("missing unit in duration"), measured in
  * state/EP-1/T-179.md — so both are refused here too, never read as seconds.
+ * It does NOT refuse everything compose refuses (QA-7): surrounding whitespace
+ * is trimmed, so `"30s "` / `" 30s"` / `"30s\t"` pass here while compose
+ * rejects the file. Harmless — compose then refuses at `svc up` — but the claim
+ * is only that a bare number and a unit-less string are refused.
  */
 const DURATION_UNIT_MS: Readonly<Record<string, number>> = {
   ns: 1e-6,
