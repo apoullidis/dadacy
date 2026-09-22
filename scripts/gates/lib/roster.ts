@@ -288,8 +288,7 @@ export const ROSTER: readonly RosterEntry[] = [
     spec: 'Drizzle introspection parity',
     cls: 'SERVICE',
     why: '`pnpm -w db:introspect:check` migrates a real database and re-introspects it (T-138, T-150, T-152)',
-    owner:
-      'T-006 (gate:heavy) — SUPPLIED and EXECUTED there; the command itself is LIVE and owned by T-138',
+    owner: 'T-006 (gate:heavy) — SUPPLIED there; the command is LIVE and owned by T-138',
     unblocks:
       'nothing here: it is green where it runs. `pnpm gate:heavy` executes it under `scripts/svc run <ticket> --`. It cannot run in THIS stage because gate:pr declares `svc: none` (DOCKER.md §7), which is structural and permanent.',
   },

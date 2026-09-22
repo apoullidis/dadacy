@@ -100,11 +100,18 @@
  *     bound is unchanged by the expansion above.
  *   * NOT that W7 checked ANYTHING. It prints the number of concrete
  *     invocations it resolved and nothing in this gate asserts that number is
- *     greater than zero (QR2-A3). It is caught one level up — case F0 requires
- *     the literal `W7: 29 concrete` in the control's output, so a committed
- *     pr.yml of the flag-bearing shape goes red in gate:pr-gate-suite — but the
- *     gate a reader runs ALONE passes at zero coverage. The one-line floor
- *     belongs in this file and is T-174's, which already owns it by name.
+ *     greater than zero (QR2-A3). It is caught one level up — case F0 in
+ *     pr-gates.sh AND case W0 in heavy-gates.sh each require the exact
+ *     `W7: <n> concrete` line this gate prints, so a committed workflow of the
+ *     flag-bearing shape goes red in gate:pr-gate-suite or in
+ *     gate:negative-suites — but the gate a reader runs ALONE passes at zero
+ *     coverage. THE LITERAL IS DELIBERATELY NOT SPELLED HERE (OD-190): it was
+ *     29 when T-005 wrote this line, 30 after T-008 added a gate and 36 after
+ *     T-006 added a second workflow file, and this sentence moved with none of
+ *     them. The pins are in the two suites, where a wrong one goes red; a prose
+ *     copy of a number is a copy that goes stale silently (PROTOCOL §5.3 R1:
+ *     prefer a number the machine prints). The one-line floor belongs in this
+ *     file and is T-174's, which already owns it by name.
  *   * NOT anything about `merge`, `production` or `migrations` stages of
  *     SD §QD-4. This gate covers SD's two PR-stage rows — pr.yml against
  *     scripts/gates/lib/roster.ts (W4/W5) and heavy.yml against
