@@ -251,15 +251,33 @@ const SIMPLE_COMMAND = /^[A-Za-z0-9_@.:/+,-]+(?: [A-Za-z0-9_@.:/+=,-]+)*$/;
  *  and SIGQUIT then ended the container at ExitCode=131 in 2.19 s with NO
  *  drain, against still running at 36.36 s without it) and through
  *  `LD_PRELOAD` (MEASURED: five mappings of the named object inside PID 1's own
- *  address space), both at gate exit 0. That space is the compose KEY SPACE and
- *  the LOADERS' env namespaces, so it is closed by two ALLOW-LISTS rather than
- *  by more refusals: an application service may declare only the compose keys
- *  §7c classifies, and no variable in `LD_*`/`DYLD_*`/`NODE_*` or `PATH` except
- *  NODE_OPTIONS and NODE_ENV (§7d). So a key or variable NOBODY HAS NAMED reds
- *  the gate — cases 196 and 201 plant exactly that — and `pid:`, `user:` and
- *  `pull_policy: always` are refused as members of the class rather than as
- *  entries on a list (cases 193-206: TEN refusals and FOUR controls, of which
- *  the eight inside 193-202 were GREEN at T-182's first head `e1e5bfa`).
+ *  address space), both at gate exit 0. Those are two spaces and they got two
+ *  DIFFERENT shapes, which rework 2 had to say out loud because rework 1's text
+ *  called them both allow-lists:
+ *    * the compose KEY space is an ALLOW-LIST (§7c). An application service may
+ *      declare only the keys §7c classifies, so a key NOBODY HAS NAMED reds the
+ *      gate — case 196 plants one, and the orchestrator independently planted
+ *      `userns_mode:` and got exit=1, GATE FAIL, 11 of 14. `pid:`, `user:` and
+ *      `pull_policy: always` are refused as members of the class rather than as
+ *      entries on a list (cases 193-206: TEN refusals and FOUR controls, of
+ *      which the eight inside 193-202 were GREEN at T-182's first head
+ *      `e1e5bfa`);
+ *    * the ENVIRONMENT space is a DENY-LIST (§7d), and a variable name outside
+ *      it is ADMITTED WITHOUT BEING READ. Rework 1 listed four namespaces
+ *      (`LD_*`/`DYLD_*`/`NODE_*`, plus `PATH`) and called the class closed; the
+ *      orchestrator then defeated that with `OPENSSL_CONF` inside `core`'s own
+ *      `environment:` block, at gate exit 0 with `14 of 14` printed as resolved
+ *      (OE-44). Rework 2 WIDENED the deny-list by measuring which names load
+ *      code into THIS process in the shipping images — node links OpenSSL 3.5.7
+ *      statically, and an `OPENSSL_CONF` naming a `providers` module under the
+ *      `nodejs_conf` app section dlopens it: with a real .so, PID 1 dies in
+ *      node::InitializeOncePerProcessInternal (SIGABRT, container ExitCode=139)
+ *      instead of starting the app. So `OPENSSL_*` joins the namespaces and
+ *      `SSL_CERT_FILE`/`SSL_CERT_DIR`/`CTLOG_FILE` join the exact names
+ *      (cases 207-211). **`T-183` is the successor that replaces this
+ *      deny-list with an allow-list anchored to a checked per-app manifest, and
+ *      until it lands a green run means "no variable in a MEASURED loader
+ *      namespace", never "no variable that can load code".**
  *  WHAT THE GATE GIVES, now
  *  that the deadline counts from the first forwarded signal: if the
  *  application has exited by the deadline, this process is gone within about
