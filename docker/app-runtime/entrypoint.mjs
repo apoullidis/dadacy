@@ -131,10 +131,11 @@
  *     T-180 that wait also ends at first-signal + GROUP_DRAIN_MS, so it is
  *     inside the grace however long the app drained, and on this path the
  *     status reported is the application's EXIT CODE (it is the direct
- *     child) — but a death by a signal is mapped, not passed through: 143 for
- *     SIGTERM and 130 for every other signal, so an app SIGKILLed or SIGSEGVed
- *     mid-drain reports 130 (qa-verification on T-180, both paths; see WHAT
- *     THIS PROCESS CAN AND CANNOT REPORT below).
+ *     child) — but a death by a signal is mapped, not passed through: since
+ *     T-181 it is 128 + signo, so an app SIGKILLed mid-drain reports 137 and
+ *     one that SIGSEGVs reports 139, where before T-181 both reported 130 and
+ *     read as SIGINT (qa-verification on T-180, both paths; see WHAT THIS
+ *     PROCESS CAN AND CANNOT REPORT below).
  *     Before T-180 the wait started when the APP exited, and an 8 s drain
  *     was SIGKILLed (137) at the 30 s grace after every process had logged a
  *     clean exit. Both readings, red at main 36a41d1 and green after, in the
@@ -150,14 +151,30 @@
  *
  * WHAT THIS PROCESS CAN AND CANNOT REPORT. On path 1 the direct child is the
  * application, so its EXIT CODE is the application's and a clean drain shows
- * up as `exit 0`. A death by a SIGNAL is mapped, not passed through: 143 for
- * SIGTERM and 130 for every other signal, so an OOM SIGKILL or a SIGSEGV is
- * reported as SIGINT (qa-verification on T-180, QA-F2; T-018's mapping in
- * child.on('exit'), unchanged here — its fix is a separate ticket). On path 2, if the shell is the one that dies on the
- * forwarded signal, this process cannot observe the application's own status;
- * it says so on stderr and exits 128+signum rather than inventing a 0.
+ * up as `exit 0`. A death by a SIGNAL is mapped, not passed through, and SINCE
+ * T-181 the mapping is 128 + signo, read from `os.constants.signals` rather
+ * than written here: 137 for SIGKILL, 139 for SIGSEGV, 134 for SIGABRT, and
+ * 143/130 for SIGTERM/SIGINT as before. Until T-181 one expression gave 143 for
+ * SIGTERM and 130 for EVERY other signal, so an OOM SIGKILL and a SIGSEGV both
+ * reported 130 and read as SIGINT (qa-verification on T-180, QA-F2; the
+ * expression was T-018's, d434296). ON PATH 1 THAT NUMBER IS THE
+ * APPLICATION'S OWN, and the stderr line says so; on path 2, if the shell is
+ * the one that dies on the forwarded signal, this process cannot observe the
+ * application's own status, and the line says THAT instead. One sentence for
+ * both paths was T-151's, and it was false on path 1 — the CONDITION tech-lead
+ * attached to T-180's second approval (TL-5), closed with the mapping in one
+ * commit because a correct number carrying "this is not the app's own" is worse
+ * than the wrong number was.
+ *
+ * WHAT A SIGNAL DEATH STILL DOES NOT TELL YOU, so nobody reads more into the
+ * number than it holds: 137 does not mean the OOM killer. `docker inspect` is
+ * where that lives — a real memory-cgroup OOM kill reports OOMKilled=true
+ * beside the 137, and V8's own heap OOM is not a cgroup event at all (it
+ * aborts, so 134, with `FATAL ERROR … JavaScript heap out of memory` in the
+ * log and OOMKilled=false). Measured both ways in the image, T-181 § Evidence.
  */
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
@@ -204,6 +221,30 @@ const SIMPLE_COMMAND = /^[A-Za-z0-9_@.:/+,-]+(?: [A-Za-z0-9_@.:/+=,-]+)*$/;
  *  a later signal does not move it, and if no signal is ever forwarded there
  *  is no deadline and no wait. Until T-180 it counted from the direct child's
  *  exit instead (tech-lead TL-A1 on T-179).
+ *
+ *  WHAT "A LATER SIGNAL DOES NOT MOVE IT" COSTS, stated because T-180's text
+ *  said it was true and not what it buys or spends (tech-lead TL-1 on T-180,
+ *  measured, routed to T-181): A FORWARDED SIGNAL THE APPLICATION SURVIVES
+ *  FIXES THE DEADLINE FOR ANY LATER STOP. A stop more than GROUP_DRAIN_MS after
+ *  such a signal therefore gets NO group wait — this process exits within one
+ *  poll of the application's own exit, and anything still draining in the group
+ *  dies with it, at the application's exit code with nothing in the number
+ *  saying work was cut. Measured in the container: a SIGINT both app and helper
+ *  ignored, then `docker stop` 27 s later, exited in 1.11 s with `helper:
+ *  drained` never printed, against 25.18 s for the identical pair without the
+ *  earlier SIGINT (tech-lead on T-180; re-measured on T-181 as case L14, which
+ *  PINS this behaviour so it cannot change in silence). IT IS NOT A DEFECT THIS
+ *  FILE CAN FIX, and T-181 measured the candidate fix rather than arguing it:
+ *  re-anchoring on a signal that arrives after the deadline has passed does
+ *  repair this case, and it turns an app draining past the deadline under ONE
+ *  stop into a container SIGKILLed at the grace — 137, the exact outcome T-179
+ *  and T-180 exist to remove. PID 1 cannot tell the two apart, because it
+ *  cannot know which signal the stopper is timing (T-181 § Published contract 3
+ *  and § Evidence E7; tech-lead TL-1(c)). The three things this needs together:
+ *  a non-SIGTERM stop signal reaching the container, an application that
+ *  survives it while draining on SIGTERM, and a second live process in the
+ *  group. T-012, T-148 and web/admin's first `start` are the tickets that
+ *  supply the third (OD-196's widened trigger).
  *
  *  EVERY APPLICATION SERVICE'S GRACE IS HELD ABOVE THIS NUMBER, BY A GATE THAT
  *  READS IT FROM HERE (T-179). gate:app-images §7 reads the ONE TOP-LEVEL
@@ -389,15 +430,47 @@ function runReal(script) {
   }
 
   child.on('exit', (code, sig) => {
-    const status = sig !== null ? 128 + (sig === 'SIGTERM' ? 15 : 2) : (code ?? 1);
+    // A SIGNAL DEATH IS REPORTED AS 128 + signo, THE NUMBER EVERY SHELL, DOCKER
+    // AND ORCHESTRATOR ALREADY READS (T-181). Until T-181 this was one
+    // expression — `128 + (sig === 'SIGTERM' ? 15 : 2)` — so SIGTERM gave 143
+    // and EVERY OTHER SIGNAL gave 130, which reads as SIGINT: an OOM SIGKILL
+    // and a SIGSEGV both arrived as "someone pressed Ctrl-C" (qa-verification
+    // on T-180, QA-F2; the expression was T-018's, d434296).
+    //
+    // THE NUMBER IS NOT WRITTEN DOWN HERE. `os.constants.signals` is node's own
+    // table for THIS platform, so SIGKILL is 9 because node says so and not
+    // because a literal in this file says so — the alternative, a hand-kept
+    // name->number map beside the handlers, is the OD-207 shape (a value a
+    // reader must re-derive by hand, next to the thing that has it already).
+    //
+    // WHY 128 + signo IS THE RIGHT CHOICE HERE, decided on measurement and not
+    // on convention (T-181 § Published contract 1): docker reports PID 1's own
+    // signal death as 128 + signo itself (its SIGKILL at the grace is 137, with
+    // nothing in this file involved), so any OTHER number for the SAME death of
+    // the direct child would make the two disagree inside one container. And
+    // nothing in this repository decides on the value: no consumer reads it.
+    // SIGTERM (143) and SIGINT (130) are unchanged by this mapping, which is
+    // why T-151's and T-180's published 143s still hold.
+    //
+    // THE UNMAPPABLE CASE IS SAID OUT LOUD, not defaulted. `sig` comes from
+    // node's own signal table, so a name that table cannot number is not
+    // reachable from a real signal — but 128 + undefined is NaN, and
+    // `process.exit(NaN)` exits 0, which is the one outcome that must never
+    // come out of a signal death. So it is 128 with a log line, and "did
+    // nothing" is distinguishable from "refused" (PROTOCOL §5.1).
+    const signo = sig === null ? null : (os.constants.signals[sig] ?? null);
+    if (sig !== null && signo === null) {
+      log(`the start command was ended by ${sig}, which this node cannot number; reporting 128`);
+    }
+    const status = sig !== null ? 128 + (signo ?? 0) : (code ?? 1);
     // NO SIGNAL WAS FORWARDED: the application ended on its own — a crash or
     // a normal completion. Exit NOW, with `status` above, and do NOT wait for
     // its process group (T-180's decision; this is also what the code did
     // before T-180). `status` is the application's EXIT CODE when it exited;
-    // when it died by a SIGNAL, the mapping above reports 143 for SIGTERM and
-    // 130 for EVERY other signal — so an OOM SIGKILL or a SIGSEGV reads as
-    // SIGINT (measured by qa-verification on T-180, QA-F2; the mapping is
-    // T-018's, unchanged here, and its fix is a separate ticket). Nobody asked for a drain, so there is no deadline to count from
+    // when it died by a SIGNAL it is 128 + signo (T-181), so a SIGKILL is 137
+    // and a SIGSEGV is 139 — each distinguishable, where until T-181 every
+    // signal but SIGTERM was flattened to 130 and read as SIGINT (measured by
+    // qa-verification on T-180, QA-F2). Nobody asked for a drain, so there is no deadline to count from
     // and no grace period running; waiting would only delay a restart by up
     // to GROUP_DRAIN_MS and hide the crash behind a quiet container. Anything
     // the application left in its group dies with this process, which is the
@@ -405,12 +478,24 @@ function runReal(script) {
     // by scripts/negative-tests/entrypoint-lifecycle.sh cases L05/L06.
     if (deadline === null) return void process.exit(status);
     if (sig !== null) {
-      // The direct child was killed by the signal we forwarded. On the shell
-      // path that is the shell, not the app, so this process must not claim
-      // the app exited cleanly — and must not exit yet either.
+      // THE LINE IS PER PATH, BECAUSE THE TRUTH IS PER PATH (T-181, the
+      // CONDITION tech-lead attached to T-180's second approval, TL-5). Until
+      // T-181 there was one sentence — "reporting N because this process cannot
+      // see the application's own exit status" — and on the ARGV path it is
+      // false: the direct child IS the application (`simple` is what chose that
+      // path, thirty lines up), so its signal death IS the application's own
+      // status and 137 IS the number to act on. Saying otherwise told an
+      // operator to discard the one true number this process has. On the SHELL
+      // path the sentence is right and stays, because the child that died is
+      // /bin/sh and the application's own status is behind it.
       log(
-        `the start command itself was ended by ${sig}; waiting for its process ` +
-          `group, and reporting ${String(status)} because this process cannot see the application's own exit status`,
+        simple
+          ? `the application itself (the start command, ${script}) was ended by ${sig}; ` +
+              `reporting ${String(status)} = 128 + ${String(signo ?? 0)}, which IS its own ` +
+              `signal death, and waiting for its process group`
+          : `the start command itself — /bin/sh -c (${script}) — was ended by ${sig}; waiting ` +
+              `for its process group, and reporting ${String(status)} = 128 + ${String(signo ?? 0)} ` +
+              `for the SHELL, because this process cannot see the application's own exit status`,
       );
     }
     waitForGroup(child.pid, status, signalledAt, deadline);
