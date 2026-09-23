@@ -2947,8 +2947,9 @@ console.log(
     `[${[...PID1_MODELLED_KEYS].sort().join(' ')} | ${[...PID1_NEUTRAL_KEYS].sort().join(' ')}], ` +
     `anything else REFUSED as unclassified — plus a DENY-LIST over environment NAMES: the ` +
     `MEASURED loader namespaces [LD_* DYLD_* NODE_* OPENSSL_*] and [PATH SSL_CERT_FILE ` +
-    `SSL_CERT_DIR CTLOG_FILE], less NODE_OPTIONS and NODE_ENV. **A VARIABLE NAME OUTSIDE THAT ` +
-    `DENY-LIST IS ADMITTED WITHOUT BEING READ** — OPENSSL_CONF was, until rework 2 measured it ` +
+    `SSL_CERT_DIR CTLOG_FILE], less NODE_OPTIONS and NODE_ENV. NOTE THE ASYMMETRY: A VARIABLE ` +
+    `NAME OUTSIDE THAT DENY-LIST IS ADMITTED WITHOUT BEING READ — OPENSSL_CONF was, until ` +
+    `rework 2 measured it ` +
     `loading a shared object into PID 1 (OE-44). T-183 is the allow-list that ends it — T-182 ` +
     `rework 2)`,
 );
