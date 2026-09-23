@@ -386,6 +386,13 @@ const cases = [
     // holds the group open. PID 1 reports 143 for the SHELL and says so. The
     // number is unchanged by T-181; the SENTENCE is what this case holds, and it
     // is red against 7411061, which printed one sentence for both paths.
+    //
+    // THE PAIR IS SYMMETRIC ON PURPOSE. L13 asserts the argv sentence present
+    // and the shell one absent; this case asserts the reverse. Without both
+    // absences, an entrypoint that printed BOTH lines would pass one of the two,
+    // and "the line is per path" would be a claim one step wider than what is
+    // held (PROTOCOL §5.1). Found by reading this ticket's own contract back
+    // against its cases.
     id: 'L14',
     label: 'SHELL path: SIGTERM kills /bin/sh, app ignores it -> 143 for the SHELL',
     env: { LC_MODE: 'ignore', LC_DRAIN_MS: '0', LC_HELPER: 'none' },
@@ -396,6 +403,7 @@ const cases = [
     asserts: [
       /the start command itself — \/bin\/sh -c \(node app\.js ; true\) — was ended by SIGTERM; waiting for its process group, and reporting 143 = 128 \+ 15 for the SHELL, because this process cannot see the application's own exit status/,
     ],
+    absent: [/which IS its own signal death/],
   },
   {
     // L15: THE BOUND, PINNED RATHER THAN DESCRIBED (T-181; tech-lead TL-1 on
