@@ -166,12 +166,25 @@ const SUITES: readonly Suite[] = [
     // compose key, `user:`, `pull_policy:`, LD_PRELOAD, a NODE_* nobody named,
     // PATH, `command:` as a string, the chaos overlay declaring an application
     // service, and a `secrets:` target — TEN refusals and FOUR controls. Two of
-    // the ten (196, 201) plant a key and a variable nobody in this family has
-    // named, because the closure is an ALLOW-LIST and that is the property to
-    // pin. No case removed, renamed, re-classed or re-planted in either change,
+    // the ten plant something nobody in this family has named: 196 a compose
+    // KEY, which is the ALLOW-LIST property (§7c), and 201 a variable inside a
+    // listed NAMESPACE, which is not the same property — §7d is a deny-list.
+    // No case removed, renamed, re-classed or re-planted in either change,
     // so OD-176(d)'s four conditions are not engaged — T-182 § Evidence and
     // § Rework 1.
-    cases: 199,
+    // 199 -> 204, 2026-09-23, T-182 rework 2 (OE-44, stakeholder ruling B):
+    // five cases (207-211) for §7d WIDENED BY MEASUREMENT. The orchestrator
+    // beat rework 1's four-namespace environment rule with `OPENSSL_CONF`
+    // inside `core`'s own `environment:` block at gate exit 0; node links
+    // OpenSSL 3.5.7 statically and that variable dlopens a module into PID 1
+    // (measured: a real .so ends PID 1 in node::InitializeOncePerProcess-
+    // Internal, SIGABRT, container ExitCode=139). OPENSSL_* is now a loader
+    // namespace and SSL_CERT_FILE/SSL_CERT_DIR/CTLOG_FILE are refused by name:
+    // FOUR refusals (207 compose, 208 the image's ENV, 209 a spelling nobody
+    // named, 210 the exact-name half) and ONE control (211, the scope). No
+    // existing case touched, so OD-176(d) is again not engaged — T-182
+    // § Rework 2.
+    cases: 204,
     state: 'GREEN',
     why: 'gate:app-images: every Dockerfile an overlay service builds, plus the suite’s own working-tree verdict (T-035, T-036, T-156)',
   },

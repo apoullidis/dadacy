@@ -1997,13 +1997,18 @@ mut "$DF" "$EP_LINE" 'ENTRYPOINT ["node", "--title", "kinvara", "/srv/kinvara/ap
 # (MEASURED: five mappings of the named object inside PID 1's own address space,
 # zero without it).
 #
-# THE CLOSURE IS TWO ALLOW-LISTS, NOT TWO MORE DENY ENTRIES (§7c/§7d), so the
-# cases below are not one per hazard: 196 and 201 plant a KEY and a VARIABLE
-# NOBODY IN THIS FAMILY HAS EVER NAMED, and they are refused because they are
-# not on a list rather than because they are on one. That is the property the
-# allow-list buys and it is what these two cases exist to pin. Every FAIL case
-# here is exit=0 GATE PASS under the gate as at e1e5bfa (the KINVARA_GATE_IMPL
-# differential, state/EP-1/T-182.md § Rework 1).
+# THE KEY HALF IS AN ALLOW-LIST; THE ENVIRONMENT HALF IS A DENY-LIST (§7c/§7d).
+# Rework 1 called both allow-lists and rework 2 had to correct that (OE-44), so
+# read these cases for what each pins:
+#   * 196 plants a compose KEY NOBODY IN THIS FAMILY HAS EVER NAMED and it is
+#     refused for not being classified — that is the allow-list property, and it
+#     is the case that would go green if §7c became a list of forbidden keys;
+#   * 201 plants a variable nobody named INSIDE a listed namespace (`NODE_*`).
+#     It pins the NAMESPACE, not an allow-list: a name outside every listed
+#     namespace is admitted WITHOUT being read, which is how `OPENSSL_CONF`
+#     reached GATE PASS at ae4eeea (cases 207-211, T-182 § Rework 2).
+# Every FAIL case here is exit=0 GATE PASS under the gate as at e1e5bfa (the
+# KINVARA_GATE_IMPL differential, state/EP-1/T-182.md § Rework 1).
 echo; echo "=== cases 193-206 (T-182 rework 1, QA-1): §7c/§7d — what PID 1 IS. pid:, an unclassified key, user:, pull_policy:, LD_PRELOAD, a NODE_* nobody named, PATH ==="
 # 193. QA-1's decisive plant: `pid: host`. Measured in a container above.
 mut "$BASE" "$CORE_HEAD" "$CORE_HEAD    pid: host
@@ -2099,6 +2104,73 @@ volumes:
         target: /srv/kinvara/app-runtime/entrypoint.mjs
 " \
   && run_case "206 a secrets: target over PID 1's script" FAIL "covers PID 1's script"
+
+# --- T-182 REWORK 2: §7d WIDENED BY MEASUREMENT (OE-44) ----------------------
+# The orchestrator defeated rework 1's four-namespace environment rule with
+# `OPENSSL_CONF: /srv/kinvara/evil.cnf` placed INSIDE `core`'s real
+# `environment:` block: exit=0, GATE PASS, `14 of 14` pairs printed as resolved.
+# Stakeholder ruling B on OE-44: widen by measurement, merge, cut `T-183` (the
+# environment ALLOW-LIST, anchored to a checked per-app manifest).
+#
+# WHAT WAS MEASURED, in the five shipping application images (all five run the
+# same node: sha256 3840e7a7…, v24.20.0, OpenSSL 3.5.7, Alpine 3.24.1/musl):
+#   * the objects mapped into a real node process are node, libstdc++, libgcc_s
+#     and ld-musl — so the loaders in PID 1 are musl's ld.so, node/V8, and the
+#     OpenSSL 3.5.7 node links STATICALLY (no libcrypto.so in ldd);
+#   * a FIFO-poison sweep over every env-name-shaped string in those four
+#     objects (if the process OPENs the value, open(2) blocks and the run is
+#     killed) found exactly three names OPENED: LD_PRELOAD (rework 1's hazard,
+#     the positive control), NODE_EXTRA_CA_CERTS (already NODE_*), and
+#     OPENSSL_CONF — at startup, before any application code;
+#   * OPENSSL_CONF LOADS CODE: with the app section spelled `nodejs_conf`
+#     (node's own config appname; `openssl_conf` is IGNORED), a `providers`
+#     section dlopens the module it names, and with a real .so PID 1 dies in
+#     node::InitializeOncePerProcessInternal — `Assertion failed:
+#     ncrypto::CSPRNG(nullptr, 0)`, SIGABRT, container ExitCode=139 — against a
+#     control that boots the app. OPENSSL_MODULES / OPENSSL_ENGINES /
+#     OPENSSL_CONF_INCLUDE each decide WHERE that code comes from.
+# So `OPENSSL_*` is a loader namespace here, and SSL_CERT_FILE/SSL_CERT_DIR/
+# CTLOG_FILE are refused as exact names on the argument (the sweep did NOT reach
+# them — stated in §7d rather than dressed as a measurement).
+# Every FAIL case below is exit=0 GATE PASS under the gate as at ae4eeea (the
+# KINVARA_GATE_IMPL differential, state/EP-1/T-182.md § Rework 2).
+echo; echo "=== cases 207-211 (T-182 rework 2, OE-44): §7d widened by measurement — OPENSSL_* loads code into PID 1 ==="
+# 207. OE-44's OWN CONSTRUCTION, reproduced in the valid form: the variable goes
+#      INSIDE core's existing environment: block (a second `environment:` key
+#      trips the pre-existing duplicate-key rule and would be a FAIL for the
+#      wrong reason — the orchestrator threw that first attempt away and so do we).
+mut "$BASE" "$CORE_ENV" "$CORE_ENV
+      OPENSSL_CONF: /srv/kinvara/evil.cnf" \
+  && run_case "207 OPENSSL_CONF via compose environment: (OE-44)" FAIL "LOADER's own namespace"
+# 208. The same name from the IMAGE's own ENV, the direction case 176 covers for
+#      NODE_OPTIONS. §7d reads both sources and this is the half a Dockerfile
+#      edit reaches. NOTE THE PLANT: app.Dockerfile:226-232 is ONE `ENV`
+#      instruction continued over seven lines, so the new variable needs the
+#      backslash — appending a bare line makes the file invalid and the gate
+#      then reads no such ENV at all (my first spelling of this case was exactly
+#      that mistake: exit=0 PASS for the wrong reason, T-182 § Rework 2).
+mut "$DF" '    NODE_OPTIONS=--enable-source-maps' '    NODE_OPTIONS=--enable-source-maps \
+    OPENSSL_CONF=/srv/kinvara/evil.cnf' \
+  && run_case "208 Dockerfile ENV OPENSSL_CONF" FAIL "LOADER's own namespace"
+# 209. THE NAMESPACE, not the name: `OPENSSL_ia32cap` is a spelling nobody in
+#      this family has named, and its tail is lower-case — it is refused because
+#      OPENSSL_ is a loader namespace, which is what this case pins (the sibling
+#      of 201, one namespace over).
+mut "$BASE" "$CORE_ENV" "$CORE_ENV
+      OPENSSL_ia32cap: '~0x20000000'" \
+  && run_case "209 an OPENSSL_* variable nobody named" FAIL "LOADER's own namespace"
+# 210. The EXACT-NAME half: an OpenSSL file input with no OPENSSL_ prefix. Its
+#      refusal message says it is refused on the ARGUMENT and that the sweep did
+#      not reach it, so the case pins the refusal and not a hazard measurement.
+mut "$BASE" "$CORE_ENV" "$CORE_ENV
+      SSL_CERT_FILE: /srv/kinvara/evil-ca.pem" \
+  && run_case "210 SSL_CERT_FILE — an OpenSSL file input, no prefix" FAIL "REFUSED ON THE ARGUMENT"
+# 211. THE CONTROL for 207-210, and it is the scope: the same variable on a
+#      service that is not an application service is nothing to do with §7d.
+mut "$BASE" '    image: stripe/stripe-mock:v0.194.0' '    image: stripe/stripe-mock:v0.194.0
+    environment:
+      OPENSSL_CONF: /srv/kinvara/evil.cnf' \
+  && run_case "211 OPENSSL_CONF on stripe-mock (stay green)" PASS
 
 echo
 run_case "99 tree restored" PASS
