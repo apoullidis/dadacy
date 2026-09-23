@@ -1419,12 +1419,16 @@ for (const [rel, users] of [...dockerfilesInUse].sort(([a], [b]) => a.localeComp
 //        the COPY/ADD that puts the script there plus anything later in the
 //        chain that rewrites it — and either mapped back to a repository file
 //        or REFUSED. §7b's docblock below lists those nine inputs, each with
-//        the case that falsifies it — and, since T-182's rework 1, the TWO
-//        ALLOW-LISTS that close the question the nine do not answer: which
-//        compose keys an application service may declare at all (§7c), and
-//        which environment variable NAMES may reach PID 1 (§7d). `pid: host`
-//        and `LD_PRELOAD` were green through the nine and are refused by
-//        those (qa-verification QA-1, cases 193-206).
+//        the case that falsifies it — and, since T-182's rework 1, the two
+//        rules that answer the question the nine do not: which compose keys an
+//        application service may declare at all (§7c, an ALLOW-LIST) and which
+//        environment variable NAMES may reach PID 1 (§7d, a DENY-LIST over the
+//        loader namespaces MEASURED to be in that process). `pid: host` and
+//        `LD_PRELOAD` were green through the nine and are refused by those
+//        (qa-verification QA-1, cases 193-206); `OPENSSL_CONF` was green
+//        through those four namespaces and is refused since rework 2, which
+//        widened §7d by measurement and named `T-183` as the ticket that
+//        replaces the deny-list with an allow-list (OE-44, cases 207-211).
 //        T-180 derived it from the image ENTRYPOINT of
 //        each application STAGE, which a compose `entrypoint:` replaces
 //        silently: measured GATE PASS with a 60 s copy of the entrypoint
@@ -1813,29 +1817,45 @@ for (const { svcs } of composedServices) {
 //     WHAT THEY DO NOT ANSWER IS A SECOND QUESTION: "WHAT IS PID 1, AND WHAT
 //     CODE IS LOADED INTO IT." `init:` was always in that class (3);
 //     qa-verification then reached the identical condition through `pid:` and
-//     `LD_PRELOAD`, both invisible in all nine and both GREEN (QA-1). That
-//     class is not a list of hazards — it is the KEY SPACE and the ENVIRONMENT
-//     namespace — so it is closed by two allow-lists rather than by more deny
-//     entries:
+//     `LD_PRELOAD`, both invisible in all nine and both GREEN (QA-1). The two
+//     halves of that class are NOT the same shape, and rework 2 was cut because
+//     rework 1's text said they were:
 //
-//       (10) §7c — an application service may declare only compose keys this
-//            gate has classified as MODELLED or as NEUTRAL (with the argument
-//            written beside each). Anything else is REFUSED, so a tenth key is
-//            impossible rather than uncaught.
-//       (11) §7d — a variable in a LOADER's own namespace (`LD_*`/`DYLD_*` per
-//            ld.so(8), `NODE_*` per node(1)), or `PATH`, is REFUSED, from
-//            compose `environment:` and from the image's own ENV. Only
-//            NODE_OPTIONS (read, token by token) and NODE_ENV (loads nothing)
-//            are admitted, so a new spelling inside either namespace is
-//            refused without this gate knowing it exists.
+//       (10) §7c — AN ALLOW-LIST, and it holds. An application service may
+//            declare only compose keys this gate has classified as MODELLED or
+//            as NEUTRAL (with the argument written beside each). Anything else
+//            is REFUSED, so a tenth KEY is impossible rather than uncaught.
+//            Independently attacked by the orchestrator with `userns_mode:`,
+//            a key nobody in this family had named: exit=1, GATE FAIL, 11 of 14
+//            (T-182 § Rework 2).
+//       (11) §7d — A DENY-LIST, and it is not the allow-list's twin. A variable
+//            in a MEASURED loader namespace (`LD_*`/`DYLD_*` per ld.so(8),
+//            `NODE_*` per node(1), `OPENSSL_*` for the OpenSSL 3.5.7 node links
+//            statically), or one of [`PATH` `SSL_CERT_FILE` `SSL_CERT_DIR`
+//            `CTLOG_FILE`], is REFUSED, from compose `environment:` and from
+//            the image's own ENV. NODE_OPTIONS (read, token by token) and
+//            NODE_ENV (loads nothing) are admitted. A NAME OUTSIDE THAT LIST IS
+//            ADMITTED WITHOUT BEING READ: rework 1 enumerated four namespaces
+//            and called the class closed, and the orchestrator then defeated it
+//            with `OPENSSL_CONF` inside `core`'s own `environment:` block —
+//            exit=0, GATE PASS, `14 of 14` printed as resolved (OE-44). Rework 2
+//            WIDENED the list by measuring which names actually load code into
+//            PID 1 in these images (§7d's docblock has every measurement) and
+//            states the shape honestly rather than claiming the class is shut.
+//            **`T-183` is the successor that ends it: the environment
+//            allow-list, anchored to a checked per-app manifest.**
 //
-//     So the fail-closed claim is now: an input that changes what PID 1 runs
-//     is refused by the resolution, and an input that changes what PID 1 IS
-//     reaches a green run only by being spelled OUTSIDE the composed file —
-//     which is where § Published contract §3's residue lives, and it is
-//     specific: a RUN that rewrites the file without naming it, anything
-//     decided inside the application image's own base image, ECS, and a flag
-//     typed at a shell.
+//     So the fail-closed claim, at the width it actually holds: an input that
+//     changes what PID 1 RUNS is refused by the resolution; a compose KEY that
+//     changes what PID 1 IS is refused unless it has been classified here; and
+//     an ENVIRONMENT VARIABLE that changes what PID 1 is, or loads code into
+//     it, is refused if its name is in a measured loader namespace — and is
+//     NOT read at all if it is not. § Published contract §3's residue lists
+//     what else is out of reach: a RUN that rewrites the file without naming
+//     it, anything decided inside the application image's own base image, ECS,
+//     a flag typed at a shell, a hazard in the VALUE of an allow-listed key,
+//     and — since rework 2 — every environment variable name outside §7d's
+//     measured list.
 // ---------------------------------------------------------------------------
 
 /** The image's resolved ENTRYPOINT argv and stage chain, per (dockerfile, target). */
@@ -2224,11 +2244,60 @@ const PID1_KEY_NOTES: Readonly<Record<string, string>> = {
  *   * node reads `NODE_*` (node(1) ENVIRONMENT: NODE_OPTIONS, NODE_REPL_*,
  *     NODE_EXTRA_CA_CERTS, …).
  *
- * So a new spelling INSIDE either namespace is refused without this gate
- * knowing it exists, which is the same property §7c gives the key space. Two
- * names are read rather than refused: NODE_OPTIONS (input (5), resolved token
- * by token) and NODE_ENV (it selects behaviour in the application, loads
- * nothing, and every application service declares it).
+ * So a new spelling INSIDE a listed namespace is refused without this gate
+ * knowing it exists. Two names are read rather than refused: NODE_OPTIONS
+ * (input (5), resolved token by token) and NODE_ENV (it selects behaviour in
+ * the application, loads nothing, and every application service declares it).
+ *
+ * ================= THIS RULE IS A DENY-LIST, NOT AN ALLOW-LIST =============
+ * READ THIS BEFORE TRUSTING A GREEN RUN. §7c (the KEY space) is an allow-list:
+ * a key nobody classified fails closed. §7d is NOT its twin. It enumerates the
+ * namespaces of the loaders MEASURED to be in PID 1's process, and a variable
+ * name OUTSIDE them is ADMITTED WITHOUT BEING READ. T-182 rework 1 stated four
+ * namespaces and treated the class as closed; the orchestrator then defeated it
+ * with `OPENSSL_CONF` placed inside `core`'s own `environment:` block —
+ * exit=0, GATE PASS, `14 of 14` pairs printed as resolved (T-182 § Rework 2,
+ * the OE-44 route, stakeholder ruling B: widen by measurement, merge, cut a
+ * successor). THE SUCCESSOR IS `T-183`: the environment ALLOW-LIST, anchored to
+ * a checked per-app manifest. Until it lands, the honest statement of what a
+ * green §7d run means is: "no variable in a MEASURED loader namespace", never
+ * "no variable that can load code".
+ *
+ * WHAT REWORK 2 MEASURED, on the five shipping application images (all five run
+ * the SAME node: sha256 3840e7a7…, v24.20.0, OpenSSL 3.5.7, Alpine 3.24.1, musl
+ * — kinvara/{core,safety-gw,web,admin,worker}:dev, T-182 § Rework 2 M4/M5):
+ *   * the objects mapped into a real node process are exactly four — the node
+ *     binary, libstdc++, libgcc_s and /lib/ld-musl-x86_64.so.1. So the loaders
+ *     in PID 1 are musl's ld.so, node/V8/libuv, and the OpenSSL 3.5.7 that node
+ *     links STATICALLY (there is no libcrypto.so in ldd output);
+ *   * instrument, over every env-name-shaped string in those four objects: set
+ *     the name to the path of a FIFO with no writer. If the process OPENs the
+ *     value, open(2) blocks and the run is killed (status >= 124); if the name
+ *     is never used as a path, the workload completes at 0. Measured OPENED:
+ *     LD_PRELOAD (the rework-1 hazard, positive control), NODE_EXTRA_CA_CERTS
+ *     (already in NODE_*), and **OPENSSL_CONF** — at startup, before any
+ *     application code. Measured not-opened: OPENSSL_MODULES, OPENSSL_ENGINES,
+ *     OPENSSL_CONF_INCLUDE, SSL_CERT_FILE, SSL_CERT_DIR, CTLOG_FILE,
+ *     ARES_RAND_FILE, ICU_TIMEZONE_FILES_DIR, MUSL_LOCPATH, NLSPATH, DATEMSK,
+ *     TZ, TMPDIR, GLIBCXX_TUNABLES, UV_THREADPOOL_SIZE, LD_LIBRARY_PATH, and
+ *     the negative control KINVARA_NOT_A_LOADER;
+ *   * OPENSSL_CONF LOADS CODE, and that is the point: with the app section
+ *     spelled `nodejs_conf` (node's own config appname — `openssl_conf` is
+ *     IGNORED, which is why a naive probe shows nothing), a `providers` section
+ *     whose `module` is a FIFO blocks the process at startup — the dlopen was
+ *     attempted — and a `module` naming a REAL shared object (/usr/lib/libz.so.1)
+ *     ends PID 1 inside node::InitializeOncePerProcessInternal with
+ *     `Assertion failed: ncrypto::CSPRNG(nullptr, 0)`, SIGABRT, container
+ *     ExitCode=139 against a control that boots the app. An `engines` section's
+ *     `dynamic_path` does the same, and OPENSSL_MODULES / OPENSSL_ENGINES /
+ *     OPENSSL_CONF_INCLUDE each decide WHERE that code is loaded from once a
+ *     config names one (each measured OPENED in that arrangement). So the whole
+ *     OPENSSL_ prefix is treated as a loader namespace, exactly as LD_ is;
+ *   * SSL_CERT_FILE, SSL_CERT_DIR and CTLOG_FILE are OpenSSL's other file
+ *     inputs in the same statically linked library. They are REFUSED on the
+ *     argument — not on a measurement: the sweep above did NOT reach them
+ *     (node uses its bundled CA store unless the application asks for the
+ *     OpenSSL one), and refusing them is the fail-closed direction.
  *
  * PATH is in the family for a measured reason: the image's resolved ENTRYPOINT
  * is ["node", "/srv/kinvara/app-runtime/entrypoint.mjs"] — `node` with NO
@@ -2239,12 +2308,28 @@ const PID1_KEY_NOTES: Readonly<Record<string, string>> = {
  * second key to put a `node` on the new PATH, and it is refused here either
  * way rather than argued about.
  */
-const ENV_LOADER_NAMESPACE = /^(?:LD_|DYLD_|NODE_)/;
+/**
+ * The loader namespaces MEASURED to be in PID 1's process (see the docblock
+ * above for each measurement). OPENSSL_ was added by T-182 rework 2 after the
+ * OE-44 route: node links OpenSSL 3.5.7 statically, and OPENSSL_CONF loads a
+ * shared object into PID 1 at startup. `DYLD_` is not reachable on these Linux
+ * images and is kept because the same compose file describes the estate T-003
+ * owns; it costs nothing and it is the ld.so namespace on Darwin.
+ */
+const ENV_LOADER_NAMESPACE = /^(?:LD_|DYLD_|NODE_|OPENSSL_)/;
+/**
+ * Exact names outside every prefix above. PATH is measured (it decides which
+ * binary is PID 1); the three OpenSSL file inputs are refused on the argument
+ * that the library reading them is in this process, with the measurement that
+ * did NOT reach them stated rather than hidden (T-182 § Rework 2).
+ */
+const ENV_LOADER_EXACT = new Set(['SSL_CERT_FILE', 'SSL_CERT_DIR', 'CTLOG_FILE']);
 const ENV_FAMILY_READ = new Set(['NODE_OPTIONS']);
 const ENV_FAMILY_INERT = new Set(['NODE_ENV']);
-const envNameVerdict = (k: string): 'ok' | 'loader' | 'path' => {
+const envNameVerdict = (k: string): 'ok' | 'loader' | 'path' | 'ossl-file' => {
   if (k === 'PATH') return 'path';
   if (ENV_FAMILY_READ.has(k) || ENV_FAMILY_INERT.has(k)) return 'ok';
+  if (ENV_LOADER_EXACT.has(k)) return 'ossl-file';
   return ENV_LOADER_NAMESPACE.test(k) ? 'loader' : 'ok';
 };
 
@@ -2444,6 +2529,18 @@ function resolvePid1(
     for (const key of names) {
       const v = envNameVerdict(key);
       if (v === 'ok') continue;
+      if (v === 'ossl-file') {
+        return {
+          why:
+            `sets ${key} in ${source}. node links OpenSSL 3.5.7 STATICALLY into PID 1's own ` +
+            `binary (measured: no libcrypto.so in ldd, T-182 § Rework 2 M4), and ${key} is one ` +
+            `of that library's file inputs. REFUSED ON THE ARGUMENT, NOT ON A MEASUREMENT: the ` +
+            `FIFO sweep of § Rework 2 M5 did NOT observe this name being opened under either ` +
+            `workload, because node uses its bundled CA store unless the application asks for ` +
+            `OpenSSL's — refusing it is the fail-closed direction, and admitting it is a review ` +
+            `decision in ENV_LOADER_EXACT in scripts/gates/app-images.ts (T-182 rework 2, §7d)`,
+        };
+      }
       return {
         why:
           v === 'path'
@@ -2453,15 +2550,20 @@ function resolvePid1(
               `('exec: "node": executable file not found in $PATH', docker run exit 127). The ` +
               `silent direction puts a different \`node\` first on the path. Refused rather than ` +
               `resolved (T-182 rework 1, §7d)`
-            : `sets ${key} in ${source}, which is in a LOADER's own namespace: the dynamic ` +
-              `loader reads LD_*/DYLD_* (ld.so(8)) and node reads NODE_* (node(1) ENVIRONMENT), ` +
-              `so a variable there can put code into PID 1's process without naming a file this ` +
-              `gate reads. MEASURED for LD_PRELOAD on kinvara/core:dev (qa-verification QA-1, ` +
-              `reproduced in T-182 § Rework 1 M2): five mappings of the named object inside PID ` +
-              `1's OWN address space (grep -c libz /proc/1/maps) against zero without it — ` +
-              `NODE_OPTIONS' --require hazard by way of ld.so instead of node. Only ` +
-              `NODE_OPTIONS (resolved token by token, input (5)) and NODE_ENV (it loads nothing) ` +
-              `are read; anything else in those namespaces is refused (T-182 rework 1, §7d)`,
+            : `sets ${key} in ${source}, which is in a LOADER's own namespace. The loaders in ` +
+              `PID 1's process are MEASURED, not assumed (T-182 § Rework 2 M4): musl's ld.so ` +
+              `(LD_*, and DYLD_* where it is Darwin's), node/V8 (NODE_*, node(1) ENVIRONMENT), ` +
+              `and the OpenSSL 3.5.7 node links STATICALLY (OPENSSL_*). A variable there can put ` +
+              `code into PID 1 without naming a file this gate reads: MEASURED for LD_PRELOAD ` +
+              `(five mappings of the named object in PID 1's own /proc/1/maps against zero ` +
+              `without it — § Rework 1 M2) and for OPENSSL_CONF (a \`providers\` section under ` +
+              `the \`nodejs_conf\` app name dlopens the module it names; with a real .so PID 1 ` +
+              `dies in node::InitializeOncePerProcessInternal, SIGABRT, ExitCode=139 — ` +
+              `§ Rework 2 M5/M6). Only NODE_OPTIONS (resolved token by token, input (5)) and ` +
+              `NODE_ENV (it loads nothing) are read; anything else in those namespaces is ` +
+              `refused. NOTE THE BOUND: §7d is a DENY-LIST over measured namespaces, so a name ` +
+              `outside them is admitted WITHOUT being read — T-183 is the allow-list that ends ` +
+              `that (T-182 rework 2, §7d)`,
       };
     }
   }
@@ -2832,10 +2934,15 @@ console.log(
     `${pid1Resolved.join(' ')}` +
     `  (WHICH FILE: the image ENTRYPOINT/CMD, compose entrypoint:/command:/init:/working_dir:/` +
     `stop_signal:/env_file:, NODE_OPTIONS, every mount target, and the COPY/ADD that puts the ` +
-    `script there. WHAT PID 1 IS: two ALLOW-LISTS — only these compose keys on an application ` +
-    `service [${[...PID1_MODELLED_KEYS].sort().join(' ')} | ${[...PID1_NEUTRAL_KEYS].sort().join(' ')}], ` +
-    `and no variable in a loader namespace [LD_* DYLD_* NODE_*, PATH] except NODE_OPTIONS and ` +
-    `NODE_ENV. Anything unresolved or unclassified is REFUSED, never defaulted — T-182 rework 1)`,
+    `script there — anything unresolved is REFUSED, never defaulted. WHAT PID 1 IS: an ` +
+    `ALLOW-LIST over compose KEYS — only these on an application service ` +
+    `[${[...PID1_MODELLED_KEYS].sort().join(' ')} | ${[...PID1_NEUTRAL_KEYS].sort().join(' ')}], ` +
+    `anything else REFUSED as unclassified — plus a DENY-LIST over environment NAMES: the ` +
+    `MEASURED loader namespaces [LD_* DYLD_* NODE_* OPENSSL_*] and [PATH SSL_CERT_FILE ` +
+    `SSL_CERT_DIR CTLOG_FILE], less NODE_OPTIONS and NODE_ENV. **A VARIABLE NAME OUTSIDE THAT ` +
+    `DENY-LIST IS ADMITTED WITHOUT BEING READ** — OPENSSL_CONF was, until rework 2 measured it ` +
+    `loading a shared object into PID 1 (OE-44). T-183 is the allow-list that ends it — T-182 ` +
+    `rework 2)`,
 );
 console.log(
   `  app services held to it (§7)    ${String(graceWhy.size)}: ${graceSeen.join(' ')}` +
