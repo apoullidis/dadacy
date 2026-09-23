@@ -2568,10 +2568,18 @@ function resolvePid1(
               `the \`nodejs_conf\` app name dlopens the module it names; with a real .so PID 1 ` +
               `dies in node::InitializeOncePerProcessInternal, SIGABRT, ExitCode=139 — ` +
               `§ Rework 2 M5/M6). Only NODE_OPTIONS (resolved token by token, input (5)) and ` +
-              `NODE_ENV (it loads nothing) are read; anything else in those namespaces is ` +
-              `refused. NOTE THE BOUND: §7d is a DENY-LIST over measured namespaces, so a name ` +
-              `outside them is admitted WITHOUT being read — T-183 is the allow-list that ends ` +
-              `that (T-182 rework 2, §7d)`,
+              `NODE_ENV (it loads nothing) are read; every other name in those namespaces is ` +
+              `refused AS THE COMPOSED FILE SPELLS IT. NOTE THE TWO BOUNDS. (1) §7d is a ` +
+              `DENY-LIST over measured namespaces, so a name OUTSIDE them is admitted WITHOUT ` +
+              `being read. (2) IT IS THE COMMITTED SPELLING THAT IS READ, so a name INSIDE ` +
+              `them is unread too when compose ASSEMBLES it: a list-form environment: entry ` +
+              `whose \${...} interpolation splits the namespace prefix is admitted — MEASURED, ` +
+              `with the interpolating variable UNSET (compose interpolates a blank string): ` +
+              `- L\${X}D_PRELOAD=/usr/lib/libz.so.1 and - PAT\${X}H=/opt/qa:... reach GATE ` +
+              `PASS while compose resolves LD_PRELOAD and PATH, against plainly-spelled ` +
+              `controls that are refused; - LD_\${X}=..., - OPENSSL_\${X}=... and an ` +
+              `interpolated VALUE are all still refused (T-182 § tech-lead TL-1). T-183 is ` +
+              `the allow-list that ends BOTH bounds (T-182 rework 2, §7d)`,
       };
     }
   }
@@ -2947,11 +2955,16 @@ console.log(
     `[${[...PID1_MODELLED_KEYS].sort().join(' ')} | ${[...PID1_NEUTRAL_KEYS].sort().join(' ')}], ` +
     `anything else REFUSED as unclassified — plus a DENY-LIST over environment NAMES: the ` +
     `MEASURED loader namespaces [LD_* DYLD_* NODE_* OPENSSL_*] and [PATH SSL_CERT_FILE ` +
-    `SSL_CERT_DIR CTLOG_FILE], less NODE_OPTIONS and NODE_ENV. NOTE THE ASYMMETRY: A VARIABLE ` +
-    `NAME OUTSIDE THAT DENY-LIST IS ADMITTED WITHOUT BEING READ — OPENSSL_CONF was, until ` +
-    `rework 2 measured it ` +
-    `loading a shared object into PID 1 (OE-44). T-183 is the allow-list that ends it — T-182 ` +
-    `rework 2)`,
+    `SSL_CERT_DIR CTLOG_FILE], less NODE_OPTIONS and NODE_ENV, EACH READ AS THE COMPOSED FILE ` +
+    `SPELLS IT. NOTE THE ASYMMETRY, BOTH HALVES OF IT: a NAME OUTSIDE that deny-list is ` +
+    `ADMITTED WITHOUT BEING READ — OPENSSL_CONF was, until rework 2 measured it loading a ` +
+    `shared object into PID 1 (OE-44) — AND a name ON it is admitted too when the committed ` +
+    `spelling does not carry it, because §7d reads the NAME AS THE FILE SPELLS IT: a list-form ` +
+    `environment: entry whose \${...} interpolation splits the namespace prefix is unread ` +
+    `(MEASURED with the variable UNSET: - L\${X}D_PRELOAD= and - PAT\${X}H= reach GATE PASS ` +
+    `with this line counting the pair as RESOLVED, while compose resolves LD_PRELOAD and ` +
+    `PATH — T-182 § tech-lead TL-1). T-183 is the allow-list that ends BOTH halves — ` +
+    `T-182 rework 2)`,
 );
 console.log(
   `  app services held to it (§7)    ${String(graceWhy.size)}: ${graceSeen.join(' ')}` +
