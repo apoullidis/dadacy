@@ -165,10 +165,22 @@ const SUITES: readonly Suite[] = [
     // what code is loaded into it. `pid:` (two spellings), an unclassified
     // compose key, `user:`, `pull_policy:`, LD_PRELOAD, a NODE_* nobody named,
     // PATH, `command:` as a string, the chaos overlay declaring an application
-    // service, and a `secrets:` target — TEN refusals and FOUR controls. Two of
-    // the ten plant something nobody in this family has named: 196 a compose
-    // KEY, which is the ALLOW-LIST property (§7c), and 201 a variable inside a
-    // listed NAMESPACE, which is not the same property — §7d is a deny-list.
+    // service, and a `secrets:` target. THE REFUSAL/CONTROL SPLIT IS NOT
+    // WRITTEN HERE. It read "TEN refusals and FOUR controls" until 2026-09-23
+    // and it was wrong; it is DELETED rather than re-numbered, because OD-207
+    // rules that the SHAPE is the defect — a hand-written count beside a live
+    // literal is not checked by anything and must be re-derived by hand every
+    // time the literal moves, and on this ticket it moved five times (161 ->
+    // 185 -> 199 -> 204). This was the THIRD live instance of that shape in
+    // this comment block: OD-204's is the first, corrected in the 161 -> 185
+    // entry above, and this one was written twelve lines below that correction
+    // in the same breath. The instrument, which is the literal a reader can
+    // check: `grep -oE 'run_case "(19[3-9]|20[0-6]) [^"]*" (PASS|FAIL)'
+    // scripts/negative-tests/app-images.sh | awk '{print $NF}' | sort |
+    // uniq -c`. Two of these cases plant something nobody in this family has
+    // named: 196 a compose KEY, which is the ALLOW-LIST property (§7c), and
+    // 201 a variable inside a listed NAMESPACE, which is not the same
+    // property — §7d is a deny-list.
     // No case removed, renamed, re-classed or re-planted in either change,
     // so OD-176(d)'s four conditions are not engaged — T-182 § Evidence and
     // § Rework 1.

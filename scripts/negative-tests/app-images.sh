@@ -2057,9 +2057,13 @@ mut "$BASE" "$CORE_HEAD" "$CORE_HEAD    restart: 'no'
 mut "$BASE" "$CORE_ENV" "$CORE_ENV
       LD_PRELOAD: /usr/lib/libz.so.1" \
   && run_case "200 LD_PRELOAD via compose environment:" FAIL "LOADER's own namespace"
-# 201. §7d's OWN allow-list case, the sibling of 196: a variable NOBODY has
-#      named, refused because NODE_* is a namespace node reads, not because
-#      anyone enumerated this spelling.
+# 201. §7d's NAMESPACE case, and it is NOT the sibling of 196: §7d has no
+#      allow-list at all (the block comment above this group says so in the
+#      ticket's own words, and rework 2 was bounded to remove that framing).
+#      A variable NOBODY has named, refused because NODE_* is a namespace node
+#      reads, not because anyone enumerated this spelling. What 196 pins is the
+#      ALLOW-LIST over compose KEYS (§7c); what this pins is one namespace on a
+#      DENY-LIST (§7d), and the two properties are not the same.
 mut "$BASE" "$CORE_ENV" "$CORE_ENV
       NODE_REPL_EXTERNAL_MODULE: /srv/kinvara/app-runtime/pre.mjs" \
   && run_case "201 a NODE_* variable §7d does not admit" FAIL "LOADER's own namespace"
@@ -2070,7 +2074,21 @@ mut "$BASE" "$CORE_ENV" "$CORE_ENV
       PATH: /opt/qa:/usr/local/bin:/usr/bin:/bin" \
   && run_case "202 PATH via compose environment:" FAIL "WHICH BINARY is PID 1"
 # 203. THE CONTROL for 200-202: a variable in no loader's namespace is green.
-#      §7d refuses a NAMESPACE, not `environment:`.
+#      §7d refuses a NAMESPACE, not `environment:`. AND THIS GREEN *IS* THE
+#      DECLARED HOLE, not merely a control: § Published contract 1 makes it the
+#      proof of the bound and § contract 3 makes "203 staying green" the
+#      falsifying test for it — a name OUTSIDE every measured namespace is
+#      admitted WITHOUT being read. If this case ever reds, §7d has stopped
+#      being a deny-list. `T-183` (the per-app allow-list) is what ends it.
+#      THE BOUND HAS A SECOND HALF AND IT DELIBERATELY HAS NO CASE HERE: §7d
+#      reads the NAME AS THE COMPOSED FILE SPELLS IT, so a list-form
+#      `environment:` entry whose ${...} interpolation splits the namespace
+#      prefix is unread even though the name IS on the deny-list — measured by
+#      tech-lead with the interpolating variable unset (T-182 § tech-lead TL-1:
+#      `- L${X}D_PRELOAD=` and `- PAT${X}H=` at exit=0 GATE PASS against
+#      plainly-spelled controls at exit=1). Adding a case for it would move this
+#      suite's footer and the pin, which is the rework tech-lead's approval
+#      declined; closing it is `T-183`'s condition C3.
 mut "$BASE" "$CORE_ENV" "$CORE_ENV
       KINVARA_T182_PROBE: '1'" \
   && run_case "203 an env var in no loader namespace (stay green)" PASS

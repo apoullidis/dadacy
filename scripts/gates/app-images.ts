@@ -2186,7 +2186,22 @@ const PID1_MODELLED_KEYS: readonly string[] = [
  * reviewer has to check when a key is added:
  *
  *   profiles      selects WHETHER the service starts, never what it runs.
- *   labels        metadata; read by scripts/svc, never by exec.
+ *   labels        metadata; read by scripts/svc, never by exec — but NEUTRAL
+ *                 here is a statement about the EXEC PATH, and that is not the
+ *                 only axis a labels: edit moves. io.kinvara.built-by is one
+ *                 of the ways the APPLICATION-SERVICE SET is derived, so
+ *                 editing labels: changes WHICH services §7 holds to the rule
+ *                 at all. It is NEUTRAL only because that set's MEMBERSHIP is
+ *                 ANCHORED OUTSIDE the file being checked, against the
+ *                 workspace's own apps directory (OD-38 — asserted above,
+ *                 where appServices and declaredByLabel are cross-checked;
+ *                 search BUILT_BY in this file; recorded in CONTRACTS.md and
+ *                 pinned by T-039 cases 64/65). MEASURED, not argued:
+ *                 deleting safety-gw's two built-by lines gives exit=1 GATE
+ *                 FAIL while §7b still counts the service in its pair total,
+ *                 so it is a FAILURE and not a silent demotion (T-182
+ *                 § tech-lead TL-5). WEAKEN OR RELOCATE THAT ANCHOR AND THIS
+ *                 CLASSIFICATION IS WRONG.
  *   networks      the namespace the process joins after exec (and the egress
  *                 boundary's own subject — gate:egress-boundary).
  *   expose        documentation of a port; publishes nothing.

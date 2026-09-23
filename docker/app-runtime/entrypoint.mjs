@@ -259,9 +259,17 @@ const SIMPLE_COMMAND = /^[A-Za-z0-9_@.:/+,-]+(?: [A-Za-z0-9_@.:/+=,-]+)*$/;
  *      gate — case 196 plants one, and the orchestrator independently planted
  *      `userns_mode:` and got exit=1, GATE FAIL, 11 of 14. `pid:`, `user:` and
  *      `pull_policy: always` are refused as members of the class rather than as
- *      entries on a list (cases 193-206: TEN refusals and FOUR controls, of
- *      which the eight inside 193-202 were GREEN at T-182's first head
- *      `e1e5bfa`);
+ *      entries on a list (cases 193-206. THE REFUSAL/CONTROL SPLIT IS NOT
+ *      WRITTEN HERE, and that is OD-207: a hand-written count beside a live
+ *      literal is a defect on sight, whether or not it is currently correct —
+ *      this one said "TEN refusals and FOUR controls" until 2026-09-23 and was
+ *      wrong. The instrument is the suite's own run_case verdicts:
+ *      `grep -oE 'run_case "(19[3-9]|20[0-6]) [^"]*" (PASS|FAIL)'
+ *      scripts/negative-tests/app-images.sh | awk '{print $NF}' | sort |
+ *      uniq -c`. Eight of them, all inside 193-202, were GREEN at T-182's
+ *      first head `e1e5bfa` — a PAST state at a NAMED commit, measured by the
+ *      KINVARA_GATE_IMPL differential in state/EP-1/T-182.md § Rework 1 D,
+ *      which is the R1 register and not a sibling of a literal);
  *    * the ENVIRONMENT space is a DENY-LIST (§7d), and a variable name outside
  *      it is ADMITTED WITHOUT BEING READ. Rework 1 listed four namespaces
  *      (`LD_*`/`DYLD_*`/`NODE_*`, plus `PATH`) and called the class closed; the
