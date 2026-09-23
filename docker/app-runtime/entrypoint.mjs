@@ -238,7 +238,8 @@ const SIMPLE_COMMAND = /^[A-Za-z0-9_@.:/+,-]+(?: [A-Za-z0-9_@.:/+=,-]+)*$/;
  *  from this image's own ENV, a node flag that loads code or takes a separate
  *  value, `env_file:`, a RUN that rewrites this file after its COPY, an ADDed
  *  archive, and a `stop_signal:` this process installs no handler for are each
- *  REFUSED, with a case apiece (169-192: SIXTEEN refusals and EIGHT controls). Every one of
+ *  REFUSED, with a case apiece (cases 169-192; for the refusal/control split run the
+ *  run_case instrument named below over that range instead — OD-207). Every one of
  *  those was GREEN before T-182 EXCEPT a flag taking a separate value, which
  *  was already refused for a different reason (it could not be mapped to a
  *  repository file) and is now refused as the flag it is. And the first was not

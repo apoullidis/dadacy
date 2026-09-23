@@ -2126,9 +2126,13 @@ function mountTargets(
 //     this ticket was cut in the first place: seven patches for seven members
 //     is a failed ticket even if every case is green. The second question's
 //     space is not a list of hazards — it is THE KEY SPACE ITSELF, which is far
-//     wider than the fifteen keys §7 reads and grows with compose. (No count of
-//     the compose spec's keys is stated here, because none was taken —
-//     PROTOCOL §5.3 R1, and the argument does not need one.) So this is an
+//     wider than the keys §7 reads (PID1_MODELLED_KEYS and PID1_NEUTRAL_KEYS
+//     below are the literals; no count of them is written here, because a hand
+//     count beside a live literal is OD-207's defect on sight, and the printed
+//     §7b line already emits both lists from the literals themselves) and grows
+//     with compose. (No count of the compose spec's keys is stated here either,
+//     because none was taken — PROTOCOL §5.3 R1, and the argument does not
+//     need one.) So this is an
 //     ALLOW-LIST:
 //
 //       an application service may declare ONLY keys this gate has classified,
