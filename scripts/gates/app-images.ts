@@ -2137,17 +2137,25 @@ function mountTargets(
 //       it — the argument is beside each). ANYTHING ELSE IS REFUSED and the
 //       pair is UNRESOLVED.
 //
-//     A tenth spelling is then IMPOSSIBLE rather than merely uncaught: a key
-//     nobody has thought of fails closed, and admitting one is a decision made
-//     in this file, in review, with its argument written down. The allow-list
-//     earned its keep immediately — it refused three keys nobody in this family
-//     had named (`pull_policy:`, `user:`, `userns_mode:`), and `pull_policy:`
-//     turned out to be MODELLED rather than neutral (below).
+//     A tenth KEY is then IMPOSSIBLE rather than merely uncaught: a key nobody
+//     has thought of fails closed, and admitting one is a decision made in this
+//     file, in review, with its argument written down. The allow-list earned its
+//     keep immediately — it refused three keys nobody in this family had named
+//     (`pull_policy:`, `user:`, `userns_mode:`), and `pull_policy:` turned out
+//     to be MODELLED rather than neutral (below). It has also been attacked from
+//     outside: the orchestrator planted its own novel key `userns_mode: host`
+//     and got exit=1, GATE FAIL, 11 of 14 (OE-44, 2026-09-22T21:30:48Z). THAT
+//     SENTENCE IS ABOUT KEYS AND ONLY KEYS — the same orchestrator pass beat the
+//     ENVIRONMENT half in the same hour, which is why §7d below now says out
+//     loud that it is a deny-list.
 //
 //     WHAT IT DOES NOT CLOSE, stated rather than implied: a value inside an
 //     allow-listed key (`environment:` is allow-listed, and LD_PRELOAD lives
-//     in it) — which is why §7d below is a second, name-derived rule, and why
-//     the two together are the claim rather than either alone.
+//     in it) — which is why §7d below is a second, name-derived rule. The two
+//     together are the claim rather than either alone, AND THE SECOND ONE IS
+//     WEAKER THAN THIS ONE: §7d enumerates the loader namespaces measured to be
+//     in PID 1's process, so a variable name outside them is admitted without
+//     being read. `T-183` is the allow-list that ends that half.
 
 /**
  * Keys §7 reads. Each either resolves (and its case is in § Published contract

@@ -2026,8 +2026,10 @@ mut "$BASE" "$SM_HEAD" "$SM_HEAD    pid: host
   && run_case "195 pid: host on stripe-mock (stay green)" PASS
 # 196. THE ALLOW-LIST ITSELF: a compose key NOBODY in this family has named, on
 #      an application service. It is refused because it is not classified — not
-#      because anyone wrote a rule about capabilities. A tenth spelling is
-#      IMPOSSIBLE here rather than uncaught, and this is the case that says so.
+#      because anyone wrote a rule about capabilities. A tenth KEY is IMPOSSIBLE
+#      here rather than uncaught, and this is the case that says so — the claim
+#      is about KEYS, not about the environment half, which is a deny-list
+#      (cases 207-211).
 mut "$BASE" "$CORE_HEAD" "$CORE_HEAD    cap_add: ['SYS_ADMIN']
 " \
   && run_case "196 a compose key §7 has not classified (cap_add:)" FAIL "has not classified"
