@@ -232,7 +232,7 @@ const SIMPLE_COMMAND = /^[A-Za-z0-9_@.:/+,-]+(?: [A-Za-z0-9_@.:/+=,-]+)*$/;
  *  saying work was cut. Measured in the container: a SIGINT both app and helper
  *  ignored, then `docker stop` 27 s later, exited in 1.11 s with `helper:
  *  drained` never printed, against 25.18 s for the identical pair without the
- *  earlier SIGINT (tech-lead on T-180; re-measured on T-181 as case L14, which
+ *  earlier SIGINT (tech-lead on T-180; re-measured on T-181 as case L15, which
  *  PINS this behaviour so it cannot change in silence). IT IS NOT A DEFECT THIS
  *  FILE CAN FIX, and T-181 measured the candidate fix rather than arguing it:
  *  re-anchoring on a signal that arrives after the deadline has passed does

@@ -48,9 +48,9 @@
  *        it repairs this case and turns an app draining past the deadline under
  *        ONE stop into ExitCode=137 at the grace, which is what T-179/T-180
  *        exist to remove. This case is therefore the GUARD ON THE DECISION — it
- *        is red against a re-anchoring entrypoint (measured: 51605 ms, `helper:
- *        drained` printed) and L01-L14 are all green against that same variant,
- *        so nothing else here would catch the change.
+ *        is red against a re-anchoring entrypoint (measured, T-181 § E8: 51605 ms
+ *        and `helper: drained` printed) while L01-L14 are all green against that
+ *        same variant, so nothing else here would catch the change.
  *
  * WHAT IT DOES NOT JUDGE. It runs entrypoint.mjs as an ordinary process in
  * whatever container runs this suite, NOT as PID 1, so it does not reproduce a
@@ -327,7 +327,8 @@ const cases = [
     ['L08', 'SIGSEGV', 139],
     // SIGQUIT and SIGABRT take node through its abort path, which prints a
     // native stack before the process dies: measured at 1965 ms and 1795 ms
-    // against the 1000 ms the others take (one run, at T-181's head), so these
+    // against the ~1010 ms the others take (one run each, pasted in
+    // tasks/state/EP-1/T-181.md § E8), so these
     // two get twice the slack. The number being judged is the EXIT STATUS; the
     // window only has to exclude a hang.
     ['L09', 'SIGQUIT', 131, 1000 + 2 * SLACK_MS],
@@ -405,10 +406,11 @@ const cases = [
     //
     // THIS CASE EXISTS BECAUSE THE BEHAVIOUR IS DELIBERATE AND UNGUARDED.
     // T-181 measured the obvious fix — re-anchor on a signal that arrives after
-    // the deadline — in the real image: it DOES repair this case (25.19 s, the
-    // helper drains) and it turns an app draining past the deadline under ONE
-    // stop into ExitCode=137 at the grace (30.16 s), the outcome T-179 and T-180
-    // exist to remove. So the behaviour is kept and pinned here instead: this
+    // the deadline — in the real image (§ E6, § E7 of tasks/state/EP-1/T-181.md):
+    // it DOES repair this case (25.187 s, the helper drains) and it turns an app
+    // draining past the deadline under ONE stop into ExitCode=137 at the grace
+    // (30.162 s, against 27.110 s and exit 0 without it), the outcome T-179 and
+    // T-180 exist to remove. So the behaviour is kept and pinned here instead: this
     // case goes RED against any entrypoint that re-anchors, which is exactly the
     // change a later ticket would make without knowing what it costs.
     id: 'L15',
