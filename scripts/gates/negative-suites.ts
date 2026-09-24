@@ -286,7 +286,15 @@ const SUITES: readonly Suite[] = [
     // the history attack's two walk-back steps cannot move `public`'s order). With K18's walk
     // lengthened in an uncommitted copy (one line), it prints `!! 25 of 81 cases misbehaved`: the 25
     // are OD-154's K36-K49m, unchanged; every other case, T-153's K50-K62r included, is `ok`.
-    digest: '780ce587371ef47beeb4f12d68fa6192350a2024cce48e1b1ff28d84f9a58365',
+    // RE-PINNED 2026-09-24 by T-188 (OD-218): K18's walk-back is now derived from the committed
+    // migrations instead of fixed at HIGHEST-1/HIGHEST-2 (d126c68); no case added or removed, so
+    // `cases: 81` is unchanged. Taken with the instrument, never edited by hand (PROTOCOL §5.2):
+    //   $ git cat-file blob d126c68:scripts/negative-tests/db-introspect.sh | sha256sum
+    //   c21c64120c03a473144fe9d7ce9dfd1d1b38f0e2d232d61be54753817aa4ebd3
+    // MEASURED against a real database at d126c68 (tasks/state/EP-2/T-188.md § Evidence B): the
+    // committed suite now reaches its footer, `!! 25 of 81 cases misbehaved`, exit 1; K18 is `ok`
+    // (down --to 0004 moved the order); the 25 are OD-154's K36-K49m, unchanged.
+    digest: 'c21c64120c03a473144fe9d7ce9dfd1d1b38f0e2d232d61be54753817aa4ebd3',
   },
 ];
 

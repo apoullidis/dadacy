@@ -241,11 +241,14 @@ export const HEAVY_ROSTER: readonly HeavyEntry[] = [
     spec: PROGRAMME,
     cls: 'BLOCKED',
     segment: 'service',
-    why: "scripts/negative-tests/db-introspect.sh — 65 cases attacking T-138's parity check, against a real database",
+    why: "scripts/negative-tests/db-introspect.sh — 81 cases attacking T-138's parity check, against a real database",
     owner: 'T-165 — tech-lead, PARKED awaiting stakeholder ruling OE-37 (OD-154)',
     unblocks:
       "T-165 re-cuts the K36-K49 plants to add to 0006's `pgboss` schema and takes the admitted counts from the catalogue. Then this entry becomes BLOCKING and the pinned failure below is deleted.",
-    pinnedFailure: '!! 25 of 65 cases misbehaved',
+    // 65 -> 81, 2026-09-24, T-188 (OD-218): re-taken from a real run of this gate on a fresh `db`
+    // project at d126c68 (tasks/state/EP-2/T-188.md § Evidence E), which printed exactly this footer.
+    // T-153 added K50-K62r (16 cases, all ok); the 25 are still OD-154's K36-K49m.
+    pinnedFailure: '!! 25 of 81 cases misbehaved',
     anchors: [
       {
         label: 'the suite printed a footer at all',

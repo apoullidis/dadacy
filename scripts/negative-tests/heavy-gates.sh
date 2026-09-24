@@ -232,7 +232,7 @@ mut "$HROSTER" "    anchors: [
     'is BLOCKING with no evidence anchor' 'a sub-gate that did nothing' -- node "$HEAVY" --roster-only
 
 CASE="H8"
-mut "$HROSTER" "    pinnedFailure: '!! 25 of 65" "    xinnedFailure: '!! 25 of 65" &&
+mut "$HROSTER" "    pinnedFailure: '!! 25 of 81" "    xinnedFailure: '!! 25 of 81" &&
   run_case "H8 a BLOCKED sub-gate with no pinned expected failure" FAIL \
     'is BLOCKED with no pinned expected failure' -- node "$HEAVY" --roster-only
 
@@ -279,7 +279,7 @@ receipt() {
     "$1" "$2" "$3" > "$RCPT/$1.json"
 }
 OK_SOCKET='[{"name":"gate:constraint-suite","code":0,"banners":["GATE PASS  gate:constraint-suite"],"anchorLines":["tests 171 / passed 171 / failed 0 / skipped 0 / todo 0 / files 12 of 12"],"seconds":60}]'
-OK_SERVICE='[{"name":"gate:drizzle-parity","code":0,"banners":["GATE PASS  gate:drizzle-parity"],"anchorLines":["MIGRATE OK  up: 0000 -> 0006","drizzle-kit 0.31.10: 4 relation(s) introspected from public","db/schema.ts: byte-identical to a fresh introspection"],"seconds":7},{"name":"gate:db-introspect-suite","code":1,"banners":["GATE FAIL  gate:db-introspect-suite — !! 25 of 65 cases misbehaved  (exit 1, 205.9s)"],"anchorLines":["!! 25 of 65 cases misbehaved"],"seconds":206}]'
+OK_SERVICE='[{"name":"gate:drizzle-parity","code":0,"banners":["GATE PASS  gate:drizzle-parity"],"anchorLines":["MIGRATE OK  up: 0000 -> 0006","drizzle-kit 0.31.10: 4 relation(s) introspected from public","db/schema.ts: byte-identical to a fresh introspection"],"seconds":7},{"name":"gate:db-introspect-suite","code":1,"banners":["GATE FAIL  gate:db-introspect-suite — !! 25 of 81 cases misbehaved  (exit 1, 205.9s)"],"anchorLines":["!! 25 of 81 cases misbehaved"],"seconds":206}]'
 
 CASE="C0"
 rm -rf "$RCPT"
@@ -330,7 +330,7 @@ run_case "C6 a GREEN sub-gate that ran 3 of its 12 files" FAIL \
 
 CASE="C7"
 receipt socket "$FP" "$OK_SOCKET"
-receipt service "$FP" '[{"name":"gate:drizzle-parity","code":0,"banners":["GATE PASS  gate:drizzle-parity"],"anchorLines":["MIGRATE OK  up: 0000 -> 0006","drizzle-kit 0.31.10: 0 relation(s) introspected from public","db/schema.ts: byte-identical to a fresh introspection"],"seconds":7},{"name":"gate:db-introspect-suite","code":1,"banners":["GATE FAIL  gate:db-introspect-suite — !! 25 of 65 cases misbehaved"],"anchorLines":["!! 25 of 65 cases misbehaved"],"seconds":206}]'
+receipt service "$FP" '[{"name":"gate:drizzle-parity","code":0,"banners":["GATE PASS  gate:drizzle-parity"],"anchorLines":["MIGRATE OK  up: 0000 -> 0006","drizzle-kit 0.31.10: 0 relation(s) introspected from public","db/schema.ts: byte-identical to a fresh introspection"],"seconds":7},{"name":"gate:db-introspect-suite","code":1,"banners":["GATE FAIL  gate:db-introspect-suite — !! 25 of 81 cases misbehaved"],"anchorLines":["!! 25 of 81 cases misbehaved"],"seconds":206}]'
 run_case "C7 Drizzle parity green over ZERO relations (T-138 K07's bound)" FAIL \
   'evidence anchor' 'a pass over an empty set' -- node "$HEAVY"
 
@@ -348,7 +348,7 @@ run_case "C9 the BLOCKED suite red on a DIFFERENT count than the pin" FAIL \
 
 CASE="C10"
 receipt socket "$FP" "$OK_SOCKET"
-receipt service "$FP" '[{"name":"gate:drizzle-parity","code":1,"banners":["GATE FAIL  gate:drizzle-parity"],"anchorLines":["","",""],"seconds":7},{"name":"gate:db-introspect-suite","code":1,"banners":["GATE FAIL  gate:db-introspect-suite — !! 25 of 65 cases misbehaved"],"anchorLines":["!! 25 of 65 cases misbehaved"],"seconds":206}]'
+receipt service "$FP" '[{"name":"gate:drizzle-parity","code":1,"banners":["GATE FAIL  gate:drizzle-parity"],"anchorLines":["","",""],"seconds":7},{"name":"gate:db-introspect-suite","code":1,"banners":["GATE FAIL  gate:db-introspect-suite — !! 25 of 81 cases misbehaved"],"anchorLines":["!! 25 of 81 cases misbehaved"],"seconds":206}]'
 run_case "C10 ONE failing sub-gate does not mask the others' results" FAIL \
   'gate:drizzle-parity FAILED (exit 1)' \
   'gate:constraint-suite      [BLOCKING]' \
