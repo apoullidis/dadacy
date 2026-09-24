@@ -207,9 +207,9 @@ const SUITES: readonly Suite[] = [
     // About 27 s: the three deadline cases run concurrently.
     id: 'entrypoint-lifecycle',
     file: 'scripts/negative-tests/entrypoint-lifecycle.sh',
-    cases: 15,
+    cases: 18,
     state: 'GREEN',
-    why: "PID 1's group-drain deadline counts from the FIRST forwarded signal, a second signal does not move it, and with NO signal forwarded PID 1 exits at once with the app's exit code (T-180, TL-A1 on T-179); a signal death is reported as 128 + signo with the two paths' stderr lines held apart, and the deadline rule's one cost — a survived signal anchors a later stop — is pinned so a re-anchor cannot land in silence (T-181)",
+    why: "PID 1's group-drain deadline counts from the FIRST forwarded signal, a second signal does not move it, and with NO signal forwarded PID 1 exits at once with the app's exit code (T-180, TL-A1 on T-179); a signal death is reported as 128 + signo, including two signals outside the six first pinned so a literal table cannot pass, and the argv path's stderr line is held apart from the shell path's, which must not say whose death it was because PID 1 does not check whether the shell exec'd — asserted with the shell kept and with the shell exec'd; the deadline rule's one cost — a survived signal anchors a later stop — is pinned so a re-anchor cannot land in silence (T-181)",
   },
   {
     id: 'otel-contract',

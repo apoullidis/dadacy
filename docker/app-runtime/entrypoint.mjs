@@ -158,10 +158,13 @@
  * SIGTERM and 130 for EVERY other signal, so an OOM SIGKILL and a SIGSEGV both
  * reported 130 and read as SIGINT (qa-verification on T-180, QA-F2; the
  * expression was T-018's, d434296). ON PATH 1 THAT NUMBER IS THE
- * APPLICATION'S OWN, and the stderr line says so; on path 2, if the shell is
- * the one that dies on the forwarded signal, this process cannot observe the
- * application's own status, and the line says THAT instead. One sentence for
- * both paths was T-151's, and it was false on path 1 — the CONDITION tech-lead
+ * APPLICATION'S OWN, and the stderr line says so. On path 2 the direct child is
+ * the shell OR — if the shell exec'd, as busybox ash does for `VAR=value cmd` —
+ * the start command itself, and this process does not check which, so the line
+ * reports the number and says it does not know whose death it is (T-181 rework
+ * 1, OD-209: rework 0's line said "for the SHELL", false whenever the shell had
+ * exec'd). One sentence for both paths was T-151's, and it was false on path 1
+ * — the CONDITION tech-lead
  * attached to T-180's second approval (TL-5), closed with the mapping in one
  * commit because a correct number carrying "this is not the app's own" is worse
  * than the wrong number was.
@@ -460,7 +463,7 @@ function runReal(script) {
     // nothing" is distinguishable from "refused" (PROTOCOL §5.1).
     const signo = sig === null ? null : (os.constants.signals[sig] ?? null);
     if (sig !== null && signo === null) {
-      log(`the start command was ended by ${sig}, which this node cannot number; reporting 128`);
+      log(`the direct child was ended by ${sig}, which this node cannot number; reporting 128`);
     }
     const status = sig !== null ? 128 + (signo ?? 0) : (code ?? 1);
     // NO SIGNAL WAS FORWARDED: the application ended on its own — a crash or
@@ -485,17 +488,29 @@ function runReal(script) {
       // false: the direct child IS the application (`simple` is what chose that
       // path, thirty lines up), so its signal death IS the application's own
       // status and 137 IS the number to act on. Saying otherwise told an
-      // operator to discard the one true number this process has. On the SHELL
-      // path the sentence is right and stays, because the child that died is
-      // /bin/sh and the application's own status is behind it.
+      // operator to discard the one true number this process has.
+      //
+      // ON THE SHELL PATH THIS PROCESS DOES NOT KNOW WHOSE DEATH IT SAW, so the
+      // line does not say (T-181 rework 1, OD-209). The direct child is /bin/sh
+      // — unless the shell exec'd the start command, and then it IS the start
+      // command: busybox ash does that for `VAR=value cmd`, which is exactly the
+      // shape the SIMPLE_COMMAND test above sends here. Nothing here checks
+      // which happened. Rework 0's line said "for the SHELL, because this
+      // process cannot see the application's own exit status", which is false
+      // on every clause when the shell exec'd (a shell is never SIGKILLed on its
+      // own, and there is no shell left). This sentence is true of both
+      // topologies: scripts/negative-tests/entrypoint-lifecycle.sh L14 (the
+      // shell stays) and L16 (the shell exec'd) assert the same text.
       log(
         simple
           ? `the application itself (the start command, ${script}) was ended by ${sig}; ` +
               `reporting ${String(status)} = 128 + ${String(signo ?? 0)}, which IS its own ` +
               `signal death, and waiting for its process group`
-          : `the start command itself — /bin/sh -c (${script}) — was ended by ${sig}; waiting ` +
-              `for its process group, and reporting ${String(status)} = 128 + ${String(signo ?? 0)} ` +
-              `for the SHELL, because this process cannot see the application's own exit status`,
+          : `the direct child was ended by ${sig}; reporting ${String(status)} = ` +
+              `128 + ${String(signo ?? 0)}, and waiting for its process group. It was started ` +
+              `as /bin/sh -c (${script}), so it is either that shell or, if the shell exec'd, ` +
+              `the start command itself; this process does not check which, so it does not ` +
+              `say whose signal death ${String(status)} is`,
       );
     }
     waitForGroup(child.pid, status, signalledAt, deadline);

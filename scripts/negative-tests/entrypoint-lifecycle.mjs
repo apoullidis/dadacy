@@ -33,13 +33,33 @@
  *        against main 7411061 through KINVARA_ENTRYPOINT_IMPL below.
  *   L11  SIGTERM -> 143 and L12 SIGINT -> 130 are the CONTROLS: the two numbers
  *        the old expression already had right, which T-181 must not move.
+ *   L17  SIGBUS -> 135 and L18 SIGHUP -> 129 (T-181 rework 1, QA-2): two signals
+ *        OUTSIDE the six above. L07-L12 pin six numbers, not the rule — a
+ *        literal six-entry table passed all of them, and so did one that
+ *        defaulted every unlisted signal to 2 (the original defect). These two
+ *        red against both (measured, T-181 § Rework 1). Their expected numbers
+ *        are LITERALS from Linux's x86/ARM numbering (signal(7): SIGBUS 7,
+ *        SIGHUP 1), deliberately not read from os.constants — that is the table
+ *        the code under test reads, and a check must not share its source.
  *   L13  the OTHER path to the mapping, and the one that PRINTS: a forwarded
  *        SIGTERM, then a death by SIGKILL mid-drain with a helper still in the
  *        group -> 137, and PID 1 says the number IS the application's own. On
  *        the ARGV path that is true, and until T-181 it said the opposite.
- *   L14  the SHELL path, where the same sentence is TRUE: `node app.js ; true`
- *        is compound, so /bin/sh is the direct child and the application's own
- *        status is behind it. 143 for the shell, said as that.
+ *   L14  the SHELL path, compound: `node app.js ; true`, so /bin/sh is the
+ *        direct child (asserted: the app's parent is NOT the entrypoint). 143,
+ *        and PID 1 says it does not know whose signal death that is.
+ *   L16  the SHELL path where the shell is REPLACED by the application
+ *        (T-181 rework 1, QA-1 / OD-209): `NODE_ENV=production exec node app.js`
+ *        goes to /bin/sh -c (its first word contains `=`), and the shell execs,
+ *        so the direct child IS the application (asserted: the app's parent IS
+ *        the entrypoint). It dies by SIGKILL mid-drain -> 137, the app's own.
+ *        Until rework 1 PID 1 said that 137 was "for the SHELL" — false here.
+ *        WHY `exec` IS SPELLED OUT: busybox ash (the image's /bin/sh) execs
+ *        `VAR=value cmd` by itself, but this suite runs in the toolbox, whose
+ *        /bin/sh is dash 0.5.12, which does not (measured, T-181 § Rework 1).
+ *        PID 1 sees only its direct child's pid and death, so the explicit
+ *        `exec` gives it the identical view on any /bin/sh. The literal
+ *        `VAR=value cmd` shape under ash is measured in the image, not here.
  *   L15  THE BOUND, pinned rather than described (tech-lead TL-1 on T-180): a
  *        signal the application SURVIVES fixes the deadline for a LATER stop, so
  *        a stop more than GROUP_DRAIN_MS after it gets NO group wait and a
@@ -49,8 +69,15 @@
  *        ONE stop into ExitCode=137 at the grace, which is what T-179/T-180
  *        exist to remove. This case is therefore the GUARD ON THE DECISION — it
  *        is red against a re-anchoring entrypoint (measured, T-181 § E8: 51605 ms
- *        and `helper: drained` printed) while L01-L14 are all green against that
- *        same variant, so nothing else here would catch the change.
+ *        and `helper: drained` printed) while every other case is green against
+ *        that same variant, so nothing else here would catch the change.
+ *
+ * THE LINE PID 1 PRINTS, and which cases hold it. L13 (argv) asserts the
+ * "which IS its own signal death" sentence and the shell-path sentence ABSENT;
+ * L14 and L16 (shell path, one per topology) assert the reverse. The shell-path
+ * sentence claims neither whose death it was nor that it was the shell's,
+ * because PID 1 does not check whether the shell exec'd: L14 and L16 are the
+ * two answers to that question and the SAME sentence must be true of both.
  *
  * WHAT IT DOES NOT JUDGE. It runs entrypoint.mjs as an ordinary process in
  * whatever container runs this suite, NOT as PID 1, so it does not reproduce a
@@ -136,7 +163,10 @@ const e = process.env;
 let helper = null;
 if (e.LC_HELPER === 'stubborn') helper = spawn(process.execPath, [__dirname + '/helper.js'], { stdio: 'inherit' });
 if (e.LC_HELPER === 'draining') helper = spawn(process.execPath, [__dirname + '/helper-draining.js'], { stdio: 'inherit' });
-console.error('app: pid=' + process.pid + ' helper=' + (helper ? helper.pid : 'none'));
+// ppid (T-181 rework 1): whether the app is the entrypoint's DIRECT child —
+// i.e. whether a shell sits between them — is set-up for L13/L14/L16, and a
+// case must see its set-up land before its verdict means anything.
+console.error('app: pid=' + process.pid + ' helper=' + (helper ? helper.pid : 'none') + ' ppid=' + process.ppid);
 // T-181: an app that SURVIVES a signal is the whole point of L15, so SIGINT is
 // ignored on request rather than taking node's default death.
 if (e.LC_IGNORE_INT === '1') process.on('SIGINT', () => console.error('app: SIGINT ignored'));
@@ -168,36 +198,47 @@ setInterval(() => {}, 1000);
 `,
 );
 /**
- * THE SHELL PATH, as a second fixture (T-181). `entrypoint.mjs` classifies a
- * start script with `;` in it as compound and spawns `/bin/sh -c`, so the DIRECT
- * CHILD is the shell and the application is behind it. That is the one path on
- * which "this process cannot see the application's own exit status" is TRUE, and
- * L14 is what holds the two spellings of that line apart.
+ * THE SHELL PATH, as two more fixtures (T-181; the second is rework 1's).
+ * `entrypoint.mjs` sends any start script that is not a simple command to
+ * `/bin/sh -c`. What the direct child then IS depends on the shell:
+ *   compound — `node app.js ; true`: the shell stays, the app is behind it (L14).
+ *   varexec  — `NODE_ENV=production exec node app.js`: shell path (first word
+ *              contains `=`), and the shell is replaced by the app, so the
+ *              direct child IS the app (L16). See L16 in the header for why
+ *              `exec` is spelled out rather than left to the shell.
+ * PID 1 does not check which of the two it has, so its shell-path line must be
+ * true of both — that is what L14 and L16 hold together.
  */
-const shellFixture = fs.mkdtempSync(path.join(os.tmpdir(), 'kinvara-t181-sh-'));
-fs.writeFileSync(
-  path.join(shellFixture, 'package.json'),
-  JSON.stringify({ name: 'lc-sh', private: true, scripts: { start: 'node app.js ; true' } }),
-);
-fs.copyFileSync(path.join(fixture, 'app.js'), path.join(shellFixture, 'app.js'));
-fs.copyFileSync(path.join(fixture, 'helper.js'), path.join(shellFixture, 'helper.js'));
-fs.copyFileSync(
-  path.join(fixture, 'helper-draining.js'),
-  path.join(shellFixture, 'helper-draining.js'),
-);
+const START = {
+  argv: 'node app.js',
+  compound: 'node app.js ; true',
+  varexec: 'NODE_ENV=production exec node app.js',
+};
+const fixtures = { argv: fixture };
+for (const kind of ['compound', 'varexec']) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `kinvara-t181-${kind}-`));
+  fs.writeFileSync(
+    path.join(dir, 'package.json'),
+    JSON.stringify({ name: `lc-${kind}`, private: true, scripts: { start: START[kind] } }),
+  );
+  for (const f of ['app.js', 'helper.js', 'helper-draining.js'])
+    fs.copyFileSync(path.join(fixture, f), path.join(dir, f));
+  fixtures[kind] = dir;
+}
+const reEscape = (s) => s.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
 
 /**
  * Run one case. `signals` are ms offsets after boot at which SIGTERM is sent to
  * the entrypoint. Returns what was observed; judging is the caller's.
  */
-function runCase(env, signals, shell = false) {
+function runCase(env, signals, kind = 'argv') {
   return new Promise((resolve) => {
     const t0 = Date.now();
     const ep = spawn(process.execPath, [IMPL], {
       env: {
         ...process.env,
         KINVARA_APP: 'lc',
-        KINVARA_APP_DIR: shell ? shellFixture : fixture,
+        KINVARA_APP_DIR: fixtures[kind],
         ...env,
       },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -249,11 +290,60 @@ function runCase(env, signals, shell = false) {
             }
           }
         }
-        resolve({ code, sig, log, t0, bootAt, firstSignalAt, exitAt });
+        const pp = /app: pid=\d+ helper=(?:\d+|none) ppid=(\d+)/.exec(log);
+        const appPpid = pp ? Number(pp[1]) : null;
+        resolve({ code, sig, log, t0, bootAt, firstSignalAt, exitAt, epPid: ep.pid, appPpid });
       }, 300);
     });
   });
 }
+
+/**
+ * A NO-SIGNAL-FORWARDED signal death: the app kills itself with `sig` 1 s after
+ * boot, and PID 1 must exit with `code`. Used by L07-L12 and L17-L18.
+ *
+ * ONE WINDOW FOR EVERY SIGNAL, 1000 + 2 * SLACK_MS (T-181 rework 1, QA-4). The
+ * window's only job on this path is to exclude a hang or a group wait — no
+ * helper is started, and the wait it would catch is GROUP_DRAIN_MS (25 000 ms)
+ * long. The exit status is what is judged. Rework 0 gave the wide window to
+ * SIGQUIT/SIGABRT only, on the ground that node's abort path is slower; QA then
+ * measured SIGSEGV (L08, narrow window, ceiling 3500 ms) at 2113 ms on a head
+ * run, and T-181 § E8's own pastes had it at 1195, 1218 and 1900 ms. Which
+ * signals take node's slow path is not something this file can enumerate, so
+ * every signal gets the window that still excludes the thing being guarded.
+ * Readings are in tasks/state/EP-1/T-181.md § E8 and § Rework 1, per run.
+ */
+const selfSignalCase = ([id, sig, code, note = '']) => ({
+  id,
+  label: `NO signal forwarded, app dies by ${sig} -> ${String(code)}${note}`,
+  env: {
+    LC_MODE: 'self-signal',
+    LC_SIG: sig,
+    LC_LIFE_MS: '1000',
+    LC_HELPER: 'none',
+    LC_DRAIN_MS: '0',
+  },
+  signals: [],
+  expect: { code, from: 'boot', min: 900, max: 1000 + 2 * SLACK_MS, deadlineLine: false },
+  landed: [new RegExp(`app: killing itself with ${sig}`)],
+});
+
+/** The shell-path sentence, and the argv one, as each case must see them. */
+const shellLine = (script, sig, n, signo) =>
+  new RegExp(
+    reEscape(
+      `the direct child was ended by ${sig}; reporting ${String(n)} = 128 + ${String(signo)}, ` +
+        `and waiting for its process group. It was started as /bin/sh -c (${script}), so it is ` +
+        `either that shell or, if the shell exec'd, the start command itself; this process does ` +
+        `not check which, so it does not say whose signal death ${String(n)} is`,
+    ),
+  );
+const ARGV_CLAIM = /which IS its own signal death/;
+const SHELL_CLAIM = /does not say whose signal death/;
+/** Every spelling rework 0 printed on the shell path. Each asserted a fact PID 1
+ *  does not have — "for the SHELL", "cannot see the application's own exit
+ *  status" — and was false when the shell had exec'd (OD-209). */
+const OLD_SHELL_CLAIMS = [/for the SHELL/, /cannot see the application's own exit status/];
 
 const cases = [
   {
@@ -325,36 +415,11 @@ const cases = [
   ...[
     ['L07', 'SIGKILL', 137],
     ['L08', 'SIGSEGV', 139],
-    // SIGQUIT and SIGABRT take node through its abort path, which prints a
-    // native stack before the process dies: measured at 1965 ms and 1795 ms
-    // against the ~1010 ms the others take (one run each, pasted in
-    // tasks/state/EP-1/T-181.md § E8), so these
-    // two get twice the slack. The number being judged is the EXIT STATUS; the
-    // window only has to exclude a hang.
-    ['L09', 'SIGQUIT', 131, 1000 + 2 * SLACK_MS],
-    ['L10', 'SIGABRT', 134, 1000 + 2 * SLACK_MS],
-    ['L11', 'SIGTERM', 143],
-    ['L12', 'SIGINT', 130],
-  ].map(([id, sig, code, max]) => ({
-    id,
-    label: `NO signal forwarded, app dies by ${sig} -> ${String(code)}${code === 143 || code === 130 ? ' (control: unchanged)' : ''}`,
-    env: {
-      LC_MODE: 'self-signal',
-      LC_SIG: sig,
-      LC_LIFE_MS: '1000',
-      LC_HELPER: 'none',
-      LC_DRAIN_MS: '0',
-    },
-    signals: [],
-    expect: {
-      code,
-      from: 'boot',
-      min: 900,
-      max: max ?? 1000 + SLACK_MS,
-      deadlineLine: false,
-    },
-    landed: [new RegExp(`app: killing itself with ${sig}`)],
-  })),
+    ['L09', 'SIGQUIT', 131],
+    ['L10', 'SIGABRT', 134],
+    ['L11', 'SIGTERM', 143, ' (control: unchanged)'],
+    ['L12', 'SIGINT', 130, ' (control: unchanged)'],
+  ].map(selfSignalCase),
   {
     // L13: THE OTHER PATH TO THE MAPPING, and the one that PRINTS. A forwarded
     // SIGTERM, then the app dies mid-drain by SIGKILL with a helper still in its
@@ -373,37 +438,38 @@ const cases = [
     },
     signals: [500],
     expect: { code: 137, from: 'signal', min: D - 100, max: D + SLACK_MS, deadlineLine: true },
+    directChild: true,
     landed: [/helper: up/, /app: dying mid-drain by SIGKILL/],
     asserts: [
       /the application itself \(the start command, node app\.js\) was ended by SIGKILL; reporting 137 = 128 \+ 9, which IS its own signal death/,
     ],
-    absent: [/cannot see the application's own exit status/],
+    absent: [SHELL_CLAIM, ...OLD_SHELL_CLAIMS],
   },
   {
-    // L14: THE SHELL PATH, the one path on which "cannot see the application's
-    // own exit status" is TRUE. `node app.js ; true` is compound, so the direct
-    // child is /bin/sh; SIGTERM kills the shell while the app ignores it and
-    // holds the group open. PID 1 reports 143 for the SHELL and says so. The
-    // number is unchanged by T-181; the SENTENCE is what this case holds, and it
-    // is red against 7411061, which printed one sentence for both paths.
+    // L14: THE SHELL PATH, compound — the topology where the shell STAYS.
+    // `node app.js ; true`, so the direct child is /bin/sh (asserted below: the
+    // app's parent is not the entrypoint); SIGTERM kills the shell while the app
+    // ignores it and holds the group open. 143, and PID 1 says it does not know
+    // whose signal death that is — here it happens to be the shell's, and in L16
+    // the same sentence is printed over the app's own. Rework 0 printed "for the
+    // SHELL", true here and false in L16 (OD-209), so this case is red against
+    // 69a276d as well as 7411061.
     //
     // THE PAIR IS SYMMETRIC ON PURPOSE. L13 asserts the argv sentence present
-    // and the shell one absent; this case asserts the reverse. Without both
-    // absences, an entrypoint that printed BOTH lines would pass one of the two,
-    // and "the line is per path" would be a claim one step wider than what is
-    // held (PROTOCOL §5.1). Found by reading this ticket's own contract back
-    // against its cases.
+    // and the shell one absent; this case (and L16) asserts the reverse. Without
+    // both absences, an entrypoint that printed BOTH lines would pass one of the
+    // two, and "the line is per path" would be a claim one step wider than what
+    // is held (PROTOCOL §5.1).
     id: 'L14',
-    label: 'SHELL path: SIGTERM kills /bin/sh, app ignores it -> 143 for the SHELL',
+    label: 'SHELL path, compound: SIGTERM kills /bin/sh -> 143, whose not said',
     env: { LC_MODE: 'ignore', LC_DRAIN_MS: '0', LC_HELPER: 'none' },
     signals: [500],
-    shell: true,
+    fixture: 'compound',
+    directChild: false,
     expect: { code: 143, from: 'signal', min: D - 100, max: D + SLACK_MS, deadlineLine: true },
     landed: [/app: SIGTERM ignored, still working/],
-    asserts: [
-      /the start command itself — \/bin\/sh -c \(node app\.js ; true\) — was ended by SIGTERM; waiting for its process group, and reporting 143 = 128 \+ 15 for the SHELL, because this process cannot see the application's own exit status/,
-    ],
-    absent: [/which IS its own signal death/],
+    asserts: [shellLine(START.compound, 'SIGTERM', 143, 15)],
+    absent: [ARGV_CLAIM, ...OLD_SHELL_CLAIMS],
   },
   {
     // L15: THE BOUND, PINNED RATHER THAN DESCRIBED (T-181; tech-lead TL-1 on
@@ -446,29 +512,71 @@ const cases = [
     // rather than a note.
     absent: [/helper: drained/],
   },
+  {
+    // L16: THE SHELL PATH WHERE THE SHELL IS GONE (T-181 rework 1, QA-1 /
+    // OD-209). The start script's first word contains `=`, so it goes to
+    // /bin/sh -c; the shell execs, so the direct child IS the application
+    // (asserted: the app's parent is the entrypoint). A forwarded SIGTERM, then
+    // death by SIGKILL mid-drain with a helper in the group -> 137, which is the
+    // APPLICATION's own signal death. At 69a276d PID 1 said "/bin/sh -c (…) was
+    // ended by SIGKILL … 137 … for the SHELL, because this process cannot see
+    // the application's own exit status" — false on every clause, and the same
+    // defect TL-5's CONDITION removed from the argv path. RED at 69a276d.
+    // `exec` is spelled out because the toolbox's dash does not exec on its own
+    // (header, L16); under the image's busybox ash `NODE_ENV=production node
+    // app.js` gives PID 1 this same view, measured in the image.
+    id: 'L16',
+    label: "SHELL path, shell exec'd: app dies by SIGKILL -> 137, whose not said",
+    env: {
+      LC_MODE: 'drain',
+      LC_DRAIN_MS: '1000',
+      LC_DIE_SIG: 'SIGKILL',
+      LC_HELPER: 'stubborn',
+    },
+    signals: [500],
+    fixture: 'varexec',
+    directChild: true,
+    expect: { code: 137, from: 'signal', min: D - 100, max: D + SLACK_MS, deadlineLine: true },
+    landed: [/helper: up/, /app: dying mid-drain by SIGKILL/],
+    asserts: [shellLine(START.varexec, 'SIGKILL', 137, 9)],
+    absent: [ARGV_CLAIM, ...OLD_SHELL_CLAIMS],
+  },
+  // L17-L18 (T-181 rework 1, QA-2): the rule, not a table. Numbers are Linux
+  // x86/ARM literals (signal(7)); see the header for why they are not read from
+  // os.constants.
+  ...[
+    ['L17', 'SIGBUS', 135, ' (outside the six)'],
+    ['L18', 'SIGHUP', 129, ' (outside the six)'],
+  ].map(selfSignalCase),
 ];
 
-const results = await Promise.all(cases.map((c) => runCase(c.env, c.signals, c.shell ?? false)));
+const results = await Promise.all(cases.map((c) => runCase(c.env, c.signals, c.fixture ?? 'argv')));
 let bad = 0;
 cases.forEach((c, i) => {
   const r = results[i];
   const problems = [];
   let verdict = 'OK';
+  const kind = c.fixture ?? 'argv';
   const bootLine =
-    c.shell === true
-      ? /mode=real {2}running start via \/bin\/sh -c \(node app\.js ; true\)/
-      : /mode=real {2}running start \(node app\.js\) as a direct child/;
+    kind === 'argv'
+      ? /mode=real {2}running start \(node app\.js\) as a direct child/
+      : new RegExp(`mode=real {2}running start via /bin/sh -c \\(${reEscape(START[kind])}\\)`);
   if (r.bootAt === null || !bootLine.test(r.log)) {
     verdict = 'CRASH';
-    problems.push(
-      `the app never booted in REAL mode on the ${c.shell === true ? 'shell' : 'argv'} path`,
-    );
+    problems.push(`the app never booted in REAL mode on the ${kind} path`);
   } else if (r.sig === 'SIGKILL') {
     verdict = 'HUNG';
     problems.push(`no exit within ${String(2 * D + 20_000)} ms; the harness killed it`);
   } else {
     for (const re of c.landed)
       if (!re.test(r.log)) problems.push(`set-up did not land: ${String(re)} not in the log`);
+    // T-181 rework 1: the process topology is set-up too. L16 means nothing if
+    // a shell was still in between, and L14 means nothing if there was not.
+    if (c.directChild !== undefined && (r.appPpid === r.epPid) !== c.directChild)
+      problems.push(
+        `set-up did not land: the app's parent is ${String(r.appPpid)}, the entrypoint is ${String(r.epPid)}; ` +
+          `expected the app ${c.directChild ? 'to BE' : 'NOT to be'} the direct child`,
+      );
     for (const re of c.absent ?? [])
       if (re.test(r.log)) problems.push(`${String(re)} appeared, and it should not have`);
     // T-181: what PID 1 ITSELF printed, kept apart from `landed` (the set-up) so
@@ -502,7 +610,7 @@ cases.forEach((c, i) => {
   );
   for (const p of problems) console.log(`       - ${p}`);
 });
-fs.rmSync(fixture, { recursive: true, force: true });
+for (const dir of Object.values(fixtures)) fs.rmSync(dir, { recursive: true, force: true });
 console.log('');
 if (bad === 0) console.log(`ALL ${String(cases.length)} CASES BEHAVED AS EXPECTED`);
 else console.log(`!! ${String(bad)} of ${String(cases.length)} CASE(S) MISBEHAVED`);
