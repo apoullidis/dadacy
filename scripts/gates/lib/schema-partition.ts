@@ -26,13 +26,19 @@
  *      has no counterpart because PostgreSQL clones no policy to a partition). One without a
  *      counterpart is a problem: only the parent is rendered, so a partition's own object would be
  *      in the catalogue and in no reading of `db/schema.ts` (T-165 rework 1, OD-155 and OD-156).
+ *      Rework 2 (OE-37 (A), OD-158) reads three more kinds the same way, each always a partition's
+ *      own: a RULE (`pg_rewrite`), an extended statistics object (`pg_statistic_ext`) and a
+ *      REPLICA IDENTITY other than DEFAULT (`pg_class.relreplident`). THIS IS THE WHOLE READ SET.
+ *      Anything else a partition can carry is NOT read (T-165 § contract, rework 2, R2's residue).
+ *   3b. The mirror, for **every** partition too (rework 2, OE-37 (A), OD-157): each constraint and
+ *      index the PARENT owns must have a counterpart on every partition, not only on the template.
  *   4. Every other partition of that parent in `public` is then removed from the rendering.
  * Everything it cannot check is a problem, and it never passes a partitioned family through
  * silently: a sub-partitioned table, a partition outside `public`, a parent with no partition, an
  * object of any partition's own, a partition whose
  * column shape is not the parent's, an identity column (drizzle-kit renders a partition's as
  * `name: "null", startWith: null`, measured), a name in the template with no counterpart on the
- * parent, a constraint or index the parent has and the template partition does not, an export name
+ * parent, a constraint or index the parent has and ANY partition does not, an export name
  * this step and drizzle-kit would spell differently, and PostgreSQL's per-partition clone of a
  * foreign key on a table that is not itself a partition.
  */
@@ -100,8 +106,10 @@ export type PartitionResult =
       readonly policies: number;
       /** export names this step and drizzle-kit spell identically, checked in this rendering */
       readonly names: number;
-      /** constraint, index, trigger and policy names read for a parent counterpart, on EVERY partition */
+      /** constraint, index, trigger, policy, rule, statistics and replica-identity entries read for a parent counterpart, on EVERY partition */
       readonly checked: number;
+      /** (parent constraint or index name, partition) pairs checked for a counterpart: the mirror, on EVERY partition */
+      readonly mirrored: number;
     }
   | { readonly ok: false; readonly problems: readonly string[] };
 
@@ -179,7 +187,26 @@ export const PARTITIONS_SQL = `
                             -- always the partition's own and has no counterpart: to_name is NULL.
                             SELECT pol.polname::text, NULL::text, 'policy'::text
                               FROM pg_policy pol
-                             WHERE pol.polrelid = ch.oid) m))
+                             WHERE pol.polrelid = ch.oid
+                            UNION ALL
+                            -- T-165 rework 2 (OE-37 (A), OD-158): a RULE, an extended statistics
+                            -- object and a non-default REPLICA IDENTITY of the partition's own.
+                            -- PostgreSQL 18 clones none of the three from the parent (measured, rework
+                            -- 2 M1: a parent's rule, statistics object, REPLICA IDENTITY FULL and
+                            -- USING INDEX reach no partition, old or new), so, like a policy, each is
+                            -- always the partition's own and to_name is NULL.
+                            SELECT r.rulename::text, NULL::text, 'rule'::text
+                              FROM pg_rewrite r
+                             WHERE r.ev_class = ch.oid
+                            UNION ALL
+                            SELECT s.stxname::text, NULL::text, 'statistics object'::text
+                              FROM pg_statistic_ext s
+                             WHERE s.stxrelid = ch.oid
+                            UNION ALL
+                            SELECT CASE ch.relreplident WHEN 'f' THEN 'FULL' WHEN 'n' THEN 'NOTHING'
+                                                        WHEN 'i' THEN 'USING INDEX' ELSE ch.relreplident::text END,
+                                   NULL::text, 'replica identity'::text
+                             WHERE ch.relreplident <> 'd') m))
             ORDER BY cn.nspname, ch.relname), '[]'::json)
            FROM pg_inherits i
            JOIN pg_class ch ON ch.oid = i.inhrelid
@@ -342,6 +369,17 @@ interface Declaration {
 
 const KINDS: ReadonlySet<string> = new Set(['pgTable', 'pgView', 'pgMaterializedView']);
 
+/**
+ * The kinds PARTITIONS_SQL reads for a partition that PostgreSQL never clones from its parent, so
+ * their `to` is always null (measured for the last three in T-165 rework 2, M1).
+ */
+const NEVER_CLONED: ReadonlySet<string> = new Set([
+  'policy',
+  'rule',
+  'statistics object',
+  'replica identity',
+]);
+
 /** The innermost call of a chain such as `pgTable(...).enableRLS()`. */
 function rootCall(node: ts.Expression): ts.CallExpression | undefined {
   let n: ts.Expression = node;
@@ -451,6 +489,7 @@ export function canonicalPartitions(
       policies: 0,
       names: 0,
       checked: 0,
+      mirrored: 0,
     };
   }
 
@@ -473,6 +512,7 @@ export function canonicalPartitions(
   let mapped = 0;
   let emitted = 0;
   let checked = 0;
+  let mirrored = 0;
 
   for (const parent of catalogue.parents) {
     const where = `partitioned table "${parent.name}"`;
@@ -535,18 +575,25 @@ export function canonicalPartitions(
         checked += 1;
         if (n.to !== null) continue;
         problems.push(
-          `${where}: partition "${p.name}" has its own ${n.kind} "${n.from}", which the parent has no counterpart for${n.kind === 'policy' ? ' (PostgreSQL clones no policy to a partition, so a policy row on one is always its own)' : ''}; only the parent is rendered, so it would be in the catalogue and in no reading of db/schema.ts`,
+          `${where}: partition "${p.name}" has its own ${n.kind} "${n.from}", which the parent has no counterpart for${NEVER_CLONED.has(n.kind) ? ` (PostgreSQL clones no ${n.kind} to a partition, so one on a partition is always its own)` : ''}; only the parent is rendered, so it would be in the catalogue and in no reading of db/schema.ts`,
         );
       }
     }
-    // Every constraint and index the PARENT owns must be one the template partition has too, or it
-    // would be absent from the rendering: `CREATE INDEX … ON ONLY <parent>` creates exactly that.
-    const counterparts = new Set(template.names.map((n) => n.to).filter((t) => t !== null));
-    for (const own of parent.ownNames) {
-      if (!counterparts.has(own)) {
-        problems.push(
-          `${where}: it owns "${own}", which partition "${template.name}" has no counterpart for, so it would be absent from the rendering (a \`CREATE INDEX … ON ONLY\` is one way to get there)`,
-        );
+    // The mirror, for EVERY partition too (T-165 rework 2, OE-37 (A), OD-157): every constraint and
+    // index the PARENT owns must have a counterpart on every partition. On the template, one without
+    // would be absent from the rendering; on any other partition, the rendering would describe the
+    // parent as having something that partition does not. `CREATE INDEX … ON ONLY <parent>` and then
+    // attaching a child index on some partitions only creates exactly that. Until rework 2 this read
+    // the template's names alone, so which partition sorted first decided the verdict.
+    for (const p of local) {
+      const counterparts = new Set(p.names.map((n) => n.to).filter((t) => t !== null));
+      for (const own of parent.ownNames) {
+        mirrored += 1;
+        if (!counterparts.has(own)) {
+          problems.push(
+            `${where}: it owns "${own}", which partition "${p.name}" has no counterpart for, so ${p.name === template.name ? 'it would be absent from the rendering, which is taken from that partition' : 'the rendering would describe every partition as having it, and that one does not'} (a \`CREATE INDEX … ON ONLY\` is one way to get there)`,
+          );
+        }
       }
     }
     const decl = byName.get(template.name);
@@ -660,7 +707,7 @@ export function canonicalPartitions(
     else body = fixed.body;
   }
   if (problems.length > 0) return { ok: false, problems };
-  return { ok: true, body, parents, removed, mapped, policies: emitted, names, checked };
+  return { ok: true, body, parents, removed, mapped, policies: emitted, names, checked, mirrored };
 }
 
 /** `pgPolicy` and `sql` must be imported where this step emitted policy entries. */

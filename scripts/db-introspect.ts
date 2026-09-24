@@ -44,7 +44,8 @@
  *      not by a list kept here.
  *   3d. [I-MAP] (T-153, OD-107) every int8 and PostGIS geometry column in `public` (arrays included),
  *      with `format_type` and its array dimensions, read as one JSON array (COLUMN_TYPES_SQL). An
- *      unreadable read fails. Step 5a holds the rendering against it.
+ *      unreadable read fails. Step 5a holds the rendering against it. A partition's columns are held
+ *      there through its parent, the relation that is rendered (T-165 rework 2; step 4b).
  *   4a. [I-MAP] (T-150, OD-97) each `unknown("col")` drizzle-kit writes for a type it cannot parse
  *      is rewritten from a CLOSED map (`citext`, `bytea` -> customType). Any other type fails the
  *      run: `unknown(...)` is never written (scripts/gates/lib/schema-render.ts).
@@ -58,12 +59,16 @@
  *      first of its partitions in `public` in byte order, with every name mapped to the parent's by
  *      the catalogue and the parent's policies added from pg_policy; its partitions leave the
  *      rendering and are on neither side of I-VACUOUS (scripts/gates/lib/schema-partition.ts).
- *      EVERY partition's own constraints, indexes, triggers and policies are read from the
- *      catalogue and matched to the parent's first, because only the parent is rendered (rework 1,
- *      OD-155/OD-156). A shape it cannot check — a sub-partitioned table, a partition outside
- *      `public` (including one in a schema I-SCOPE admits), a parent with no partition, an object
- *      any partition carries alone, a partition whose columns are not the parent's, an identity
- *      column, a name with no counterpart on the parent — fails the run.
+ *      EVERY partition's own constraints, indexes, triggers and policies (rework 1, OD-155/OD-156),
+ *      and its rules, extended statistics objects and non-default REPLICA IDENTITY (rework 2,
+ *      OD-158), are read from the catalogue and matched to the parent's first, because only the
+ *      parent is rendered; and every constraint and index the parent owns must have a counterpart on
+ *      EVERY partition, not only the template (rework 2, OD-157). Nothing else a partition carries
+ *      is read (T-165 § contract, rework 2, R2). A shape it cannot check — a sub-partitioned
+ *      table, a partition outside `public` (including one in a schema I-SCOPE admits), a parent
+ *      with no partition, an object any partition carries alone, a partition whose columns are not
+ *      the parent's, an identity column, a name with no counterpart on the parent or on any
+ *      partition — fails the run.
  *   4c. [I-POLICY] (T-152 rework 1, OD-109) drizzle-kit keeps a row-level security policy's
  *      `using` and `withCheck` only for the first pg_policies row it receives per table, from a query
  *      with no ORDER BY, so on a table with two or more policies the rendering is wrong and follows
@@ -501,7 +506,7 @@ function main(): void {
   }
   const partitionedBody = parted.ok ? parted.body : mappedBody;
   console.log(
-    `  partitions: ${parted.ok ? `${String(parted.parents)} partitioned table(s) rendered from a partition; ${String(parted.removed)} partition declaration(s) removed; ${String(parted.mapped)} name(s) mapped to the parent's; ${String(parted.policies)} policy entr(ies) added from pg_policy; ${String(parted.names)} export name(s) checked against drizzle-kit's; ${String(parted.checked)} constraint/index/trigger/policy name(s) on partitions checked for a parent counterpart` : 'failed'}`,
+    `  partitions: ${parted.ok ? `${String(parted.parents)} partitioned table(s) rendered from a partition; ${String(parted.removed)} partition declaration(s) removed; ${String(parted.mapped)} name(s) mapped to the parent's; ${String(parted.policies)} policy entr(ies) added from pg_policy; ${String(parted.names)} export name(s) checked against drizzle-kit's; ${String(parted.checked)} constraint/index/trigger/policy/rule/statistics/replica-identity entr(ies) on partitions checked for a parent counterpart; ${String(parted.mirrored)} (parent name, partition) pair(s) checked for a partition counterpart` : 'failed'}`,
   );
 
   // 4c. row-level security policies checked against and rendered from pg_policy (T-152 rework 1, OD-109)
@@ -574,7 +579,20 @@ function main(): void {
   // (base type and array dimensions, keyed by relation and column name — T-153 rework 1, OD-147,
   // OD-148); geometry admitted only as a scalar 2D point (T-153, OD-107). After anti-vacuity, so a
   // pull that lost a relation is I-VACUOUS, not I-MAP.
-  const typed = checkCatalogueColumns(body, catalogueColumns);
+  // T-165 rework 2 (the merge with T-153): a partition in public is not rendered (step 4b), so its
+  // columns are held here through its PARENT, which is rendered and whose own int8/geometry columns
+  // are in this read (relkind 'p'). Step 4b refuses a partition whose column signature (name, type,
+  // typmod, NOT NULL, identity, generated, default) is not the parent's, so nothing is lost. The set
+  // left out is exactly the one I-VACUOUS leaves out (`partitions`, step 3), and it is printed.
+  const partitionNames = new Set(partitions.map((r) => r.name));
+  const partitionColumns = catalogueColumns.filter((c) => partitionNames.has(c.relation));
+  console.log(
+    `  int8/geometry column(s) of partitions held through their parent, not matched on their own: ${String(partitionColumns.length)}`,
+  );
+  const typed = checkCatalogueColumns(
+    body,
+    catalogueColumns.filter((c) => !partitionNames.has(c.relation)),
+  );
   console.log(
     `  bigint: ${String(mapping.ok ? mapping.bigints : 0)} column(s) rewritten to drizzle's bigint mode; ${String(typed.matched)} of the catalogue's ${String(typed.int8)} int8 column(s) matched per column against ${String(typed.relations)} parsed relation(s); geometry: ${String(typed.points)} point column(s) admitted`,
   );
