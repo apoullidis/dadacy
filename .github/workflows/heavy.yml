@@ -58,11 +58,10 @@ jobs:
   # one matrix leg each. fail-fast is off for the reason this ticket's
   # acceptance row names in terms: ONE FAILURE MUST NOT MASK THE OTHERS.
   #
-  #   gate:db-introspect-suite is BLOCKED, not BLOCKING: it is a known, owned
-  #   red (OD-154, owner T-165, PARKED awaiting OE-37) pinned to its exact
-  #   failure, so it fails this stage if it changes in EITHER direction. On a
-  #   runner it would be red today, which is correct and is the point of the
-  #   class.
+  #   gate:db-introspect-suite is BLOCKING since T-190 (OD-220): T-165 turned
+  #   its suite green (ALL 141 at 3119884), so its pinned failure was deleted
+  #   and any misbehaving case fails this stage. No heavy entry is BLOCKED now;
+  #   the class stays in this matrix's definition (W8: BLOCKING + BLOCKED).
   blocking:
     name: heavy gate (blocking)
     runs-on: ubuntu-latest

@@ -264,9 +264,9 @@ const SUITES: readonly Suite[] = [
     state: 'NEEDS-SERVICE',
     why: 'db:introspect:check: the closed type map, canonical order, RLS policies, the pgboss exclusion (T-138, T-150, T-152, T-145)',
     owner:
-      'T-165 — tech-lead (the cases); the gate:heavy promotion of gate:db-introspect-suite is platform-infrastructure (OD-220)',
+      'T-165 — tech-lead (the cases); gate:db-introspect-suite in gate:heavy is platform-infrastructure (T-190 promoted it, OD-220)',
     unblocks:
-      "NEEDS-SERVICE is structural: the suite needs the `db` profile and the PR stage has none, so its home is gate:heavy (T-006), where `gate:db-introspect-suite` runs it against a real database. OD-154 (K36-K49m red since 0006) is closed by T-165's re-cut plants: 141/141 on a fresh db project at 4feb38f. gate:heavy still rosters that entry BLOCKED against `!! 25 of 81`, so a green run is refused there until it is promoted to BLOCKING (T-006 § contract §8/§10; OD-220). Run it with `scripts/svc run <ticket> -- pnpm -w gate:db-introspect-suite`.",
+      "NEEDS-SERVICE is structural: the suite needs the `db` profile and the PR stage has none, so its home is gate:heavy (T-006), where `gate:db-introspect-suite` runs it against a real database. OD-154 (K36-K49m red since 0006) is closed by T-165's re-cut plants: 141/141 on a fresh db project at 4feb38f. gate:heavy rosters that entry BLOCKING since T-190 (OD-220), so any misbehaving case fails gate:heavy. Run it with `scripts/svc run <ticket> -- pnpm -w gate:db-introspect-suite`.",
     // RE-MEASURED 2026-09-20 on the rebase onto main 6582596. T-168 added
     // EXIT/INT/TERM traps to this suite (9b35d3e), so the digest moved and this
     // gate went RED — the tripwire firing, exactly as § contract 6 said it
