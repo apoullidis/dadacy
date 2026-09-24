@@ -244,6 +244,20 @@ mut "$HROSTER" "    anchors: [
 # plant_blocked <pinned|unpinned>
 FIX=gate:fixture-blocked
 FIX_PIN='!! 25 of 141 cases misbehaved'
+# planted_fp: the fingerprint of the tree AS IT IS NOW. A planted fixture is a
+# working-tree change, and gate:heavy's fingerprint covers `git diff HEAD`, so a
+# receipt written with the clean-tree $FP would be refused as STALE.
+# planted_fp sets FPM, or is a HARNESS ERROR that also puts the tree back, so a
+# fixture can never leak into the next case and a case can never be skipped
+# silently.
+planted_fp() {
+  FPM="$(node "$HEAVY" --roster-only 2>&1 | sed -n 's/.*fingerprint \([0-9a-f]*\).*/\1/p' | head -1)"
+  if [ -z "$FPM" ] || [ "$FPM" = "$FP" ]; then
+    printf '!! %-62s %s\n' "$CASE" "HARNESS ERROR: no fingerprint for the planted tree (got '$FPM')"
+    harness=$((harness + 1)); restore; return 1
+  fi
+  return 0
+}
 plant_blocked() {
   local pin=""
   [ "$1" = pinned ] && pin="
@@ -340,7 +354,7 @@ receipt socket "$FP" "$OK_SOCKET"; receipt service "$FP" "$OK_SERVICE"
 run_case "C1 CONTROL: both receipts at THIS tree state, green" PASS \
   'GATE PASS  gate:heavy' 'the socket segment was carried by a receipt' \
   '3 BLOCKING, 0 BLOCKED, 0 SERVICE, 3 PENDING' \
-  'PASS (206s)               gate:db-introspect-suite   [BLOCKING]' \
+  'PASS (206s)              gate:db-introspect-suite   [BLOCKING]' \
   '3/3 sub-gate(s) whose outcome must match their class, matched' \
   '3 rostered sub-gate(s) are NOT GREEN' -- node "$HEAVY"
 
@@ -348,12 +362,12 @@ run_case "C1 CONTROL: both receipts at THIS tree state, green" PASS \
 # against a judge that refused EVERY BLOCKED observation — the class's
 # acceptance path would be tested by nothing (T-190).
 CASE="C1b"
-plant_blocked pinned &&
-  receipt socket "$FP" "$OK_SOCKET" &&
-  receipt service "$FP" "[$OBS_DRIZZLE,$OBS_SUITE,$OBS_FIX_PINNED]" &&
+plant_blocked pinned && planted_fp &&
+  receipt socket "$FPM" "$OK_SOCKET" &&
+  receipt service "$FPM" "[$OBS_DRIZZLE,$OBS_SUITE,$OBS_FIX_PINNED]" &&
   run_case "C1b CONTROL: a BLOCKED fixture red exactly as pinned is accepted" PASS \
     'GATE PASS  gate:heavy' '3 BLOCKING, 1 BLOCKED, 0 SERVICE, 3 PENDING' \
-    'RED AS PINNED (1s)        gate:fixture-blocked       [BLOCKED]' \
+    'RED AS PINNED (1s)       gate:fixture-blocked       [BLOCKED]' \
     '4/4 sub-gate(s) whose outcome must match their class, matched' \
     '4 rostered sub-gate(s) are NOT GREEN' -- node "$HEAVY"
 
@@ -400,17 +414,17 @@ run_case "C7 Drizzle parity green over ZERO relations (T-138 K07's bound)" FAIL 
 # in the MISBEHAVED count alone, as QR-F1 (T-188) required: a comparator that
 # ignored that count would pass `!! 31 of 141` against `!! 25 of 141`.
 CASE="C8"
-plant_blocked pinned &&
-  receipt socket "$FP" "$OK_SOCKET" &&
-  receipt service "$FP" "[$OBS_DRIZZLE,$OBS_SUITE,"'{"name":"gate:fixture-blocked","code":0,"banners":["GATE PASS  gate:fixture-blocked"],"anchorLines":[],"seconds":1}]' &&
+plant_blocked pinned && planted_fp &&
+  receipt socket "$FPM" "$OK_SOCKET" &&
+  receipt service "$FPM" "[$OBS_DRIZZLE,$OBS_SUITE,"'{"name":"gate:fixture-blocked","code":0,"banners":["GATE PASS  gate:fixture-blocked"],"anchorLines":[],"seconds":1}]' &&
   run_case "C8 the BLOCKED suite goes GREEN: an allowance that outlives its reason" FAIL \
     'gate:fixture-blocked is rostered BLOCKED against a pinned failure and is GREEN' \
     'an allowance that outlives its reason' 'gate:heavy — 1 problem(s)' -- node "$HEAVY"
 
 CASE="C9"
-plant_blocked pinned &&
-  receipt socket "$FP" "$OK_SOCKET" &&
-  receipt service "$FP" "[$OBS_DRIZZLE,$OBS_SUITE,"'{"name":"gate:fixture-blocked","code":1,"banners":["GATE FAIL  gate:fixture-blocked — !! 31 of 141 cases misbehaved"],"anchorLines":[],"seconds":1}]' &&
+plant_blocked pinned && planted_fp &&
+  receipt socket "$FPM" "$OK_SOCKET" &&
+  receipt service "$FPM" "[$OBS_DRIZZLE,$OBS_SUITE,"'{"name":"gate:fixture-blocked","code":1,"banners":["GATE FAIL  gate:fixture-blocked — !! 31 of 141 cases misbehaved"],"anchorLines":[],"seconds":1}]' &&
   run_case "C9 the BLOCKED suite red on a DIFFERENT count than the pin" FAIL \
     'gate:fixture-blocked is RED IN A WAY THAT IS NOT THE PINNED ONE' \
     'the pin is "!! 25 of 141 cases misbehaved"' 'gate:heavy — 1 problem(s)' -- node "$HEAVY"
@@ -419,14 +433,14 @@ plant_blocked pinned &&
 # BLOCKED fixture red as pinned, so every result kind the summary can print is
 # on the page at once and none may be masked by the failure.
 CASE="C10"
-plant_blocked pinned &&
-  receipt socket "$FP" "$OK_SOCKET" &&
-  receipt service "$FP" '[{"name":"gate:drizzle-parity","code":1,"banners":["GATE FAIL  gate:drizzle-parity"],"anchorLines":["","",""],"seconds":7},'"$OBS_SUITE,$OBS_FIX_PINNED"']' &&
+plant_blocked pinned && planted_fp &&
+  receipt socket "$FPM" "$OK_SOCKET" &&
+  receipt service "$FPM" '[{"name":"gate:drizzle-parity","code":1,"banners":["GATE FAIL  gate:drizzle-parity"],"anchorLines":["","",""],"seconds":7},'"$OBS_SUITE,$OBS_FIX_PINNED"']' &&
   run_case "C10 ONE failing sub-gate does not mask the others' results" FAIL \
     'gate:drizzle-parity FAILED (exit 1)' \
     'gate:constraint-suite      [BLOCKING]' \
-    'PASS (206s)               gate:db-introspect-suite   [BLOCKING]' \
-    'RED AS PINNED (1s)        gate:fixture-blocked       [BLOCKED]' \
+    'PASS (206s)              gate:db-introspect-suite   [BLOCKING]' \
+    'RED AS PINNED (1s)       gate:fixture-blocked       [BLOCKED]' \
     '3/4 sub-gate(s) whose outcome must match their class, matched' \
     'gate:heavy — 1 problem(s)' -- node "$HEAVY"
 
