@@ -427,22 +427,32 @@ echo "== control, again, after every plant and drop above"
 check K17 "CONTROL: the committed tree after the whole suite's plant/drop history, no ANALYZE anywhere in the suite" PASS 'byte-identical to a fresh introspection'
 
 echo "== T-152: the rendering is a function of the schema alone (OD-106, OD-108)"
-PREV=$(printf '%04d' $((10#$HIGHEST - 1)))
-PREV2=$(printf '%04d' $((10#$HIGHEST - 2)))
+# T-188 (OD-218): the walk-back targets are DERIVED from the committed migration set, not fixed at
+# HIGHEST-1 and HIGHEST-2. Which step moves drizzle-kit's `public` order is a property of the migration
+# set: with 0007 highest, 0007 re-creates only `approval` (already last) and 0006 touches only schema
+# `pgboss`, so neither of the two nearest steps can move it and the old walk ABORTed here on every head
+# containing 0007. So: every committed number below HIGHEST, nearest first, stopping at the FIRST whose
+# down/up moves the order. What K18 proves is unchanged: the move is still asserted BEFORE parity is
+# judged, and if no step down to the lowest committed migration moves it, the run still ABORTs.
+WALK=$(ls "$M" | sed -nE 's/^([0-9]{4})_[a-z0-9_]+\.up\.sql$/\1/p' | sort -r | awk -v h="$HIGHEST" '$1 + 0 < h + 0')
+[ -n "$WALK" ] || abort "no committed migration below $HIGHEST to walk back to: the history attack cannot be made"
 before=$(table_list_order)
 after=$before
 perturbed=
-for to in "$PREV" "$PREV2"; do
+tried=
+for to in $WALK; do
+  tried="$tried $to"
   { node scripts/db-migrate.ts down --to "$to" >"$OUT.p" 2>&1 && grep -q '^MIGRATE OK  down: ' "$OUT.p"; } || { cat "$OUT.p"; abort "db:migrate down --to $to failed"; }
   { node scripts/db-migrate.ts up >"$OUT.p" 2>&1 && grep -q '^MIGRATE OK  up: ' "$OUT.p"; } || { cat "$OUT.p"; abort "db:migrate up after down --to $to failed"; }
+  [ "$(record)" = "kinvara-migrate version=$HIGHEST" ] || abort "the record reads '$(record)' after down --to $to and up, not $HIGHEST"
   after=$(table_list_order)
   if [ "$after" != "$before" ]; then
     perturbed=$to
     break
   fi
 done
-[ -n "$perturbed" ] || abort "neither down --to $PREV nor down --to $PREV2, then up, moved drizzle-kit's table-list order [$before]: the history attack did not land"
-echo "   history attack landed: down --to $perturbed, up; drizzle-kit's table list was [$before], is now [$after]"
+[ -n "$perturbed" ] || abort "no walk-back moved drizzle-kit's table-list order [$before] (down --to each of:$tried, then up): the history attack did not land"
+echo "   history attack landed: down --to $perturbed, up (walk-back tried:$tried); drizzle-kit's table list was [$before], is now [$after]"
 check K18 "(T-152) catalogue history moved drizzle-kit's own table order (asserted above), no ANALYZE: parity holds" PASS 'byte-identical to a fresh introspection'
 
 m0=$(stats_mark)
