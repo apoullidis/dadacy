@@ -489,12 +489,15 @@ describe('I-5 clause (b) — the role row is read FOR SHARE, so a concurrent rev
     await sleep(1500);
     const cs = await asApp(countersign(a, ACC.tsSenior));
     const rv = await revoking;
+    // Restore before judging, so a failure here cannot leak a revoked fixture into later tests.
+    await db.sql({
+      commands: [
+        `UPDATE public.account_role SET revoked_at = NULL WHERE account_id = '${ACC.tsSenior}' AND role = 'ts_senior'`,
+      ],
+    });
     assertPermitted('the revoke transaction', rv);
     assertRefusedWith('the waiting countersignature', cs, ERR_NOT_TS_SENIOR);
-    // Restore, and prove the restore.
-    await asSuperuser(
-      `UPDATE public.account_role SET revoked_at = NULL WHERE account_id = '${ACC.tsSenior}' AND role = 'ts_senior'`,
-    );
+    // Prove the restore, and that nothing was countersigned.
     assert.equal(
       await db.value(
         `SELECT (SELECT (revoked_at IS NULL)::text FROM public.account_role WHERE account_id = '${ACC.tsSenior}' AND role = 'ts_senior')
