@@ -221,7 +221,12 @@ const SUITES: readonly Suite[] = [
   {
     id: 'schema-typecheck',
     file: 'scripts/negative-tests/schema-typecheck.sh',
-    cases: 16,
+    // 16 -> 24, 2026-09-24, T-153 merging main 3385ede (OE-35 A): T-153 committed P05-P09 and
+    // P07m/P08m/P09m (eight cases) before this pin existed; the merge put them under it and this gate
+    // went RED on the count, as designed. Measured, not edited: `./scripts/dev bash
+    // scripts/negative-tests/schema-typecheck.sh` at d1dedcb printed `ALL 24 CASES BEHAVED AS
+    // EXPECTED`, exit 0 (tasks/state/EP-2/T-153.md § Rework 2, phase R2-5).
+    cases: 24,
     // PROMOTED BLOCKED -> GREEN, 2026-09-20, when T-005 rebased onto main
     // 6582596. T-168 merged (aa45209, 3c54c71, 9b35d3e) and fixed S09, so the
     // suite is green on the trunk: `ALL 16 CASES BEHAVED AS EXPECTED`, exit 0,
@@ -250,7 +255,9 @@ const SUITES: readonly Suite[] = [
   {
     id: 'db-introspect',
     file: 'scripts/negative-tests/db-introspect.sh',
-    cases: 65,
+    // 65 -> 81, 2026-09-24, T-153 merging main 3385ede: T-153 added K50-K62r (sixteen cases). NOT a
+    // green count: see the digest note below for what was and was not measured.
+    cases: 81,
     state: 'NEEDS-SERVICE',
     why: 'db:introspect:check: the closed type map, canonical order, RLS policies, the pgboss exclusion (T-138, T-150, T-152, T-145)',
     owner: 'T-165 — tech-lead, PARKED awaiting stakeholder ruling OE-37',
@@ -269,7 +276,17 @@ const SUITES: readonly Suite[] = [
     // pinned `cases: 65` is unchanged and OD-154's `!! 25 of 65` on `main` is
     // still the last real reading anyone has. The pin detects an edit; that is
     // all it has ever claimed to detect.
-    digest: '30708f1b2c3e458e54292488346fd2e9cd95490a40c8124e590ec935151155fb',
+    // RE-PINNED 2026-09-24 by T-153 merging main 3385ede (OE-35 A): the merge brought T-153's cases
+    // K50-K62r and its K60 correction (d1dedcb) under this pin, and this gate went RED. Taken with
+    // the instrument, never edited by hand (PROTOCOL §5.2):
+    //   $ git cat-file blob d1dedcb:scripts/negative-tests/db-introspect.sh | sha256sum
+    //   780ce587371ef47beeb4f12d68fa6192350a2024cce48e1b1ff28d84f9a58365
+    // WHAT WAS MEASURED against a real database at d1dedcb (T-153.md § Rework 2): the COMMITTED suite
+    // ABORTS at K18 before printing a footer, exactly as it does on main 3385ede (OD-218: with 0007
+    // the history attack's two walk-back steps cannot move `public`'s order). With K18's walk
+    // lengthened in an uncommitted copy (one line), it prints `!! 25 of 81 cases misbehaved`: the 25
+    // are OD-154's K36-K49m, unchanged; every other case, T-153's K50-K62r included, is `ok`.
+    digest: '780ce587371ef47beeb4f12d68fa6192350a2024cce48e1b1ff28d84f9a58365',
   },
 ];
 
