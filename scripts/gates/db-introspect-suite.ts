@@ -2,7 +2,7 @@
  * gate:db-introspect-suite — the one committed negative suite that no stage
  * could run. T-006.
  *
- * `scripts/negative-tests/db-introspect.sh` is 65 cases attacking T-138's
+ * `scripts/negative-tests/db-introspect.sh` is 81 cases attacking T-138's
  * parity check. `gate:negative-suites` rosters it NEEDS-SERVICE and pins its
  * SHA-256 instead of running it, because the PR stage declares `svc: none`
  * (T-005 § contract §6). Its own entry there says, in terms: "its home is
@@ -25,14 +25,18 @@
  * gap and says it is gate:heavy's. Running the suite against a real database
  * is what closes it: the count is re-measured on every heavy run.
  *
- * IT NEEDS A FRESH `db` PROJECT, AND THAT IS MEASURED, NOT ASSUMED (OD-189).
- * Run it a second time against a database it has already run against and case
- * K18's history attack cannot land — `down --to 0005` / `down --to 0004` then
- * `up` no longer moves drizzle-kit's table-list order, because the first run
- * already consumed the catalogue ordering it was going to disturb. The suite
- * then ABORTS at exit 2 WITH NO FOOTER, which is the one shape a harness must
- * be able to tell from a refusal: this gate prints `GATE CRASH` for it, and
- * `gate:heavy` refuses the run rather than reading exit 2 as "the pinned red".
+ * IT NEEDS A FRESH `db` PROJECT (OD-189). K18's history attack walks back to
+ * targets DERIVED from the committed migrations (T-188, OD-218): every
+ * committed number below the highest, nearest first, stopping at the first
+ * `down --to <n>` then `up` that moves drizzle-kit's table-list order. If no
+ * target moves it, the suite ABORTS at exit 2 WITH NO FOOTER, which is the one
+ * shape a harness must be able to tell from a refusal: this gate prints
+ * `GATE CRASH` for it, and `gate:heavy` refuses the run rather than reading
+ * exit 2 as "the pinned red". A second run on a used database with the derived
+ * walk was measured ONCE (qa-verification, T-188 at f748b73): it reached its
+ * footer, `!! 25 of 81`, exit 1, with K18 `ok` at `down --to 0006`. One run is
+ * not a guarantee. The walk it replaced was fixed at `down --to 0005` /
+ * `down --to 0004`, and with that walk a second run aborted:
  * Measured both ways at T-006's head: fresh project → `!! 25 of 65`, exit 1,
  * 206.3 s; the same project a second time → ABORT, exit 2, 97.7 s, no footer.
  * So: `./scripts/svc down <ticket>` before the heavy stage's service segment.

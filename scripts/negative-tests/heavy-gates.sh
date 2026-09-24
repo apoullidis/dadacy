@@ -342,7 +342,7 @@ run_case "C8 the BLOCKED suite goes GREEN: an allowance that outlives its reason
 
 CASE="C9"
 receipt socket "$FP" "$OK_SOCKET"
-receipt service "$FP" '[{"name":"gate:drizzle-parity","code":0,"banners":["GATE PASS  gate:drizzle-parity"],"anchorLines":["MIGRATE OK  up: 0000 -> 0006","drizzle-kit 0.31.10: 4 relation(s) introspected from public","db/schema.ts: byte-identical to a fresh introspection"],"seconds":7},{"name":"gate:db-introspect-suite","code":1,"banners":["GATE FAIL  gate:db-introspect-suite — !! 31 of 65 cases misbehaved"],"anchorLines":["!! 31 of 65 cases misbehaved"],"seconds":206}]'
+receipt service "$FP" '[{"name":"gate:drizzle-parity","code":0,"banners":["GATE PASS  gate:drizzle-parity"],"anchorLines":["MIGRATE OK  up: 0000 -> 0006","drizzle-kit 0.31.10: 4 relation(s) introspected from public","db/schema.ts: byte-identical to a fresh introspection"],"seconds":7},{"name":"gate:db-introspect-suite","code":1,"banners":["GATE FAIL  gate:db-introspect-suite — !! 31 of 81 cases misbehaved"],"anchorLines":["!! 31 of 81 cases misbehaved"],"seconds":206}]'
 run_case "C9 the BLOCKED suite red on a DIFFERENT count than the pin" FAIL \
   'RED IN A WAY THAT IS NOT THE PINNED ONE' -- node "$HEAVY"
 
