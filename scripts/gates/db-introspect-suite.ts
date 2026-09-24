@@ -132,5 +132,7 @@ console.error(
 );
 console.error('  gate:heavy rosters this suite BLOCKING (T-190, OD-220): every case must behave.');
 console.error("  This gate prints the suite's last six lines only; the suite's own `BAD` lines");
-console.error('  name the cases (run `bash scripts/negative-tests/db-introspect.sh` under svc run).');
+console.error(
+  '  name the cases (run `bash scripts/negative-tests/db-introspect.sh` under svc run).',
+);
 process.exit(1);
