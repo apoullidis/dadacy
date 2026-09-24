@@ -40,7 +40,7 @@ import {
 import { assertPermitted, assertRefused, INT10_RAISE } from '../src/expect.ts';
 
 const SUITE = 'migrations-applied';
-const HIGHEST_COMMITTED = '0006';
+const HIGHEST_COMMITTED = '0007';
 const COMMITTED_DIR = path.join(REPO_ROOT, MIGRATIONS_DIR);
 const RECORD_SQL = `SELECT coalesce(shobj_description(oid, 'pg_database'), '(no comment)')
                       FROM pg_database WHERE datname = current_database()`;
@@ -187,6 +187,29 @@ const CREATED_BY: Readonly<
                                      has_schema_privilege('app_rw', n.oid, 'CREATE')::text
                                FROM pg_namespace n WHERE n.nspname = 'pgboss'), '(absent)')`,
         holds: 'true,false',
+      },
+    ],
+  },
+  '0007': {
+    source: 'T-030',
+    // Each probe names one object 0007 creates, and each reading returns a value rather
+    // than raising once that object is gone: to_regclass and to_regprocedure return NULL
+    // for a missing name, and the trigger read is a count over pg_trigger.
+    probes: [
+      {
+        title: 'table public.approval exists',
+        sql: `SELECT (to_regclass('public.approval') IS NOT NULL)::text`,
+        holds: 'true',
+      },
+      {
+        title: 'function public.assert_second_actor_differs() exists',
+        sql: `SELECT (to_regprocedure('public.assert_second_actor_differs()') IS NOT NULL)::text`,
+        holds: 'true',
+      },
+      {
+        title: 'trigger trg_approval_four_eyes exists',
+        sql: `SELECT count(*)::text FROM pg_trigger WHERE tgname = 'trg_approval_four_eyes'`,
+        holds: '1',
       },
     ],
   },
