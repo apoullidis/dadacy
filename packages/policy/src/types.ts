@@ -271,15 +271,24 @@ export interface ResourceRef {
   /**
    * SA §SA-4 I-5, clause (b), as `decisions.md` OE-21 ruled it (`T-030`): the
    * roles the COUNTERSIGNER holds, as the caller read them from
-   * `account_role` (unrevoked rows). `four_eyes` allows only when this is an
-   * actual array containing exactly `'ts_senior'`; absent, junk or any other
-   * role set denies with `four_eyes_required`.
+   * `account_role` (unrevoked rows). `four_eyes` requires
+   * `Array.isArray(x) && x.includes('ts_senior')`. Against DATA-SHAPED input
+   * (plain arrays, strings, sets, array-likes, JSON) that means an actual
+   * array containing exactly `'ts_senior'`; absent, junk or any other role set
+   * denies with `four_eyes_required`. It is NOT a guard against a hostile
+   * caller's objects: an array carrying its own `includes()`, an `Array`
+   * subclass overriding it, a `Proxy` lying on an index, or a polluted
+   * `Array.prototype` can all pass (`T-030` QA-A1; the LIMITATION case in
+   * `can.test.ts`).
    *
    * This is the DETECTIVE half. It checks what the caller says the
-   * countersigner holds, and a caller can say anything: the INVARIANT is the
-   * database trigger `trg_approval_four_eyes` on `approval` (migration
-   * `0007`), which reads `account_role` itself and refuses a countersignature
-   * without an unrevoked `ts_senior` (KV052). PROTOCOL §9.1.
+   * countersigner holds, and a caller can say anything. The database trigger
+   * `trg_approval_four_eyes` on `approval` (migration `0007`) reads
+   * `account_role` as the countersigning transaction sees it and refuses a
+   * countersignature without an unrevoked `ts_senior` (KV052). That holds
+   * only against a principal that cannot WRITE `ts_senior` rows: `app_rw`
+   * can, and can meet the check for any account (`T-030` QA-F1, B2/B3/B4),
+   * until `T-186` closes that route (`decisions.md` OE-47). PROTOCOL §9.1.
    */
   readonly countersignerRoles?: readonly Role[] | undefined;
   /**

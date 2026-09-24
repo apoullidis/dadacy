@@ -1345,8 +1345,10 @@ test('no decision ever carries both an allow basis and a deny reason', () => {
  * countersignature satisfies four-eyes ONLY when the countersigner holds
  * `ts_senior`, whoever performed the action. Before T-030 `countersigned()`
  * read no role, and every case below that expects `four_eyes_required` for a
- * non-ts_senior countersigner ALLOWED (OD-66). This is the detective layer;
- * the invariant is the database trigger (packages/db-testkit/suites/four-eyes.test.ts).
+ * non-ts_senior countersigner ALLOWED (OD-66). This is the detective layer.
+ * The database trigger (packages/db-testkit/suites/four-eyes.test.ts) holds
+ * clause (b) only against a principal that cannot write `ts_senior` rows;
+ * `app_rw` can until T-186 (decisions.md OE-47; T-030 QA-F1).
  */
 
 /**
@@ -1472,4 +1474,58 @@ test('T-030: a countersigner role list that is absent or junk cannot satisfy fou
   );
   // The control, so the denials above are not a blanket denial.
   expectAllow(by(['ts_senior']), 'role_grant', 'a real ts_senior second actor');
+});
+
+/*
+ * T-030 rework 1 (QA-A1): the bound of the role-list check, pinned. The check is
+ * `Array.isArray(x) && x.includes('ts_senior')`, which refuses every DATA-SHAPED
+ * junk value above but trusts the object's own behaviour. A hostile caller's
+ * object can therefore pass while holding no `ts_senior`. This layer is
+ * detective (a caller can pass any roles it likes), so no route opens; the case
+ * exists so that the narrowed contract sentence has a test, and it goes red if
+ * the check is ever hardened (then rewrite contract §5 and this case together).
+ * Polluting `Array.prototype` also passes (QA block PA); it is not committed here
+ * because it mutates a global the other cases share.
+ */
+test('T-030 LIMITATION (QA-A1): a hostile array-shaped object holding no ts_senior passes the role-list check', () => {
+  const actor: Actor = { accountId: SELF, roles: ['ts_senior'], stepUpUntil: FRESH_STEP_UP };
+  const by = (roles: unknown): Decision =>
+    can(
+      actor,
+      'remove_permanently',
+      {
+        type: 'account',
+        countersignedBy: OTHER,
+        countersignerRoles: roles,
+      } as unknown as ResourceRef,
+      CTX,
+    );
+  const ownIncludes = Object.assign(['parent'], { includes: (): boolean => true });
+  class LyingArray extends Array<string> {
+    override includes(): boolean {
+      return true;
+    }
+  }
+  const subclass = LyingArray.from(['parent']);
+  const proxyTarget = ['parent'];
+  const proxy = new Proxy(proxyTarget, {
+    get: (target, key, receiver): unknown =>
+      key === '0' ? 'ts_senior' : Reflect.get(target, key, receiver),
+  });
+  // [what, the value passed, the data it actually stores]
+  for (const [what, roles, stored] of [
+    ['an array with an own includes()', ownIncludes, ownIncludes],
+    ['an Array subclass overriding includes()', subclass, subclass],
+    ['a Proxy over [parent] lying on index 0', proxy, proxyTarget],
+  ] as const) {
+    assert.ok(Array.isArray(roles), `${what}: precondition, Array.isArray holds`);
+    assert.deepEqual(
+      Array.from({ length: stored.length }, (_, i) => Reflect.get(stored, i) as unknown),
+      ['parent'],
+      `${what}: precondition, the only stored element is parent`,
+    );
+    expectAllow(by(roles), 'role_grant', `${what} (LIMITATION: allowed)`);
+  }
+  // CONTROL: the same data as a plain array is refused.
+  expectDeny(by(['parent']), 'four_eyes_required', 'plain [parent]');
 });

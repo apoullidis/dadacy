@@ -134,11 +134,16 @@ const COUNTERSIGNING_ROLE: Role = 'ts_senior';
  *
  * `T-030`: until then this read no role, so any well-formed second account —
  * a parent's, a sitter's — satisfied four-eyes on all nine `F4` cells (OD-66).
- * The role list is caller-supplied, so it is read as `unknown` and must be an
- * actual array holding exactly `'ts_senior'`: a string `'ts_senior'` (whose
- * `.includes` would match), `['TS_SENIOR']`, an array-like object, `null` and
- * absence all deny. This is DETECTIVE: the database trigger on `approval`
- * (migration `0007`) is the invariant, and it reads `account_role` itself.
+ * The role list is caller-supplied, so it is read as `unknown` and must pass
+ * `Array.isArray` and then `.includes('ts_senior')`: against data-shaped
+ * input, a string `'ts_senior'` (whose `.includes` would match),
+ * `['TS_SENIOR']`, an array-like object, `null` and absence all deny. A
+ * hostile object can pass (an own or subclass `includes()`, a `Proxy`, a
+ * polluted `Array.prototype`: `T-030` QA-A1), which is one more reason this
+ * layer is DETECTIVE. The database trigger on `approval` (migration `0007`)
+ * reads `account_role` as the countersigning transaction sees it; it holds
+ * only against a principal that cannot write `ts_senior` rows, and `app_rw`
+ * can until `T-186` (`decisions.md` OE-47; `T-030` QA-F1).
  */
 function countersigned(actor: Actor, resource: ResourceRef): boolean {
   if (!differentId(resource.countersignedBy, actor.accountId)) return false;
