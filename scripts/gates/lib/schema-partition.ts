@@ -33,14 +33,16 @@
  *   3b. The mirror, for **every** partition too (rework 2, OE-37 (A), OD-157): each constraint and
  *      index the PARENT owns must have a counterpart on every partition, not only on the template.
  *   4. Every other partition of that parent in `public` is then removed from the rendering.
- * Everything it cannot check is a problem, and it never passes a partitioned family through
- * silently: a sub-partitioned table, a partition outside `public`, a parent with no partition, an
+ * Everything it cannot check, among what it reads, is a problem: a sub-partitioned table, a partition outside `public`, a parent with no partition, an
  * object of any partition's own, a partition whose
  * column shape is not the parent's, an identity column (drizzle-kit renders a partition's as
  * `name: "null", startWith: null`, measured), a name in the template with no counterpart on the
  * parent, a constraint or index the parent has and ANY partition does not, an export name
  * this step and drizzle-kit would spell differently, and PostgreSQL's per-partition clone of a
- * foreign key on a table that is not itself a partition.
+ * foreign key on a table that is not itself a partition. It does NOT follow that a partitioned
+ * family never passes with something unread: what a partition carries outside the read set in 3
+ * passes silently — for example a partition that DISABLEs a trigger cloned from its parent
+ * (`pg_trigger.tgenabled` is not read; db-introspect.sh K188 is that bound, measured).
  */
 import ts from 'typescript';
 import { type CataloguePolicy, renderPolicy } from './schema-policy.ts';
