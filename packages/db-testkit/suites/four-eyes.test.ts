@@ -447,9 +447,13 @@ describe('I-5 clause (b) — the role row is read FOR SHARE, so a concurrent rev
       'ROLLBACK',
     );
     await sleep(1500);
+    // Inside BEGIN … ROLLBACK, so that if the lock did NOT block it, the revoke still
+    // never commits and cannot leak into the next test's state.
     const revoke = await asApp(
-      "SET lock_timeout = '1s'",
+      'BEGIN',
+      "SET LOCAL lock_timeout = '1s'",
       `UPDATE public.account_role SET revoked_at = now() WHERE account_id = '${ACC.tsSenior}' AND role = 'ts_senior'`,
+      'ROLLBACK',
     );
     const cs = await countersigning;
     assertPermitted('the countersignature transaction', cs);
@@ -467,6 +471,13 @@ describe('I-5 clause (b) — the role row is read FOR SHARE, so a concurrent rev
   });
 
   test('a countersignature that WAITS on an open revoke is REFUSED once the revoke commits (KV052)', async () => {
+    // Precondition, so a revoke leaked from elsewhere cannot make this refusal vacuous.
+    assert.equal(
+      await db.value(
+        `SELECT (revoked_at IS NULL)::text FROM public.account_role WHERE account_id = '${ACC.tsSenior}' AND role = 'ts_senior'`,
+      ),
+      'true',
+    );
     const a = nextApprovalId();
     await asSuperuser(insertPending(a, 'safeguarding_referral#make', ACC.dsl));
     const revoking = asApp(
