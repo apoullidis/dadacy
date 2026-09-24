@@ -24,10 +24,26 @@
 --   (c) "an audit entry for both roles" is NOT here: audit_log does not exist yet (T-067).
 --
 -- THE TRIGGER READS THE ROLE ROW `FOR SHARE`. A plain read, or FOR KEY SHARE, does not block a
--- concurrent revoke of that role; FOR SHARE does (T-140 TL-A3 (iii), 55P03). So an approval and
--- a revoke of its approver's ts_senior cannot both commit: whichever is second waits for the
--- first, and a countersignature that waited for a committed revoke re-reads the row and is
--- refused.
+-- concurrent revoke of that role; FOR SHARE does (T-140 TL-A3 (iii), 55P03). That is a
+-- guarantee ACROSS TWO SESSIONS only: a revoke in another transaction waits for an open
+-- countersignature, and a countersignature that waited for a committed revoke is refused -
+-- under READ COMMITTED with KV052, under REPEATABLE READ or SERIALIZABLE with 40001.
+--
+-- WHAT CLAUSE (b) DOES NOT HOLD AGAINST. The trigger checks account_role AS THE COUNTERSIGNING
+-- TRANSACTION SEES IT. It therefore holds only against a principal that cannot write ts_senior
+-- rows. app_rw, the principal that writes `approval`, CAN (INSERT/UPDATE on account_role, 0005),
+-- and qa-verification measured three routes by which it meets clause (b) for any account
+-- (T-030 QA-F1, B2/B3/B4): un-revoke a revoked ts_senior, countersign and restore revoked_at, in
+-- one transaction; move another account's live ts_senior row onto the approver, countersign and
+-- move it back, in one transaction; or grant ts_senior, commit, and countersign. Each commits.
+-- The route is OPEN until T-186 (decisions.md OE-47: only app_admin_rw may write ts_senior rows,
+-- app_rw refused at the database). Pinned as LIMITATION cases in four-eyes.test.ts.
+--
+-- WHAT A CONSUMER MUST STILL BIND. After a countersignature, action, subject_type, subject_id and
+-- submitter_id stay writable by app_rw, decision may be NULL or 'reject', and nothing here names
+-- the account that PERFORMS the action. A consumer must bind action and subject to what it
+-- performs, require the performer to be submitter_id (not approver_id), and require
+-- decision = 'approve' (T-030 QA-F2; T-030 § contract §7).
 --
 -- IT IS AN AFTER TRIGGER, ON PURPOSE. CHECK constraints are evaluated before AFTER ROW triggers
 -- fire, so an exact self-countersignature is refused by SD's own CHECK, by name, and the trigger
@@ -35,7 +51,9 @@
 --
 -- WHAT IT DOES NOT READ. The approver account's `status`. A live ts_senior role on a SUSPENDED
 -- account satisfies this trigger. SA §SA-4 I-5, OE-21 and SD name the role only and say nothing
--- about account status, so this is reported (decisions.md), not decided here (T-140 TL-A3 (i)).
+-- about account status, so this was reported (OD-214), not decided here (T-140 TL-A3 (i)). The
+-- stakeholder has since ruled that only an ACTIVE account's ts_senior satisfies I-5 (OE-45);
+-- T-186 builds it. Until then the LIMITATION case in four-eyes.test.ts pins the acceptance.
 --
 -- GENERIC. `public.assert_second_actor_differs(<first column>, <second column>)` is written so
 -- any table that records a second actor can attach it; the two column names are its trigger
