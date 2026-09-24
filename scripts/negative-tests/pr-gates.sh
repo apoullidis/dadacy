@@ -785,8 +785,9 @@ echo
 echo "=== I. gate:policy-coverage — 100% of nothing is not 100% ==="
 pc() { node scripts/gates/policy-coverage.ts; }
 CASE="I0"
-run_case "I0 CONTROL: 75/75 branches over 5 tracked source files" PASS \
-  'branches 75/75 (100%)' -- pc
+# 79/79 since T-030 (countersigned() gained two branches: the ts_senior role clause, OE-21).
+run_case "I0 CONTROL: 79/79 branches over 5 tracked source files" PASS \
+  'branches 79/79 (100%)' -- pc
 
 CASE="I1"
 mut packages/policy/package.json '"test": "node tools/run-tests.ts"' '"tset": "node tools/run-tests.ts"' &&
