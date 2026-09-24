@@ -28,6 +28,7 @@ import type { Type } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
 import { errorClass } from './problem-json/error-class.ts';
+import { installObservability } from './observability/install.ts';
 import { ProblemJsonFilter } from './problem-json/problem-json.filter.ts';
 
 export interface ServerOptions {
@@ -147,6 +148,10 @@ export function installDrain(app: NestFastifyApplication): void {
 export async function startServer(options: ServerOptions): Promise<NestFastifyApplication> {
   installProcessHandlers();
   const app = await createApp(options.module);
+  // T-008. Before `listen`, like `installDrain`: both add Fastify hooks. It
+  // emits SD §QD-5's seven-field request span and NOTHING ELSE; see
+  // apps/core/src/observability/install.ts for why it never reads `request.url`.
+  installObservability(app);
   installDrain(app);
   await app.listen(options.port, options.host);
   const address: unknown = app.getHttpServer().address();

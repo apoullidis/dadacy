@@ -69,6 +69,9 @@
 # example that the planted migration was applied. After each case the database is brought back to
 # the highest committed migration and its record is asserted, the tree is restored, and
 # `git status` is asserted clean.
+#
+# T-168: EXIT/INT/TERM traps call restore_tree(), so an INTERRUPTED run puts db/schema.ts (deleted
+# by K05) back too — see the block beside the traps, including what they deliberately do NOT do.
 set -uo pipefail
 cd "$(dirname "$0")/../.." || exit 2
 
@@ -124,16 +127,19 @@ stats_mark() {
   psql -X -A -t -q -c "SELECT coalesce(last_analyze::text, 'never') || ' / ' || coalesce(last_vacuum::text, 'never') FROM pg_stat_all_tables WHERE relid = 'pg_class'::regclass"
 }
 
-# T-153: the importer K50/K53 plant into the root program; restore() removes it.
+# T-153: the importer K50/K53 plant into the root program; restore_tree() removes it.
 T153_BITE=packages/db-testkit/type-tests/t153-bite.ts
 
-restore() {
+# T-168 (OD-161). restore_tree is the working-tree half of restore(), split out UNCHANGED so the
+# traps below can call it on its own. It needs no database, which is the whole point: the tracked
+# path this suite deletes (K05 removes db/schema.ts outright) must come back even when the database
+# is unreachable — and it is reached through `git checkout`, because git already has these files.
+# The halves cannot be reordered: rolling the planted migration back needs its down file, which
+# restore_tree deletes.
+# (T-153 merge of main 3385ede: T-153's `rm -f "$T153_BITE"` is a working-tree action, so it moved
+# from the top of restore() into this half, where the traps reach it too.)
+restore_tree() {
   rm -f "$T153_BITE"
-  if [ "$(record)" != "kinvara-migrate version=$HIGHEST" ]; then
-    node scripts/db-migrate.ts down --to "$HIGHEST" >"$OUT.down" 2>&1
-    grep -q '^MIGRATE OK  down: ' "$OUT.down" || { cat "$OUT.down"; abort "could not bring the database back to $HIGHEST"; }
-  fi
-  [ "$(record)" = "kinvara-migrate version=$HIGHEST" ] || abort "the record reads '$(record)', not $HIGHEST"
   rm -f "$M/${NEXT}_t138_plant.up.sql" "$M/${NEXT}_t138_plant.down.sql"
   git checkout -q -- "$SCHEMA" "$SCRIPT" "$RENDER" "$ORDER" "$POLICY"
   if [ -n "$(git status --porcelain)" ]; then
@@ -141,6 +147,47 @@ restore() {
     abort "the tree did not restore cleanly"
   fi
 }
+
+restore() {
+  if [ "$(record)" != "kinvara-migrate version=$HIGHEST" ]; then
+    node scripts/db-migrate.ts down --to "$HIGHEST" >"$OUT.down" 2>&1
+    grep -q '^MIGRATE OK  down: ' "$OUT.down" || { cat "$OUT.down"; abort "could not bring the database back to $HIGHEST"; }
+  fi
+  [ "$(record)" = "kinvara-migrate version=$HIGHEST" ] || abort "the record reads '$(record)', not $HIGHEST"
+  restore_tree
+}
+
+# Every case calls restore() explicitly, so a COMPLETE run already put the tree back. These traps
+# close the interrupt window: between `rm -f "$SCHEMA"` (K05) and the next restore(), the TRACKED
+# db/schema.ts is deleted, and until this ticket a Ctrl-C there left it deleted.
+#
+# The traps restore the TREE, not the database, and that is deliberate rather than an omission. The
+# database is this ticket's own ephemeral compose project; a tracked file is not. Calling the full
+# restore() from a trap would put the database half first, and an unreachable database would then
+# abort BEFORE db/schema.ts was ever checked out — the trap would fail in exactly the direction it
+# exists to prevent.
+#
+# What that costs, stated plainly because it is a CONSEQUENCE ACCEPTED and not a non-effect (T-168
+# rework 1, QR-F1; measured by QA on both sides with a real database). An interrupt after the plant
+# has been applied leaves the database ADVANCED PAST WHAT THIS DIRECTORY CAN REVERT: the record
+# still reads $NEXT, and restore_tree has already deleted ${NEXT}_t138_plant.down.sql, which is the
+# one file `node scripts/db-migrate.ts down` would need. That command then answers
+#   MIGRATE REFUSED  the database records version <NEXT>, but the directory's highest migration is
+#                    <HIGHEST>: a recorded migration has no file          (exit 2)
+# and this suite cannot start again on that database at all — its own first act is `db:migrate up`,
+# which is refused the same way, so the run ends at `ABORT: db:migrate up failed before the first
+# case`. The remedy is to DISPOSE OF THE DATABASE, which `scripts/svc down <ticket>` does (it is
+# `docker compose down --volumes`, scripts/svc:580); the volume goes and the next `svc up` starts
+# from nothing. Without the traps — i.e. on main c27c354 — the down file survives and `db:migrate
+# down --to <HIGHEST>` still returns `MIGRATE OK`, so this is a real regression in the DATABASE
+# half, deliberately taken: the tree half is the one that protects COMMITTED SOURCE, the database
+# is this ticket's own ephemeral compose project, and a tracked file is not.
+#
+# restore_tree aborts (exit 2) when the tree does not come back clean, so "restored", "could not
+# restore" and "was never touched" stay three distinguishable outcomes from inside a trap too.
+trap 'restore_tree; rm -f "$OUT" "$OUT".*' EXIT
+trap 'echo; echo "INTERRUPTED (SIGINT) — restoring the working tree"; restore_tree; trap - EXIT; exit 130' INT
+trap 'echo; echo "TERMINATED (SIGTERM) — restoring the working tree"; restore_tree; trap - EXIT; exit 143' TERM
 
 # plant <file> <content>: write, then assert the bytes on disk are the bytes intended.
 plant() {

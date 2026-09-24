@@ -1,0 +1,20 @@
+{
+  "name": "@kinvara/observability",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "SD §QD-5's instrumentation contract as executable code: the request/job/provider span shapes, the route -> data_class registry, the OTLP/HTTP JSON exporter, and the Sentry beforeSend scrubber. No runtime dependencies, deliberately (T-008).",
+  "exports": {
+    ".": "./src/index.ts",
+    "./testing": "./src/testing.ts"
+  },
+  "scripts": {
+    "test": "node tools/run-tests.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint . && prettier --check ."
+  },
+  "devDependencies": {
+    "vite": "8.2.2",
+    "vitest": "5.0.0"
+  }
+}

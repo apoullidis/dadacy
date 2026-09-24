@@ -18,20 +18,146 @@ DF=docker/app.Dockerfile
 BK="$(mktemp -d)"
 PGDF=docker/postgres.Dockerfile
 cp "$VERIFY" "$BK/verify"; cp "$CHAOS" "$BK/chaos"; cp "$BASE" "$BK/base"; cp "$DEV" "$BK/dev"; cp "$DF" "$BK/df"; cp "$PGDF" "$BK/pgdf"; cp scripts/svc "$BK/svc"; cp apps/core/package.json "$BK/corepkg"; cp apps/safety-gw/package.json "$BK/sgwpkg"
+# T-179: the stop-grace rule (§7) reads GROUP_DRAIN_MS out of the shipping entrypoint, so cases 148-151 mutate it.
+ENTRY=docker/app-runtime/entrypoint.mjs
+cp "$ENTRY" "$BK/entry"
+
+# T-156 (decisions.md OD-119) — WHAT THIS SUITE MAY DELETE, AND THE PROOF THAT
+# IT MAY.
+#
+# restore() used to end in a hard-coded `rm -rf apps/core/src apps/qa-newapp
+# docker/next.Dockerfile docker/rogue.Dockerfile` (plus two more lines like it).
+# That list was written when `apps/core` was a placeholder and cases 21-22
+# planted a `src/` into it. `T-135` then COMMITTED `apps/core/src/**`, and from
+# that day every exit of this suite deleted 23 tracked files, 2044 lines of
+# `core`, and any `git add -A` afterwards committed the deletion. The deletion
+# was silent: nothing in the suite ever looked at the tree it had just edited.
+#
+# THE MECHANISM, and why this one:
+#   * tracked files a case MUTATES are still restored from the $BK temp copy
+#     above — unchanged, and it was never the broken half;
+#   * files a case CREATES are enumerated in PLANTED below, and restore() removes
+#     those and nothing else;
+#   * PLANTED is checked against git ONCE, before the first case runs, and the
+#     suite REFUSES TO START if any entry is tracked. That is the structural
+#     part: OD-119 is precisely a PLANTED path becoming tracked, so the failure
+#     mode now stops the suite instead of being executed by it;
+#   * run_case re-reads `git status --porcelain` after every restore and names
+#     the case that leaked, and the footer judges the whole run against the
+#     tree as it was at startup — for any path git REPORTS. It is not a
+#     backstop for a path git ignores; see the bound on the PLANTED rule below.
+#
+# Why not `git stash`: it would sweep up the uncommitted work of whoever is
+# running the suite and put it back through an index this script does not own —
+# a worse version of the same hazard — and it cannot be done per case (136
+# stashes). Why not a worktree: the gate reads `node_modules` and the real
+# compose/Dockerfile set, so a second worktree needs its own install and the
+# suite would then judge a tree that is not the one on disk, which is the one
+# thing a negative suite must not do. A temp copy plus an enumerated plant list
+# leaves the suite reading the real working tree, costs one `git ls-files` at
+# startup, and is the only variant in which "restore exactly what was planted"
+# is written down rather than inferred.
+#
+# IF YOU ADD A CASE THAT CREATES A FILE, add its path here. If the suite then
+# refuses to start because the path is tracked, your case is planting over
+# committed source — fix the case, never this list.
+#
+# AND THE BOUND ON THAT RULE — READ IT BEFORE YOU DECIDE A PATH IS TOO BORING TO
+# LIST (T-156 rework 1; decisions.md OD-159, found by qa-verification by planting
+# one). THE TREE CHECK BELOW DOES NOT BACK THIS LIST UP OVER THE WHOLE
+# NAMESPACE. It is `git status --porcelain`, so it is blind to exactly what git
+# is blind to: a path matched by .gitignore, and an empty directory. Measured —
+# a case planting `apps/core/dist/qa-leak.txt` (.gitignore line 9, `dist/`) and
+# an empty `apps/qa-empty-dir` left the suite printing WORKING TREE UNCHANGED
+# and ALL 136 CASES BEHAVED AS EXPECTED, exit 0, with both still on disk.
+# So for a path git IGNORES, PLANTED is the ONLY instrument, and leaving one out
+# leaks SILENTLY: no case is named, nothing is printed, the exit status does not
+# move. These are the directories where that bites, and they are the ones a
+# Docker-shaped suite is likeliest to write into:
+#
+#     node_modules/   dist/   build/   out/   .next/   .turbo/
+#     coverage/       .cache/  .pnpm-store/   .env*
+#
+# A path git REPORTS is still backstopped: create one outside PLANTED and the
+# tree check names your case and exits non-zero. And the DELETION half is
+# unaffected either way — a TRACKED file that is deleted, truncated or modified
+# always appears in porcelain whatever .gitignore says, which is why OD-119
+# itself stays covered. Do not reach for `git status --ignored` to close this:
+# it would pull node_modules/ and the Trivy cache into 136 per-case comparisons.
+PLANTED=(
+  apps/qa-newapp
+  apps/qa-attack
+  apps/qa-x
+  apps/safety-gw/package.json.t037
+  docker/next.Dockerfile
+  docker/rogue.Dockerfile
+  docker/rogue-single.Dockerfile
+  docker/rogue-two-stage.Dockerfile
+  docker/compose.extra.yml
+  docker/chaos-extra.yml
+  docker/zz-thing.yaml
+  docker/compose.yml.t130
+  docker/compose.yml.t131
+  infra/compose.rogue.yml
+  docker/app-runtime/pid1.mjs
+  docker/app-runtime/pid1.tar
+  docker/qa-pid1.cfg
+)
+command -v git >/dev/null 2>&1 || {
+  echo "HARNESS ERROR: git is not on PATH. This suite refuses to delete anything"
+  echo "               it cannot first prove untracked (OD-119)."
+  exit 2
+}
+_tracked=""
+for _p in "${PLANTED[@]}"; do
+  git ls-files --error-unmatch -- "$_p" >/dev/null 2>&1 && _tracked="$_tracked  - $_p
+"
+done
+if [[ -n "$_tracked" ]]; then
+  echo "HARNESS ERROR: these PLANTED paths are TRACKED, and this suite will not delete them:"
+  printf '%s' "$_tracked"
+  echo "               A case plants a path; if git tracks it, that case is planting over"
+  echo "               committed source. That is OD-119. Fix the case, not this list."
+  exit 2
+fi
+# The tree as it was before the first case. TREE0 is the verdict's anchor and is
+# never reassigned; TREE_PREV rolls forward so each leak is attributed to the
+# case that caused it rather than re-reported by every case after it.
+TREE0="$(git status --porcelain)"
+TREE_PREV="$TREE0"
+leaks=0
+
 restore() {
-  cp "$BK/verify" "$VERIFY"; cp "$BK/chaos" "$CHAOS"; cp "$BK/base" "$BASE"; cp "$BK/dev" "$DEV"; cp "$BK/df" "$DF"; cp "$BK/pgdf" "$PGDF"; cp "$BK/svc" scripts/svc; cp "$BK/corepkg" apps/core/package.json
-  rm -rf apps/core/src apps/qa-newapp docker/next.Dockerfile docker/rogue.Dockerfile
-  # T-037: the OD-36 / OD-37 / OD-38 cases. `chaos-extra.yml` is named
-  # deliberately — it is the file `tech-lead` cited to reject a
-  # `docker/compose*.yml` glob as the fix for OD-37.
-  rm -rf docker/rogue-single.Dockerfile docker/rogue-two-stage.Dockerfile \
-         docker/compose.extra.yml docker/chaos-extra.yml
-  # T-037 rework (OD-39) and the folded-in attack round.
-  rm -rf apps/qa-attack apps/qa-x apps/safety-gw/package.json.t037 docker/zz-thing.yaml
+  cp "$BK/verify" "$VERIFY"; cp "$BK/chaos" "$CHAOS"; cp "$BK/base" "$BASE"; cp "$BK/dev" "$DEV"; cp "$BK/df" "$DF"; cp "$BK/pgdf" "$PGDF"; cp "$BK/svc" scripts/svc; cp "$BK/corepkg" apps/core/package.json; cp "$BK/entry" "$ENTRY"
+  rm -rf -- "${PLANTED[@]}"
   [[ -f "$BK/sgwpkg" ]] && cp "$BK/sgwpkg" apps/safety-gw/package.json
   return 0
 }
+# `tree_check` is the per-case half of the OD-119 fix: "did nothing", "restored"
+# and "left something behind" are three distinguishable outcomes, and the third
+# names the case (PROTOCOL §5.1). Its blind spot is git's: a plant under an
+# ignored path, or an empty directory, reads here as "restored" (OD-159 — the
+# bound on the PLANTED rule above).
+tree_check() {
+  local now; now="$(git status --porcelain)"
+  [[ "$now" == "$TREE_PREV" ]] && return 0
+  leaks=$((leaks + 1))
+  echo "   !! WORKING TREE NOT RESTORED by: $1"
+  diff <(printf '%s\n' "$TREE_PREV") <(printf '%s\n' "$now") | head -20 | sed 's/^/      /'
+  TREE_PREV="$now"
+  return 1
+}
 trap 'restore; rm -rf "$BK"' EXIT
+# An interrupt must leave the tree as it found it too, and MEASURED (T-156 § H):
+# on this bash the EXIT trap above ALREADY runs when the shell dies of SIGINT or
+# SIGTERM, so with these two lines deleted the tree still comes back clean. What
+# these add is therefore NOT the restore — it is that an interrupted run SAYS it
+# was interrupted instead of ending in silence three lines into a case, and that
+# the restore does not depend on bash's EXIT-on-signal behaviour staying what it
+# is. The bound, also measured: SIGKILL restores nothing (H4 leaves
+# apps/core/package.json mutated), and no trap can change that.
+trap 'echo; echo "INTERRUPTED (SIGINT) — restoring the working tree"; restore; rm -rf "$BK"; trap - EXIT; exit 130' INT
+trap 'echo; echo "TERMINATED (SIGTERM) — restoring the working tree"; restore; rm -rf "$BK"; trap - EXIT; exit 143' TERM
 
 # THE DIFFERENTIAL HARNESS (T-036). Which implementation of the gate to judge
 # each case with. The default is the committed gate and nothing in this repo
@@ -93,6 +219,8 @@ run_case() {
   [[ "$verdict" == FAIL* ]] && printf '%s\n' "$out" | grep -E '^  - ' | head -1 | cut -c1-150 | sed 's/^/       /'
   [[ "$verdict" == CRASH ]] && printf '%s\n' "$out" | tail -3 | sed 's/^/       /'
   restore
+  tree_check "$label"
+  return 0
 }
 
 CORE_BUILD="  core:
@@ -300,12 +428,27 @@ fs.writeFileSync(p, s.slice(0, j) + 'target: next-runtime' + s.slice(j + 'target
 JS
 run_case "20a next-runtime inheriting NOTHING: no USER/HC/ENTRYPOINT" FAIL
 
-echo; echo "=== cases 21-22: apps/<name>/src present with no start script ==="
-mkdir -p apps/core/src && echo 'export const x = 1;' > apps/core/src/index.ts
-run_case "21 apps/core has src/ but declares no start script" FAIL
-mkdir -p apps/core/src && echo 'export const x = 1;' > apps/core/src/index.ts
-node scripts/negative-tests/mutate.mjs apps/core/package.json '"type": "module",' '"type": "module",
-  "scripts": { "start": "node dist/main.js" },' && run_case "22 the same, once it declares start" PASS
+echo; echo "=== cases 21-22 (T-156, OD-120): apps/<name>/src present with no start script ==="
+# These two used to PLANT `apps/core/src/index.ts` and then, in 22, insert a
+# second `"scripts"` key into apps/core/package.json. Both halves stopped being
+# the state they name the day T-135 committed apps/core/src/** AND a `start`
+# script: case 21's plant added a file to a directory that already had source,
+# to an app that already declared `start`, so the app satisfied the rule and the
+# case reported `exit=0 PASS (expected FAIL)` on a clean main — this suite has
+# been red on main ever since (decisions.md OD-120). Case 22's insert was worse
+# than useless: JSON.parse keeps the LAST duplicate key, so the real `"scripts"`
+# won and the mutation changed nothing the gate read.
+#
+# The state that actually lacks a start script is core's own manifest with the
+# entry REMOVED. apps/core/package.json is already in the $BK backup set, so this
+# is an anchored mutation of a restored file and plants nothing; the anchor makes
+# a future rename of the script a HARNESS ERROR rather than a silent pass.
+# Case 22 keeps a `start` and changes only its VALUE, so the pair isolates the
+# key's presence: same src/, same file touched, opposite verdicts.
+mut apps/core/package.json '    "start": "node src/main.ts",
+' '' && run_case "21 apps/core has src/ but declares no start script" FAIL "declares no 'start' script"
+mut apps/core/package.json '"start": "node src/main.ts"' '"start": "node dist/main.js"' \
+  && run_case "22 the same, once it declares start" PASS
 
 echo; echo "=== cases 23-31 (T-035): STAGE AWARENESS — last-wins along the target stage's ancestry ==="
 # T-018's cases 09-12 are the same REPLACE shape four times: each swaps a good
@@ -502,13 +645,25 @@ repoint_web() {   # $1 = the dockerfile to point compose.verify.yml's web at
         PNPM_VERSION: \${KINVARA_PNPM_VERSION:?derived from .tool-versions by scripts/svc}
         APP: web"
 }
+# T-180: all THREE plants below gained `WORKDIR` + `COPY docker/app-runtime/` and
+# an ENTRYPOINT at the copied entrypoint.mjs. §7 now reads GROUP_DRAIN_MS from
+# the file each application stage's ENTRYPOINT runs, and REFUSES a PID 1 it
+# cannot map to a repository file, so the old `/x.mjs` (which nothing COPYs)
+# turned case 45 red for a reason that has nothing to do with pins. The edit is
+# the same in all three because 43/44/45 are one differential: 45 is the
+# control for 43-44 only while the three differ by the pins alone. Names,
+# classes and expected reasons are unchanged; against the gate as at 36a41d1
+# the three verdicts are unchanged (T-180 § Evidence); the unedited plant is
+# kept as case 165, expecting §7's refusal (T-179 QA-4's four conditions).
 cat > docker/next.Dockerfile <<'DF'
 ARG NODE_VERSION=24.20.0
 ARG PNPM_VERSION=11.25.0
 FROM node:24.20.0-alpine AS runtime
 USER 10001:10001
+WORKDIR /srv/kinvara
+COPY docker/app-runtime/ ./app-runtime/
 HEALTHCHECK CMD ["node", "/x.mjs"]
-ENTRYPOINT ["node", "/x.mjs"]
+ENTRYPOINT ["node", "/srv/kinvara/app-runtime/entrypoint.mjs"]
 DF
 repoint_web docker/next.Dockerfile && run_case "43 a 2nd Dockerfile with literal pins (OD-25 verbatim)" FAIL
 cat > docker/next.Dockerfile <<'DF'
@@ -517,8 +672,10 @@ ARG PNPM_VERSION
 FROM node:${NODE_VERSION}-alpine AS runtime
 ENV KINVARA_PNPM_HINT=11.25.0
 USER 10001:10001
+WORKDIR /srv/kinvara
+COPY docker/app-runtime/ ./app-runtime/
 HEALTHCHECK CMD ["node", "/x.mjs"]
-ENTRYPOINT ["node", "/x.mjs"]
+ENTRYPOINT ["node", "/srv/kinvara/app-runtime/entrypoint.mjs"]
 DF
 repoint_web docker/next.Dockerfile && run_case "44 a 2nd Dockerfile, PNPM literal only" FAIL
 # The control: the same second Dockerfile with nothing written down must PASS,
@@ -528,8 +685,10 @@ ARG NODE_VERSION
 ARG PNPM_VERSION
 FROM node:${NODE_VERSION}-alpine AS runtime
 USER 10001:10001
+WORKDIR /srv/kinvara
+COPY docker/app-runtime/ ./app-runtime/
 HEALTHCHECK CMD ["node", "/x.mjs"]
-ENTRYPOINT ["node", "/x.mjs"]
+ENTRYPOINT ["node", "/srv/kinvara/app-runtime/entrypoint.mjs"]
 DF
 repoint_web docker/next.Dockerfile && run_case "45 the same 2nd Dockerfile, pins derived (must stay green)" PASS
 
@@ -1116,12 +1275,18 @@ mk_qa_x && mut "$BASE" '  valkey:
 # 87. The overlay build without the label. GREEN, and correctly: nothing needs
 #     the label to reach this build — the image contract reads it through the
 #     derived Dockerfile set and the universal reads it through apps/*.
+#     T-179: the plant now carries `stop_grace_period: 30s`. It is an application
+#     service added by this overlay, so §7 requires the grace in this file, and
+#     without it this control went red for a reason unrelated to what it is
+#     about (measured: `!! 87 … FAIL (expected PASS)`). Case 147 is this plant
+#     WITHOUT the line, expected FAIL. Name, class and expectation unchanged.
 mk_qa_x && mut "$VERIFY" 'services:' 'services:
   qa-x:
     image: kinvara/qa-x:dev
     networks: [kinvara-int]
     mem_limit: 128m
     cpus: 0.25
+    stop_grace_period: 30s
     build:
       context: ..
       dockerfile: docker/app.Dockerfile
@@ -1454,12 +1619,599 @@ mk_single && mut "$CHAOS" 'services: {}' "services:
   && sep_landed "$CHAOS" "$CR" \
   && run_case "143 OD-45: a lone CR hides a build: in compose.chaos.yml" FAIL "a LONE CR"
 
+echo; echo "=== cases 144-155 (T-179, TL-1 on T-151): every APPLICATION service's stop_grace_period covers PID 1's group wait, READ from entrypoint.mjs (§7) ==="
+# At main 39f01f2 `web` and `admin` declared no stop_grace_period, took compose's
+# 10 s default, and entrypoint.mjs may wait GROUP_DRAIN_MS = 25 s for the app's
+# process group after SIGTERM — so a clean drain on the shell path would be
+# SIGKILLed and report 143, with this gate green. The rule is a RELATIONSHIP
+# (grace >= GROUP_DRAIN_MS + 5 s), the wait is read from the shipping file, and
+# which services are "application services" is derived, never listed. These
+# cases attack each of those three separately; the controls prove each plant is
+# otherwise clean, so a red is the grace rule and nothing else.
+GRACE_LINES="    # PID 1 may wait GROUP_DRAIN_MS for the app's process group after SIGTERM;
+    # gate:app-images §7 holds this above that wait, read from entrypoint.mjs (T-179).
+    stop_grace_period: 30s
+"
+WEB_TAIL="      - '3001'
+    environment:
+      NODE_ENV: \${NODE_ENV:-development}
+      CORE_BASE_URL: \${CORE_BASE_URL:-http://core:3000}
+    mem_limit: 768m
+    cpus: 1.5
+"
+DRAIN_LINE='const GROUP_DRAIN_MS = 25_000;'
+SGW_HEAD='  safety-gw:
+    image: kinvara/safety-gw:dev'
+REPLICA='  worker-2:
+    image: kinvara/worker:dev
+    profiles: [worker]
+    networks: [kinvara-int]
+    mem_limit: 512m
+    cpus: 1.0
+'
+WEB_VERIFY="        APP: web
+        APP_KIND: http
+        APP_PORT: '3001'
+    pull_policy: build"
+# 144. TL-1 itself: web's line removed.
+mut "$BASE" "$WEB_TAIL$GRACE_LINES" "$WEB_TAIL" \
+  && run_case "144 web's stop_grace_period removed (TL-1)" FAIL "'web' (contract-set+app-build+runs kinvara/web:dev) declares no stop_grace_period"
+# 145. A SIXTH application service no hand list would name: a second worker
+#      container running kinvara/worker:dev — no label, no build, no apps/ dir.
+#      It runs the same PID 1 and the same wait. Caught by derivation (c).
+mut "$BASE" "$SGW_HEAD" "$REPLICA$SGW_HEAD" \
+  && run_case "145 a SIXTH service running kinvara/worker:dev, no grace" FAIL "'worker-2' (runs kinvara/worker:dev) declares no stop_grace_period"
+# 146. THE CONTROL for 145: the same plant with the grace declared is green, so
+#      145's red is the grace rule and not some other rule the replica trips.
+mut "$BASE" "$SGW_HEAD" "$REPLICA    stop_grace_period: 30s
+$SGW_HEAD" \
+  && run_case "146 the same sixth service WITH 30s (must stay green)" PASS
+# 147. A SIXTH application, declared only by a --verify build (case 87's plant,
+#      minus the grace). The base file never names it, so the file that adds it
+#      must declare the grace itself. Caught by derivations (a) and (b).
+mk_qa_x && mut "$VERIFY" 'services:' 'services:
+  qa-x:
+    image: kinvara/qa-x:dev
+    networks: [kinvara-int]
+    mem_limit: 128m
+    cpus: 0.25
+    build:
+      context: ..
+      dockerfile: docker/app.Dockerfile
+      target: runtime
+      args:
+        NODE_VERSION: ${KINVARA_NODE_VERSION:?derived from .tool-versions by scripts/svc}
+        PNPM_VERSION: ${KINVARA_PNPM_VERSION:?derived from .tool-versions by scripts/svc}
+        APP: qa-x
+    pull_policy: build' \
+  && run_case "147 a SIXTH app added by the verify overlay, no grace" FAIL "docker/compose.verify.yml: application service 'qa-x'"
+# 148. The wait RAISED past the declared grace. A literal 30s checked against a
+#      literal 30s would stay green here; the floor is read from this file.
+mut "$ENTRY" "$DRAIN_LINE" 'const GROUP_DRAIN_MS = 35_000;' \
+  && run_case "148 GROUP_DRAIN_MS raised to 35_000" FAIL "declares stop_grace_period 30s, BELOW the floor of 40000 ms"
+# 149. The boundary: one millisecond more wait eats into the 5 s exit margin.
+mut "$ENTRY" "$DRAIN_LINE" 'const GROUP_DRAIN_MS = 25_001;' \
+  && run_case "149 GROUP_DRAIN_MS 25_001 (the margin is a floor)" FAIL "BELOW the floor of 30001 ms"
+# 150. THE CONTROL: a SHORTER wait needs no change to any grace.
+mut "$ENTRY" "$DRAIN_LINE" 'const GROUP_DRAIN_MS = 20_000;' \
+  && run_case "150 GROUP_DRAIN_MS lowered to 20_000 (must stay green)" PASS
+# 151. The wait spelled as an expression: REFUSED, not evaluated and not
+#      skipped — a reader that silently found no number would check nothing.
+mut "$ENTRY" "$DRAIN_LINE" 'const GROUP_DRAIN_MS = 25 * 1000;' \
+  && run_case "151 GROUP_DRAIN_MS as an expression" FAIL "is not a single numeric literal"
+# 152. An OVERLAY lowering it: --verify gives web 10s. The base is fine; the
+#      project that applies the overlay is not.
+mut "$VERIFY" "$WEB_VERIFY" "$WEB_VERIFY
+    stop_grace_period: 10s" \
+  && run_case "152 the verify overlay lowers web to 10s" FAIL "docker/compose.verify.yml: application service 'web'"
+# 153. THE CONTROL: an overlay RAISING it is allowed.
+mut "$VERIFY" "$WEB_VERIFY" "$WEB_VERIFY
+    stop_grace_period: 1m" \
+  && run_case "153 the verify overlay raises web to 1m (must stay green)" PASS
+# 154. A unit-less value. `docker compose config` refuses it ("missing unit in
+#      duration", measured in T-179 § Evidence); the gate refuses rather than
+#      reading 30 as seconds.
+mut "$BASE" "$WEB_TAIL$GRACE_LINES" "$WEB_TAIL    stop_grace_period: '30'
+" \
+  && run_case "154 web's grace written '30' (no unit)" FAIL "not a non-negative compose duration"
+# 155. ANTI-VACUITY (PROTOCOL §5.1): if the derivation matched ZERO application
+#      services, the rule would pass while asserting nothing. Every composed file
+#      stripped of every application service: the rule must SAY it judged none.
+#      (Other rules fail here too; the reason asserts THIS one's message.)
+printf 'services:\n  qa-nonapp:\n    image: busybox:1\n    networks: [kinvara-int]\n    mem_limit: 64m\n    cpus: 0.25\nnetworks:\n  kinvara-int:\n    internal: true\n' > "$BASE" \
+  && printf 'services: {}\n' > "$VERIFY" && printf 'services: {}\n' > "$DEV" \
+  && landed grep -q qa-nonapp "$BASE" \
+  && run_case "155 zero application services composed anywhere" FAIL "judged ZERO application services"
+
+# --- T-180: §7 HOLDS THE ONE USE OF GROUP_DRAIN_MS, AND FINDS THE ENTRYPOINT
+#     FROM §6 ----------------------------------------------------------------
+# Until T-180, §7 read the constant's declaration at a FIXED path and nothing
+# else. qa-verification (T-179 QA-2, `g02`/`g03`/`g12`) changed the REAL wait
+# three ways with the gate green: a multiplier at the use site, an environment
+# override there, and app.Dockerfile's ENTRYPOINT pointed at a copy. T-180 fixes
+# the deadline at the first forwarded signal in ONE statement, and §7 holds
+# that statement's shape (by syntax tree, so a comment or a string is not a
+# use) and reads the file the resolved ENTRYPOINT actually runs.
+echo; echo "=== cases 156-168 (T-180, QA-7 on T-179): §7 holds GROUP_DRAIN_MS's ONE use and reads the file the resolved ENTRYPOINT runs ==="
+USE_LINE='deadline = signalledAt + GROUP_DRAIN_MS;'
+EP_LINE='ENTRYPOINT ["node", "/srv/kinvara/app-runtime/entrypoint.mjs"]'
+PID1=docker/app-runtime/pid1.mjs
+# 156. g02: a multiplier where the constant is used.
+mut "$ENTRY" "$USE_LINE" 'deadline = signalledAt + GROUP_DRAIN_MS * 2;' \
+  && run_case "156 g02: GROUP_DRAIN_MS * 2 at the use site" FAIL "the one use of GROUP_DRAIN_MS is"
+# 157. g03: an environment override where the constant is used.
+mut "$ENTRY" "$USE_LINE" 'deadline = signalledAt + Number(process.env.KINVARA_GROUP_DRAIN_MS ?? GROUP_DRAIN_MS);' \
+  && run_case "157 g03: an env override at the use site" FAIL "the one use of GROUP_DRAIN_MS is"
+# 158. A SECOND read — the shape the code had before T-180, where the timeout
+#      log line read the constant too.
+mut "$ENTRY" 'the first forwarded signal (the deadline), exiting anyway`,' 'the first forwarded signal (the deadline, ${String(GROUP_DRAIN_MS)}ms), exiting anyway`,' \
+  && run_case "158 GROUP_DRAIN_MS read a second time (a log line)" FAIL "is used in code at 2 place(s)"
+# 159. The ORIGIN moved back: the deadline counted from "now" at the use site,
+#      not from the first signal. (Not modelled: the SAME statement moved to
+#      child.on('exit') — see T-180 § Published contract.)
+mut "$ENTRY" "$USE_LINE" 'deadline = Date.now() + GROUP_DRAIN_MS;' \
+  && run_case "159 the deadline counted from Date.now() again" FAIL "the one use of GROUP_DRAIN_MS is"
+# 160. THE CONTROL for 156-159: a mention in a COMMENT and in a STRING is not a
+#      use. A text count would red this; the syntax-tree count must not.
+mut "$ENTRY" "$DRAIN_LINE" "$DRAIN_LINE // GROUP_DRAIN_MS, mentioned
+const GROUP_DRAIN_NOTE = 'GROUP_DRAIN_MS is read once';" \
+  && run_case "160 GROUP_DRAIN_MS in a comment and a string (stay green)" PASS
+# 161. g12: ENTRYPOINT pointed at a COPY whose wait is 60 s. Before T-180 §7
+#      read the fixed path and stayed green.
+cp "$ENTRY" "$PID1" && mut "$PID1" "$DRAIN_LINE" 'const GROUP_DRAIN_MS = 60_000;' \
+  && mut "$DF" "$EP_LINE" 'ENTRYPOINT ["node", "/srv/kinvara/app-runtime/pid1.mjs"]' \
+  && run_case "161 g12: ENTRYPOINT repointed at a 60 s copy" FAIL "BELOW the floor of 65000 ms"
+# 162. THE CONTROL for 161: the same repoint to an IDENTICAL copy is green, so
+#      161's red is the wait read from the copy, not a fixed-path check.
+cp "$ENTRY" "$PID1" && mut "$DF" "$EP_LINE" 'ENTRYPOINT ["node", "/srv/kinvara/app-runtime/pid1.mjs"]' \
+  && run_case "162 ENTRYPOINT repointed at an identical copy (stay green)" PASS
+# 163. An ENTRYPOINT that is not `node <script>`: §7 cannot tell which file is
+#      PID 1, and refuses rather than falling back to a path.
+mut "$DF" "$EP_LINE" 'ENTRYPOINT ["/srv/kinvara/app-runtime/entrypoint.mjs"]' \
+  && run_case "163 ENTRYPOINT without node: no script to read" FAIL "is not \`node <script>\`"
+# 164. A script no COPY from the build context puts in the image.
+mut "$DF" "$EP_LINE" 'ENTRYPOINT ["node", "/usr/local/lib/pid1.mjs"]' \
+  && run_case "164 ENTRYPOINT at a path no COPY provides" FAIL "cannot map it to a repository file"
+
+# 165. Case 45's plant as it was before T-180: a second application Dockerfile
+#      whose ENTRYPOINT runs /x.mjs, which no COPY provides. §7 cannot read the
+#      wait of a PID 1 it cannot find, and refuses (T-179 QA-4 condition iii).
+cat > docker/next.Dockerfile <<'DF'
+ARG NODE_VERSION
+ARG PNPM_VERSION
+FROM node:${NODE_VERSION}-alpine AS runtime
+USER 10001:10001
+HEALTHCHECK CMD ["node", "/x.mjs"]
+ENTRYPOINT ["node", "/x.mjs"]
+DF
+repoint_web docker/next.Dockerfile && run_case "165 case 45's pre-T-180 plant: PID 1 /x.mjs, never COPY'd" FAIL "cannot map it to a repository file"
+
+# 166-168. T-180 rework 1 (QA-F4): a same-named binding in runReal SHADOWS the
+#      constant, and the held statement then reads the shadow. The `const` line
+#      regex sees only a line that STARTS `const GROUP_DRAIN_MS`, and the use
+#      count dropped every declaration name, so all three were green at 86be68a.
+#      §7 now requires exactly ONE declaration of the name in the syntax tree.
+SHADOW_AT='  let signalledAt = null;'
+mut "$ENTRY" "$SHADOW_AT" '  let GROUP_DRAIN_MS = 60_000;
+  let signalledAt = null;' \
+  && run_case "166 a same-named let in runReal shadows the constant" FAIL "GROUP_DRAIN_MS is declared 2 time(s)"
+mut "$ENTRY" "$SHADOW_AT" '  var GROUP_DRAIN_MS = 60_000;
+  let signalledAt = null;' \
+  && run_case "167 a same-named var in runReal shadows the constant" FAIL "GROUP_DRAIN_MS is declared 2 time(s)"
+mut "$ENTRY" "$SHADOW_AT" '  const shadowPad = 0, GROUP_DRAIN_MS = 60_000;
+  let signalledAt = null;' \
+  && run_case "168 a multi-declarator const shadows the constant" FAIL "GROUP_DRAIN_MS is declared 2 time(s)"
+
+# T-182 helpers. Both plant UNTRACKED files listed in PLANTED above: a tar
+# docker would extract over the script, and a file a compose `configs:` entry
+# mounts over it. Each is a COPY of the shipping entrypoint with a 60 s wait, so
+# the hazard each case names is real rather than symbolic.
+mk_pid1_tar() {
+  rm -rf "$BK/tarsrc" && mkdir -p "$BK/tarsrc/app-runtime" \
+    && cp "$ENTRY" "$BK/tarsrc/app-runtime/entrypoint.mjs" \
+    && node scripts/negative-tests/mutate.mjs "$BK/tarsrc/app-runtime/entrypoint.mjs" \
+         "$DRAIN_LINE" 'const GROUP_DRAIN_MS = 60_000;' \
+    && tar -cf docker/app-runtime/pid1.tar -C "$BK/tarsrc" app-runtime
+}
+mk_pid1_cfg() {
+  cp "$ENTRY" docker/qa-pid1.cfg \
+    && node scripts/negative-tests/mutate.mjs docker/qa-pid1.cfg "$DRAIN_LINE" \
+         'const GROUP_DRAIN_MS = 60_000;'
+}
+
+# --- T-182: §7 RESOLVES WHAT PID 1 ACTUALLY RUNS, PER APPLICATION SERVICE ---
+# Until T-182 §7 read the IMAGE ENTRYPOINT of each application stage and called
+# it PID 1. qa-verification measured seven ways to decide PID 1 that the stage's
+# ENTRYPOINT does not mention, and each was GATE PASS at 2b5d833 (T-180 § QA
+# verification §3b E1/E3 and rework 1 §4 F5/F6/F7/X1). §7 now RESOLVES the
+# process from every input that can change what it executes, and refuses what it
+# cannot resolve — so these cases are one reading attacked from nine directions,
+# not nine rules. Every FAIL case here is exit=0 GATE PASS under the 2b5d833
+# gate (the KINVARA_GATE_IMPL differential, state/EP-1/T-182.md § Evidence).
+echo; echo "=== cases 169-192 (T-182): §7 resolves PID 1 per SERVICE — compose entrypoint:/command:, init:, stop_signal:, NODE_OPTIONS, mounts, working_dir, a rewriting RUN, an ADDed archive ==="
+CORE_HEAD='  core:
+    image: kinvara/core:dev
+'
+CORE_ENV='      HIBP_API_BASE: ${HIBP_API_BASE:-http://hibp-fake:4100}'
+COPY_RUNTIME='COPY --chown=10001:10001 docker/app-runtime/ ./app-runtime/'
+SM_HEAD='  stripe-mock:
+    image: stripe/stripe-mock:v0.194.0
+'
+# 169. THE TUESDAY (QA-F3's E1): one compose line replaces PID 1 with a copy of
+#      the entrypoint that waits 60 s, and `COPY docker/app-runtime/` already
+#      puts the copy in the image — no Dockerfile edit at all. §7 now reads the
+#      copy, so the floor it holds the graces against is the copy's 60 s.
+cp "$ENTRY" "$PID1" && mut "$PID1" "$DRAIN_LINE" 'const GROUP_DRAIN_MS = 60_000;' \
+  && mut "$BASE" "$CORE_HEAD" "$CORE_HEAD    entrypoint: ['node', '/srv/kinvara/app-runtime/pid1.mjs']
+" \
+  && run_case "169 a compose entrypoint: override -> a 60 s copy" FAIL "BELOW the floor of 65000 ms"
+# 170. THE CONTROL for 169: the SAME key pointed at the file the image runs
+#      anyway is RESOLVED, read and green. The refusal is about resolution, not
+#      about the presence of an entrypoint: key.
+mut "$BASE" "$CORE_HEAD" "$CORE_HEAD    entrypoint: ['node', '/srv/kinvara/app-runtime/entrypoint.mjs']
+" \
+  && run_case "170 a compose entrypoint: -> the real entrypoint (stay green)" PASS
+# 171. The same key as a STRING. Compose reads that as SHELL form, so /bin/sh is
+#      PID 1 — the thing §6 refuses in the Dockerfile and nothing read in compose.
+cp "$ENTRY" "$PID1" && mut "$BASE" "$CORE_HEAD" "$CORE_HEAD    entrypoint: node /srv/kinvara/app-runtime/pid1.mjs
+" \
+  && run_case "171 a compose entrypoint: STRING (shell form)" FAIL "SHELL form"
+# 172. QA's F5: a bind mount over the script. The image is untouched and the
+#      file PID 1 runs is whatever the host puts there.
+cp "$ENTRY" "$PID1" && mut "$BASE" "$CORE_HEAD" "$CORE_HEAD    volumes:
+      - type: bind
+        source: ./app-runtime/pid1.mjs
+        target: /srv/kinvara/app-runtime/entrypoint.mjs
+        read_only: true
+" \
+  && run_case "172 a compose volumes: mount over PID 1's script" FAIL "covers PID 1's script"
+# 173. THE CONTROL for 172: a mount on the same service that does NOT cover the
+#      script is green — the rule is the coverage, not the key.
+mut "$BASE" "$CORE_HEAD" "$CORE_HEAD    volumes:
+      - type: bind
+        source: ./app-runtime
+        target: /qa/app-runtime
+        read_only: true
+" \
+  && run_case "173 a compose volumes: mount elsewhere (stay green)" PASS
+# 174. QA's F6: a NODE_OPTIONS preload. QA MEASURED it running INSIDE PID 1 of
+#      kinvara/core:dev, so this is code PID 1 runs from a file §7 never read.
+mut "$BASE" "$CORE_ENV" "$CORE_ENV
+      NODE_OPTIONS: --enable-source-maps --import /srv/kinvara/app-runtime/pre.mjs" \
+  && run_case "174 compose NODE_OPTIONS --import preload" FAIL "makes node run code from another file"
+# 175. THE CONTROL for 174: the value the image already sets loads nothing.
+mut "$BASE" "$CORE_ENV" "$CORE_ENV
+      NODE_OPTIONS: --enable-source-maps" \
+  && run_case "175 compose NODE_OPTIONS=--enable-source-maps (stay green)" PASS
+# 176. The same preload from the IMAGE's own ENV, which app.Dockerfile:232
+#      already declares — so this is an edit to a line that exists.
+mut "$DF" '    NODE_OPTIONS=--enable-source-maps' '    NODE_OPTIONS="--enable-source-maps --require /srv/kinvara/app-runtime/pre.cjs"' \
+  && run_case "176 Dockerfile ENV NODE_OPTIONS --require preload" FAIL "makes node run code from another file"
+# 177. QA's E3: a node flag whose VALUE is a separate argument. §7 used to take
+#      the first non-flag argument, which is the flag's value, and read THAT.
+cp "$ENTRY" "$PID1" && mut "$PID1" "$DRAIN_LINE" 'const GROUP_DRAIN_MS = 60_000;' \
+  && mut "$DF" "$EP_LINE" 'ENTRYPOINT ["node", "--import", "/srv/kinvara/app-runtime/entrypoint.mjs", "/srv/kinvara/app-runtime/pid1.mjs"]' \
+  && run_case "177 node --import <real> <60 s copy>" FAIL "makes node run code from another file"
+# 178. THE CONTROL for 177 and 191: an INERT flag before the script is read past.
+mut "$DF" "$EP_LINE" 'ENTRYPOINT ["node", "--enable-source-maps", "/srv/kinvara/app-runtime/entrypoint.mjs"]' \
+  && run_case "178 node --enable-source-maps <real> (stay green)" PASS
+# 179. T-180 § contract 4's third family member, declared and never planted: a
+#      RUN that rewrites the script AFTER the COPY that puts it there.
+mut "$DF" "$COPY_RUNTIME" "$COPY_RUNTIME
+RUN sed -i 's/GROUP_DRAIN_MS = 25_000/GROUP_DRAIN_MS = 60_000/' /srv/kinvara/app-runtime/entrypoint.mjs" \
+  && run_case "179 a RUN rewrites the script after its COPY" FAIL "runs AFTER the COPY that puts it there"
+# 180. T-180 § contract 4's fourth member: an ADDed archive docker extracts over
+#      the script. Its contents are not in the repository in a readable form.
+mk_pid1_tar && mut "$DF" "$COPY_RUNTIME" "$COPY_RUNTIME
+ADD docker/app-runtime/pid1.tar /srv/kinvara/" \
+  && run_case "180 an ADDed tar extracted over the script" FAIL "ADDs an ARCHIVE"
+# 181. QA's X1: stop_signal: SIGQUIT. PID 1 handles SIGTERM and SIGINT only, so
+#      nothing is forwarded, nothing drains, and docker SIGKILLs at the grace —
+#      measured ExitCode=137 at 30.13 s in a container.
+mut "$BASE" "$CORE_HEAD" "$CORE_HEAD    stop_signal: SIGQUIT
+" \
+  && run_case "181 stop_signal: SIGQUIT — nothing forwards it" FAIL "installs handlers for SIGTERM and SIGINT only"
+# 182. THE CONTROL for 181: the two signals PID 1 does handle are allowed.
+mut "$BASE" "$CORE_HEAD" "$CORE_HEAD    stop_signal: SIGTERM
+" \
+  && run_case "182 stop_signal: SIGTERM (stay green)" PASS
+# 183. QA's F7: init: true makes docker-init PID 1 and entrypoint.mjs its child,
+#      so the process this rule reads is not PID 1 at all.
+mut "$BASE" "$CORE_HEAD" "$CORE_HEAD    init: true
+" \
+  && run_case "183 init: true — docker-init becomes PID 1" FAIL "docker-init is PID 1"
+# 184. THE EIGHTH ROUTE, planted by T-182 rather than inherited: a compose
+#      configs: entry whose target IS the script. A different compose key from
+#      volumes:, the same effect, named by nobody in T-180's family — and it is
+#      refused by the resolution's mount step without a rule of its own.
+mk_pid1_cfg && mut "$BASE" '
+volumes:
+' '
+configs:
+  qa_pid1:
+    file: ./qa-pid1.cfg
+
+volumes:
+' && mut "$BASE" "$CORE_HEAD" "$CORE_HEAD    configs:
+      - source: qa_pid1
+        target: /srv/kinvara/app-runtime/entrypoint.mjs
+" \
+  && run_case "184 EIGHTH ROUTE: a configs: target over PID 1's script" FAIL "covers PID 1's script"
+# 185. THE CONTROL for 172/184: the same mount on a service that is NOT an
+#      application service is nothing to do with this rule.
+mut "$BASE" "$SM_HEAD" "$SM_HEAD    volumes:
+      - type: bind
+        source: ./app-runtime
+        target: /srv/kinvara/app-runtime
+        read_only: true
+" \
+  && run_case "185 the same mount on stripe-mock (stay green)" PASS
+# 186. env_file: can set NODE_OPTIONS, and this gate does not read env files.
+mut "$BASE" "$CORE_HEAD" "$CORE_HEAD    env_file: ['./.env.example']
+" \
+  && run_case "186 env_file: on an application service" FAIL "does not read env files"
+# 187. working_dir: moves the WORKDIR a RELATIVE ENTRYPOINT resolves against, so
+#      one compose line repoints PID 1 without touching the Dockerfile's argv.
+mut "$DF" "$EP_LINE" 'ENTRYPOINT ["node", "app-runtime/entrypoint.mjs"]' \
+  && mut "$BASE" "$CORE_HEAD" "$CORE_HEAD    working_dir: /srv
+" \
+  && run_case "187 working_dir: moves a relative ENTRYPOINT" FAIL "cannot map it to a repository file"
+# 188. THE CONTROL for 187: the same relative ENTRYPOINT with no working_dir
+#      resolves against the image's own WORKDIR and is green.
+mut "$DF" "$EP_LINE" 'ENTRYPOINT ["node", "app-runtime/entrypoint.mjs"]' \
+  && run_case "188 the same relative ENTRYPOINT, no working_dir (stay green)" PASS
+# 189. D13 (qa-verification's second pass on T-180): the line the value used to
+#      be read from, put inside a COMMENT, with the real declaration written so
+#      the line match misses it. The gate reported 25 000 while PID 1 waited
+#      60 s; the value now comes from the declaration the code uses.
+mut "$ENTRY" "$DRAIN_LINE" '/* the wait, as a line match reads it:
+const GROUP_DRAIN_MS = 25_000;
+*/
+const GROUP_DRAIN_MS =
+  60_000;' \
+  && run_case "189 D13: the matched line is a comment, the real wait is 60 s" FAIL "BELOW the floor of 65000 ms"
+# 190. THE CONTROL for 189: the same declaration spread over two lines, with the
+#      value unchanged, is green — 189's red is the value, not the formatting.
+mut "$ENTRY" "$DRAIN_LINE" 'const GROUP_DRAIN_MS =
+  25_000;' \
+  && run_case "190 the declaration across two lines, 25_000 (stay green)" PASS
+# 191. The one declaration must be a top-level const: a `let` is re-assignable,
+#      so holding a grace against its initial value would prove nothing.
+mut "$ENTRY" "$DRAIN_LINE" 'let GROUP_DRAIN_MS = 25_000;' \
+  && run_case "191 GROUP_DRAIN_MS declared with let" FAIL "must be declared as a TOP-LEVEL"
+# 192. QA's E4 refined: a flag with a separate value that this rule does not
+#      model is refused AS A FLAG now, naming it, rather than by failing to map
+#      the file that turned out to be its value.
+mut "$DF" "$EP_LINE" 'ENTRYPOINT ["node", "--title", "kinvara", "/srv/kinvara/app-runtime/entrypoint.mjs"]' \
+  && run_case "192 a node flag this rule does not model (--title)" FAIL "is not one this rule models"
+
+# --- T-182 REWORK 1: THE SECOND QUESTION — WHAT PID 1 *IS* (QA-1) ------------
+# Cases 169-192 above all answer "WHICH FILE does node run". qa-verification
+# reached the identical hazard through keys that answer a different question —
+# "what IS PID 1, and what code is loaded into it" — and all three were GATE
+# PASS with §7b printing `14 of 14` pairs resolved: `pid: host` (MEASURED: the
+# host's /sbin/init is PID 1, /proc/1/comm = systemd, and SIGQUIT then ends the
+# container at ExitCode=131 in 2.19 s with no drain, against still running at
+# 36.36 s — the same signature as the `init: true` case 183 refuses),
+# `pid: service:<name>`, and `LD_PRELOAD` through compose `environment:`
+# (MEASURED: five mappings of the named object inside PID 1's own address space,
+# zero without it).
+#
+# THE KEY HALF IS AN ALLOW-LIST; THE ENVIRONMENT HALF IS A DENY-LIST (§7c/§7d).
+# Rework 1 called both allow-lists and rework 2 had to correct that (OE-44), so
+# read these cases for what each pins:
+#   * 196 plants a compose KEY NOBODY IN THIS FAMILY HAS EVER NAMED and it is
+#     refused for not being classified — that is the allow-list property, and it
+#     is the case that would go green if §7c became a list of forbidden keys;
+#   * 201 plants a variable nobody named INSIDE a listed namespace (`NODE_*`).
+#     It pins the NAMESPACE, not an allow-list: a name outside every listed
+#     namespace is admitted WITHOUT being read, which is how `OPENSSL_CONF`
+#     reached GATE PASS at ae4eeea (cases 207-211, T-182 § Rework 2).
+# Every FAIL case here is exit=0 GATE PASS under the gate as at e1e5bfa (the
+# KINVARA_GATE_IMPL differential, state/EP-1/T-182.md § Rework 1).
+echo; echo "=== cases 193-206 (T-182 rework 1, QA-1): §7c/§7d — what PID 1 IS. pid:, an unclassified key, user:, pull_policy:, LD_PRELOAD, a NODE_* nobody named, PATH ==="
+# 193. QA-1's decisive plant: `pid: host`. Measured in a container above.
+mut "$BASE" "$CORE_HEAD" "$CORE_HEAD    pid: host
+" \
+  && run_case "193 pid: host — the host's init becomes PID 1" FAIL "the compose key 'pid:'"
+# 194. The sibling spelling. compose resolves it (`docker compose config` with
+#      both profiles, exit 0), and it is the same key, so the same refusal.
+mut "$BASE" "$CORE_HEAD" "$CORE_HEAD    pid: service:postgres
+" \
+  && run_case "194 pid: service:postgres" FAIL "the compose key 'pid:'"
+# 195. THE CONTROL for 193/194, and it is the scope: the same key on a service
+#      that is NOT an application service is nothing to do with this rule.
+mut "$BASE" "$SM_HEAD" "$SM_HEAD    pid: host
+" \
+  && run_case "195 pid: host on stripe-mock (stay green)" PASS
+# 196. THE ALLOW-LIST ITSELF: a compose key NOBODY in this family has named, on
+#      an application service. It is refused because it is not classified — not
+#      because anyone wrote a rule about capabilities. A tenth KEY is IMPOSSIBLE
+#      here rather than uncaught, and this is the case that says so — the claim
+#      is about KEYS, not about the environment half, which is a deny-list
+#      (cases 207-211).
+mut "$BASE" "$CORE_HEAD" "$CORE_HEAD    cap_add: ['SYS_ADMIN']
+" \
+  && run_case "196 a compose key §7 has not classified (cap_add:)" FAIL "has not classified"
+# 197. Found BY the allow-list: §5 reads USER in the Dockerfile, so a compose
+#      `user:` decided the uid of PID 1 where no rule looked.
+mut "$BASE" "$CORE_HEAD" "$CORE_HEAD    user: '0:0'
+" \
+  && run_case "197 user: 0:0 on an application service" FAIL "the compose key 'user:'"
+# 198. Also found by the allow-list, and MODELLED rather than neutral once read:
+#      `pull_policy:` decides whether the image PID 1 comes from is built here
+#      or fetched. In compose.yml no other rule requires `build` (§2's rule is
+#      the verify overlay's), so this is the base file's own route.
+mut "$BASE" "$CORE_HEAD" "$CORE_HEAD    pull_policy: always
+" \
+  && run_case "198 pull_policy: always in compose.yml" FAIL "may be FETCHED"
+# 199. THE CONTROL for 196-198: a key the allow-list classifies as NEUTRAL is
+#      green. The rule is the classification, not the presence of a key —
+#      case 170's point, one list over.
+mut "$BASE" "$CORE_HEAD" "$CORE_HEAD    restart: 'no'
+" \
+  && run_case "199 a NEUTRAL key (restart:) on core (stay green)" PASS
+# 200. QA-1's second key: LD_PRELOAD through compose `environment:`. Measured in
+#      PID 1's own /proc/1/maps. This is case 174's hazard by way of the dynamic
+#      loader instead of node, and it is the shape a native APM agent uses.
+mut "$BASE" "$CORE_ENV" "$CORE_ENV
+      LD_PRELOAD: /usr/lib/libz.so.1" \
+  && run_case "200 LD_PRELOAD via compose environment:" FAIL "LOADER's own namespace"
+# 201. §7d's NAMESPACE case, and it is NOT the sibling of 196: §7d has no
+#      allow-list at all (the block comment above this group says so in the
+#      ticket's own words, and rework 2 was bounded to remove that framing).
+#      A variable NOBODY has named, refused because NODE_* is a namespace node
+#      reads, not because anyone enumerated this spelling. What 196 pins is the
+#      ALLOW-LIST over compose KEYS (§7c); what this pins is one namespace on a
+#      DENY-LIST (§7d), and the two properties are not the same.
+mut "$BASE" "$CORE_ENV" "$CORE_ENV
+      NODE_REPL_EXTERNAL_MODULE: /srv/kinvara/app-runtime/pre.mjs" \
+  && run_case "201 a NODE_* variable §7d does not admit" FAIL "LOADER's own namespace"
+# 202. PATH: the image's ENTRYPOINT is ["node", ...] with no directory, so PATH
+#      decides WHICH BINARY is PID 1 — measured: PATH=/nonexistent and the
+#      container cannot start at all (docker run exit 127).
+mut "$BASE" "$CORE_ENV" "$CORE_ENV
+      PATH: /opt/qa:/usr/local/bin:/usr/bin:/bin" \
+  && run_case "202 PATH via compose environment:" FAIL "WHICH BINARY is PID 1"
+# 203. THE CONTROL for 200-202: a variable in no loader's namespace is green.
+#      §7d refuses a NAMESPACE, not `environment:`. AND THIS GREEN *IS* THE
+#      DECLARED HOLE, not merely a control: § Published contract 1 makes it the
+#      proof of the bound and § contract 3 makes "203 staying green" the
+#      falsifying test for it — a name OUTSIDE every measured namespace is
+#      admitted WITHOUT being read. If this case ever reds, §7d has stopped
+#      being a deny-list. `T-183` (the per-app allow-list) is what ends it.
+#      THE BOUND HAS A SECOND HALF AND IT DELIBERATELY HAS NO CASE HERE: §7d
+#      reads the NAME AS THE COMPOSED FILE SPELLS IT, so a list-form
+#      `environment:` entry whose ${...} interpolation splits the namespace
+#      prefix is unread even though the name IS on the deny-list — measured by
+#      tech-lead with the interpolating variable unset (T-182 § tech-lead TL-1:
+#      `- L${X}D_PRELOAD=` and `- PAT${X}H=` at exit=0 GATE PASS against
+#      plainly-spelled controls at exit=1). Adding a case for it would move this
+#      suite's footer and the pin, which is the rework tech-lead's approval
+#      declined; closing it is `T-183`'s condition C3.
+mut "$BASE" "$CORE_ENV" "$CORE_ENV
+      KINVARA_T182_PROBE: '1'" \
+  && run_case "203 an env var in no loader namespace (stay green)" PASS
+# 204. qa-verification's A4, caught but uncased: `command:` as a STRING under
+#      the image's exec-form entrypoint. § contract 3 claimed the command: half
+#      was refused too and only the entrypoint: half (171) had a case.
+mut "$BASE" "$CORE_HEAD" "$CORE_HEAD    command: node /srv/kinvara/app-runtime/pid1.mjs
+" \
+  && run_case "204 command: as a STRING (shell form)" FAIL "SHELL form"
+# 205. qa-verification's A5, caught but uncased: the CHAOS overlay declaring an
+#      application service. It is genuinely in the composed set, and the pair
+#      count rises to 15 of 15 when it does.
+cp "$ENTRY" "$PID1" && mut "$PID1" "$DRAIN_LINE" 'const GROUP_DRAIN_MS = 60_000;' \
+  && mut "$CHAOS" 'services: {}' "services:
+  core:
+    entrypoint: ['node', '/srv/kinvara/app-runtime/pid1.mjs']" \
+  && run_case "205 compose.chaos.yml declares core with entrypoint:" FAIL "BELOW the floor of 65000 ms"
+# 206. qa-verification's V6, measured and uncased: the `secrets:` half of the
+#      mount reader (app-images.ts mountTargets). The claim this pins is the
+#      READER's — that a secrets: target over PID 1's script is refused the way
+#      a volumes:/configs: one is; compose's own mount semantics for an absolute
+#      secret target are not measured here.
+mk_pid1_cfg && mut "$BASE" '
+volumes:
+' '
+secrets:
+  qa_pid1_s:
+    file: ./qa-pid1.cfg
+
+volumes:
+' && mut "$BASE" "$CORE_HEAD" "$CORE_HEAD    secrets:
+      - source: qa_pid1_s
+        target: /srv/kinvara/app-runtime/entrypoint.mjs
+" \
+  && run_case "206 a secrets: target over PID 1's script" FAIL "covers PID 1's script"
+
+# --- T-182 REWORK 2: §7d WIDENED BY MEASUREMENT (OE-44) ----------------------
+# The orchestrator defeated rework 1's four-namespace environment rule with
+# `OPENSSL_CONF: /srv/kinvara/evil.cnf` placed INSIDE `core`'s real
+# `environment:` block: exit=0, GATE PASS, `14 of 14` pairs printed as resolved.
+# Stakeholder ruling B on OE-44: widen by measurement, merge, cut `T-183` (the
+# environment ALLOW-LIST, anchored to a checked per-app manifest).
+#
+# WHAT WAS MEASURED, in the five shipping application images (all five run the
+# same node: sha256 3840e7a7…, v24.20.0, OpenSSL 3.5.7, Alpine 3.24.1/musl):
+#   * the objects mapped into a real node process are node, libstdc++, libgcc_s
+#     and ld-musl — so the loaders in PID 1 are musl's ld.so, node/V8, and the
+#     OpenSSL 3.5.7 node links STATICALLY (no libcrypto.so in ldd);
+#   * a FIFO-poison sweep over every env-name-shaped string in those four
+#     objects (if the process OPENs the value, open(2) blocks and the run is
+#     killed) found exactly three names OPENED: LD_PRELOAD (rework 1's hazard,
+#     the positive control), NODE_EXTRA_CA_CERTS (already NODE_*), and
+#     OPENSSL_CONF — at startup, before any application code;
+#   * OPENSSL_CONF LOADS CODE: with the app section spelled `nodejs_conf`
+#     (node's own config appname; `openssl_conf` is IGNORED), a `providers`
+#     section dlopens the module it names, and with a real .so PID 1 dies in
+#     node::InitializeOncePerProcessInternal — `Assertion failed:
+#     ncrypto::CSPRNG(nullptr, 0)`, SIGABRT, container ExitCode=139 — against a
+#     control that boots the app. OPENSSL_MODULES / OPENSSL_ENGINES /
+#     OPENSSL_CONF_INCLUDE each decide WHERE that code comes from.
+# So `OPENSSL_*` is a loader namespace here, and SSL_CERT_FILE/SSL_CERT_DIR/
+# CTLOG_FILE are refused as exact names on the argument (the sweep did NOT reach
+# them — stated in §7d rather than dressed as a measurement).
+# Every FAIL case below is exit=0 GATE PASS under the gate as at ae4eeea (the
+# KINVARA_GATE_IMPL differential, state/EP-1/T-182.md § Rework 2).
+echo; echo "=== cases 207-211 (T-182 rework 2, OE-44): §7d widened by measurement — OPENSSL_* loads code into PID 1 ==="
+# 207. OE-44's OWN CONSTRUCTION, reproduced in the valid form: the variable goes
+#      INSIDE core's existing environment: block (a second `environment:` key
+#      trips the pre-existing duplicate-key rule and would be a FAIL for the
+#      wrong reason — the orchestrator threw that first attempt away and so do we).
+mut "$BASE" "$CORE_ENV" "$CORE_ENV
+      OPENSSL_CONF: /srv/kinvara/evil.cnf" \
+  && run_case "207 OPENSSL_CONF via compose environment: (OE-44)" FAIL "LOADER's own namespace"
+# 208. The same name from the IMAGE's own ENV, the direction case 176 covers for
+#      NODE_OPTIONS. §7d reads both sources and this is the half a Dockerfile
+#      edit reaches. NOTE THE PLANT: app.Dockerfile:226-232 is ONE `ENV`
+#      instruction continued over seven lines, so the new variable needs the
+#      backslash — appending a bare line makes the file invalid and the gate
+#      then reads no such ENV at all (my first spelling of this case was exactly
+#      that mistake: exit=0 PASS for the wrong reason, T-182 § Rework 2).
+mut "$DF" '    NODE_OPTIONS=--enable-source-maps' '    NODE_OPTIONS=--enable-source-maps \
+    OPENSSL_CONF=/srv/kinvara/evil.cnf' \
+  && run_case "208 Dockerfile ENV OPENSSL_CONF" FAIL "LOADER's own namespace"
+# 209. THE NAMESPACE, not the name: `OPENSSL_ia32cap` is a spelling nobody in
+#      this family has named, and its tail is lower-case — it is refused because
+#      OPENSSL_ is a loader namespace, which is what this case pins (the sibling
+#      of 201, one namespace over).
+mut "$BASE" "$CORE_ENV" "$CORE_ENV
+      OPENSSL_ia32cap: '~0x20000000'" \
+  && run_case "209 an OPENSSL_* variable nobody named" FAIL "LOADER's own namespace"
+# 210. The EXACT-NAME half: an OpenSSL file input with no OPENSSL_ prefix. Its
+#      refusal message says it is refused on the ARGUMENT and that the sweep did
+#      not reach it, so the case pins the refusal and not a hazard measurement.
+mut "$BASE" "$CORE_ENV" "$CORE_ENV
+      SSL_CERT_FILE: /srv/kinvara/evil-ca.pem" \
+  && run_case "210 SSL_CERT_FILE — an OpenSSL file input, no prefix" FAIL "REFUSED ON THE ARGUMENT"
+# 211. THE CONTROL for 207-210, and it is the scope: the same variable on a
+#      service that is not an application service is nothing to do with §7d.
+mut "$BASE" '    image: stripe/stripe-mock:v0.194.0' '    image: stripe/stripe-mock:v0.194.0
+    environment:
+      OPENSSL_CONF: /srv/kinvara/evil.cnf' \
+  && run_case "211 OPENSSL_CONF on stripe-mock (stay green)" PASS
+
 echo
 run_case "99 tree restored" PASS
 echo
-if [[ $bad -eq 0 && $harness -eq 0 ]]; then
+# T-156 (OD-119): the tracked-files check. The anchor is TREE0, read before the
+# first case, so this compares the tree against itself-before rather than against
+# a list written down here — a `git status` that is empty for the wrong reason
+# cannot satisfy it, and a pre-existing dirty tree is not counted against the
+# suite. restore() has already run (run_case's last act, and the EXIT trap's).
+tree_final="$(git status --porcelain)"
+if [[ "$tree_final" == "$TREE0" ]]; then
+  tree_bad=0
+  echo "WORKING TREE UNCHANGED: git status --porcelain identical before and after ($(printf '%s' "$TREE0" | grep -c . || true) line(s))"
+else
+  tree_bad=1
+  echo "!! WORKING TREE CHANGED: this suite did not restore what it planted"
+  diff <(printf '%s\n' "$TREE0") <(printf '%s\n' "$tree_final") | sed 's/^/   /'
+fi
+if [[ $bad -eq 0 && $harness -eq 0 && $leaks -eq 0 && $tree_bad -eq 0 ]]; then
   echo "ALL $ran CASES BEHAVED AS EXPECTED"
 else
-  echo "!! $bad of $ran CASE(S) MISBEHAVED; $harness HARNESS ERROR(S)"
+  echo "!! $bad of $ran CASE(S) MISBEHAVED; $harness HARNESS ERROR(S); $leaks TREE LEAK(S)"
 fi
-exit $((bad + harness))
+exit $((bad + harness + leaks + tree_bad))

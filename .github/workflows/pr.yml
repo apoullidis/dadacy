@@ -1,0 +1,133 @@
+# Kinvara — the PR stage, mirrored from SD §QD-4's PR row. T-005.
+#
+# THIS FILE IS AUTHORED AND SCHEMA-VALIDATED. IT IS NEVER EXECUTED.
+#
+# That is not a caveat, it is the status: there is no git remote on this machine
+# and none may be added (PROTOCOL §3), so GitHub Actions never runs here. The
+# workflow has exactly the standing Terraform has — a design artefact that must
+# stay honest and reviewable, validated as text and applied never
+# (platform-infrastructure.md § Non-negotiables 1, PROTOCOL §5.1).
+#
+# THE AUTHORITY IS `pnpm gate:pr`, NOT THIS FILE. The gate list lives in
+# scripts/gates/lib/roster.ts. `pnpm gate:workflow` fails if the two diverge in
+# EITHER direction, so this file cannot gain a job the aggregate does not run,
+# or lose one the aggregate does.
+#
+# `fetch-depth: 0` is load-bearing and is NOT an optimisation to remove:
+# gate:migration-lint's R-TRAILER reads `merge-base..HEAD` with git's own
+# trailer parser (T-031 § Published contract; CONTRACTS.md carries this as an
+# obligation addressed to T-005 by name). A shallow checkout makes that range
+# unresolvable, and the rule would fail open or fail obscurely.
+
+name: PR
+
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Every BLOCKING gate in scripts/gates/lib/roster.ts, one matrix leg each.
+  # fail-fast is off so one red gate does not hide the state of the others —
+  # the same reason `pnpm gate:pr` runs them all and summarises at the end.
+  blocking:
+    name: gate (blocking)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        gate:
+          - gate:toolbox
+          - gate:typecheck
+          - gate:lint
+          - gate:deps
+          - gate:no-unsafe-any
+          - gate:secrets
+          - gate:trivy
+          - gate:audit
+          - gate:size-limit
+          - gate:egress-boundary
+          - gate:app-images
+          - gate:otel-contract
+          - gate:constraint-suite:static
+          - gate:migration-lint
+          - gate:semgrep
+          - gate:semgrep-rules
+          - gate:contract-drift
+          - gate:unit-tests
+          - gate:policy-coverage
+          - gate:negative-suites
+          - gate:supply-chain
+          - gate:workflow
+          - gate:pr-gate-suite
+          - gate:locale-completeness
+          - gate:safety-review-currency
+          - gate:sms-segments
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .tool-versions
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run ${{ matrix.gate }}
+
+  # Rostered gates that are NOT green IN THIS STAGE, each with the ticket that
+  # owes it. `continue-on-error: true` mirrors the local aggregate exactly:
+  # `gate:pr` runs these, asserts each fails with ITS OWN banner — `GATE NOT YET
+  # SUPPLIED` for a PENDING hook, `GATE NEEDS A SERVICE` for a SERVICE gate
+  # (T-006 split the two) — and does not let their failure fail the stage, while
+  # FAILING if one of them starts passing without being promoted. They are
+  # listed, never omitted: "no gate silently absent, and no gate silently
+  # skipped."
+  #
+  #   gate:drizzle-parity         SERVICE, and it is SUPPLIED — the difference
+  #                               from the three below. `pnpm gate:heavy`
+  #                               (T-006) runs it against a real database and
+  #                               .github/workflows/heavy.yml mirrors that job,
+  #                               with the `services: postgres` block a runner
+  #                               would need. It stays here, and stays red here,
+  #                               because THIS stage declares `svc: none` — that
+  #                               is structural and no ticket can pay it off.
+  #   gate:prohibited-claims      T-043      gate:plural-completeness    T-045
+  #   gate:pii-canary             T-119
+  #
+  #   gate:locale-completeness was here until 2026-09-20; T-042 supplied it and
+  #   it is in the `blocking` matrix above. gate:safety-review-currency was here
+  #   until later the same day; T-044 supplied it and it is there too — green
+  #   while the dated T-049 copy waiver holds, red from 2026-12-06.
+  #   gate:sms-segments was here until 2026-09-21; T-046 supplied it and it is
+  #   there too. W4 compares both matrices with the roster's classes, so a
+  #   promotion is two edits or gate:workflow reds.
+  advisory:
+    name: gate (not yet supplied)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        gate:
+          - gate:drizzle-parity
+          - gate:prohibited-claims
+          - gate:plural-completeness
+          - gate:pii-canary
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .tool-versions
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run ${{ matrix.gate }}

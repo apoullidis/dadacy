@@ -1,0 +1,84 @@
+{
+  "//": "SD §QD-1's thirteen project-specific Semgrep rules, enumerated WHERE THEY BLOCK. decisions.md OD-61: SD §QD-4's PR row makes 'Semgrep project rules' blocking and lists none, while §QD-1 names thirteen; T-133 shipped exactly one and invented nothing. This file is T-005's triage. `subject` is SD §QD-1 verbatim — do not reword it. `ruleId` is the id in .semgrep.yml when the rule is INSTALLED and null otherwise. `owner` names the ticket that owns the SUBJECT; `installingTicket` names the ticket that will ship the RULE, and null means no ticket owns it yet — which is the finding, not an omission.",
+  "//spec": "software-design.md §QD-1, 'Project-specific Semgrep rules that fail CI (this list is the institutional memory of the design)'.",
+  "rules": [
+    {
+      "subject": "watchPosition anywhere",
+      "ruleId": null,
+      "owner": "frontend-developer — apps/web, apps/admin, packages/ui are the only places a geolocation API can be called",
+      "installingTicket": null
+    },
+    {
+      "subject": "dangerouslySetInnerHTML",
+      "ruleId": null,
+      "owner": "frontend-developer — the React surfaces",
+      "installingTicket": null
+    },
+    {
+      "subject": "template-literal SQL",
+      "ruleId": null,
+      "owner": "tech-lead — the data-access layer (apps/core, db/)",
+      "installingTicket": null
+    },
+    {
+      "subject": "any in packages/policy",
+      "ruleId": "no-any",
+      "owner": "T-133 (platform-infrastructure) installed it; the rule's scope is SD §DH-2 and T-024's gate requires it",
+      "installingTicket": "T-133"
+    },
+    {
+      "subject": "hard-coded commission constants (0.08, 0.09, 2.49) outside market_config reads",
+      "ruleId": null,
+      "owner": "T-087 / T-088 (backend-booking-payments) — packages/pricing owns commission. Named in decisions.md OD-61 as 'the pricing rule is T-088'",
+      "installingTicket": null
+    },
+    {
+      "subject": "import from 'stripe' outside the adapter",
+      "ruleId": null,
+      "owner": "T-094 (backend-booking-payments) — the Stripe Connect adapter is the only legitimate import site",
+      "installingTicket": null
+    },
+    {
+      "subject": "OFFSET in a query",
+      "ruleId": null,
+      "owner": "tech-lead — the search and listing queries (SD §PERF: keyset, not offset)",
+      "installingTicket": null
+    },
+    {
+      "subject": "PII-shaped field names in logger calls",
+      "ruleId": null,
+      "owner": "T-119 (qa-verification) owns the PII pattern set (SD §SEC-I5); the logger call sites are tech-lead's",
+      "installingTicket": null
+    },
+    {
+      "subject": ".passthrough() on a Zod schema",
+      "ruleId": null,
+      "owner": "T-022 (tech-lead) — packages/contracts is where every Zod schema lives",
+      "installingTicket": null
+    },
+    {
+      "subject": "a controller method with no policy decorator",
+      "ruleId": null,
+      "owner": "T-024 / T-025 (fullstack-safety) own the policy layer; the controllers are apps/core's",
+      "installingTicket": null
+    },
+    {
+      "subject": "use of --color-trust-verified outside CredentialRow",
+      "ruleId": null,
+      "owner": "frontend-developer — packages/ui owns the token and the component",
+      "installingTicket": null
+    },
+    {
+      "subject": "arithmetic on a MinorUnits type inside packages/ui",
+      "ruleId": null,
+      "owner": "T-023 (tech-lead) DEFERRED this rule — recorded in decisions.md OD-61; packages/ui is frontend-developer's",
+      "installingTicket": null
+    },
+    {
+      "subject": "a float/number money column in a migration",
+      "ruleId": null,
+      "owner": "tech-lead — db/migrations/**. gate:migration-lint (T-021) already reads every migration and is the cheaper home for this one than Semgrep",
+      "installingTicket": null
+    }
+  ]
+}

@@ -19,6 +19,11 @@
 # and one file under scripts/, and removes both. Case C99 also creates a detached git
 # worktree under the container's /tmp and removes it.
 #
+# T-168: EXIT/INT/TERM traps call restore(), so an INTERRUPTED run puts the two tracked files C3K
+# and C87 delete back too — see the block beside the traps.
+#
+# T-167 adds one section (CV*): R-VENDOR-SQL, the reviewed `-- @vendor-sql` marker (OD-150).
+#
 # T-031 adds four sections: R-ROLE-SWITCH (CR*), R-RUN-AS (CM*), runner-read marker lines in a
 # merged migration under R-MERGED (C8F-C8I, OD-86), and R-TRAILER (CT*). The R-TRAILER cases
 # COMMIT in a second detached worktree under /tmp (git identity t031-negative-test, never merged),
@@ -56,6 +61,25 @@ restore() {
     exit 2
   fi
 }
+
+# T-168 (OD-161/OD-162). Every case calls restore() explicitly, so a COMPLETE run already put the
+# tree back. These traps close the interrupt window: two cases delete a TRACKED file and leave it
+# deleted until the next restore() — `rm -f db/schema.ts` at C3K, and the bare `rm "$DOWN1"` at C87,
+# which removes db/migrations/0001_extensions_and_roles.down.sql, a MERGED migration. Until this
+# ticket a Ctrl-C in either window left the file gone.
+#
+# The restoring instrument is restore() itself — `git checkout -q -- "$M"` plus the conditional
+# checkout of db/schema.ts — not a delete-list: these are files git already has, so git is the
+# backup. restore() exits 2 when the tree does not come back clean, so "restored", "could not
+# restore" and "was never touched" stay three distinguishable outcomes from inside a trap too.
+#
+# BOUND, stated rather than assumed: restore() is a working-tree instrument. It does not remove a
+# detached worktree that C99 or a CT* case registered under the container's /tmp; an interrupt there
+# still leaves a stale entry in .git/worktrees, which `git status --porcelain` never showed and this
+# ticket does not change. `git worktree prune` clears it.
+trap 'restore; rm -f "$OUT"' EXIT
+trap 'echo; echo "INTERRUPTED (SIGINT) — restoring the working tree"; restore; rm -f "$OUT"; trap - EXIT; exit 130' INT
+trap 'echo; echo "TERMINATED (SIGTERM) — restoring the working tree"; restore; rm -f "$OUT"; trap - EXIT; exit 143' TERM
 
 # plant <file> <content>: write, then assert the bytes on disk are the bytes intended.
 plant() {
@@ -444,6 +468,173 @@ check C70 "CREATE TABLE with no GRANT" R-TABLE-GRANT
 pair expand 'CREATE TABLE IF NOT EXISTS "t021_thing" (id int);
 GRANT SELECT ON public.t021_other TO app_rw;'
 check C71 "CREATE TABLE with a GRANT on a different table" R-TABLE-GRANT
+
+echo "== R-VENDOR-SQL (T-167, OD-150): a reviewed marker admits vendor SQL inside ONE named body"
+# The shape OD-150 found: a vendor's plpgsql whose format() format strings hold DDL the migration
+# never executes. VFN is that shape; the gate reads it (T-031 § contract §4, case A09) and this
+# section shows the marker stopping R-PHASE and R-TABLE-GRANT ACTING on what it reads, in the named
+# body and nowhere else. `pair` puts `-- @phase: <p>` on line 1, so a marker written first in the
+# SQL argument is still in the file header.
+VFN='CREATE FUNCTION public.t167_vendor(tbl text) RETURNS void LANGUAGE plpgsql AS $fn$
+BEGIN
+  EXECUTE format('"'"'DROP TABLE IF EXISTS public.%I'"'"', tbl);
+END;
+$fn$;'
+VFN2='CREATE FUNCTION public.t167_other(tbl text) RETURNS void LANGUAGE plpgsql AS $fn$
+BEGIN
+  EXECUTE format('"'"'CREATE TABLE public.%I (id int)'"'"', tbl);
+END;
+$fn$;'
+
+echo "-- the marker works"
+pair expand "-- @vendor-sql: public.t167_vendor — OD-150; T-167
+$VFN"
+check CV00 "CONTROL: a DROP TABLE format string in the body the marker names" PASS
+pair expand "-- @vendor-sql: public.t167_other — OD-150; T-167
+$VFN2"
+check CV01 "CONTROL: a CREATE TABLE format string in the body the marker names" PASS
+pair expand "-- @vendor-sql: DO#1 — OD-150; T-167
+DO \$d\$ BEGIN EXECUTE format('CREATE TABLE public.%I (id int)', 'x'); END \$d\$;"
+check CV02 "CONTROL: an anonymous DO block, named DO#1" PASS
+pair expand "-- @vendor-sql: DO#2 — OD-150; T-167
+DO \$d\$ BEGIN PERFORM 1; END \$d\$;
+DO \$d\$ BEGIN EXECUTE format('CREATE TABLE public.%I (id int)', 'x'); END \$d\$;"
+check CV03 "CONTROL: the SECOND DO block, named DO#2" PASS
+pair expand "-- @vendor-sql: public.t167_vendor — OD-150; T-167
+-- @vendor-sql: public.t167_other — OD-150; T-167
+$VFN
+$VFN2"
+check CV04 "CONTROL: two markers, two bodies, one file" PASS
+pair expand "-- @vendor-sql: public.t167_clean — OD-150; T-167
+CREATE FUNCTION public.t167_clean() RETURNS int LANGUAGE sql AS \$fn\$ SELECT 1 \$fn\$;"
+check CV05 "CONTROL: a marker that suppresses nothing (the gate prints 'suppressed nothing')" PASS
+
+echo "-- the body is refused WITHOUT the marker: A09's reading is untouched"
+pair expand "$VFN"
+check CV10 "no marker: the DROP TABLE format string in the body is still R-PHASE" R-PHASE
+pair expand "$VFN2"
+check CV11 "no marker: the CREATE TABLE format string in the body is still R-TABLE-GRANT" R-TABLE-GRANT
+pair expand "-- @vendor-sql: public.t167_other — OD-150; T-167
+$VFN
+$VFN2"
+check CV12 "the marker names t167_other; the statement in t167_vendor's body is still refused" R-PHASE
+pair expand "-- @vendor-sql: DO#1 — OD-150; T-167
+DO \$d\$ BEGIN PERFORM 1; END \$d\$;
+DO \$d\$ BEGIN EXECUTE format('CREATE TABLE public.%I (id int)', 'x'); END \$d\$;"
+check CV13 "the marker names DO#1; the statement in DO#2 is still refused" R-TABLE-GRANT
+
+echo "-- the marker exempts the body, never the file"
+pair expand "-- @vendor-sql: public.t167_vendor — OD-150; T-167
+$VFN
+DROP TABLE public.t167_real;"
+check CV14 "a real top-level DROP TABLE beside a marked body" R-PHASE
+pair expand "-- @vendor-sql: public.t167_vendor — OD-150; T-167
+$VFN
+CREATE TABLE public.t167_real (id int);"
+check CV15 "a real top-level CREATE TABLE with no grant beside a marked body" R-TABLE-GRANT
+
+plant "$UP" "-- @vendor-sql: public.t167_vendor — OD-150; T-167
+$VFN"
+plant "$DOWN" "-- the down file of a planted migration"
+check CV16 "R-PHASE's own marker clause: a correct @vendor-sql marker does not stand in for -- @phase" R-PHASE
+
+echo "-- the marker reaches no other rule"
+pair expand "-- @vendor-sql: public.t167_vendor — OD-150; T-167
+CREATE FUNCTION public.t167_vendor() RETURNS void LANGUAGE plpgsql AS \$fn\$
+BEGIN
+  EXECUTE format('DROP TRIGGER trg_booking_sitter_bookable ON public.booking');
+END;
+\$fn\$;"
+check CV20 "R-PROTECTED: a protected object named inside the marked body" R-PROTECTED
+pair expand "-- @vendor-sql: public.t167_vendor — OD-150; T-167
+CREATE FUNCTION public.t167_vendor() RETURNS void LANGUAGE plpgsql AS \$fn\$
+BEGIN
+  EXECUTE format('GRANT UPDATE ON public.audit_log TO app_rw');
+END;
+\$fn\$;"
+check CV21 "R-APPEND-ONLY: an UPDATE grant on audit_log inside the marked body" R-APPEND-ONLY
+pair expand "-- @vendor-sql: public.t167_vendor — OD-150; T-167
+CREATE FUNCTION public.t167_vendor() RETURNS void LANGUAGE plpgsql AS \$fn\$
+BEGIN
+  SET ROLE app;
+END;
+\$fn\$;"
+check CV22 "R-ROLE-SWITCH: a SET ROLE inside the marked body" R-ROLE-SWITCH
+pair expand "-- @vendor-sql: public.t167_vendor — OD-150; T-167
+$VFN"
+plant "$UP2" "-- @phase: contract
+ALTER TABLE public.booking DROP COLUMN legacy_note;"
+check CV23 "R-CONTRACT-ALONE: a contract migration in the same change set as the marked expand" R-CONTRACT-ALONE
+pair contract "-- @vendor-sql: public.t167_vendor — OD-150; T-167
+CREATE FUNCTION public.t167_vendor(tbl text) RETURNS void LANGUAGE plpgsql AS \$fn\$
+BEGIN
+  EXECUTE format('CREATE TABLE public.%I (id int)', tbl);
+END;
+\$fn\$;"
+check CV24 "R-CONTRACT-PURE: the marked body's CREATE is still an expand statement in a contract file" R-CONTRACT-PURE
+pair expand "-- @vendor-sql: public.t167_vendor — OD-150; T-167
+CREATE FUNCTION public.t167_vendor() RETURNS void LANGUAGE plpgsql AS \$fn\$
+BEGIN
+  EXECUTE format('DROP FUNCTION public.t167_gone() CASCADE');
+END;
+\$fn\$;"
+check CV25 "R-CASCADE: a DROP … CASCADE inside the marked body" R-CASCADE
+
+echo "-- the marker's own form and placement"
+pair expand "-- @vendor-sql: public.t167_vendor
+$VFN"
+check CV30 "the marker cites no ticket or decision" "R-VENDOR-SQL R-PHASE"
+pair expand "-- @vendor-sql: public.t167_missing — OD-150; T-167
+$VFN"
+check CV31 "the marker names a function this file does not define" "R-VENDOR-SQL R-PHASE"
+pair expand "-- @vendor-sql public.t167_vendor — OD-150; T-167
+$VFN"
+check CV32 "the marker has no colon" "R-VENDOR-SQL R-PHASE"
+pair expand "-- @vendor-sql:
+$VFN"
+check CV33 "the marker names nothing" "R-VENDOR-SQL R-PHASE"
+pair expand "SELECT 1;
+-- @vendor-sql: public.t167_vendor — OD-150; T-167
+$VFN"
+check CV34 "the marker as a -- line after the first statement" "R-VENDOR-SQL R-PHASE"
+pair expand "SELECT '
+-- @vendor-sql: public.t167_vendor — OD-150; T-167
+';
+$VFN"
+check CV35 "the marker on a line inside a string literal" "R-VENDOR-SQL R-PHASE"
+pair expand "CREATE FUNCTION public.t167_vendor(tbl text) RETURNS void LANGUAGE plpgsql AS \$fn\$
+BEGIN
+-- @vendor-sql: public.t167_vendor — OD-150; T-167
+  EXECUTE format('DROP TABLE IF EXISTS public.%I', tbl);
+END;
+\$fn\$;"
+check CV36 "the marker inside the very body it names" "R-VENDOR-SQL R-PHASE"
+pair expand "-- @vendor-sql: public.t167_vendor — OD-150; T-167
+-- @vendor-sql: public.t167_vendor — OD-150; T-167
+$VFN"
+check CV37 "two markers naming the same body" R-VENDOR-SQL
+pair expand "-- @vendor-sql: public.t167_vendor — OD-150; T-167
+$VFN
+CREATE FUNCTION public.t167_vendor(tbl int) RETURNS void LANGUAGE plpgsql AS \$fn2\$
+BEGIN
+  EXECUTE format('DROP TABLE IF EXISTS public.%I', tbl);
+END;
+\$fn2\$;"
+check CV38 "the marker names an overloaded function; the gate does not read argument types" "R-VENDOR-SQL R-PHASE"
+pair expand "SELECT 1; -- @vendor-sql: public.t167_vendor — OD-150; T-167
+$VFN"
+check CV39 "a @vendor-sql comment trailing a statement, which is not a whole -- line" "R-VENDOR-SQL R-PHASE"
+pair expand "/* @vendor-sql: public.t167_vendor — OD-150; T-167 */
+$VFN"
+check CV3A "a @vendor-sql block comment" "R-VENDOR-SQL R-PHASE"
+plant "$UP" "-- @phase: expand
+-- @vendor-sql: public.t167_vendor — OD-150; T-167
+$VFN"
+plant "$DOWN" "-- @vendor-sql: public.t167_vendor — OD-150; T-167
+DROP FUNCTION public.t167_vendor(text);"
+check CV3B "a marker in a down file, which R-PHASE and R-TABLE-GRANT never read" R-VENDOR-SQL
+mutate "$UP1" "-- 0001_extensions_and_roles.up.sql" $'-- @vendor-sql: public.t167_vendor — OD-150; T-167\n-- 0001_extensions_and_roles.up.sql'
+check CV3C "a marker prepended to the pinned 0001 baseline, whose content rules are not read" R-VENDOR-SQL
 
 echo "== R-MERGED (PROTOCOL §3, OD-13, OD-72) — every plant is on 0001, which is at the base"
 mutate "$UP1" "-- rotate every 30 days (SA §SEC-10)." "-- rotate every thirty days (SA §SEC-10)."

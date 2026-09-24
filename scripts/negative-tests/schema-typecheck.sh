@@ -18,6 +18,9 @@
 # under a count (P08), and its C10 construction, a lossy column beside a text DEFAULT holding the text
 # of a bigint-mode call (P09). P07m/P08m/P09m are the same three with the old regex and the old count
 # put back by a mutation asserted landed: each then gets through.
+#
+# T-168: EXIT/INT/TERM traps call restore(), so an INTERRUPTED run puts the tracked files back too —
+# see the block beside them. T-168 also repaired S09, which was BAD on a clean tree (OD-161a).
 set -uo pipefail
 cd "$(dirname "$0")/../.." || exit 2
 
@@ -37,23 +40,29 @@ TYPE=$TT/schema-import-type.ts
 BITE=$TT/t150-bite.ts
 C1=$TT/t150-c1.ts
 PRIV=$TT/t150-private.ts
+# T-168 (OD-161a). S09's fixture: real drizzle-kit output, planted at its own path under db/, which
+# the root tsconfig does not `include` — so like db/schema.ts it enters the root program only when
+# something imports it. Untracked, and removed by restore() below.
+C1RENDER=db/t150-c1-schema.ts
 MAIN_RENDERING=9f7ed68 # main before T-150: db/schema.ts with unknown(...) and an unpruned (table)
 EMPTY_RENDERING=18b24c0 # T-138: drizzle-kit output for 0003, two imports and nothing using them
 OUT=$(mktemp)
 total=0
 bad=0
 
-C1_TSCONFIG=tsconfig.t153-s09-c1.json # OD-146: S09's program of C1 alone; restore() removes it
+# (T-153 merge of main 3385ede: T-153's OD-146 fix of S09 — a program of C1 alone, through a planted
+# tsconfig.t153-s09-c1.json — is superseded by main's T-168 fix of the same case (OD-161a, $C1RENDER
+# above), and is removed. undo() below removes $C1RENDER, so abort() puts it back too.)
 
 # undo: put every file a case may have planted or mutated back. Called by restore() AND by abort(),
 # because every case mutates the working tree and an abort is an exit path like any other.
 undo() {
-  rm -f "$BITE" "$C1" "$PRIV" "$C1_TSCONFIG"
+  rm -f "$BITE" "$C1" "$PRIV" "$C1RENDER"
   git checkout -q -- "$SCHEMA" "$BASE" "$VALUE" "$TYPE" "$RENDER"
 }
 
 # T-153 rework 1 (QR-A5): abort() RESTORES THE WORKING TREE before exiting. It used to exit straight
-# out, so an abort reached inside a mutated case — S09's own `the C1 program does not hold exactly`
+# out, so an abort reached inside a mutated case — S09's own `$C1RENDER is not in the root program`
 # among them — left db/schema.ts, tsconfig.base.json and the committed importers mutated for whatever
 # ran next. The guard stops the recursion when restore()'s own assertion is what aborted.
 ABORTING=0
@@ -75,6 +84,36 @@ restore() {
     abort "the tree did not restore cleanly"
   fi
 }
+
+# T-168 (OD-160/OD-161). Every case above calls restore() explicitly, so a COMPLETE run already put
+# the tree back. These traps close the interrupt window: between a case's first write and the next
+# restore(), FIVE tracked paths are deleted, overwritten or rewritten in place — the two type-test
+# importers, db/schema.ts, tsconfig.base.json and scripts/gates/lib/schema-render.ts, by `rm -f`,
+# `sed -i`, `git show … >` and mutate.mjs across SIXTEEN sites on FIFTEEN lines (T-168 § Published
+# contract §3 lists them at main c27c354: L108, L113, L136, L144, L164, L170, L171, L175, L176,
+# L186, L188, L189, L208, L209, L239 — those are MAIN's numbers, and this block shifts them; L189
+# is two sites because `rm -f "$VALUE" "$TYPE"` names two tracked paths on one line). Until this
+# ticket a Ctrl-C left them that way.
+# The count was "eleven sites" until T-168 rework 1: eleven is the number of ITEMS in the list
+# above once L164-L176 is written as a range, not the number of sites. Sites are NOT deduplicated
+# — one line writing two paths is two sites — which is the lesson of T-156's signed annotation and
+# the third time this class of count has been understated here.
+#
+# The restoring instrument is restore() itself — `git checkout` over tracked paths plus `rm -f` over
+# the planted ones. It is NOT app-images.sh's PLANTED delete-list: this suite removes and overwrites
+# files git already has, so git is the backup.
+#
+# restore() aborts (exit 2) when the tree does not come back clean, so "restored", "could not
+# restore" and "was never touched" stay three distinguishable outcomes even from inside a trap.
+#
+# What the INT/TERM lines add over the EXIT line alone is NOT measured here (T-156 § H measured, for
+# app-images.sh on this bash, that the EXIT trap already runs when the shell dies of SIGINT/SIGTERM).
+# What IS measured for this suite (T-168 § C) is the pair as delivered: the run announces the
+# interrupt instead of dying silently mid-case, exits 130/143 rather than bash's default, and leaves
+# `git status --porcelain` empty. SIGKILL restores nothing and no trap can change that.
+trap 'restore; rm -f "$OUT" "$OUT.eslint"' EXIT
+trap 'echo; echo "INTERRUPTED (SIGINT) — restoring the working tree"; restore; rm -f "$OUT" "$OUT.eslint"; trap - EXIT; exit 130' INT
+trap 'echo; echo "TERMINATED (SIGTERM) — restoring the working tree"; restore; rm -f "$OUT" "$OUT.eslint"; trap - EXIT; exit 143' TERM
 
 mutate() {
   node scripts/negative-tests/mutate.mjs "$1" "$2" "$3" || abort "mutation anchor missing in $1"
@@ -211,21 +250,38 @@ $VALUE:$D1 TS2578" "$(typecheck)"
 restore
 
 echo "== rejected option C1: noUnusedParameters off alone"
-git show "$EMPTY_RENDERING:$SCHEMA" >"$SCHEMA"
-grep -q '^import { sql } from "drizzle-orm"$' "$SCHEMA" || abort "the $EMPTY_RENDERING rendering did not land"
+# T-168 (OD-161a). What this case is about is the TEXT of real drizzle-kit output under one set of
+# tsconfig flags — not db/schema.ts's path. It used to install T-138's rendering OVER db/schema.ts
+# and delete the two type-test importers. That rendering exports nothing, so once T-135/T-141 gave
+# apps/core a real value import (`account, accountRole, appSession` at
+# apps/core/src/identity/account.repository.ts:30, committed after this case was written) the swap
+# made the root program emit three TS2305s that the expectation neither lists nor is about, and the
+# case went BAD on a clean tree — `!! 1 of 16`, on main at c27c354.
+#
+# The rendering now goes to its own path under db/, which the root tsconfig does not `include`, and
+# $C1 imports it exactly as an importer pulls in db/schema.ts. db/schema.ts is left committed, so
+# every real importer of it still typechecks and the only errors left in the program are the two
+# this case names. The expectation is NOT widened: it is still exactly the two TS6133s, still under
+# `noUnusedParameters: false`, and the case still goes BAD if either stops being reported.
+# Side effect worth stating, narrowed in T-168 rework 1 (QR-F2) because the first wording said
+# "S09 no longer writes to any tracked path at all" and the very next mutate line falsifies it:
+# S09 no longer writes db/schema.ts — which is the point of the fix, and is asserted three lines
+# down by `git diff --quiet -- "$SCHEMA"`. It DOES still write the tracked tsconfig.base.json
+# (the `mutate "$BASE"` below; BASE=tsconfig.base.json), and it plants the untracked $C1RENDER and
+# $C1. Interrupted inside this block, `git status --porcelain` reads ` M tsconfig.base.json`; the
+# traps above are what put it back.
+git show "$EMPTY_RENDERING:$SCHEMA" >"$C1RENDER"
+grep -q '^import { sql } from "drizzle-orm"$' "$C1RENDER" || abort "the $EMPTY_RENDERING rendering did not land in $C1RENDER"
+git diff --quiet -- "$SCHEMA" || abort "S09 must not modify $SCHEMA"
 mutate "$BASE" '"noUnusedParameters": true,' '"noUnusedParameters": false,'
-rm -f "$VALUE" "$TYPE"
-plant "$C1" "import '../../../db/schema.ts';"
-# OD-146 (T-153): C1 is judged on a program of C1 alone, the root tsconfig.json extended with only C1 in
-# `files` (the mutated tsconfig.base.json flags still apply through it). Every other committed importer of
-# db/schema.ts (apps/core's identity module, merged after T-150) meets T-138's empty rendering too and
-# reports errors of its own, which are not what C1 is about; moving one aside only cascades to its importers.
-plant "$C1_TSCONFIG" "{ \"extends\": \"./tsconfig.json\", \"include\": [], \"files\": [\"$C1\"] }"
-[ "$("$TSC" --listFilesOnly -p "$C1_TSCONFIG" 2>/dev/null | grep -cE "/($C1|$SCHEMA)\$")" -eq 2 ] || abort "the C1 program does not hold exactly $C1 and $SCHEMA"
-E_PG=$(line_of "$SCHEMA" 'import { pgTable } from "drizzle-orm/pg-core"')
-E_SQL=$(line_of "$SCHEMA" 'import { sql } from "drizzle-orm"')
-judge S09 "C1: real drizzle-kit output whose sql import nothing reads still fails noUnusedLocals with noUnusedParameters off (a program of C1 alone, OD-146)" 2 "$SCHEMA:$E_PG TS6133
-$SCHEMA:$E_SQL TS6133" "$("$TSC" --noEmit -p "$C1_TSCONFIG" >"$OUT" 2>&1; echo $?)"
+plant "$C1" "import '../../../db/t150-c1-schema.ts';"
+# Anti-vacuity: judge nothing about a file tsc never read.
+[ "$("$TSC" --listFilesOnly -p tsconfig.json 2>/dev/null | grep -c "/$C1RENDER\$")" -eq 1 ] ||
+  abort "$C1RENDER is not in the root program"
+E_PG=$(line_of "$C1RENDER" 'import { pgTable } from "drizzle-orm/pg-core"')
+E_SQL=$(line_of "$C1RENDER" 'import { sql } from "drizzle-orm"')
+judge S09 "C1: real drizzle-kit output whose sql import nothing reads still fails noUnusedLocals with noUnusedParameters off" 2 "$C1RENDER:$E_PG TS6133
+$C1RENDER:$E_SQL TS6133" "$(typecheck)"
 restore
 
 echo "== rejected option C2: both unused-identifier flags off"

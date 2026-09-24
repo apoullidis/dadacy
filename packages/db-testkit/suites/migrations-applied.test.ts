@@ -40,7 +40,7 @@ import {
 import { assertPermitted, assertRefused, INT10_RAISE } from '../src/expect.ts';
 
 const SUITE = 'migrations-applied';
-const HIGHEST_COMMITTED = '0005';
+const HIGHEST_COMMITTED = '0007';
 const COMMITTED_DIR = path.join(REPO_ROOT, MIGRATIONS_DIR);
 const RECORD_SQL = `SELECT coalesce(shobj_description(oid, 'pg_database'), '(no comment)')
                       FROM pg_database WHERE datname = current_database()`;
@@ -138,6 +138,78 @@ const CREATED_BY: Readonly<
         title: 'extension citext is installed',
         sql: `SELECT (EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'citext'))::text`,
         holds: 'true',
+      },
+    ],
+  },
+  '0006': {
+    source: 'T-146',
+    // Each probe names one object 0006 creates, and each reading returns a value
+    // rather than raising once that object is gone: to_regtype and to_regprocedure
+    // return NULL for a missing name, and the catalogue reads are subqueries over
+    // pg_namespace/pg_class that yield no row. The dated queue_stats partitions are
+    // deliberately NOT probed: their names depend on the UTC date the file is
+    // applied (pg-boss's own DO block computes them), so a probe on one would be a
+    // reading of the clock, not of the migration.
+    probes: [
+      {
+        title: 'schema pgboss exists, owned by the bootstrap superuser',
+        sql: `SELECT coalesce((SELECT pg_get_userbyid(nspowner) FROM pg_namespace
+                              WHERE nspname = 'pgboss'), '(absent)')`,
+        holds: SUPERUSER,
+      },
+      {
+        title: 'pgboss.job exists and is a partitioned table (relkind p)',
+        sql: `SELECT coalesce((SELECT c.relkind::text FROM pg_class c
+                               JOIN pg_namespace n ON n.oid = c.relnamespace
+                              WHERE n.nspname = 'pgboss' AND c.relname = 'job'), '(absent)')`,
+        holds: 'p',
+      },
+      {
+        title: 'pgboss.job_common is the DEFAULT partition of pgboss.job',
+        sql: `SELECT coalesce((SELECT pg_get_expr(c.relpartbound, c.oid) FROM pg_class c
+                               JOIN pg_namespace n ON n.oid = c.relnamespace
+                              WHERE n.nspname = 'pgboss' AND c.relname = 'job_common'), '(absent)')`,
+        holds: 'DEFAULT',
+      },
+      {
+        title: 'enum type pgboss.job_state exists',
+        sql: `SELECT (to_regtype('pgboss.job_state') IS NOT NULL)::text`,
+        holds: 'true',
+      },
+      {
+        title: 'function pgboss.create_queue(text, jsonb) exists',
+        sql: `SELECT (to_regprocedure('pgboss.create_queue(text, jsonb)') IS NOT NULL)::text`,
+        holds: 'true',
+      },
+      {
+        title: 'app_rw holds USAGE on schema pgboss and not CREATE',
+        sql: `SELECT coalesce((SELECT has_schema_privilege('app_rw', n.oid, 'USAGE')::text || ',' ||
+                                     has_schema_privilege('app_rw', n.oid, 'CREATE')::text
+                               FROM pg_namespace n WHERE n.nspname = 'pgboss'), '(absent)')`,
+        holds: 'true,false',
+      },
+    ],
+  },
+  '0007': {
+    source: 'T-030',
+    // Each probe names one object 0007 creates, and each reading returns a value rather
+    // than raising once that object is gone: to_regclass and to_regprocedure return NULL
+    // for a missing name, and the trigger read is a count over pg_trigger.
+    probes: [
+      {
+        title: 'table public.approval exists',
+        sql: `SELECT (to_regclass('public.approval') IS NOT NULL)::text`,
+        holds: 'true',
+      },
+      {
+        title: 'function public.assert_second_actor_differs() exists',
+        sql: `SELECT (to_regprocedure('public.assert_second_actor_differs()') IS NOT NULL)::text`,
+        holds: 'true',
+      },
+      {
+        title: 'trigger trg_approval_four_eyes exists',
+        sql: `SELECT count(*)::text FROM pg_trigger WHERE tgname = 'trg_approval_four_eyes'`,
+        holds: '1',
       },
     ],
   },

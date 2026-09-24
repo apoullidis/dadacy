@@ -1,0 +1,82 @@
+{
+  "//": "T-046 — THE DELIVERY-CHANNEL DECLARATION, and the SMS corpus `gate:sms-segments` asserts over. PM §MVP-N1 AC3 requires every Critical/Transactional SMS template to be length-audited at <=2 segments per locale. Before this file, 'every Critical/Transactional SMS template' denoted a set NOBODY HAD DEFINED: `tiers.json` carries 14 strict-tier keys and not one of them was marked as an SMS template, so the obvious gate — iterate the SMS templates, count segments — would have been VACUOUSLY GREEN because it iterated nothing. This file is the set, stated rather than inferred. EXACT AND EXHAUSTIVE over the strict tiers, exactly as `tiers.json` is over the whole catalogue: every key tiered `safety_critical` or `transactional` must appear here with `sms` true or false and a non-empty `why`, and a key here that is not strict-tier is refused. There is no third value and no default — a key nobody has decided about is a GATE FAILURE, not a shrug. See `state/EP-0/T-046.md` § Published contract.",
+  "//2": "WHY THE STRICT TIERS AND NOT THE WHOLE CATALOGUE. PM §MVP-N1 AC3(a): 'SMS is reserved for the Critical and time-critical-Transactional tiers only.' `operational` and `marketing` are Push+email and Email-only in AC5's channel table, so they are outside both the cost constraint and this gate. If that ever changes, widen the tier filter here and in `tools/sms-segments.ts` in the same commit — the gate derives the tier set from `TIER_POLICY` (`src/tiers.ts`), never from the literal string 'safety_critical'.",
+  "//3": "THE CROSS-CHECK, so this file cannot quietly disagree with the one that already holds channel data. `review.json` § `pipeline.assignments[<key>].channel` (T-049) records a COPY-REVIEW channel — `screen` / `spoken_by_user` / `voice` / `undetermined` — for each `safety_critical` key. It answers a different question (how must this copy be reviewed: in-context screenshot, or read aloud?) and it has no `sms` value. The gate therefore asserts ONE direction only: a key whose pipeline channel is DETERMINED and is not an outbound message channel must be `sms: false` here. A pipeline channel of `undetermined` constrains nothing here. The asymmetry is deliberate and is the whole value of the check — it is an anchor OUTSIDE this file (PROTOCOL §5.1: a check must not be derived from the same reading as the thing it checks).",
+  "version": 1,
+  "channels": {
+    "safety.emergency.address_prompt": {
+      "sms": false,
+      "why": "Emergency-panel copy on the device. `review.json` § pipeline determines its channel as `spoken_by_user`: the parent READS THIS ALOUD to the 112 operator. It is never sent anywhere (PM §MVP-IS5 AC7 — the emergency panel is never machine-translated and never translated at runtime, because it is rendered, not delivered)."
+    },
+    "safety.emergency.call_112.label": {
+      "sms": false,
+      "why": "The emergency panel's call button label. `review.json` § pipeline determines its channel as `screen`."
+    },
+    "safety.emergency.call_112.script": {
+      "sms": false,
+      "why": "The script the caller speaks to the 112 operator. `review.json` § pipeline determines its channel as `spoken_by_user`."
+    },
+    "safety.helpline.116111.label": {
+      "sms": false,
+      "why": "A labelled panel entry (PROTOCOL §9 item 7: 112 is the only number the SOS flow dials; 199, 116 111 and 1466 are labelled panel entries). `review.json` § pipeline determines its channel as `screen`."
+    },
+    "safety.helpline.1466.label": {
+      "sms": false,
+      "why": "A labelled panel entry. `review.json` § pipeline determines its channel as `screen`."
+    },
+    "safety.helpline.199.label": {
+      "sms": false,
+      "why": "A labelled panel entry. `review.json` § pipeline determines its channel as `screen`."
+    },
+    "safety.sos.confirm": {
+      "sms": false,
+      "why": "The hold-to-send SOS control's own on-screen confirmation copy; `review.json` § pipeline determines its channel as `screen`. PM §MVP-N1 AC5 DOES send an SOS by SMS — but that is a NOTIFICATION TO A RECIPIENT and its template is not in this catalogue. When it is written it is a new key and `sms: true`; see `state/EP-0/T-046.md` § Published contract §7."
+    },
+    "session.checkins_missed": {
+      "sms": true,
+      "why": "PM §MVP-N1 AC5's criticality table, Critical (safety) row: examples 'SOS, MISSED CHECK-IN LADDER, no-show, session anomaly'; channels 'Push + SMS + in-app, immediate, escalating; cannot be disabled'. This key IS the missed-check-in message. `review.json` § pipeline records its channel as `undetermined` — that is T-049's COPY-REVIEW channel (screen/spoken/voice) and answers a different question, so it neither supports nor contradicts this; the gate's cross-check treats `undetermined` as constraining nothing, and says so.",
+      "worst_case": {
+        "//": "THE SUBSTITUTION THE <=2-SEGMENT CLAIM IS BOUNDED BY. An ICU template has no single length — this one is a plural with a parameterised name — so `gate:sms-segments` measures the MAXIMUM rendered length over a declared, committed substitution set, and the claim it proves is bounded by exactly this block. A restatement of the claim that drops this bound is the R2 defect (PROTOCOL §5.3). || HOW THE GATE TURNS THIS DECLARATION INTO A WORST CASE (T-176 — this replaces the warning that stood here, which said the gate measured ONE BRANCHING ELEMENT PER PARAMETER and that a `select` declaration in this file was NOT HONOURED; both were true at c140093 and neither is true now). A message is read as a list of BRANCHING SITES — one per `plural` or `select` ELEMENT, including elements nested inside another branch and inside an ICU tag — and a parameter's candidate set is ONE VALUE PER DISTINCT BRANCH SIGNATURE, the tuple of branches every site on that parameter selects. So a parameter branched on TWICE has its FIRST element's branches measured as well as its last, for `plural` and `select` alike, and a `select` value you declare HERE is bound even when it is not a branch name of any element. || AND THE CHECK IS NOT THE READING. After the measured product, the gate builds a SENTINEL CLONE of the parsed message, formats it with the SAME ICU evaluator, and reads back which branches ICU ACTUALLY SELECTED; it then sweeps every branching parameter across its WHOLE declared domain. If ICU renders a branch no measured binding rendered, that is CANDIDATE-INCOMPLETE; if the sweep finds a worse render than the reduction kept, that is CANDIDATE-UNDERSTATED and the budget is asserted against the WORSE of the two. Neither refusal reads this gate's own candidate map, which is the whole point: T-046's mirror iterated the same map the enumeration did and was blind to exactly what it was blind to (PROTOCOL §5.1). Both refusals are planted, by running a copy of the gate with T-046's reading and T-046's ranking restored — see `tools/sms-segments.test.ts` § T-176. || WHAT IS STILL NOT MEASURED is in `//2` below. READ IT BEFORE YOU ADD A KEY.",
+        "count": {
+          "kind": "plural",
+          "max": 999,
+          "why": "No specification bounds the number of missed check-ins in one sit, so this is an ENGINEERING BOUND and not a measured fact: the assertion covers counts up to 999. THE RULE, at the width it is actually measured (T-176 — this sentence said 'per BRANCH OF THE LAST ELEMENT THAT BRANCHES ON THIS PARAMETER' at c140093, which was the narrowed statement of a live gap; the gap is now closed and so is the narrowing): the gate builds ONE CANDIDATE PER DISTINCT BRANCH SIGNATURE — the tuple of branches EVERY plural element on this parameter selects — over the integers in [0, 999], any explicit `=N` branch outside that range, and the half-integers. So a message that pluralises `count` in TWO elements has the FIRST element's explicit `=0` branch bound, rendered and measured, which is the defect qa-verification measured at 5e6938e (the gate printed `86 units 2 segments` for a Greek message ICU sends as 219 units = FOUR SEGMENTS). Per BRANCH SIGNATURE and not per CLDR category is T-046 rework 1 (QA-F1) generalised: a candidate set built from the category list alone never binds an explicit `=0`, and a `=0` branch is ordinary idiom for a ladder rung. HOW THE CANDIDATE IS CHOSEN WITHIN A SIGNATURE, stated here because this is where you set `max`: the value kept is the one whose INSERTED STRINGS are longest — `format(v - offset)` for each distinct ICU `offset:` among the elements, plus `format(v)` where the parameter is also printed plainly — and NOT the one whose `format(v)` is longest. That closes the second bound this `why` used to carry: `#` renders `v - offset`, so ranking on `v` understated by up to the digit-count difference between `max` and `max - offset`, and with `offset:100` the longest inserted form in [0, 999] is at count=0 ('-100'), not at count=999 ('899'). AND THE CANDIDATE SET IS THEN CHECKED AGAINST ICU RATHER THAN AGAINST ITSELF: every value in the declared domain is rendered through a sentinel clone of the message, so ICU names the branches it selected, and a branch ICU renders that no measured binding rendered is CANDIDATE-INCOMPLETE. AN EXPLICIT `=N` OUTSIDE [0, max] is still bound at its own value — an extra binding can only widen the worst case, never narrow it, but it means a long out-of-domain branch can refuse a message whose declared domain does not include it. The measured headroom is printed on every run; at 999 no enabled locale reaches its grouping separator, which for `ru` is U+00A0 and is NOT in the GSM-7 alphabet. What is STILL not measured is in `//2` above."
+        },
+        "sitterName": {
+          "kind": "text",
+          "values": [
+            "Konstantina Papadopoulou-Hadjigeorgiou",
+            "Κωνσταντίνα Παπαδοπούλου-Χατζηγεωργίου",
+            "Константина Пападопулу-Хадзигеоргиу"
+          ],
+          "why": "No specification bounds a sitter's display name and no column constrains one yet (`db/migrations` has no name column at 9dd95f8), so this is an ENGINEERING BOUND: three realistic long Cypriot names, 38/38/35 UTF-16 code units, one per script the product serves. All three are substituted into EVERY locale's message, because a name is not translated — an English SMS naming a Greek sitter is UCS-2, and that is measured here rather than assumed. Whoever adds the display-name column takes the obligation to re-measure against its real ceiling: `state/EP-0/T-046.md` § Published contract §7. AND A WARNING AT THE POINT THE EDIT IS MADE, WHICH IS HERE: `WORST_CASE_FLOOR` in tools/sms-segments.ts PINS THE LENGTH OF THE LONGEST DECLARED VALUE, NOT ITS SCRIPT. Swapping the Greek name above for a 38-character LATIN one satisfies the floor and keeps the gate green while QUIETLY RETIRING THE CROSS-SCRIPT MEASUREMENT — `en` would become GSM-7 with about 240 units of headroom, and the 'an English SMS naming a Greek sitter is UCS-2' property stated in this very `why` would stop being measured by anything. One name per script is the point of these three values; keep one per script. Disclosed in `state/EP-0/T-046.md` § Published contract §5 and raised by qa-verification."
+        },
+        "//2": "WHAT THIS GATE STILL DOES NOT MEASURE — read this before you add an `sms: true` key, because each line is a place your message can be longer than the number this gate prints. (This is a SECOND comment key, which T-046 could not have: its parser skipped the literal '//' only, so a '//2' was INPUT-refused as a malformed declared parameter and the disclosure had to be crammed into '//'. T-176 made any '//'-prefixed key a comment.) (1) THE DECLARED DOMAIN IS A DECLARATION, NOT A MEASUREMENT. `count.max` and the three names below are engineering bounds; nothing in the product enforces either. A count above `max`, or a name longer than the longest declared, is outside every claim this gate makes. (2) THE VERIFICATION SWEEP VARIES ONE PARAMETER AT A TIME, holding the others at their candidate values. It therefore renders every branch of every element, and finds the worst render along each single-parameter axis, but it does not enumerate the full cross product of DOMAINS. A worst case that needs two parameters at once to be at non-candidate values is reasoned to be impossible — a parameter's contribution to the length is fixed once its branch signature is — and is not measured. (3) A `text` PARAMETER HAS NO BRANCH MODEL AT ALL: its candidates are exactly the literals declared here. `WORST_CASE_FLOOR` in tools/sms-segments.ts pins their LENGTH AND NOT THEIR SCRIPT — see `sitterName`'s `why`, which is where that edit is made. (4) A `selectordinal` IS REFUSED (PLURAL-ORDINAL) rather than measured, because its categories are the ordinal set and locale-registry.json declares the cardinal one. (5) A DECLARED DOMAIN TOO LARGE TO VERIFY IS REFUSED (VERIFICATION-EXPLOSION), never sampled. Widening `max` far enough turns this gate RED rather than quietly unchecked, and that is deliberate. (6) THE GSM-7 EXTENSION-CHARACTER SEGMENT-BOUNDARY STRADDLE IS NOT MODELLED by the arithmetic underneath any of this. It is wrong in the direction that admits a three-segment message; it is declared in tools/sms-encoding.ts with its measurement and its distance, and it is routed as decisions.md OD-181 to a ticket that must own BOTH it and docker/fakes/telephony/server.mjs, which has the identical gap. DO NOT FIX EITHER ALONE. (7) A HALF-INTEGER IS AN INSTRUMENT, NOT A VALUE THE PRODUCT CAN SEND. It is used only for a branch signature no integer in the domain reaches — Russian's `other` — so that the branch is measured rather than skipped, and every run names it. (8) A `select` PARAMETER THAT IS ALSO PRINTED MUST BE DECLARED, and one that is never printed need not be. The branch names bound what a `select` SELECTS; they bound nothing about what it PRINTS. This was a FIFTH member of the family, found by asking T-176's own model the question that found the first four, and measured before it was closed: the gate printed `69 units 1 segment, headroom 65` and exited 0 while ICU sent 214 units = FOUR SEGMENTS at a 150-character value (decisions.md OD-184). A printed `select` parameter with no declaration is now PARAM-UNDECLARED, and the values you declare here are bound IN ADDITION to the branch names. (9) A `{x, number}` / `{x, date}` / `{x, time}` ARGUMENT IS MODELLED AS `text`, so what is measured is the DECLARED STRING pushed through ICU's formatter, not the runtime value's magnitude: declare `values: [\"1234\"]` and the product sends 1234567890123, and the gate measured the shorter one. Measured, not argued: 60 units against 72 on a planted `en` message. T-040 § contract §8 already bans a `{x, time}` argument in a catalogue until T-048 settles `hourCycle`; there is no `{x, number}` in any catalogue today either. Declare the widest literal the product can produce, exactly as you would for a name."
+      }
+    },
+    "common.dossier.verified": {
+      "sms": false,
+      "why": "Trust Dossier copy rendered on a surface. PM §MVP-N1 AC5, Transactional row: 'Push + email; SMS for cancellations inside 24h' — this is not a cancellation and not a notification."
+    },
+    "common.fallback.not_translated": {
+      "sms": false,
+      "why": "The in-page 'not yet available in your language' notice required by SA §TS-12.1 for the two non-strict tiers. It is rendered on a page, never delivered."
+    },
+    "session.staffed_hours.commitment": {
+      "sms": false,
+      "why": "The Staffed-Hours commitment page's body copy (PM §MVP-N1 AC5, Transactional: Push + email)."
+    },
+    "booking.count.upcoming": {
+      "sms": false,
+      "why": "An on-screen count on the booking surfaces (PM §MVP-N1 AC5, Transactional: Push + email)."
+    },
+    "booking.cancel.fee_notice": {
+      "sms": false,
+      "why": "The fee notice shown IN-APP to the person cancelling, at the moment of cancelling ('Cancelling now costs ...'). PM §MVP-N1 AC5 does send an SMS for CANCELLATIONS INSIDE 24H — that is a notification to the OTHER party and its template is not in this catalogue. When it is written it is a new key and `sms: true`; see `state/EP-0/T-046.md` § Published contract §7."
+    },
+    "legal.terms.accept": {
+      "sms": false,
+      "why": "An acceptance checkbox label on a legal surface (PM §MVP-N1 AC5, Transactional: Push + email)."
+    }
+  }
+}
