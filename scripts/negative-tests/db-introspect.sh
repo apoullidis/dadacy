@@ -673,7 +673,11 @@ mutate "$ORDER" "con.contype IN ('p', 'u', 'f')" "con.contype IN ('x')"
 check K24 "(T-152) the catalogue returns no key for a rendered constraint: refused" I-ORDER 'primaryKey "account_role_pkey" has no matching PRIMARY KEY constraint'
 
 mutate "$ORDER" "'columns', (SELECT json_agg(a.attname ORDER BY k.ord)" "'columns', (SELECT json_agg(a.attname || '_t152' ORDER BY k.ord)"
-check K25 "(T-152) the catalogue's key columns differ from the rendered list: refused" I-ORDER "account_role_pkey columns: the rendering lists columns \[account_id, role\] but the catalogue's key is \[account_id_t152, role_t152\]"
+# T-165 rework 2 (merge): the rendered list is drizzle-kit's RAW order, which T-152 measured to depend
+# on planner statistics for exactly this key (OD-106). With 0007 highest, K18's derived walk can land at
+# 0006 in this suite's order, so account_role is not recreated and keeps the statistics K151/K152 gave it:
+# measured [role, account_id] (rework 2, S1). What K25 proves is the catalogue side, so either order is admitted.
+check K25 "(T-152) the catalogue's key columns differ from the rendered list: refused" I-ORDER "account_role_pkey columns: the rendering lists columns \[(account_id, role|role, account_id)\] but the catalogue's key is \[account_id_t152, role_t152\]"
 
 echo "== T-152 rework 1: the policy step's refusals (I-POLICY)"
 policy_fixture "$QA_POLICIES"
@@ -1187,9 +1191,9 @@ TEMPLATE_ONLY_TO="    for (const p of local.filter((q) => q.name === template.na
 # still catch the offender — there the pre-rework answer was the incidental [I-POLICY], and showing
 # it is what proves the two shapes did NOT answer alike before.
 NO_POLICY_READ_FROM="                              FROM pg_policy pol
-                             WHERE pol.polrelid = ch.oid) m))"
+                             WHERE pol.polrelid = ch.oid"
 NO_POLICY_READ_TO="                              FROM pg_policy pol
-                             WHERE false AND pol.polrelid = ch.oid) m))"
+                             WHERE false AND pol.polrelid = ch.oid"
 
 # write_judge <id> <desc> <expected exit> <expected tag set or 'none'> <name> [times it must be in db/schema.ts, default 0]
 write_judge() {
