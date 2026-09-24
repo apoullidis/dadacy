@@ -99,8 +99,11 @@ const RECEIPT_DIR = path.join(REPO_ROOT, '.cache', 'gate-heavy');
  * tasks/state/EP-1/T-006.md § Evidence 5 — at floor 2 a demotion is GATE FAIL;
  * at floor 1 the identical mutated tree is GATE PASS and the refusal is
  * silently lost. Raise it in the same change set that supplies a hook.
+ *
+ * 3 on 2026-09-24 (T-190, OD-220): gate:db-introspect-suite promoted BLOCKED -> BLOCKING once
+ * T-165 turned its suite green. Measured in both directions in tasks/state/EP-1/T-190.md.
  */
-const MIN_HEAVY_BLOCKING = 2;
+const MIN_HEAVY_BLOCKING = 3;
 
 // ---------------------------------------------------------------------- flags
 const argv = process.argv.slice(2);

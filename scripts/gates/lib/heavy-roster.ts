@@ -237,22 +237,28 @@ export const HEAVY_ROSTER: readonly HeavyEntry[] = [
     // running it is what closes the gap T-005 names: a digest detects that the
     // FILE changed, and OD-154 happened when `main` moved underneath a suite
     // nobody had touched.
+    //
+    // BLOCKED -> BLOCKING, 2026-09-24, T-190 (OD-220). T-165 (merged 3119884) turned OD-154's
+    // K36-K49m green: `ALL 141 CASES BEHAVED AS EXPECTED`, exit 0, on a fresh `db` project at
+    // 4feb38f and again inside gate:heavy at 3119884 (tasks/state/EP-2/T-165.md § Rework 2, S3, H2).
+    // The pinned failure `!! 25 of 81 cases misbehaved` (T-188) is deleted with the class, and so
+    // are the owner and unblock condition: a BLOCKING entry carries neither. From here ANY
+    // misbehaving case fails gate:heavy as `FAILED (exit 1)`.
     name: 'gate:db-introspect-suite',
     spec: PROGRAMME,
-    cls: 'BLOCKED',
+    cls: 'BLOCKING',
     segment: 'service',
-    why: "scripts/negative-tests/db-introspect.sh — 81 cases attacking T-138's parity check, against a real database",
-    owner: 'T-165 — tech-lead, PARKED awaiting stakeholder ruling OE-37 (OD-154)',
-    unblocks:
-      "T-165 re-cuts the K36-K49 plants to add to 0006's `pgboss` schema and takes the admitted counts from the catalogue. Then this entry becomes BLOCKING and the pinned failure below is deleted.",
-    // 65 -> 81, 2026-09-24, T-188 (OD-218): re-taken from a real run of this gate on a fresh `db`
-    // project at d126c68 (tasks/state/EP-2/T-188.md § Evidence E), which printed exactly this footer.
-    // T-153 added K50-K62r (16 cases, all ok); the 25 are still OD-154's K36-K49m.
-    pinnedFailure: '!! 25 of 81 cases misbehaved',
+    why: "scripts/negative-tests/db-introspect.sh — 141 cases at 3119884, attacking T-138's parity check, against a real database",
     anchors: [
       {
-        label: 'the suite printed a footer at all',
-        pattern: /(ALL \d+ CASES BEHAVED AS EXPECTED|!! \d+ of \d+ cases misbehaved)/,
+        // The suite's own green footer, and a floor on its case count. The floor is the count this
+        // entry was promoted at (141, T-165 at 3119884), a RATCHET like MIN_HEAVY_BLOCKING: a suite
+        // gutted to fewer cases that still prints a green footer is refused here, where the
+        // digest pin in gate:negative-suites (`cases: 141`) cannot see a database run at all.
+        // Raise it when cases are added; never lower it without saying which cases went and why.
+        label: 'the suite printed its green footer over at least 141 cases',
+        pattern: /ALL (\d+) CASES BEHAVED AS EXPECTED/,
+        atLeast: [[1, 141]],
       },
     ],
   },
