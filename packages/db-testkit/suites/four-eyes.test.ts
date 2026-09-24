@@ -7,7 +7,13 @@
  *       comparison (KV051);
  *   (b) the approver holds an unrevoked `ts_senior` role — decisions.md OE-21, "ts_senior
  *       ONLY", whoever performed the action — held by the trigger
- *       `trg_approval_four_eyes` → `public.assert_second_actor_differs()` (KV052).
+ *       `trg_approval_four_eyes` → `public.assert_second_actor_differs()` (KV052), reading
+ *       account_role as the countersigning transaction sees it. That holds only against a
+ *       principal that cannot write ts_senior rows; app_rw can, and the LIMITATION B2/B3/B4
+ *       cases below pin the route it leaves OPEN until T-186 (decisions.md OE-47; QA-F1).
+ *
+ * The LIMITATION RP1/RP2 cases pin what a countersigned row does not bind (QA-F2): the
+ * consumer obligation is in T-030 § contract §7.
  *
  * Every refusal asserts psql's exit status AND the exact `ERROR:  <SQLSTATE>: …` line, so a
  * crash, a connection failure or a refusal for another reason cannot read as this one
@@ -521,6 +527,196 @@ describe('I-5 — what the trigger does NOT read (stated, not decided: decisions
       ),
     );
   });
+});
+
+/** Every account_role row, byte for byte, so an attack can be shown to leave no trace. */
+const ROLE_TABLE = `SELECT string_agg(account_id || ':' || role || ':' || coalesce(granted_by, '-') || ':'
+                        || granted_at::text || ':' || coalesce(revoked_at::text, 'LIVE'), ' | '
+                        ORDER BY account_id COLLATE "C", role COLLATE "C")
+                     FROM public.account_role`;
+/** Live ts_senior rows an account holds. */
+const liveTsSenior = (acc: string): string =>
+  `SELECT count(*)::text FROM public.account_role
+    WHERE account_id = '${acc}' AND role = 'ts_senior' AND revoked_at IS NULL`;
+
+describe('I-5 clause (b) — LIMITATION (T-030 QA-F1): app_rw can write account_role, so it can meet clause (b) for any account. OPEN until T-186 (decisions.md OE-47)', () => {
+  // Each case COMMITS, because committing is the finding: the trigger checks account_role as
+  // the countersigning transaction sees it, and nothing re-checks at commit. Each restores its
+  // own writes as the superuser BEFORE judging, and asserts the restore, so no later test
+  // inherits them. T-186 turns each of these into a refusal; this file then changes with it.
+
+  test('LIMITATION B2 — app_rw, ONE transaction: un-revoke a revoked ts_senior, countersign, write revoked_at back, COMMIT: ACCEPTED, and account_role is byte-identical afterwards', async () => {
+    const before = await db.value(ROLE_TABLE);
+    const revokedAt = await db.value(
+      `SELECT revoked_at::text FROM public.account_role WHERE account_id = '${ACC.revoked}' AND role = 'ts_senior'`,
+    );
+    assert.notEqual(revokedAt, '', 'precondition: the fixture ts_senior is revoked');
+    const a = nextApprovalId();
+    const r = await asApp(
+      'BEGIN',
+      insertPending(a, 'safeguarding_referral#make', ACC.dsl),
+      `UPDATE public.account_role SET revoked_at = NULL WHERE account_id = '${ACC.revoked}' AND role = 'ts_senior'`,
+      countersign(a, ACC.revoked),
+      `UPDATE public.account_role SET revoked_at = '${revokedAt}' WHERE account_id = '${ACC.revoked}' AND role = 'ts_senior'`,
+      'COMMIT',
+    );
+    const committed = await db.value(
+      `SELECT coalesce(approver_id, '(none)') || '|' || coalesce(decision, '(none)') FROM public.approval WHERE id = '${a}'`,
+    );
+    const liveAfter = await db.value(liveTsSenior(ACC.revoked));
+    const after = await db.value(ROLE_TABLE);
+    await db.sql({ commands: [`DELETE FROM public.approval WHERE id = '${a}'`] });
+    assertPermitted('B2 transaction', r);
+    assert.equal(committed, `${ACC.revoked}|approve`, 'B2: the countersignature committed');
+    assert.equal(liveAfter, '0', 'B2: the committed approver holds no live ts_senior');
+    assert.equal(after, before, 'B2: account_role is byte-identical before and after');
+    assert.equal(await db.value(`SELECT count(*)::text FROM public.approval WHERE id = '${a}'`), '0');
+  });
+
+  test('LIMITATION B3 — app_rw, ONE transaction: move a live ts_senior row onto a no-role account, countersign as it, move the row back, COMMIT: ACCEPTED, and account_role is byte-identical afterwards', async () => {
+    const before = await db.value(ROLE_TABLE);
+    assert.equal(await db.value(liveTsSenior(ACC.noRole)), '0', 'precondition: no role');
+    const a = nextApprovalId();
+    const r = await asApp(
+      'BEGIN',
+      insertPending(a, 'safeguarding_referral#make', ACC.dsl),
+      `UPDATE public.account_role SET account_id = '${ACC.noRole}' WHERE account_id = '${ACC.tsSenior}' AND role = 'ts_senior'`,
+      countersign(a, ACC.noRole),
+      `UPDATE public.account_role SET account_id = '${ACC.tsSenior}' WHERE account_id = '${ACC.noRole}' AND role = 'ts_senior'`,
+      'COMMIT',
+    );
+    const committed = await db.value(
+      `SELECT coalesce(approver_id, '(none)') FROM public.approval WHERE id = '${a}'`,
+    );
+    const noRoleRows = await db.value(
+      `SELECT count(*)::text FROM public.account_role WHERE account_id = '${ACC.noRole}'`,
+    );
+    const after = await db.value(ROLE_TABLE);
+    await db.sql({ commands: [`DELETE FROM public.approval WHERE id = '${a}'`] });
+    assertPermitted('B3 transaction', r);
+    assert.equal(committed, ACC.noRole, 'B3: the countersignature by a no-role account committed');
+    assert.equal(noRoleRows, '0', 'B3: the approver holds no role row in any committed state');
+    assert.equal(after, before, 'B3: account_role is byte-identical before and after');
+    assert.equal(await db.value(`SELECT count(*)::text FROM public.approval WHERE id = '${a}'`), '0');
+  });
+
+  test('LIMITATION B4 — app_rw grants ts_senior to a no-role account and commits; a later countersignature by it is ACCEPTED', async () => {
+    assert.equal(await db.value(liveTsSenior(ACC.noRole)), '0', 'precondition: no role');
+    const grant = await asApp(
+      `INSERT INTO public.account_role (account_id, role) VALUES ('${ACC.noRole}', 'ts_senior')`,
+    );
+    const a = nextApprovalId();
+    const r = await asApp(
+      'BEGIN',
+      insertPending(a, 'retention_run#approve', ACC.compliance),
+      countersign(a, ACC.noRole),
+      'COMMIT',
+    );
+    const committed = await db.value(
+      `SELECT coalesce(approver_id, '(none)') FROM public.approval WHERE id = '${a}'`,
+    );
+    await db.sql({
+      commands: [
+        `DELETE FROM public.approval WHERE id = '${a}'`,
+        `DELETE FROM public.account_role WHERE account_id = '${ACC.noRole}'`,
+      ],
+    });
+    assertPermitted('B4 grant by app_rw', grant);
+    assertPermitted('B4 countersignature', r);
+    assert.equal(committed, ACC.noRole, 'B4: the countersignature committed');
+    assert.equal(
+      await db.value(
+        `SELECT (SELECT count(*) FROM public.approval WHERE id = '${a}') || '|' ||
+                (SELECT count(*) FROM public.account_role WHERE account_id = '${ACC.noRole}')`,
+      ),
+      '0|0',
+    );
+  });
+});
+
+describe('I-5 — what a countersigned row does NOT bind (T-030 QA-F2): the consumer must (contract §7)', () => {
+  test('LIMITATION RP1 — after a valid countersignature, app_rw re-points action, subject_type, subject_id and submitter_id: each ACCEPTED', async () => {
+    const a = nextApprovalId();
+    const r = await db.psql({
+      user: LOGINS.app_rw,
+      password: PROBE_PASSWORD,
+      raw: true,
+      verbose: true,
+      stopOnError: true,
+      commands: [
+        'BEGIN',
+        insertPending(a, 'safeguarding_referral#make', ACC.dsl),
+        countersign(a, ACC.tsSenior),
+        `UPDATE public.approval SET action = 'account#remove_permanently' WHERE id = '${a}'`,
+        `UPDATE public.approval SET subject_type = 'account', subject_id = '${id('OTHERSUBJ')}' WHERE id = '${a}'`,
+        `UPDATE public.approval SET submitter_id = '${ACC.compliance}' WHERE id = '${a}'`,
+        `SELECT 'row=' || action || '|' || subject_type || '|' || subject_id || '|' || submitter_id
+                || '|' || approver_id || '|' || decision FROM public.approval WHERE id = '${a}'`,
+        'ROLLBACK',
+      ],
+    });
+    assertPermitted('RP1', r);
+    assert.ok(
+      r.stdout.includes(
+        `row=account#remove_permanently|account|${id('OTHERSUBJ')}|${ACC.compliance}|${ACC.tsSenior}|approve`,
+      ),
+      `RP1: every re-point landed and the countersignature stands.\n${r.output}`,
+    );
+  });
+
+  test('LIMITATION RP2 — an approver set with decision NULL, and with decision reject, are both ACCEPTED: approver_id IS NOT NULL does not mean approved', async () => {
+    const [a1, a2] = [nextApprovalId(), nextApprovalId()];
+    const withDecision = (approvalId: string, decision: string): string =>
+      `INSERT INTO public.approval (id, subject_type, subject_id, action, submitter_id, submitted_at,
+                                    approver_id, approved_at, decision)
+         VALUES ('${approvalId}', 'case', '${id('SUBJECT')}', 'retention_run#approve',
+                 '${ACC.compliance}', now(), '${ACC.tsSenior}', now(), ${decision})`;
+    assertPermitted(
+      'RP2',
+      await asApp('BEGIN', withDecision(a1, 'NULL'), withDecision(a2, "'reject'"), 'ROLLBACK'),
+    );
+  });
+});
+
+describe('I-5 clause (b) — the race under REPEATABLE READ and SERIALIZABLE (T-030 QA-A3): refused 40001, not KV052', () => {
+  for (const level of ['REPEATABLE READ', 'SERIALIZABLE'] as const) {
+    test(`${level}: a countersignature whose snapshot predates a committed revoke of its approver's ts_senior is REFUSED (40001)`, async () => {
+      assert.equal(await db.value(liveTsSenior(ACC.tsSenior)), '1', 'precondition: ts_senior live');
+      const a = nextApprovalId();
+      await asSuperuser(insertPending(a, 'safeguarding_referral#make', ACC.dsl));
+      const countersigning = asApp(
+        `BEGIN ISOLATION LEVEL ${level}`,
+        // Takes the snapshot, which still sees the ts_senior live.
+        `SELECT count(*) FROM public.account_role WHERE account_id = '${ACC.tsSenior}' AND revoked_at IS NULL`,
+        'SELECT pg_sleep(3)',
+        countersign(a, ACC.tsSenior),
+        'COMMIT',
+      );
+      await sleep(1500);
+      const revoke = await asApp(
+        `UPDATE public.account_role SET revoked_at = now() WHERE account_id = '${ACC.tsSenior}' AND role = 'ts_senior'`,
+      );
+      const cs = await countersigning;
+      // Restore before judging.
+      await db.sql({
+        commands: [
+          `UPDATE public.account_role SET revoked_at = NULL WHERE account_id = '${ACC.tsSenior}' AND role = 'ts_senior'`,
+        ],
+      });
+      assertPermitted('the committed revoke', revoke);
+      assertRefusedWith(
+        `${level} countersignature`,
+        cs,
+        'ERROR:  40001: could not serialize access due to concurrent update',
+      );
+      assert.equal(
+        await db.value(
+          `SELECT (${liveTsSenior(ACC.tsSenior)}) || '|' || (SELECT coalesce(approver_id, '(none)') FROM public.approval WHERE id = '${a}')`,
+        ),
+        '1|(none)',
+      );
+    });
+  }
 });
 
 describe('the generic machinery — assert_second_actor_differs(first, second) on another table', () => {
