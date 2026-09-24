@@ -248,7 +248,10 @@ const SUITES: readonly Suite[] = [
     // committed suite no gate runs is OD-152.
     id: 'heavy-gates',
     file: 'scripts/negative-tests/heavy-gates.sh',
-    cases: 36,
+    // 36 -> 39, 2026-09-24, T-190 (OD-220): C1b (the BLOCKED fixture's control), C11 (the promoted
+    // suite with one misbehaving case fails) and C12 (its anchor's floor of 141). Taken from the
+    // suite's own footer at 8b881bc, `ALL 39 CASES BEHAVED AS EXPECTED` (tasks/state/EP-1/T-190.md B).
+    cases: 39,
     state: 'GREEN',
     why: "gate:heavy: the roster held against SD §QD-4's heavy row, the cross-file anchor on the PR roster's SERVICE class, the evidence anchors, the receipt coverage rule, and gate:workflow's W8 (T-006)",
   },
