@@ -42,9 +42,16 @@
  *      schemaFilter `public` and one `!<name>` tablesFilter per extension member. So extension
  *      internals (postgis, pg_partman, pg_stat_statements) are excluded by a catalogue rule,
  *      not by a list kept here.
+ *   3d. [I-MAP] (T-153, OD-107) every int8 and PostGIS geometry column in `public` (arrays included),
+ *      with `format_type` and its array dimensions, read as one JSON array (COLUMN_TYPES_SQL). An
+ *      unreadable read fails. Step 5a holds the rendering against it.
  *   4a. [I-MAP] (T-150, OD-97) each `unknown("col")` drizzle-kit writes for a type it cannot parse
  *      is rewritten from a CLOSED map (`citext`, `bytea` -> customType). Any other type fails the
  *      run: `unknown(...)` is never written (scripts/gates/lib/schema-render.ts).
+ *      T-153 (OD-107): every `bigint(…{ mode: "number" })` drizzle-kit writes (a JS number, lossy above
+ *      2^53) is rewritten to drizzle's `bigint` mode, with integer defaults as bigint literals. That is a
+ *      REWRITE of drizzle-kit 0.31.10's spelling and judges only its own completeness (a hint comment it
+ *      did not consume). What GUARANTEES the result is step 5a's per-column catalogue match.
  *   4b. [I-PART] (T-165, OD-84) drizzle-kit lists relations with `relkind IN ('r', 'v', 'm')`, so a
  *      PARTITIONED TABLE is never rendered and each of its PARTITIONS is rendered as a plain table
  *      of its own. Every partitioned table in `public` is rendered under its own name from the
@@ -107,8 +114,11 @@ import {
 } from './gates/lib/schema-partition.ts';
 import { POLICIES_SQL, canonicalPolicies, parsePolicies } from './gates/lib/schema-policy.ts';
 import {
+  COLUMN_TYPES_SQL,
   TYPESCRIPT_VERSION,
+  checkCatalogueColumns,
   mapColumnTypes,
+  parseCatalogueColumns,
   pruneUnused,
   readRootCompilerOptions,
 } from './gates/lib/schema-render.ts';
@@ -411,7 +421,18 @@ function main(): void {
   }
   const cataloguePolicies = parsedPolicies.ok ? parsedPolicies.policies : [];
 
-  // 3d. every partitioned table in public, its partitions, and the constraint and index names that
+  // 3d. every int8 and PostGIS geometry column in public, with its declared type (T-153, OD-107)
+  const typeRead = psql(COLUMN_TYPES_SQL);
+  const parsedTypes = typeRead.ok
+    ? parseCatalogueColumns(typeRead.out.trim())
+    : { ok: false as const, problem: typeRead.err.trim() };
+  if (!parsedTypes.ok) {
+    problem('I-MAP', `cannot read column types from the catalogue: ${parsedTypes.problem}`);
+    done();
+  }
+  const catalogueColumns = parsedTypes.ok ? parsedTypes.columns : [];
+
+  // 3e. every partitioned table in public, its partitions, and the constraint and index names that
   // map a partition's rendering onto the parent's (T-165, OD-84)
   const partitionRead = psql(PARTITIONS_SQL);
   const parsedPartitions = partitionRead.ok
@@ -548,6 +569,17 @@ function main(): void {
       `  VACUOUS: 0 relations introspected, and the catalogue independently lists 0 relations owned by no extension in ${INTROSPECTED_SCHEMA} after migration ${String(highest)}. The parity below compares an empty schema.`,
     );
   }
+
+  // 5a. every catalogue int8 column MATCHED PER COLUMN against the rendering, parsed as TypeScript
+  // (base type and array dimensions, keyed by relation and column name — T-153 rework 1, OD-147,
+  // OD-148); geometry admitted only as a scalar 2D point (T-153, OD-107). After anti-vacuity, so a
+  // pull that lost a relation is I-VACUOUS, not I-MAP.
+  const typed = checkCatalogueColumns(body, catalogueColumns);
+  console.log(
+    `  bigint: ${String(mapping.ok ? mapping.bigints : 0)} column(s) rewritten to drizzle's bigint mode; ${String(typed.matched)} of the catalogue's ${String(typed.int8)} int8 column(s) matched per column against ${String(typed.relations)} parsed relation(s); geometry: ${String(typed.points)} point column(s) admitted`,
+  );
+  for (const p of typed.problems) problem('I-MAP', p);
+  if (failures.length > 0) done();
 
   const fresh = renderSchemaFile(body, kitVersion);
 

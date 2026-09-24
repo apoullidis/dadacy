@@ -20,3 +20,15 @@ packages:
 # no dependency script runs.
 allowBuilds:
   esbuild: false
+
+# T-005, decisions.md OD-51. WITHOUT THIS LINE pnpm handles a package published
+# inside its minimumReleaseAge window by writing an entry into
+# `minimumReleaseAgeExclude` IN THIS FILE, printing one informational line, and
+# EXITING 0 — leaving a supply-chain exemption that reads like configuration
+# somebody chose. `minimumReleaseAgeStrict: true` is pnpm's own answer: it
+# REFUSES the install instead. `pnpm gate:supply-chain` is the second half — it
+# fails if this line is missing or false, and on any `minimumReleaseAgeExclude`
+# entry, because a prevention nobody checks is a prevention that stops one day
+# without saying so. The remedy for a too-new package is to PIN AN OLDER
+# RELEASE (T-115 pinned vite 8.2.2 over the day-old 8.3.0), never an exemption.
+minimumReleaseAgeStrict: true

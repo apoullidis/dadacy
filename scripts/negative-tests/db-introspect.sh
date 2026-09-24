@@ -36,17 +36,38 @@
 # hex, the check must be exactly {I-SCOPE} naming it unambiguously, and then K42m–K49m restore main's
 # read (asserted landed) and show the same plant getting past I-SCOPE.
 #
-# T-165 — K50–K64 (OD-84): drizzle-kit lists relations with relkind IN ('r','v','m'), so a PARTITIONED
+# T-153 — K50–K57 (OD-107): bigint and PostGIS geometry. K50 is the control: a bigint plant (identity PK,
+# FK, NOT NULL, nullable, DEFAULT 0, bigint[] with a default above 2^53, int8, a view) is written in
+# drizzle's bigint mode, read and written exactly through pg/drizzle, re-checked after ANALYZE, and an
+# importer is refused a number with exactly TS2322. K51 deletes the rewrite (the text guard refuses), K52
+# the rewrite and its guard (the per-column catalogue match refuses; rework 1 replaced the count), K53 the whole mapping (RED BEFORE: number
+# mode, 9007199254740993 read as ...992, the importer's refusals inverted). K54 makes the column-type query
+# unreadable. K55 is the geometry control (scalar Point with and without SRID, read and written); K56/K56w
+# plant every other geometry shape and a Point[] (I-MAP, check and write mode); K57 deletes the rule (RED
+# BEFORE: the plant passes and a polygon select throws).
+#
+# T-153 rework 1 — K58-K62 (OD-147, OD-148): the per-relation COUNT is replaced by a PER-COLUMN match
+# against the catalogue, over the rendering parsed as TypeScript. K58/K59 plant a VIEW and a
+# MATERIALIZED VIEW over a bigint[] column, which drizzle-kit renders with no `.array()`; K60 is the
+# RED BEFORE with the count restored (they pass, and drizzle's read of each throws). The loss is NOT
+# specific to bigint: drizzle-kit 0.31.10 renders EVERY array column of a view or materialized view with
+# no .array() (text[], numeric[], timestamptz[] too; OD-149). K60 asserts it for the text[] column of the
+# same view, from db/schema.ts. The per-column match holds int8 only, so a non-int8 view array column
+# passes the gate typed as a scalar; that general case is T-187's (OE-35 (A)). K61/K62 are the
+# false refusals the old text-shaped mechanisms produced on drizzle-kit's own output — a text DEFAULT
+# holding a bigint-mode call, and one equal to the hint sentence - each with its own RED BEFORE.
+#
+# T-165 — K150–K164 (OD-84): drizzle-kit lists relations with relkind IN ('r','v','m'), so a PARTITIONED
 # table is never rendered and each of its PARTITIONS is rendered as a plain table. The generator now
 # renders every partitioned table in public under its own name, from the first of its partitions in
 # public, with every constraint and index name mapped to the parent's by the catalogue and the
 # parent's policies added from pg_policy; the partitions leave the rendering and are on neither side
-# of I-VACUOUS (scripts/gates/lib/schema-partition.ts, [I-PART]). K50 is the control fixture
+# of I-VACUOUS (scripts/gates/lib/schema-partition.ts, [I-PART]). K150 is the control fixture
 # (db-introspect-partitioned.sql, whose `-- expect:`/`-- absent:` lines are written from the SQL),
-# K51–K54 are determinism and a partition attached after the file was written, K55–K61 the drifts and
-# shapes it refuses, K62–K63 the rule deleted two ways (I-VACUOUS, as before this ticket), K64 the
+# K151–K154 are determinism and a partition attached after the file was written, K155–K161 the drifts and
+# shapes it refuses, K162–K163 the rule deleted two ways (I-VACUOUS, as before this ticket), K164 the
 # catalogue read.
-# T-165 — K65–K67 (OD-145): a relation in information_schema, pg_catalog or a pg_toast* schema reached
+# T-165 — K165–K167 (OD-145): a relation in information_schema, pg_catalog or a pg_toast* schema reached
 # no check at all and the run passed. The catalogue read now also takes every relation of kind
 # r/p/v/m/f in those schemas whose oid is >= 16384, so it is I-SCOPE. Each case plants one as the
 # superuser (two need allow_system_table_mods) and is then re-run with main's schema filter restored.
@@ -65,6 +86,9 @@
 # example that the planted migration was applied. After each case the database is brought back to
 # the highest committed migration and its record is asserted, the tree is restored, and
 # `git status` is asserted clean.
+#
+# T-168: EXIT/INT/TERM traps call restore_tree(), so an INTERRUPTED run puts db/schema.ts (deleted
+# by K05) back too — see the block beside the traps, including what they deliberately do NOT do.
 set -uo pipefail
 cd "$(dirname "$0")/../.." || exit 2
 
@@ -110,7 +134,7 @@ cleanup_after_abort() {
   if [ "$(record)" != "kinvara-migrate version=$HIGHEST" ]; then
     node scripts/db-migrate.ts down --to "$HIGHEST" >"$OUT.abort" 2>&1 || cat "$OUT.abort"
   fi
-  rm -f "$M/${NEXT}_t138_plant.up.sql" "$M/${NEXT}_t138_plant.down.sql"
+  rm -f "$M/${NEXT}_t138_plant.up.sql" "$M/${NEXT}_t138_plant.down.sql" "${T153_BITE:-}"
   git checkout -q -- "$SCHEMA" "$SCRIPT" "$RENDER" "$ORDER" "$POLICY" "$PARTITION"
   echo "   abort cleanup: record now '$(record)'; git status --porcelain:"
   git status --porcelain
@@ -138,12 +162,19 @@ stats_mark() {
   psql -X -A -t -q -c "SELECT coalesce(last_analyze::text, 'never') || ' / ' || coalesce(last_vacuum::text, 'never') FROM pg_stat_all_tables WHERE relid = 'pg_class'::regclass"
 }
 
-restore() {
-  if [ "$(record)" != "kinvara-migrate version=$HIGHEST" ]; then
-    node scripts/db-migrate.ts down --to "$HIGHEST" >"$OUT.down" 2>&1
-    grep -q '^MIGRATE OK  down: ' "$OUT.down" || { cat "$OUT.down"; abort "could not bring the database back to $HIGHEST"; }
-  fi
-  [ "$(record)" = "kinvara-migrate version=$HIGHEST" ] || abort "the record reads '$(record)', not $HIGHEST"
+# T-153: the importer K50/K53 plant into the root program; restore_tree() removes it.
+T153_BITE=packages/db-testkit/type-tests/t153-bite.ts
+
+# T-168 (OD-161). restore_tree is the working-tree half of restore(), split out UNCHANGED so the
+# traps below can call it on its own. It needs no database, which is the whole point: the tracked
+# path this suite deletes (K05 removes db/schema.ts outright) must come back even when the database
+# is unreachable — and it is reached through `git checkout`, because git already has these files.
+# The halves cannot be reordered: rolling the planted migration back needs its down file, which
+# restore_tree deletes.
+# (T-153 merge of main 3385ede: T-153's `rm -f "$T153_BITE"` is a working-tree action, so it moved
+# from the top of restore() into this half, where the traps reach it too.)
+restore_tree() {
+  rm -f "$T153_BITE"
   rm -f "$M/${NEXT}_t138_plant.up.sql" "$M/${NEXT}_t138_plant.down.sql"
   git checkout -q -- "$SCHEMA" "$SCRIPT" "$RENDER" "$ORDER" "$POLICY" "$PARTITION"
   if [ -n "$(git status --porcelain)" ]; then
@@ -151,6 +182,47 @@ restore() {
     abort "the tree did not restore cleanly"
   fi
 }
+
+restore() {
+  if [ "$(record)" != "kinvara-migrate version=$HIGHEST" ]; then
+    node scripts/db-migrate.ts down --to "$HIGHEST" >"$OUT.down" 2>&1
+    grep -q '^MIGRATE OK  down: ' "$OUT.down" || { cat "$OUT.down"; abort "could not bring the database back to $HIGHEST"; }
+  fi
+  [ "$(record)" = "kinvara-migrate version=$HIGHEST" ] || abort "the record reads '$(record)', not $HIGHEST"
+  restore_tree
+}
+
+# Every case calls restore() explicitly, so a COMPLETE run already put the tree back. These traps
+# close the interrupt window: between `rm -f "$SCHEMA"` (K05) and the next restore(), the TRACKED
+# db/schema.ts is deleted, and until this ticket a Ctrl-C there left it deleted.
+#
+# The traps restore the TREE, not the database, and that is deliberate rather than an omission. The
+# database is this ticket's own ephemeral compose project; a tracked file is not. Calling the full
+# restore() from a trap would put the database half first, and an unreachable database would then
+# abort BEFORE db/schema.ts was ever checked out — the trap would fail in exactly the direction it
+# exists to prevent.
+#
+# What that costs, stated plainly because it is a CONSEQUENCE ACCEPTED and not a non-effect (T-168
+# rework 1, QR-F1; measured by QA on both sides with a real database). An interrupt after the plant
+# has been applied leaves the database ADVANCED PAST WHAT THIS DIRECTORY CAN REVERT: the record
+# still reads $NEXT, and restore_tree has already deleted ${NEXT}_t138_plant.down.sql, which is the
+# one file `node scripts/db-migrate.ts down` would need. That command then answers
+#   MIGRATE REFUSED  the database records version <NEXT>, but the directory's highest migration is
+#                    <HIGHEST>: a recorded migration has no file          (exit 2)
+# and this suite cannot start again on that database at all — its own first act is `db:migrate up`,
+# which is refused the same way, so the run ends at `ABORT: db:migrate up failed before the first
+# case`. The remedy is to DISPOSE OF THE DATABASE, which `scripts/svc down <ticket>` does (it is
+# `docker compose down --volumes`, scripts/svc:580); the volume goes and the next `svc up` starts
+# from nothing. Without the traps — i.e. on main c27c354 — the down file survives and `db:migrate
+# down --to <HIGHEST>` still returns `MIGRATE OK`, so this is a real regression in the DATABASE
+# half, deliberately taken: the tree half is the one that protects COMMITTED SOURCE, the database
+# is this ticket's own ephemeral compose project, and a tracked file is not.
+#
+# restore_tree aborts (exit 2) when the tree does not come back clean, so "restored", "could not
+# restore" and "was never touched" stay three distinguishable outcomes from inside a trap too.
+trap 'restore_tree; rm -f "$OUT" "$OUT".*' EXIT
+trap 'echo; echo "INTERRUPTED (SIGINT) — restoring the working tree"; restore_tree; trap - EXIT; exit 130' INT
+trap 'echo; echo "TERMINATED (SIGTERM) — restoring the working tree"; restore_tree; trap - EXIT; exit 143' TERM
 
 # plant <file> <content>: write, then assert the bytes on disk are the bytes intended.
 plant() {
@@ -287,7 +359,7 @@ GRANT SELECT ON public.t165_abort TO app_rw;"
 fi
 
 # T-165 rework 1 (QR-A3): the partitioned-table control block runs FIRST, so that its first write
-# sees a catalogue nobody has ANALYZEd — K26b runs an ANALYZE, and until this rework K50 ran after
+# sees a catalogue nobody has ANALYZEd — K26b runs an ANALYZE, and until this rework K150 ran after
 # it. Neither this block nor the policy block that follows analyses anything, so both still meet an
 # un-analysed catalogue on a fresh project. OWNED is read here because this block needs it.
 OWNED=$(owned_in_public)
@@ -349,15 +421,15 @@ case "$PART_MARK" in
   *) echo "   pg_class last analyze / vacuum before the first write: '$PART_MARK' -- ALREADY ANALYSED: run this suite on a FRESH project" ;;
 esac
 write_schema
-# QR-A3: a case of its own, so that "K50-K54 ran against a never-ANALYZEd catalogue" is judged and
+# QR-A3: a case of its own, so that "K150-K154 ran against a never-ANALYZEd catalogue" is judged and
 # not merely printed. It is BAD on a project something has already analysed — run this suite fresh.
 total=$((total + 1))
 if [ "${PART_MARK#never}" != "$PART_MARK" ]; then v=ok; else
   v=BAD
   bad=$((bad + 1))
 fi
-printf '%-4s %s  %s\n       pg_class last analyze / vacuum at the first write of this suite: %s (expected it to begin "never")\n' "$v" K50a "(T-165 r1, QR-A3) the partitioned-table block runs before any ANALYZE in this suite" "$PART_MARK"
-part_check K50 "(T-165) CONTROL: a PARTITION BY RANGE parent with two partitions, regenerated, never ANALYZEd: the parent is rendered under its own name with the parent's key, index, check and policies; neither partition is in the file" \
+printf '%-4s %s  %s\n       pg_class last analyze / vacuum at the first write of this suite: %s (expected it to begin "never")\n' "$v" K150a "(T-165 r1, QR-A3) the partitioned-table block runs before any ANALYZE in this suite" "$PART_MARK"
+part_check K150 "(T-165) CONTROL: a PARTITION BY RANGE parent with two partitions, regenerated, never ANALYZEd: the parent is rendered under its own name with the parent's key, index, check and policies; neither partition is in the file" \
   "$PART_RENDERED" "$PART_COUNTS" "$PART_INTRO" 'byte-identical to a fresh introspection' '^  policies: 2 checked against pg_policy'
 
 m0=$(stats_mark)
@@ -365,29 +437,29 @@ psql -X -q -v ON_ERROR_STOP=1 -c ANALYZE >/dev/null || abort "ANALYZE failed"
 m1=$(stats_mark)
 { [ "$m1" != "$m0" ] && [ "${m1%% / *}" != never ]; } || abort "ANALYZE did not land on pg_class (last analyze / vacuum '$m0' -> '$m1')"
 echo "   statistics attack landed: pg_class last analyze / vacuum '$m0' -> '$m1'"
-part_check K51 "(T-165) the same file after ANALYZE (asserted above): byte-identical" "$PART_RENDERED" 'byte-identical to a fresh introspection'
+part_check K151 "(T-165) the same file after ANALYZE (asserted above): byte-identical" "$PART_RENDERED" 'byte-identical to a fresh introspection'
 
 m0=$(stats_mark)
 psql -X -q -v ON_ERROR_STOP=1 -c "VACUUM ANALYZE" >/dev/null || abort "VACUUM ANALYZE failed"
 m1=$(stats_mark)
 { [ "${m1#* / }" != "${m0#* / }" ] && [ "${m1#* / }" != never ]; } || abort "VACUUM ANALYZE did not land on pg_class (last analyze / vacuum '$m0' -> '$m1')"
 echo "   statistics attack landed: pg_class last analyze / vacuum '$m0' -> '$m1'"
-part_check K52 "(T-165) the same file after VACUUM ANALYZE (asserted above): byte-identical" "$PART_RENDERED" 'byte-identical to a fresh introspection'
+part_check K152 "(T-165) the same file after VACUUM ANALYZE (asserted above): byte-identical" "$PART_RENDERED" 'byte-identical to a fresh introspection'
 
 { node scripts/db-migrate.ts down --to "$HIGHEST" >"$OUT.p" 2>&1 && grep -q "^MIGRATE OK  down: $NEXT -> $HIGHEST" "$OUT.p"; } || { cat "$OUT.p"; abort "db:migrate down --to $HIGHEST failed"; }
 { node scripts/db-migrate.ts up >"$OUT.p" 2>&1 && grep -q "^MIGRATE OK  up: $HIGHEST -> $NEXT" "$OUT.p"; } || { cat "$OUT.p"; abort "db:migrate up to $NEXT failed"; }
 echo "   history attack landed: down --to $HIGHEST, up to $NEXT"
-part_check K53 "(T-165) the same file after the partition migration's down/up: byte-identical" "$PART_RENDERED" 'byte-identical to a fresh introspection'
+part_check K153 "(T-165) the same file after the partition migration's down/up: byte-identical" "$PART_RENDERED" 'byte-identical to a fresh introspection'
 
 psql -X -q -v ON_ERROR_STOP=1 -c "CREATE TABLE public.t165_part_a0 PARTITION OF public.t165_part FOR VALUES FROM (TIMESTAMPTZ '2025-01-01Z') TO (TIMESTAMPTZ '2026-01-01Z')" >/dev/null || abort "attaching a third partition failed"
 attached=$(psql -X -A -t -q -c "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relispartition AND c.relkind IN ('r','p') AND c.relname LIKE 't165\_part\_%'")
 [ "$attached" = 3 ] || abort "the third partition did not land (partitions in public: $attached)"
 echo "   attach attack landed: t165_part_a0 sorts BEFORE t165_part_q1, so it is now the template; partitions in public: $attached"
-part_check K54 "(T-165) a third partition attached after db/schema.ts was written, sorting first so the template changes: the file is unchanged and the check still passes" \
+part_check K154 "(T-165) a third partition attached after db/schema.ts was written, sorting first so the template changes: the file is unchanged and the check still passes" \
   '^  partitions: 1 partitioned table\(s\) rendered from a partition; 2 partition declaration\(s\) removed' 'byte-identical to a fresh introspection' '"t165_part_a0"'
 restore
 
-echo "== T-152 rework 1: row-level security policies (OD-109). First among the policy cases and still before any ANALYZE in this suite: T-165 rework 1 moved K50-K54 ahead of it (QR-A3) and neither block analyses anything"
+echo "== T-152 rework 1: row-level security policies (OD-109). First among the policy cases and still before any ANALYZE in this suite: T-165 rework 1 moved K150-K154 ahead of it (QR-A3) and neither block analyses anything"
 policy_fixture "$QA_POLICIES"
 echo "   pg_class last analyze / vacuum before the first write: '$(stats_mark)'"
 write_schema
@@ -519,22 +591,32 @@ echo "== control, again, after every plant and drop above"
 check K17 "CONTROL: the committed tree after the whole suite's plant/drop history, no ANALYZE anywhere in the suite" PASS 'byte-identical to a fresh introspection'
 
 echo "== T-152: the rendering is a function of the schema alone (OD-106, OD-108)"
-PREV=$(printf '%04d' $((10#$HIGHEST - 1)))
-PREV2=$(printf '%04d' $((10#$HIGHEST - 2)))
+# T-188 (OD-218): the walk-back targets are DERIVED from the committed migration set, not fixed at
+# HIGHEST-1 and HIGHEST-2. Which step moves drizzle-kit's `public` order is a property of the migration
+# set: with 0007 highest, 0007 re-creates only `approval` (already last) and 0006 touches only schema
+# `pgboss`, so neither of the two nearest steps can move it and the old walk ABORTed here on every head
+# containing 0007. So: every committed number below HIGHEST, nearest first, stopping at the FIRST whose
+# down/up moves the order. What K18 proves is unchanged: the move is still asserted BEFORE parity is
+# judged, and if no step down to the lowest committed migration moves it, the run still ABORTs.
+WALK=$(ls "$M" | sed -nE 's/^([0-9]{4})_[a-z0-9_]+\.up\.sql$/\1/p' | sort -r | awk -v h="$HIGHEST" '$1 + 0 < h + 0')
+[ -n "$WALK" ] || abort "no committed migration below $HIGHEST to walk back to: the history attack cannot be made"
 before=$(table_list_order)
 after=$before
 perturbed=
-for to in "$PREV" "$PREV2"; do
+tried=
+for to in $WALK; do
+  tried="$tried $to"
   { node scripts/db-migrate.ts down --to "$to" >"$OUT.p" 2>&1 && grep -q '^MIGRATE OK  down: ' "$OUT.p"; } || { cat "$OUT.p"; abort "db:migrate down --to $to failed"; }
   { node scripts/db-migrate.ts up >"$OUT.p" 2>&1 && grep -q '^MIGRATE OK  up: ' "$OUT.p"; } || { cat "$OUT.p"; abort "db:migrate up after down --to $to failed"; }
+  [ "$(record)" = "kinvara-migrate version=$HIGHEST" ] || abort "the record reads '$(record)' after down --to $to and up, not $HIGHEST"
   after=$(table_list_order)
   if [ "$after" != "$before" ]; then
     perturbed=$to
     break
   fi
 done
-[ -n "$perturbed" ] || abort "neither down --to $PREV nor down --to $PREV2, then up, moved drizzle-kit's table-list order [$before]: the history attack did not land"
-echo "   history attack landed: down --to $perturbed, up; drizzle-kit's table list was [$before], is now [$after]"
+[ -n "$perturbed" ] || abort "no walk-back moved drizzle-kit's table-list order [$before] (down --to each of:$tried, then up): the history attack did not land"
+echo "   history attack landed: down --to $perturbed, up (walk-back tried:$tried); drizzle-kit's table list was [$before], is now [$after]"
 check K18 "(T-152) catalogue history moved drizzle-kit's own table order (asserted above), no ANALYZE: parity holds" PASS 'byte-identical to a fresh introspection'
 
 m0=$(stats_mark)
@@ -902,12 +984,12 @@ policy_fixture "$PART_FIXTURE"
 write_schema
 psql -X -q -v ON_ERROR_STOP=1 -c "ALTER TABLE public.t165_part ADD COLUMN drifted text" >/dev/null || abort "the parent drift failed"
 psql -X -A -t -q -c "SELECT count(*) FROM pg_attribute WHERE attrelid = 'public.t165_part_q1'::regclass AND attname = 'drifted'" | grep -qx 1 || abort "the parent's new column did not reach its partition"
-check K55 "(T-165) the parent gains a column, which every partition gains too, and db/schema.ts is not regenerated: I-DIFF" I-DIFF 'db/schema.ts differs from a fresh introspection'
+check K155 "(T-165) the parent gains a column, which every partition gains too, and db/schema.ts is not regenerated: I-DIFF" I-DIFF 'db/schema.ts differs from a fresh introspection'
 
 policy_fixture "$PART_FIXTURE"
 write_schema
 psql -X -q -v ON_ERROR_STOP=1 -c "CREATE INDEX t165_part_q1_own_idx ON public.t165_part_q1 (note)" >/dev/null || abort "the partition-only index failed"
-check K56 "(T-165) an index created on a partition alone, which the parent does not have: refused, never rendered as the parent's" I-PART 'partition "t165_part_q1" has its own index "t165_part_q1_own_idx", which the parent has no counterpart for'
+check K156 "(T-165) an index created on a partition alone, which the parent does not have: refused, never rendered as the parent's" I-PART 'partition "t165_part_q1" has its own index "t165_part_q1_own_idx", which the parent has no counterpart for'
 
 plant "$UP" "-- @phase: expand
 CREATE TABLE public.t165_part (id bigint NOT NULL, at timestamptz NOT NULL,
@@ -915,7 +997,7 @@ CREATE TABLE public.t165_part (id bigint NOT NULL, at timestamptz NOT NULL,
 CREATE TABLE public.t165_part_q1 (at timestamptz NOT NULL, id bigint NOT NULL);
 ALTER TABLE public.t165_part ATTACH PARTITION public.t165_part_q1 FOR VALUES FROM (TIMESTAMPTZ '2026-01-01Z') TO (TIMESTAMPTZ '2026-04-01Z');"
 plant "$DOWN" "DROP TABLE public.t165_part;"
-check K57 "(T-165) a partition ATTACHed with the parent's columns in another order: its rendering is not the parent's, refused" I-PART 'does not have the parent.s columns in the parent.s order'
+check K157 "(T-165) a partition ATTACHed with the parent's columns in another order: its rendering is not the parent's, refused" I-PART 'does not have the parent.s columns in the parent.s order'
 
 plant "$UP" "-- @phase: expand
 CREATE TABLE public.t165_part (id bigint NOT NULL, at timestamptz NOT NULL, k text NOT NULL,
@@ -923,7 +1005,7 @@ CREATE TABLE public.t165_part (id bigint NOT NULL, at timestamptz NOT NULL, k te
 CREATE TABLE public.t165_part_q1 PARTITION OF public.t165_part FOR VALUES FROM (TIMESTAMPTZ '2026-01-01Z') TO (TIMESTAMPTZ '2026-04-01Z') PARTITION BY LIST (k);
 CREATE TABLE public.t165_part_q1_k PARTITION OF public.t165_part_q1 FOR VALUES IN ('k1');"
 plant "$DOWN" "DROP TABLE public.t165_part;"
-check K58 "(T-165) a sub-partitioned table (a partition that is itself partitioned): refused" I-PART 'is itself partitioned: a sub-partitioned table is not represented'
+check K158 "(T-165) a sub-partitioned table (a partition that is itself partitioned): refused" I-PART 'is itself partitioned: a sub-partitioned table is not represented'
 
 plant "$UP" "-- @phase: expand
 -- @run-as: bootstrap-superuser — T-165
@@ -932,13 +1014,13 @@ CREATE TABLE public.t165_part (id bigint NOT NULL, at timestamptz NOT NULL,
 CREATE TABLE public.t165_part_q1 PARTITION OF public.t165_part FOR VALUES FROM (TIMESTAMPTZ '2026-01-01Z') TO (TIMESTAMPTZ '2026-04-01Z');
 CREATE TABLE pgboss.t165_part_pb PARTITION OF public.t165_part FOR VALUES FROM (TIMESTAMPTZ '2026-04-01Z') TO (TIMESTAMPTZ '2026-07-01Z');"
 plant "$DOWN" "DROP TABLE public.t165_part;"
-check K59 "(T-165) a partition of a public partitioned table planted in ADMITTED schema pgboss beside a public one (T-145 LIVE contract §4's route, which OD-84 would otherwise open): refused" I-PART 'is not in schema public, and a partition of a table in public is part of that table'
+check K159 "(T-165) a partition of a public partitioned table planted in ADMITTED schema pgboss beside a public one (T-145 LIVE contract §4's route, which OD-84 would otherwise open): refused" I-PART 'is not in schema public, and a partition of a table in public is part of that table'
 
 plant "$UP" "-- @phase: expand
 CREATE TABLE public.t165_part (id bigint NOT NULL, at timestamptz NOT NULL,
   CONSTRAINT t165_part_pkey PRIMARY KEY (id, at)) PARTITION BY RANGE (at);"
 plant "$DOWN" "DROP TABLE public.t165_part;"
-check K59b "(T-165) a partitioned table with no partition at all, which drizzle-kit renders nothing for: refused" I-PART 'has no partition, so drizzle-kit renders nothing'
+check K159b "(T-165) a partitioned table with no partition at all, which drizzle-kit renders nothing for: refused" I-PART 'has no partition, so drizzle-kit renders nothing'
 
 plant "$UP" "-- @phase: expand
 -- @run-as: bootstrap-superuser — T-165
@@ -949,20 +1031,20 @@ CREATE TABLE public.t165_part_q1 PARTITION OF public.t165_part FOR VALUES FROM (
 CREATE TABLE t165_other.t165_part_ot PARTITION OF public.t165_part FOR VALUES FROM (TIMESTAMPTZ '2026-04-01Z') TO (TIMESTAMPTZ '2026-07-01Z');"
 plant "$DOWN" "DROP TABLE public.t165_part;
 DROP SCHEMA t165_other;"
-check K59c "(T-165) the same partition in a schema nothing admits: the scope rule reaches it first" I-SCOPE '^  - \[I-SCOPE\] relation "t165_other"\."t165_part_ot" is owned by no extension'
+check K159c "(T-165) the same partition in a schema nothing admits: the scope rule reaches it first" I-SCOPE '^  - \[I-SCOPE\] relation "t165_other"\."t165_part_ot" is owned by no extension'
 
 plant "$UP" "-- @phase: expand
 CREATE TABLE public.t165_part (id bigint GENERATED ALWAYS AS IDENTITY, at timestamptz NOT NULL,
   CONSTRAINT t165_part_pkey PRIMARY KEY (id, at)) PARTITION BY RANGE (at);
 CREATE TABLE public.t165_part_q1 PARTITION OF public.t165_part FOR VALUES FROM (TIMESTAMPTZ '2026-01-01Z') TO (TIMESTAMPTZ '2026-04-01Z');"
 plant "$DOWN" "DROP TABLE public.t165_part;"
-check K60 "(T-165) a partitioned table with an identity column, which drizzle-kit renders on a partition as name: \"null\", startWith: null: refused" I-PART 'has an identity column'
+check K160 "(T-165) a partitioned table with an identity column, which drizzle-kit renders on a partition as name: \"null\", startWith: null: refused" I-PART 'has an identity column'
 
 policy_fixture "$PART_FIXTURE"
 write_schema
 psql -X -q -v ON_ERROR_STOP=1 -c "CREATE INDEX t165_part_only_idx ON ONLY public.t165_part (note)" >/dev/null || abort "the ON ONLY index failed"
 psql -X -A -t -q -c "SELECT count(*) FROM pg_index i JOIN pg_class ci ON ci.oid = i.indexrelid WHERE ci.relname = 't165_part_only_idx'" | grep -qx 1 || abort "the ON ONLY index did not land"
-check K71 "(T-165) an index the PARENT has that no partition has (CREATE INDEX ... ON ONLY), which would otherwise be silently absent from the rendering: refused" I-PART 'it owns "t165_part_only_idx", which partition "t165_part_q1" has no counterpart for'
+check K171 "(T-165) an index the PARENT has that no partition has (CREATE INDEX ... ON ONLY), which would otherwise be silently absent from the rendering: refused" I-PART 'it owns "t165_part_only_idx", which partition "t165_part_q1" has no counterpart for'
 
 plant "$UP" "-- @phase: expand
 CREATE TABLE public.t165_part (id bigint NOT NULL, at timestamptz NOT NULL,
@@ -972,7 +1054,7 @@ CREATE TABLE public.t165_ref (id bigint PRIMARY KEY, r_id bigint NOT NULL, r_at 
   CONSTRAINT t165_ref_fkey FOREIGN KEY (r_id, r_at) REFERENCES public.t165_part (id, at));"
 plant "$DOWN" "DROP TABLE public.t165_ref;
 DROP TABLE public.t165_part;"
-check K61 "(T-165) a foreign key from a public table INTO the partitioned table, which PostgreSQL clones once per partition: refused" I-PART "renders \"t165_ref_fkey_1\", PostgreSQL's per-partition clone"
+check K161 "(T-165) a foreign key from a public table INTO the partitioned table, which PostgreSQL clones once per partition: refused" I-PART "renders \"t165_ref_fkey_1\", PostgreSQL's per-partition clone"
 
 policy_fixture "$PART_FIXTURE"
 write_schema
@@ -980,39 +1062,39 @@ mutate "$PARTITION" "  const decls = declarations(sf);" "  const decls = declara
   if (source !== '')
     return { ok: true, body: source, parents: 0, removed: 0, mapped: 0, policies: 0, names: 0 };"
 git diff -U0 -- "$PARTITION" | grep -E '^[-+][^-+]' | sed 's/^/   mutation:   /'
-check K62 "(T-165) the rule deleted (the step made a pass-through): the regenerated file is refused and the parent is unrendered, as before this ticket" I-VACUOUS 'I-VACUOUS. drizzle-kit wrote .*t165_part_q1, t165_part_q2\] but the catalogue lists .*t165_part\]'
+check K162 "(T-165) the rule deleted (the step made a pass-through): the regenerated file is refused and the parent is unrendered, as before this ticket" I-VACUOUS 'I-VACUOUS. drizzle-kit wrote .*t165_part_q1, t165_part_q2\] but the catalogue lists .*t165_part\]'
 
 policy_fixture "$PART_FIXTURE"
 write_schema
 mutate "$SCRIPT" "    .filter((r) => !r.extensionMember && r.schema === INTROSPECTED_SCHEMA && !r.partition)" "    .filter((r) => !r.extensionMember && r.schema === INTROSPECTED_SCHEMA)"
 git diff -U0 -- "$SCRIPT" | grep -E '^[-+][^-+]' | sed 's/^/   mutation:   /'
-check K63 "(T-165) the other half deleted (partitions counted by I-VACUOUS again): the regenerated file is refused" I-VACUOUS 'but the catalogue lists .*t165_part_q1, t165_part_q2'
+check K163 "(T-165) the other half deleted (partitions counted by I-VACUOUS again): the regenerated file is refused" I-VACUOUS 'but the catalogue lists .*t165_part_q1, t165_part_q2'
 
 mutate "$PARTITION" "      FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace" "      FROM pg_class_t165 c JOIN pg_namespace n ON n.oid = c.relnamespace"
-check K64 "(T-165) the partitioned-table query unreadable, committed tree: refused, never treated as no partitioned table" I-PART 'cannot read the partitioned tables from the catalogue'
+check K164 "(T-165) the partitioned-table query unreadable, committed tree: refused, never treated as no partitioned table" I-PART 'cannot read the partitioned tables from the catalogue'
 
 policy_fixture "$PART_FIXTURE"
 write_schema
 mutate "$PARTITION" "    const mine = policies" "    const mine = ([] as typeof policies)"
 git diff -U0 -- "$PARTITION" | grep -E '^[-+][^-+]' | sed 's/^/   mutation:   /'
-check K68 "(T-165) the parent's policies not added (the partition carries none of them): T-152's pg_policy step now SEES the partitioned table and refuses it" I-POLICY 'table "t165_part": pg_policy has policy "t165_part_(zulu|omega)", which the rendering does not contain'
+check K168 "(T-165) the parent's policies not added (the partition carries none of them): T-152's pg_policy step now SEES the partitioned table and refuses it" I-POLICY 'table "t165_part": pg_policy has policy "t165_part_(zulu|omega)", which the rendering does not contain'
 
 # Measured (T-165 § Evidence M6): drizzle-kit spells `t165_x2y` as `t165X2Y`, because the `camelcase`
 # package it uses breaks a word at a digit-to-letter boundary, where this step would spell it
-# `t165X2y`. A PARENT of that shape is refused by name (K69) rather than exported under a guess; K70
+# `t165X2y`. A PARENT of that shape is refused by name (K169) rather than exported under a guess; K170
 # deletes the agreement itself and shows the check that holds it.
 plant "$UP" "-- @phase: expand
 CREATE TABLE public.t165_x2y (id bigint NOT NULL, at timestamptz NOT NULL,
   CONSTRAINT t165_x2y_pkey PRIMARY KEY (id, at)) PARTITION BY RANGE (at);
 CREATE TABLE public.t165_x2y_q1 PARTITION OF public.t165_x2y FOR VALUES FROM (TIMESTAMPTZ '2026-01-01Z') TO (TIMESTAMPTZ '2026-04-01Z');"
 plant "$DOWN" "DROP TABLE public.t165_x2y;"
-check K69 "(T-165) a partitioned table whose name has a digit-to-letter boundary, which drizzle-kit and this step spell differently: refused, never exported under a guess" I-PART 'is not named as .<letters><digits>'
+check K169 "(T-165) a partitioned table whose name has a digit-to-letter boundary, which drizzle-kit and this step spell differently: refused, never exported under a guess" I-PART 'is not named as .<letters><digits>'
 
 policy_fixture "$PART_FIXTURE"
 write_schema
 mutate "$PARTITION" "  const parts = relname.split('_');" "  const parts = \`\${relname}_t165\`.split('_');"
 git diff -U0 -- "$PARTITION" | grep -E '^[-+][^-+]' | sed 's/^/   mutation:   /'
-check K70 "(T-165) the export-name derivation changed: it is held against the names drizzle-kit itself wrote in the same rendering, so it is refused" I-PART 'drizzle-kit exports relation "account_role" as .accountRole., which this step would spell .accountRoleT165.'
+check K170 "(T-165) the export-name derivation changed: it is held against the names drizzle-kit itself wrote in the same rendering, so it is refused" I-PART 'drizzle-kit exports relation "account_role" as .accountRole., which this step would spell .accountRoleT165.'
 
 echo "== T-165 (OD-145): a relation in information_schema, pg_catalog or a pg_toast* schema"
 # Before this ticket the catalogue read excluded those schemas outright, so such a relation was on no
@@ -1071,10 +1153,10 @@ $post}"
   restore
 }
 
-system_case K65 information_schema '' ''
-system_case K66 pg_catalog 'SET allow_system_table_mods = on;
+system_case K165 information_schema '' ''
+system_case K166 pg_catalog 'SET allow_system_table_mods = on;
 ' ''
-system_case K67 pg_toastq 'SET allow_system_table_mods = on;
+system_case K167 pg_toastq 'SET allow_system_table_mods = on;
 CREATE SCHEMA pg_toastq;
 ' 'DROP SCHEMA pg_toastq;'
 
@@ -1154,7 +1236,7 @@ partlocal_case() {
   restore
 }
 
-partlocal_case K72 "(T-165 r1, OD-155) a row-level security POLICY on the non-template partition (QA's A8b/A17 stage 1): refused, and the partition that owns it is named" \
+partlocal_case K172 "(T-165 r1, OD-155) a row-level security POLICY on the non-template partition (QA's A8b/A17 stage 1): refused, and the partition that owns it is named" \
   "ALTER TABLE public.t165_part_q2 ENABLE ROW LEVEL SECURITY;
 CREATE POLICY t165_part_q2_only ON public.t165_part_q2 FOR SELECT TO app_rw USING (note <> 'x');" \
   "" \
@@ -1163,7 +1245,7 @@ CREATE POLICY t165_part_q2_only ON public.t165_part_q2 FOR SELECT TO app_rw USIN
   'partition "t165_part_q2" has its own policy "t165_part_q2_only", which the parent has no counterpart for' \
   0 none t165_part_q2_only
 
-partlocal_case K73 "(T-165 r1, OD-155) the SAME policy on the TEMPLATE partition: the same answer, [I-PART], not the incidental [I-POLICY] it used to be" \
+partlocal_case K173 "(T-165 r1, OD-155) the SAME policy on the TEMPLATE partition: the same answer, [I-PART], not the incidental [I-POLICY] it used to be" \
   "ALTER TABLE public.t165_part_q1 ENABLE ROW LEVEL SECURITY;
 CREATE POLICY t165_part_q1_only ON public.t165_part_q1 FOR SELECT TO app_rw USING (note <> 'x');" \
   "" \
@@ -1172,7 +1254,7 @@ CREATE POLICY t165_part_q1_only ON public.t165_part_q1 FOR SELECT TO app_rw USIN
   'partition "t165_part_q1" has its own policy "t165_part_q1_only", which the parent has no counterpart for' \
   1 I-POLICY t165_part_q1_only no-policy-read
 
-partlocal_case K74 "(T-165 r1, OD-156) an INDEX on the non-template partition (QA's DRIFT 2): refused" \
+partlocal_case K174 "(T-165 r1, OD-156) an INDEX on the non-template partition (QA's DRIFT 2): refused" \
   "CREATE INDEX t165_part_q2_local_idx ON public.t165_part_q2 (note);" \
   "" \
   "SELECT count(*)::text FROM pg_class WHERE relname = 't165_part_q2_local_idx'" \
@@ -1180,7 +1262,7 @@ partlocal_case K74 "(T-165 r1, OD-156) an INDEX on the non-template partition (Q
   'partition "t165_part_q2" has its own index "t165_part_q2_local_idx", which the parent has no counterpart for' \
   0 none t165_part_q2_local_idx
 
-partlocal_case K75 "(T-165 r1, OD-156) a CHECK constraint on the non-template partition alone: refused" \
+partlocal_case K175 "(T-165 r1, OD-156) a CHECK constraint on the non-template partition alone: refused" \
   "ALTER TABLE public.t165_part_q2 ADD CONSTRAINT t165_part_q2_note_ck CHECK (note <> 'q2');" \
   "" \
   "SELECT count(*)::text FROM pg_constraint WHERE conname = 't165_part_q2_note_ck'" \
@@ -1188,7 +1270,7 @@ partlocal_case K75 "(T-165 r1, OD-156) a CHECK constraint on the non-template pa
   'partition "t165_part_q2" has its own constraint "t165_part_q2_note_ck", which the parent has no counterpart for' \
   0 none t165_part_q2_note_ck
 
-partlocal_case K76 "(T-165 r1, OD-156) a UNIQUE constraint on the non-template partition alone: refused" \
+partlocal_case K176 "(T-165 r1, OD-156) a UNIQUE constraint on the non-template partition alone: refused" \
   "ALTER TABLE public.t165_part_q2 ADD CONSTRAINT t165_part_q2_note_key UNIQUE (note);" \
   "" \
   "SELECT count(*)::text FROM pg_constraint WHERE conname = 't165_part_q2_note_key'" \
@@ -1196,7 +1278,7 @@ partlocal_case K76 "(T-165 r1, OD-156) a UNIQUE constraint on the non-template p
   'partition "t165_part_q2" has its own (constraint|index) "t165_part_q2_note_key", which the parent has no counterpart for' \
   0 none t165_part_q2_note_key
 
-partlocal_case K77 "(T-165 r1, OD-156) a FOREIGN KEY from the non-template partition alone: refused" \
+partlocal_case K177 "(T-165 r1, OD-156) a FOREIGN KEY from the non-template partition alone: refused" \
   "CREATE TABLE public.t165_ref (note text PRIMARY KEY);
 GRANT SELECT ON public.t165_ref TO app_rw;
 ALTER TABLE public.t165_part_q2 ADD CONSTRAINT t165_part_q2_note_fkey FOREIGN KEY (note) REFERENCES public.t165_ref (note);" \
@@ -1206,7 +1288,7 @@ ALTER TABLE public.t165_part_q2 ADD CONSTRAINT t165_part_q2_note_fkey FOREIGN KE
   'partition "t165_part_q2" has its own constraint "t165_part_q2_note_fkey", which the parent has no counterpart for' \
   0 none t165_part_q2_note_fkey
 
-partlocal_case K78 "(T-165 r1, OD-156) a TRIGGER on the non-template partition alone, which PostgreSQL's own FK triggers (tgisinternal) are told apart from: refused" \
+partlocal_case K178 "(T-165 r1, OD-156) a TRIGGER on the non-template partition alone, which PostgreSQL's own FK triggers (tgisinternal) are told apart from: refused" \
   "CREATE FUNCTION public.t165_noop() RETURNS trigger LANGUAGE plpgsql AS \$fn\$ BEGIN RETURN NEW; END \$fn\$;
 CREATE TRIGGER t165_part_q2_local_trg BEFORE INSERT ON public.t165_part_q2 FOR EACH ROW EXECUTE FUNCTION public.t165_noop();" \
   "DROP FUNCTION public.t165_noop();" \
@@ -1227,23 +1309,473 @@ ALTER TABLE public.t165_part_q2 ENABLE ROW LEVEL SECURITY;
 CREATE POLICY t165_part_q2_mid ON public.t165_part_q2 FOR SELECT TO app_rw USING (note <> 'm');"
 plant "$DOWN" "DROP TABLE public.t165_part;"
 sed 's/^/   plant up:   /' "$UP"
-node scripts/db-migrate.ts up >"$OUT.p" 2>&1 || { cat "$OUT.p"; abort "K79: the plant did not apply"; }
+node scripts/db-migrate.ts up >"$OUT.p" 2>&1 || { cat "$OUT.p"; abort "K179: the plant did not apply"; }
 got=$(psql -X -A -t -q -c "SELECT string_agg(c.relname, ',' ORDER BY c.relname) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relispartition AND c.relkind = 'r' AND c.relname LIKE 't165\_part\_%'")
-[ "$got" = "t165_part_q1,t165_part_q2,t165_part_q3" ] || abort "K79: the three partitions did not land: [$got]"
+[ "$got" = "t165_part_q1,t165_part_q2,t165_part_q3" ] || abort "K179: the three partitions did not land: [$got]"
 echo "   plant landed: partitions in byte order [$got]; the template is t165_part_q1 and the offender is t165_part_q2, neither first nor last"
-check K79 "(T-165 r1) three partitions, the offending policy on the middle one: refused, naming that partition" I-PART 'partition "t165_part_q2" has its own policy "t165_part_q2_mid"'
+check K179 "(T-165 r1) three partitions, the offending policy on the middle one: refused, naming that partition" I-PART 'partition "t165_part_q2" has its own policy "t165_part_q2_mid"'
 
 # QA's A17 stage 2: the attach that changed the verdict before this rework.
 plant_two_partitions "ALTER TABLE public.t165_part_q2 ENABLE ROW LEVEL SECURITY;
 CREATE POLICY t165_part_q2_only ON public.t165_part_q2 FOR SELECT TO app_rw USING (note <> 'x');" ""
-node scripts/db-migrate.ts up >"$OUT.p" 2>&1 || { cat "$OUT.p"; abort "K80: the plant did not apply"; }
-psql -X -q -v ON_ERROR_STOP=1 -c "CREATE TABLE public.t165_part_a0 PARTITION OF public.t165_part FOR VALUES FROM (TIMESTAMPTZ '2025-01-01Z') TO (TIMESTAMPTZ '2026-01-01Z')" >/dev/null || abort "K80: the attach failed"
+node scripts/db-migrate.ts up >"$OUT.p" 2>&1 || { cat "$OUT.p"; abort "K180: the plant did not apply"; }
+psql -X -q -v ON_ERROR_STOP=1 -c "CREATE TABLE public.t165_part_a0 PARTITION OF public.t165_part FOR VALUES FROM (TIMESTAMPTZ '2025-01-01Z') TO (TIMESTAMPTZ '2026-01-01Z')" >/dev/null || abort "K180: the attach failed"
 got=$(psql -X -A -t -q -c "SELECT string_agg(c.relname, ',' ORDER BY c.relname) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relispartition AND c.relkind = 'r' AND c.relname LIKE 't165\_part\_%'")
-[ "$got" = "t165_part_a0,t165_part_q1,t165_part_q2" ] || abort "K80: the attach did not land: [$got]"
+[ "$got" = "t165_part_a0,t165_part_q1,t165_part_q2" ] || abort "K180: the attach did not land: [$got]"
 got=$(psql -X -A -t -q -c "SELECT c.relname || '/' || pol.polname FROM pg_policy pol JOIN pg_class c ON c.oid = pol.polrelid")
-[ "$got" = "t165_part_q2/t165_part_q2_only" ] || abort "K80: the policy is no longer there: [$got]"
+[ "$got" = "t165_part_q2/t165_part_q2_only" ] || abort "K180: the policy is no longer there: [$got]"
 echo "   attach landed: partitions [$(psql -X -A -t -q -c "SELECT string_agg(c.relname, ',' ORDER BY c.relname) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relispartition AND c.relkind = 'r' AND c.relname LIKE 't165\_part\_%'")], the template is now t165_part_a0; pg_policy STILL [$got]"
-check K80 "(T-165 r1, OD-155) QA's A17 stage 2: a partition that sorts FIRST attached, so the template changes — the policy on t165_part_q2 is refused just the same" I-PART 'partition "t165_part_q2" has its own policy "t165_part_q2_only"'
+check K180 "(T-165 r1, OD-155) QA's A17 stage 2: a partition that sorts FIRST attached, so the template changes — the policy on t165_part_q2 is refused just the same" I-PART 'partition "t165_part_q2" has its own policy "t165_part_q2_only"'
+
+echo "== T-153 (OD-107): bigint in drizzle's bigint mode, counted against the catalogue; geometry admitted only as a scalar 2D point"
+# The plant: an identity PK, an FK to an identity PK, NOT NULL, nullable, DEFAULT 0, a bigint[] with a
+# default above 2^53, the int8 spelling, and a view. Its int8 columns, named from this SQL: t153_parent 1
+# (id), t153_money 7 (id, parent_id, amount_minor, maybe_minor, zero_minor, minor_list, int8_spelled),
+# t153_money_v 2 (id, amount_minor): 10.
+plant_bigint() {
+  plant "$UP" "-- @phase: expand
+CREATE TABLE public.t153_parent (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, note text);
+CREATE TABLE public.t153_money (
+  id bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+  parent_id bigint NOT NULL REFERENCES public.t153_parent (id),
+  amount_minor bigint NOT NULL,
+  maybe_minor bigint,
+  zero_minor bigint NOT NULL DEFAULT 0,
+  minor_list bigint[] NOT NULL DEFAULT '{1,9007199254740993}',
+  int8_spelled int8);
+CREATE VIEW public.t153_money_v AS SELECT id, amount_minor FROM public.t153_money;"
+  plant "$DOWN" "DROP VIEW public.t153_money_v;
+DROP TABLE public.t153_money;
+DROP TABLE public.t153_parent;"
+}
+
+# The driver round trip, through pg + drizzle-orm and the db/schema.ts just written. A value written
+# through drizzle is a bigint or a number according to the column's own (element) mode, so the same
+# script reads the defect when the mapping is reverted (K53).
+T153_ROUNDTRIP=$(
+  cat <<'EOF'
+import pg from "pg";
+import { drizzle } from "drizzle-orm/node-postgres";
+import { t153Money, t153MoneyV } from "./db/schema.ts";
+const pool = new pg.Pool();
+const db = drizzle(pool);
+const show = (v) => (Array.isArray(v) ? v.map(show).join(",") : `${typeof v} ${String(v)}`);
+const big = (col, s) => ((col.baseColumn ?? col).dataType === "bigint" ? BigInt(s) : Number(s));
+try {
+  await pool.query("INSERT INTO t153_parent (note) VALUES ('p')");
+  await pool.query("INSERT INTO t153_money (parent_id, amount_minor, int8_spelled) VALUES (1, 9007199254740993, -9223372036854775808)");
+  const [r] = await db.select().from(t153Money);
+  console.log(`READ id ${show(r.id)}`);
+  console.log(`READ amountMinor ${show(r.amountMinor)}`);
+  console.log(`READ int8Spelled ${show(r.int8Spelled)}`);
+  console.log(`READ minorList ${show(r.minorList)}`);
+  console.log(`READ maybeMinor ${String(r.maybeMinor)}`);
+  const [v] = await db.select().from(t153MoneyV);
+  console.log(`READ view amountMinor ${show(v.amountMinor)}`);
+  await db.insert(t153Money).values({ parentId: r.parentId, amountMinor: big(t153Money.amountMinor, "9007199254740995"), minorList: [big(t153Money.minorList, "9007199254740995"), big(t153Money.minorList, "-9223372036854775807")] });
+  const back = await pool.query("SELECT amount_minor::text AS a, minor_list::text AS l FROM t153_money ORDER BY id DESC LIMIT 1");
+  console.log(`WRITE database text amount_minor ${back.rows[0].a} minor_list ${back.rows[0].l}`);
+} catch (e) {
+  console.log(`ROUNDTRIP THREW ${e.constructor.name}: ${e.message}; cause: ${e.cause?.message}`);
+}
+await pool.end();
+EOF
+)
+
+# The importer: lines 4-6 assign bigints, lines 7-9 numbers (select, insert, array element), line 10 null.
+T153_BITE_TEXT="import type { t153Money } from '../../../db/schema.ts';
+type Row = typeof t153Money.\$inferSelect;
+type Ins = typeof t153Money.\$inferInsert;
+export const exactSelect: Row['amountMinor'] = 9007199254740993n;
+export const exactInsert: Ins['amountMinor'] = 9007199254740993n;
+export const exactList: Row['minorList'] = [9007199254740993n];
+export const numberSelect: Row['amountMinor'] = 5;
+export const numberInsert: Ins['amountMinor'] = 5;
+export const numberList: Row['minorList'] = [5];
+export const absent: Row['maybeMinor'] = null;"
+
+# tsc_errors: the root program's `<file>:<line> TS<code>` set, sorted, space-separated (the importer planted).
+tsc_errors() {
+  plant "$T153_BITE" "$T153_BITE_TEXT"
+  node_modules/.bin/tsc --noEmit -p tsconfig.json >"$OUT.tsc" 2>&1
+  grep -oE '^[^(: ]+\([0-9]+,[0-9]+\): error TS[0-9]+' "$OUT.tsc" | sed -E 's/^([^(]+)\(([0-9]+),[0-9]+\): error (TS[0-9]+)$/\1:\2 \3/' | sort -u | tr '\n' ' ' | sed 's/ $//'
+}
+
+# bigint_facts lossless|lossy: facts about the rendering, the driver and the importer, into $OUT.f.
+bigint_facts() {
+  local line
+  node --input-type=module -e "$T153_ROUNDTRIP" >"$OUT.rt" 2>&1
+  if [ "$1" = lossless ]; then
+    for line in 'id: bigint({ mode: "bigint" }).primaryKey().generatedAlwaysAsIdentity(' \
+      'id: bigint({ mode: "bigint" }).primaryKey().generatedByDefaultAsIdentity(' \
+      'parentId: bigint("parent_id", { mode: "bigint" }).notNull(),' \
+      'amountMinor: bigint("amount_minor", { mode: "bigint" }).notNull(),' \
+      'maybeMinor: bigint("maybe_minor", { mode: "bigint" }),' \
+      'zeroMinor: bigint("zero_minor", { mode: "bigint" }).default(0n).notNull(),' \
+      'minorList: bigint("minor_list", { mode: "bigint" }).array().default([1n, 9007199254740993n]).notNull(),' \
+      'int8Spelled: bigint("int8_spelled", { mode: "bigint" }),' \
+      'id: bigint({ mode: "bigint" }),' \
+      'amountMinor: bigint("amount_minor", { mode: "bigint" }),'; do
+      fact "db/schema.ts lines containing [$line]" "$(grep -cF -- "$line" "$SCHEMA")" 1
+    done
+    fact "db/schema.ts lines in number mode or with drizzle-kit's bigint hint" "$(grep -cE 'mode: "number"|You can use \{ mode: "bigint" \}' "$SCHEMA")" 0
+    fact "the generator's bigint line (10 int8 columns, from the plant's SQL, each matched per column)" "$(grep -cE "^  bigint: 10 column\\(s\\) rewritten to drizzle's bigint mode; 10 of the catalogue's 10 int8 column\\(s\\) matched per column against [0-9]+ parsed relation\\(s\\)" "$OUT")" 1
+    for line in 'READ id bigint 1' 'READ amountMinor bigint 9007199254740993' 'READ int8Spelled bigint -9223372036854775808' \
+      'READ minorList bigint 1,bigint 9007199254740993' 'READ maybeMinor null' 'READ view amountMinor bigint 9007199254740993' \
+      'WRITE database text amount_minor 9007199254740995 minor_list {9007199254740995,-9223372036854775807}'; do
+      fact "driver round trip prints [$line]" "$(grep -cxF -- "$line" "$OUT.rt")" 1
+    done
+    fact "importer: exactly TS2322 on the three number lines (7-9), the bigints and null accepted" "$(tsc_errors)" "$T153_BITE:7 TS2322 $T153_BITE:8 TS2322 $T153_BITE:9 TS2322"
+  else
+    fact "db/schema.ts lines containing drizzle-kit's number-mode amount_minor" "$(grep -cF 'amountMinor: bigint("amount_minor", { mode: "number" }).notNull(),' "$SCHEMA")" 1
+    fact "driver round trip prints [READ amountMinor number 9007199254740992]" "$(grep -cxF 'READ amountMinor number 9007199254740992' "$OUT.rt")" 1
+    fact "importer: TS2322 on the three bigint lines (4-6) and the three number lines (7-9) SILENT" "$(tsc_errors)" "$T153_BITE:4 TS2322 $T153_BITE:5 TS2322 $T153_BITE:6 TS2322"
+  fi
+  sed 's/^/driver: /' "$OUT.rt" >>"$OUT.f"
+}
+
+plant_bigint
+write_schema
+node scripts/db-introspect.ts --check >"$OUT" 2>&1
+code=$?
+: >"$OUT.f"
+nf=0
+nok=0
+bigint_facts lossless
+m0=$(stats_mark)
+psql -X -q -v ON_ERROR_STOP=1 -c ANALYZE >/dev/null || abort "ANALYZE failed"
+[ "$(stats_mark)" != "$m0" ] || abort "ANALYZE did not land on pg_class"
+node scripts/db-introspect.ts --check >"$OUT.2" 2>&1
+fact "after ANALYZE (asserted landed), the check again: exit" "$?" 0
+fact "after ANALYZE, the check again: byte-identical lines" "$(grep -c 'byte-identical to a fresh introspection' "$OUT.2")" 1
+[ "$nok" -eq "$nf" ] && echo "ALL $nf BIGINT FACTS HOLD" >>"$OUT.f"
+cat "$OUT.f" >>"$OUT"
+judge K50 "(T-153) CONTROL: bigint PK/FK/identity, NOT NULL, nullable, DEFAULT 0, bigint[] with a default above 2^53, int8, a view: bigint mode, exact through the driver both ways, a number refused at the importer" PASS "$code" '^ALL [0-9]+ BIGINT FACTS HOLD$'
+grep -E '^fact |^driver: |^  bigint: ' "$OUT" | cut -c1-240 | sed 's/^/       /'
+restore
+
+plant_bigint
+mutate "$RENDER" "    BIGINT_NUMBER_COLUMN," "    /\$^()()()()()/g,"
+check K51 "(T-153) the bigint-mode rewrite deleted: the hint it did not consume is refused, nothing written" I-MAP "rendering line [0-9]+ still carries drizzle-kit's bigint hint comment after the bigint-mode rewrite"
+
+T153_NOOP="  if (body !== '') return { ok: true, body, columns: 0 };"
+# T-153 rework 1: the per-column catalogue match turned off, for K53's RED BEFORE.
+T153_MATCH_OFF="  const int8 = { problems: [] as string[], int8: body.length * 0, matched: 0, relations: 0 };"
+plant_bigint
+mutate "$RENDER" "export function mapBigintColumns(body: string): BigintResult {" "export function mapBigintColumns(body: string): BigintResult {
+$T153_NOOP"
+grep -qxF -- "$T153_NOOP" "$RENDER" || abort "the mapBigintColumns no-op did not land"
+check K52 "(T-153 r1) the rewrite AND its leftover-hint check deleted: the per-column catalogue match still refuses the number-mode rendering, naming the column" I-MAP "int8 column \"t153_money\"\\.\"amount_minor\" \\(bigint\\) is rendered on line [0-9]+ in drizzle's \"number\" mode, so it would reach importers as a JS number"
+
+plant_bigint
+mutate "$RENDER" "export function mapBigintColumns(body: string): BigintResult {" "export function mapBigintColumns(body: string): BigintResult {
+$T153_NOOP"
+node scripts/negative-tests/mutate.mjs "$RENDER" "  const int8 = matchInt8Columns(body, columns);" "$T153_MATCH_OFF" || abort "mutation anchor missing in $RENDER"
+{ grep -qxF -- "$T153_NOOP" "$RENDER" && grep -qxF -- "$T153_MATCH_OFF" "$RENDER"; } || abort "the T-153 mapping was not fully reverted in $RENDER"
+git diff -U0 -- "$RENDER" | grep -E '^[-+][^-+]' | sed 's/^/   mutation:   /'
+node scripts/db-introspect.ts --write >"$OUT.w" 2>&1
+wcode=$?
+node scripts/db-introspect.ts --check >"$OUT" 2>&1
+code=$?
+: >"$OUT.f"
+nf=0
+nok=0
+fact "write with the mapping reverted: exit" "$wcode" 0
+bigint_facts lossy
+[ "$nok" -eq "$nf" ] && echo "ALL $nf RED-BEFORE FACTS HOLD" >>"$OUT.f"
+cat "$OUT.f" >>"$OUT"
+judge K53 "(T-153) RED BEFORE: the whole mapping reverted (asserted above): written in number mode, 9007199254740993 read as 9007199254740992, and the importer refuses bigints while accepting numbers" PASS "$code" '^ALL [0-9]+ RED-BEFORE FACTS HOLD$'
+grep -E '^fact |^driver: READ amountMinor' "$OUT" | cut -c1-240 | sed 's/^/       /'
+restore
+
+mutate "$RENDER" "      FROM pg_attribute a" "      FROM pg_attribute_t153 a"
+check K54 "(T-153) the column-type query unreadable, committed tree: refused" I-MAP 'cannot read column types from the catalogue'
+
+T153_GEO_ROUNDTRIP=$(
+  cat <<'EOF'
+import pg from "pg";
+import { drizzle } from "drizzle-orm/node-postgres";
+import { t153Geo } from "./db/schema.ts";
+const pool = new pg.Pool();
+const db = drizzle(pool);
+try {
+  await pool.query("INSERT INTO t153_geo (id, g_point, g_point_nosrid) VALUES (1, ST_GeomFromText('POINT(33.25 35.5)', 4326), ST_GeomFromText('POINT(1 2)'))");
+  const [r] = await db.select().from(t153Geo);
+  console.log(`READ gPoint ${JSON.stringify(r.gPoint)}`);
+  console.log(`READ gPointNosrid ${JSON.stringify(r.gPointNosrid)}`);
+  await db.insert(t153Geo).values({ id: 2, gPoint: [33.125, 34.875], gPointNosrid: [5, -6.5] });
+  const back = await pool.query("SELECT ST_AsEWKT(g_point) AS p, ST_AsEWKT(g_point_nosrid) AS n FROM t153_geo WHERE id = 2");
+  console.log(`WRITE gPoint ${back.rows[0].p}`);
+  console.log(`WRITE gPointNosrid ${back.rows[0].n}`);
+} catch (e) {
+  console.log(`ROUNDTRIP THREW ${e.constructor.name}: ${e.message}; cause: ${e.cause?.message}`);
+}
+await pool.end();
+EOF
+)
+plant "$UP" "-- @phase: expand
+CREATE TABLE public.t153_geo (id integer PRIMARY KEY, g_point geometry(Point,4326), g_point_nosrid geometry(Point));"
+plant "$DOWN" "DROP TABLE public.t153_geo;"
+write_schema
+node scripts/db-introspect.ts --check >"$OUT" 2>&1
+code=$?
+: >"$OUT.f"
+nf=0
+nok=0
+fact "db/schema.ts lines containing the Point,4326 column" "$(grep -cF 'gPoint: geometry("g_point", { type: "point", srid: 4326 }),' "$SCHEMA")" 1
+fact "db/schema.ts lines containing the Point column" "$(grep -cF 'gPointNosrid: geometry("g_point_nosrid", { type: "point" }),' "$SCHEMA")" 1
+fact "the generator admits 2 point columns" "$(grep -cE '^  bigint: .*; geometry: 2 point column\(s\) admitted$' "$OUT")" 1
+node --input-type=module -e "$T153_GEO_ROUNDTRIP" >"$OUT.rt" 2>&1
+for line in 'READ gPoint [33.25,35.5]' 'READ gPointNosrid [1,2]' 'WRITE gPoint SRID=4326;POINT(33.125 34.875)' 'WRITE gPointNosrid POINT(5 -6.5)'; do
+  fact "driver round trip prints [$line]" "$(grep -cxF -- "$line" "$OUT.rt")" 1
+done
+sed 's/^/driver: /' "$OUT.rt" >>"$OUT.f"
+[ "$nok" -eq "$nf" ] && echo "ALL $nf POINT FACTS HOLD" >>"$OUT.f"
+cat "$OUT.f" >>"$OUT"
+judge K55 "(T-153) CONTROL: geometry(Point,4326) and geometry(Point) are admitted, and read and write through the driver" PASS "$code" '^ALL [0-9]+ POINT FACTS HOLD$'
+grep -E '^fact |^driver: ' "$OUT" | cut -c1-240 | sed 's/^/       /'
+restore
+
+plant_geometry_refused() {
+  plant "$UP" "-- @phase: expand
+CREATE TABLE public.t153_geo (id integer PRIMARY KEY, g_poly geometry(Polygon,4326), g_line geometry(LineString,4326),
+  g_multipoint geometry(MultiPoint,4326), g_pointz geometry(PointZ,4326), g_any geometry, g_point_arr geometry(Point,4326)[]);"
+  plant "$DOWN" "DROP TABLE public.t153_geo;"
+}
+plant_geometry_refused
+check_facts K56 "(T-153) Polygon, LineString, MultiPoint, PointZ, plain geometry and Point[]: each I-MAP with its catalogue type, nothing admitted" I-MAP \
+  '^  - \[I-MAP\] column "t153_geo"\."g_poly" has database type .geometry\(Polygon,4326\).: ' \
+  '^  - \[I-MAP\] column "t153_geo"\."g_line" has database type .geometry\(LineString,4326\).: ' \
+  '^  - \[I-MAP\] column "t153_geo"\."g_multipoint" has database type .geometry\(MultiPoint,4326\).: ' \
+  '^  - \[I-MAP\] column "t153_geo"\."g_pointz" has database type .geometry\(PointZ,4326\).: ' \
+  '^  - \[I-MAP\] column "t153_geo"\."g_any" has database type .geometry.: ' \
+  '^  - \[I-MAP\] column "t153_geo"\."g_point_arr" has database type .geometry\(Point,4326\)\[\].: ' \
+  '^  bigint: .*; geometry: 0 point column\(s\) admitted$'
+
+plant_geometry_refused
+node scripts/db-introspect.ts --write >"$OUT" 2>&1
+code=$?
+total=$((total + 1))
+w_banners=$(grep -cE '^GATE (PASS|FAIL|CRASH)  db:introspect($| — |: )' "$OUT")
+w_tags=$(grep -oE '^  - \[I-[A-Z]+\]' "$OUT" | sed -E 's/^  - \[(.*)\]$/\1/' | sort -u | tr '\n' ' ' | sed 's/ $//')
+w_geo=$(grep -c '^  - \[I-MAP\] column "t153_geo"\.' "$OUT")
+if [ "$code" -eq 1 ] && [ "$w_banners" -eq 1 ] && [ "$w_tags" = "I-MAP" ] && [ "$w_geo" -eq 6 ] && git diff --quiet -- "$SCHEMA"; then v=ok; else v=BAD; bad=$((bad + 1)); fi
+printf '%-4s %s  %s\n       exit %s; banners %s; expected I-MAP x6 and db/schema.ts unchanged; reported %s x%s; db/schema.ts %s\n' "$v" K56w "(T-153) the same plant in WRITE mode: refused, and db/schema.ts is not written" "$code" "$w_banners" "${w_tags:-none}" "$w_geo" "$(git diff --quiet -- "$SCHEMA" && echo unchanged || echo CHANGED)"
+restore
+
+T153_GEO_DEFECT=$(
+  cat <<'EOF'
+import pg from "pg";
+import { drizzle } from "drizzle-orm/node-postgres";
+import { t153Geo } from "./db/schema.ts";
+const pool = new pg.Pool();
+const db = drizzle(pool);
+await pool.query("INSERT INTO t153_geo (id, g_poly, g_pointz) VALUES (1, ST_GeomFromText('POLYGON((0 0,1 0,1 1,0 1,0 0))', 4326), ST_GeomFromText('POINT Z (33 35 7)', 4326))");
+for (const key of ["gPoly", "gPointz"]) {
+  try {
+    const rows = await db.select({ v: t153Geo[key] }).from(t153Geo);
+    console.log(`READ ${key} ${JSON.stringify(rows[0].v)}`);
+  } catch (e) {
+    console.log(`READ ${key} THREW ${e.message}`);
+  }
+}
+await pool.end();
+EOF
+)
+plant_geometry_refused
+mutate "$RENDER" "    if (!GEOMETRY_ADMITTED.test(c.type)) {" "    if (c.type === 't153 rule deleted') {"
+git diff -U0 -- "$RENDER" | grep -E '^[-+][^-+]' | sed 's/^/   mutation:   /'
+node scripts/db-introspect.ts --write >"$OUT.w" 2>&1
+wcode=$?
+node scripts/db-introspect.ts --check >"$OUT" 2>&1
+code=$?
+: >"$OUT.f"
+nf=0
+nok=0
+fact "write with the geometry rule deleted: exit" "$wcode" 0
+fact "db/schema.ts lines containing the polygon column as drizzle-kit renders it" "$(grep -cF 'gPoly: geometry("g_poly", { type: "polygon", srid: 4326 }),' "$SCHEMA")" 1
+node --input-type=module -e "$T153_GEO_DEFECT" >"$OUT.rt" 2>&1
+fact "driver prints [READ gPoly THREW Unsupported geometry type]" "$(grep -cxF 'READ gPoly THREW Unsupported geometry type' "$OUT.rt")" 1
+fact "driver prints [READ gPointz [33,35]] (the stored Z, 7, is lost)" "$(grep -cxF 'READ gPointz [33,35]' "$OUT.rt")" 1
+sed 's/^/driver: /' "$OUT.rt" >>"$OUT.f"
+[ "$nok" -eq "$nf" ] && echo "ALL $nf RED-BEFORE FACTS HOLD" >>"$OUT.f"
+cat "$OUT.f" >>"$OUT"
+judge K57 "(T-153) RED BEFORE: the geometry rule deleted (asserted above): the same plant passes, and a polygon select throws while PointZ loses Z" PASS "$code" '^ALL [0-9]+ RED-BEFORE FACTS HOLD$'
+grep -E '^fact |^driver: ' "$OUT" | cut -c1-240 | sed 's/^/       /'
+restore
+
+# ---------------------------------------------------------------------------------------------
+# T-153 rework 1 — K58–K62 (OD-147, OD-148). The per-relation COUNT is replaced by a PER-COLUMN
+# match against the catalogue, over the rendering parsed as TypeScript. K58/K59 are the route it
+# closes: drizzle-kit 0.31.10 renders a VIEW's and a MATERIALIZED VIEW's int8[] column with NO
+# `.array()`, which a count cannot see. K60 is the RED BEFORE for both, with the count restored by
+# a mutation asserted landed: the run passes, the columns are written scalar, and drizzle's read of
+# each THROWS. K61/K62 are the false refusals the count and the line-local hint scan produced on
+# drizzle-kit's own output: a text DEFAULT holding a bigint-mode call, and one equal to the hint
+# sentence. Each has its own RED BEFORE with the old mechanism restored.
+
+# MUTATION: the original per-relation COUNT of bigint-mode calls in the relation's rendering TEXT.
+T153_COUNT_MUTATION=$(
+  cat <<'EOF'
+  const int8 = ((): Int8Match => {
+    const BIGINT_MODE_CALL = /\bbig(?:int|serial)\((?:"[^"\n]*", )?\{ mode: "bigint" \}\)/g;
+    const out: string[] = [];
+    const starts = [...body.matchAll(/^export const [\w$]+ = /gm)];
+    const rendered = new Map<string, number>();
+    starts.forEach((m, i) => {
+      const text = body.slice(m.index, starts[i + 1]?.index ?? body.length);
+      const rel = /^export const [\w$]+ = pg(?:Table|View|MaterializedView)\("([^"]+)"/.exec(text)?.[1];
+      if (rel === undefined) return;
+      rendered.set(rel, (rendered.get(rel) ?? 0) + [...text.matchAll(BIGINT_MODE_CALL)].length);
+    });
+    const cat = new Map<string, string[]>();
+    for (const c of columns) {
+      if (c.kind !== 'int8') continue;
+      cat.set(c.relation, [...(cat.get(c.relation) ?? []), c.column]);
+    }
+    let n = 0;
+    let g = 0;
+    for (const rel of [...new Set([...rendered.keys(), ...cat.keys()])].sort()) {
+      const want = cat.get(rel) ?? [];
+      const have = rendered.get(rel) ?? 0;
+      n += want.length;
+      g += have;
+      if (have !== want.length)
+        out.push(`relation ${JSON.stringify(rel)}: the catalogue has ${String(want.length)} int8 column(s) [${want.join(', ')}] but the rendering has ${String(have)} bigint column(s) in drizzle's bigint mode (T-153, OD-107)`);
+    }
+    return { problems: out, int8: n, matched: g, relations: rendered.size };
+  })();
+EOF
+)
+count_mutation() {
+  mutate "$RENDER" "  const int8 = matchInt8Columns(body, columns);" "$T153_COUNT_MUTATION"
+  grep -qF 'const BIGINT_MODE_CALL = /\bbig(?:int|serial)\(' "$RENDER" || abort "the count mutation did not land in $RENDER"
+  git diff --numstat -- "$RENDER" | sed 's/^/   count mutation landed (added removed file): /'
+}
+
+# The array plant: an int8[] and a text[], in a table, a view and a materialized view. The text[] is NOT a
+# control for the view: drizzle-kit renders it with no .array() there too (OD-149; K60 asserts it).
+# <rels> picks which of the two derived relations the plant creates.
+plant_arrays() {
+  local v='' d=''
+  case "$1" in
+    view) v="CREATE VIEW public.t153_arr_v AS SELECT id, amounts, labels FROM public.t153_arr;"; d="DROP VIEW public.t153_arr_v;" ;;
+    matview) v="CREATE MATERIALIZED VIEW public.t153_arr_mv AS SELECT id, amounts, labels FROM public.t153_arr;"; d="DROP MATERIALIZED VIEW public.t153_arr_mv;" ;;
+    both) v="CREATE VIEW public.t153_arr_v AS SELECT id, amounts, labels FROM public.t153_arr;
+CREATE MATERIALIZED VIEW public.t153_arr_mv AS SELECT id, amounts, labels FROM public.t153_arr;"; d="DROP MATERIALIZED VIEW public.t153_arr_mv;
+DROP VIEW public.t153_arr_v;" ;;
+  esac
+  plant "$UP" "-- @phase: expand
+CREATE TABLE public.t153_arr (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  amounts bigint[] NOT NULL,
+  labels text[] NOT NULL);
+$v"
+  plant "$DOWN" "$d
+DROP TABLE public.t153_arr;"
+}
+
+plant_arrays view
+check_facts K58 "(T-153 r1) a VIEW over a bigint[] column: drizzle-kit renders it with no .array(), and the per-column match refuses it by name (OD-147)" I-MAP \
+  '^  - \[I-MAP\] int8 column "t153_arr_v"\."amounts" is an array of 1 dimension\(s\) in the catalogue \(bigint\[\], attndims 0\) but the rendering on line [0-9]+ carries 0 \.array\(\) call\(s\)' \
+  '!^  - \[I-MAP\] int8 column "t153_arr"\.' \
+  '^  bigint: [0-9]+ column\(s\) rewritten to drizzle.s bigint mode; 3 of the catalogue.s 4 int8 column\(s\) matched per column'
+
+plant_arrays matview
+check_facts K59 "(T-153 r1) a MATERIALIZED VIEW over a bigint[] column: the same, refused by name (OD-147)" I-MAP \
+  '^  - \[I-MAP\] int8 column "t153_arr_mv"\."amounts" is an array of 1 dimension\(s\) in the catalogue \(bigint\[\], attndims 0\) but the rendering on line [0-9]+ carries 0 \.array\(\) call\(s\)' \
+  '!^  - \[I-MAP\] int8 column "t153_arr"\.' \
+  '^  bigint: [0-9]+ column\(s\) rewritten to drizzle.s bigint mode; 3 of the catalogue.s 4 int8 column\(s\) matched per column'
+
+# The RED BEFORE probe: read each array column through drizzle and the db/schema.ts just written.
+T153_ARR_ROUNDTRIP=$(
+  cat <<'EOF'
+import pg from "pg";
+import { drizzle } from "drizzle-orm/node-postgres";
+import { t153Arr, t153ArrV, t153ArrMv } from "./db/schema.ts";
+const pool = new pg.Pool();
+const db = drizzle(pool);
+await pool.query("INSERT INTO t153_arr (amounts, labels) VALUES ('{9007199254740993,-9223372036854775808}', '{alpha,beta}')");
+await pool.query("REFRESH MATERIALIZED VIEW t153_arr_mv");
+const show = (v) => (Array.isArray(v) ? `[${v.map(show).join(", ")}]` : `${typeof v} ${String(v)}`);
+for (const [label, rel, key] of [["table amounts", t153Arr, "amounts"], ["view amounts", t153ArrV, "amounts"], ["matview amounts", t153ArrMv, "amounts"], ["table labels", t153Arr, "labels"], ["view labels", t153ArrV, "labels"]]) {
+  try {
+    const rows = await db.select({ v: rel[key] }).from(rel);
+    console.log(`READ ${label} ${show(rows[0].v)}`);
+  } catch (e) {
+    console.log(`READ ${label} THREW ${e.constructor.name}: ${e.message}`);
+  }
+}
+await pool.end();
+EOF
+)
+plant_arrays both
+count_mutation
+node scripts/db-introspect.ts --write >"$OUT.w" 2>&1
+wcode=$?
+node scripts/db-introspect.ts --check >"$OUT" 2>&1
+code=$?
+: >"$OUT.f"
+nf=0
+nok=0
+fact "write with the per-relation COUNT restored: exit" "$wcode" 0
+fact "db/schema.ts: the TABLE's bigint[] keeps .array()" "$(grep -cF 'amounts: bigint({ mode: "bigint" }).array()' "$SCHEMA")" 1
+fact "db/schema.ts: lines rendering a bigint[] of a view or matview WITHOUT .array()" "$(grep -cxF '	amounts: bigint({ mode: "bigint" }),' "$SCHEMA")" 2
+fact "the count balances, so nothing is reported" "$(grep -cE "^  bigint: [0-9]+ column\(s\) rewritten to drizzle's bigint mode; 6 of the catalogue's 6 int8 column\(s\)" "$OUT")" 1
+node --input-type=module -e "$T153_ARR_ROUNDTRIP" >"$OUT.rt" 2>&1
+fact "driver: the TABLE's bigint[] reads exactly" "$(grep -cxF 'READ table amounts [bigint 9007199254740993, bigint -9223372036854775808]' "$OUT.rt")" 1
+fact "driver: the VIEW's bigint[] read THREW" "$(grep -c '^READ view amounts THREW SyntaxError' "$OUT.rt")" 1
+fact "driver: the MATERIALIZED VIEW's bigint[] read THREW" "$(grep -c '^READ matview amounts THREW SyntaxError' "$OUT.rt")" 1
+# OE-35 (A): the lost .array() is not bigint's. Read from the RENDERING, because a driver read cannot
+# tell: node-postgres parses a text[] result field into a JS array by its type OID, and drizzle's scalar
+# text() reader is the identity, so a view rendered WITHOUT .array() still reads [alpha, beta] (OD-149).
+fact "db/schema.ts: the TABLE's text[] keeps .array()" "$(grep -cF 'labels: text().array()' "$SCHEMA")" 1
+fact "db/schema.ts: the VIEW's and MATVIEW's text[] are rendered WITHOUT .array() too, so the loss is not bigint's (OD-149, T-187)" "$(grep -cxF '	labels: text(),' "$SCHEMA")" 2
+fact "driver: the TABLE's text[] reads as an array" "$(grep -cxF 'READ table labels [string alpha, string beta]' "$OUT.rt")" 1
+fact "driver: the VIEW's text[] reads as the same array although rendered scalar (node-postgres parses by OID; this read cannot tell .array() from none)" "$(grep -cxF 'READ view labels [string alpha, string beta]' "$OUT.rt")" 1
+sed 's/^/driver: /' "$OUT.rt" >>"$OUT.f"
+[ "$nok" -eq "$nf" ] && echo "ALL $nf RED-BEFORE FACTS HOLD" >>"$OUT.f"
+cat "$OUT.f" >>"$OUT"
+judge K60 "(T-153 r1) RED BEFORE: with the per-relation COUNT restored (asserted above), the view's and matview's bigint[] pass as scalar and drizzle's read of each THROWS (OD-147)" PASS "$code" '^ALL [0-9]+ RED-BEFORE FACTS HOLD$'
+grep -E '^fact |^driver: READ |^  bigint: ' "$OUT" | cut -c1-240 | sed 's/^/       /'
+restore
+
+# K61/K62: two text DEFAULTs on drizzle-kit's own output that the OLD text-shaped mechanisms refused.
+plant "$UP" "-- @phase: expand
+CREATE TABLE public.t153_counttext (
+  amount bigint NOT NULL,
+  note text NOT NULL DEFAULT 'bigint(\"q\", { mode: \"bigint\" })');"
+plant "$DOWN" "DROP TABLE public.t153_counttext;"
+write_schema
+check_facts K61 "(T-153 r1) a text column whose DEFAULT is the TEXT of a bigint-mode call, beside a real bigint: the default no longer affects the judgement (OD-148)" PASS \
+  '^  bigint: 1 column\(s\) rewritten to drizzle.s bigint mode; 1 of the catalogue.s 1 int8 column\(s\) matched per column'
+plant "$UP" "-- @phase: expand
+CREATE TABLE public.t153_counttext (
+  amount bigint NOT NULL,
+  note text NOT NULL DEFAULT 'bigint(\"q\", { mode: \"bigint\" })');"
+plant "$DOWN" "DROP TABLE public.t153_counttext;"
+count_mutation
+check K61r "(T-153 r1) RED BEFORE: with the per-relation COUNT restored (asserted above), the same text DEFAULT is counted as a bigint column and the relation is falsely refused" I-MAP \
+  'relation "t153_counttext": the catalogue has 1 int8 column\(s\) \[amount\] but the rendering has 2 bigint column\(s\)'
+
+T153_HINT='// You can use { mode: "bigint" } if numbers are exceeding js number limitations'
+plant "$UP" "-- @phase: expand
+CREATE TABLE public.t153_hinttext (
+  amount bigint NOT NULL,
+  note text NOT NULL DEFAULT '$T153_HINT');"
+plant "$DOWN" "DROP TABLE public.t153_hinttext;"
+write_schema
+check_facts K62 "(T-153 r1) a text column whose DEFAULT is drizzle-kit's hint sentence: admitted, because the leftover-hint scan skips string literals (QR-A2)" PASS \
+  '^  bigint: 1 column\(s\) rewritten to drizzle.s bigint mode; 1 of the catalogue.s 1 int8 column\(s\) matched per column'
+plant "$UP" "-- @phase: expand
+CREATE TABLE public.t153_hinttext (
+  amount bigint NOT NULL,
+  note text NOT NULL DEFAULT '$T153_HINT');"
+plant "$DOWN" "DROP TABLE public.t153_hinttext;"
+mutate "$RENDER" "    if (ranges.some(([a, b]) => i >= a && i < b)) continue;" "    if (ranges.length === -1) continue;"
+git diff -U0 -- "$RENDER" | grep -E '^[-+][^-+]' | sed 's/^/   mutation:   /'
+check K62r "(T-153 r1) RED BEFORE: with the string-literal filter removed (asserted above), the hint sentence inside the text DEFAULT is falsely refused" I-MAP \
+  "rendering line [0-9]+ still carries drizzle-kit's bigint hint comment"
 
 echo
 if [ "$bad" -eq 0 ]; then

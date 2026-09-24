@@ -408,7 +408,14 @@ function walk(
  * that branch renders nothing. Checked structurally rather than by rendering,
  * because rendering would need a count for every category in every locale.
  */
-function assertNoBlankBranches(
+/* Exported for `tools/locale-completeness.ts` (T-042): SD §FE-10 requires
+ * `gate:locale-completeness` to refuse "a syntactically valid but structurally
+ * empty ICU message" too. The gate imports this and `hasContent` rather than
+ * restating the rule, so the compiler's refusal and the gate's cannot drift
+ * (PROTOCOL §5.3 R2). Neither is part of the package's public surface —
+ * `package.json`'s `exports` are `.`, `./review` and `./compiled/*`, and none
+ * resolves into `tools/` (T-049 § Published contract §2). */
+export function assertNoBlankBranches(
   elements: readonly MessageFormatElement[],
   where: string,
   problems: string[],
@@ -434,7 +441,7 @@ function assertNoBlankBranches(
 }
 
 /** True when these elements can render something a reader would see. */
-function hasContent(elements: readonly MessageFormatElement[]): boolean {
+export function hasContent(elements: readonly MessageFormatElement[]): boolean {
   return elements.some((el) => {
     if (el.type === TYPE.literal) return !rendersNothingVisible(el.value);
     if (el.type === TYPE.plural || el.type === TYPE.select) {

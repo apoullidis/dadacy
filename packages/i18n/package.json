@@ -13,13 +13,16 @@
     "build": "node tools/compile.ts",
     "build:check": "node tools/compile.ts --check",
     "test": "node tools/run-tests.ts",
-    "test:negatives": "node tools/run-tests-negatives.ts"
+    "test:negatives": "node tools/run-tests-negatives.ts",
+    "gate:locale-completeness:negatives": "node tools/locale-completeness-negatives.ts",
+    "gate:safety-review-currency:negatives": "node tools/safety-review-currency-negatives.ts",
+    "gate:sms-segments:negatives": "node tools/sms-segments-negatives.ts"
   },
   "dependencies": {
+    "@formatjs/icu-messageformat-parser": "3.5.17",
     "intl-messageformat": "11.2.14"
   },
   "devDependencies": {
-    "@formatjs/icu-messageformat-parser": "3.5.17",
     "prettier": "3.9.6",
     "vite": "8.2.2",
     "vitest": "5.0.0"

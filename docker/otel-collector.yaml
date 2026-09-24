@@ -1,0 +1,140 @@
+# THE OTel COLLECTOR — profile `otel`, T-008.
+#
+# SA §TS-10 rule 1 names three redaction points and this is the SECOND of them:
+#
+#   1. a structured logger that accepts only an allowlisted field set
+#      (NOT BUILT — SD §SEC-I5's logger is not this ticket; see
+#      state/EP-1/T-008.md § Published contract § What is not claimed);
+#   2. an OTel Collector redaction processor           <- this file;
+#   3. Sentry's `beforeSend` scrubber                  <- packages/observability/src/sentry.ts.
+#
+# WHY THIS LAYER EXISTS WHEN THE EMITTER ALREADY REFUSES A BAD ATTRIBUTE.
+# `packages/observability` can only bound what it emits. This process bounds
+# what ARRIVES — from any sender, in any language, including one nobody has
+# written yet, and including an OpenTelemetry SDK that someone adds later and
+# which would put full request URLs and database statements on spans by
+# default. The two layers are independent, which is the point: a bug in one is
+# not a bug in the other.
+#
+# `allow_all_keys: false` MAKES THIS AN ALLOWLIST. Adding an attribute to the
+# contract means adding it here AND to `REQUEST_FIELDS`/`JOB_FIELDS`/
+# `PROVIDER_FIELDS` in packages/observability/src/contract.ts, and
+# `pnpm gate:otel-contract` check R3 fails if the two sets disagree — it
+# derives the expected set from contract.ts and reads this file, so neither is
+# checked against itself.
+#
+# IT FILTERS KEYS, NOT VALUES, AND THAT IS THE DIVISION OF LABOUR, NOT A HOLE.
+# `redaction` drops an attribute whose KEY is not on the list above. A PII value
+# sitting inside an ALLOWLISTED key passes it untouched — measured, by driving a
+# planted path into the `route` attribute and watching it reach Jaeger
+# (state/EP-1/T-008.md § Evidence 5, M2 edit 4). That is exactly why
+# `packages/observability` closes the VALUE DOMAIN of every one of these keys:
+# `route` is a registry key, `module`/`actor_role`/`data_class`/`outcome`/
+# `provider`/`breaker_state` are enumerations, `status` and `duration_ms` are
+# bounded numbers, `trace_id` and `job_id` are fixed shapes. A reader who takes
+# this processor for a content filter has the wrong model of both layers.
+#
+# `summary: debug` IS LOAD-BEARING EVIDENCE, NOT DIAGNOSTICS. It makes the
+# processor record, on the span it just cleaned, the NUMBER and the NAMES of
+# the attribute keys it removed. That is what lets the canary distinguish
+# "the attribute was redacted" from "the span never arrived" — two outcomes a
+# simple absence check reads as one (PROTOCOL §5.1: if the check did nothing,
+# would it say so?). Key NAMES only; no value is ever recorded.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  redaction:
+    allow_all_keys: false
+    allowed_keys:
+      # SD §QD-5's request tuple.
+      - trace_id
+      - route
+      - module
+      - actor_role
+      - status
+      - duration_ms
+      - data_class
+      # SD §QD-5's job tuple (`duration_ms` shared with the request tuple).
+      - queue
+      - job_id
+      - attempt
+      - outcome
+      # SD §QD-5's provider-call tuple (`status`, `duration_ms` shared).
+      - provider
+      - operation
+      - breaker_state
+      # SD §INT's provider_health gauge.
+      - state
+      # Resource identity. Without it Jaeger cannot name the service, and the
+      # trace is unfindable rather than clean.
+      - service.name
+      # The processor's own summary, which `summary: debug` writes.
+      - redaction.redacted.count
+      - redaction.redacted.keys
+      - redaction.masked.count
+      - redaction.masked.keys
+      - redaction.ignored.count
+    summary: debug
+  batch:
+    timeout: 200ms
+    send_batch_size: 128
+
+connectors:
+  # SPAN -> METRIC. The three dashboards of SD §QD-5 are RED/golden-signal
+  # boards, and a golden-signal board needs rates and latency quantiles, not
+  # individual spans. This connector derives them from the spans that already
+  # pass the allowlist above, so the metric dimensions CANNOT be wider than the
+  # span attributes — a dashboard label that is not a contract field has
+  # nowhere to come from. `pnpm gate:otel-contract` check R4 reads this
+  # `dimensions` list and refuses a dashboard query that groups by anything
+  # else.
+  spanmetrics:
+    namespace: kinvara
+    histogram:
+      explicit:
+        buckets: [10ms, 50ms, 100ms, 250ms, 500ms, 1s, 2s, 5s]
+    dimensions:
+      - name: route
+      - name: module
+      - name: actor_role
+      - name: data_class
+      - name: status
+    exemplars:
+      enabled: false
+
+exporters:
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+  debug:
+    verbosity: detailed
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      # REDACTION RUNS BEFORE spanmetrics, deliberately: a dimension the
+      # connector reads is an attribute the allowlist has already passed, so a
+      # rogue attribute cannot become a metric label even for one hop.
+      processors: [redaction, batch]
+      exporters: [otlp/jaeger, spanmetrics]
+    metrics:
+      # Jaeger stores traces, not metrics. `provider_health` and the
+      # span-derived golden signals therefore land in this collector's own log,
+      # which is where they are asserted from locally. Grafana Cloud is their
+      # destination in the cloud (SA §TS-10) and nothing here is deployed
+      # (DOCKER.md §10).
+      receivers: [otlp, spanmetrics]
+      processors: [redaction, batch]
+      exporters: [debug]
+  telemetry:
+    logs:
+      level: info

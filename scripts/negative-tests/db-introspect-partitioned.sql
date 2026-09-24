@@ -1,5 +1,5 @@
 -- @phase: expand
--- T-165 (OD-84): the partitioned-table fixture db-introspect.sh plants for K50–K55.
+-- T-165 (OD-84): the partitioned-table fixture db-introspect.sh plants for K150–K155 (numbered K50–K55 until T-165 rework 2, which moved them past T-153's K50–K62r).
 --
 -- A PARTITION BY RANGE parent with two partitions, a partitioned index, a CHECK, a bigserial
 -- column (so the parent owns a sequence), a bigint column (OD-107) and two row-level security

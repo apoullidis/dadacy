@@ -2,7 +2,7 @@
  * `@kinvara/contracts` — the single source of truth for the HTTP surface
  * (SD §DH-1, SA §TS-5). T-022.
  *
- * `import { … } from '@kinvara/contracts'`. Three groups:
+ * `import { … } from '@kinvara/contracts'`. Four groups:
  *   - THE ERROR-CODE ENUM (`ERROR_CODES`, `isErrorCode`, `ErrorCode`), which
  *     is SD §BE-2's "single enum in packages/contracts". See `error-codes.ts`
  *     for how a module adds a code.
@@ -11,6 +11,11 @@
  *     are the only supported way to put money in a payload.
  *   - THE GENERATED CLIENT: `createClient`, and the response interfaces the
  *     OpenAPI document declares.
+ *   - THE QUEUE PAYLOAD BASE (T-147): `NotifyJobBase`, `LocaleSchema`,
+ *     `UlidSchema`. SD §BE-14, and NOT part of the HTTP surface — see
+ *     `jobs.ts`. Importing this package root therefore reaches
+ *     `@kinvara/i18n`; that edge is stated in state/EP-2/T-147.md
+ *     § Published contract §3.
  *
  * NAMING. A Zod schema and the TypeScript interface generated for it cannot
  * both be called `Problem`, so the schemas keep the plain name and the
@@ -39,6 +44,21 @@ export {
   hasNoForbiddenMembers,
   isWireProblem,
 } from './problem.ts';
+
+/**
+ * THE QUEUE PAYLOAD BASE (T-147) — SD §BE-14. Not part of the HTTP surface:
+ * these schemas are deliberately absent from `COMPONENT_SCHEMAS`, so
+ * `openapi.json` and the generated client do not move when `jobs.ts` changes.
+ */
+export {
+  LOCALE_REFUSED,
+  LocaleSchema,
+  NotifyJobBase,
+  ULID_REFUSED,
+  UlidSchema,
+  type NotifyJobBaseInput,
+  type NotifyJobBasePayload,
+} from './jobs.ts';
 
 export {
   ACCOUNT_ROLES,

@@ -64,6 +64,7 @@ import path from 'node:path';
 import { REPO_ROOT, finish, toolVersions } from './lib/run.ts';
 import { composedFiles } from './lib/composed-files.ts';
 import { parseCompose } from './lib/compose-parse.ts';
+import ts from 'typescript';
 
 /**
  * EVERY compose file a ticket-scoped project is composed from — DERIVED FROM
@@ -556,6 +557,12 @@ interface BuildUse {
   readonly target: string;
   /** `build.args`, verbatim from the YAML: compose does no substitution here. */
   readonly args: Record<string, unknown>;
+  /**
+   * The build context, repo-root-relative, resolved against the compose file's
+   * directory as Docker does. §7 needs it to map the ENTRYPOINT's in-image
+   * script back to the repository file a COPY put there (T-180).
+   */
+  readonly context: string;
 }
 const buildUses: BuildUse[] = [];
 /**
@@ -596,6 +603,18 @@ const allBuilds: { readonly where: string; readonly dockerfile: string }[] = [];
  * both invisible in.
  */
 const stagesChecked: string[] = [];
+/**
+ * Every EXEC-FORM ENTRYPOINT §6 resolved for an application stage, with the
+ * stage chain it was resolved over. §7 derives the file it reads GROUP_DRAIN_MS
+ * from THESE, not from a fixed path (T-180, closing QA-7's `g12` on T-179: an
+ * ENTRYPOINT repointed at a copy of the entrypoint escaped a constant path).
+ */
+const entrypointsResolved: {
+  readonly dockerfile: string;
+  readonly target: string;
+  readonly argv: readonly unknown[];
+  readonly chain: readonly Stage[];
+}[] = [];
 
 /**
  * Resolve a `build.dockerfile` the way Docker does: relative to `context:`,
@@ -767,6 +786,7 @@ for (const rel of BUILD_DECLARING_FILES) {
       dockerfile: df,
       target,
       args: isRecord(build['args']) ? build['args'] : {},
+      context: path.normalize(path.join(path.dirname(rel), ctx)),
     });
   }
 }
@@ -1267,6 +1287,8 @@ for (const [rel, users] of [...dockerfilesInUse].sort(([a], [b]) => a.localeComp
           `${where}: ENTRYPOINT [] in stage '${entrypoint.stage}' RESETS the entrypoint. ` +
             `Docker treats an empty array as clearing it, so the image has none.`,
         );
+      } else {
+        entrypointsResolved.push({ dockerfile: rel, target, argv: parsed, chain });
       }
     }
 
@@ -1361,6 +1383,1612 @@ for (const [rel, users] of [...dockerfilesInUse].sort(([a], [b]) => a.localeComp
     }
   }
 }
+
+// ---------------------------------------------------------------------------
+// 7. EVERY APPLICATION SERVICE'S stop_grace_period COVERS PID 1'S GROUP WAIT
+//    (T-179, from tech-lead's TL-1 on T-151).
+//
+//    THE PROPERTY IS A RELATIONSHIP BETWEEN TWO FILES, NOT A NUMBER IN ONE.
+//    The file each application stage's ENTRYPOINT runs —
+//    `docker/app-runtime/entrypoint.mjs` in every image `docker/app.Dockerfile`
+//    builds today — is PID 1, and after it forwards SIGTERM and its direct
+//    child exits it waits for the application's process group to empty, until
+//    a DEADLINE FIXED AT THE FIRST FORWARDED SIGNAL: first signal +
+//    GROUP_DRAIN_MS (T-180). Docker SIGKILLs the container
+//    `stop_grace_period` after the SIGTERM. If the grace is not longer than
+//    that deadline, a drain still inside the wait is killed and the container
+//    reports 137 — a FALSE CRASH SIGNAL to compose, T-003's ECS health and
+//    T-009's paging (OD-196). At main 39f01f2 `web` and `admin` declared no
+//    grace at all, so they took compose's 10 s default against a 25 s wait:
+//    15 s short, with this gate green.
+//
+//    UNTIL T-180 THE DEADLINE COUNTED FROM THE DIRECT CHILD'S EXIT
+//    (`waitForGroup` computed it from child.on('exit')), so this relation held
+//    between two numbers without bounding the real wait: tech-lead measured an
+//    app that drained 8 s and left a helper in its group SIGKILLed at a 30 s
+//    grace (137) with this gate green (TL-A1 on T-179). Counting from the
+//    first signal makes the relation the property; the relation itself is
+//    unchanged. Red-before in the real image: state/EP-1/T-180.md § Evidence.
+//
+//    So the floor is READ, not restated, and T-180 widened what is read:
+//      * the FILE is derived from WHAT PID 1 ACTUALLY RUNS, FOR EACH
+//        APPLICATION SERVICE, IN EACH COMPOSED FILE (T-182) — resolved from
+//        the image ENTRYPOINT/CMD §6 resolved for the stage compose builds,
+//        compose's own `entrypoint:`/`command:`, `init:`, `working_dir:`, the
+//        NODE_OPTIONS in effect, anything mounted over the resolved path, and
+//        the COPY/ADD that puts the script there plus anything later in the
+//        chain that rewrites it — and either mapped back to a repository file
+//        or REFUSED. §7b's docblock below lists those nine inputs, each with
+//        the case that falsifies it — and, since T-182's rework 1, the two
+//        rules that answer the question the nine do not: which compose keys an
+//        application service may declare at all (§7c, an ALLOW-LIST) and which
+//        environment variable NAMES may reach PID 1 (§7d, a DENY-LIST over the
+//        loader namespaces MEASURED to be in that process). `pid: host` and
+//        `LD_PRELOAD` were green through the nine and are refused by those
+//        (qa-verification QA-1, cases 193-206); `OPENSSL_CONF` was green
+//        through those four namespaces and is refused since rework 2, which
+//        widened §7d by measurement and named `T-183` as the ticket that
+//        replaces the deny-list with an allow-list (OE-44, cases 207-211).
+//        T-180 derived it from the image ENTRYPOINT of
+//        each application STAGE, which a compose `entrypoint:` replaces
+//        silently: measured GATE PASS with a 60 s copy of the entrypoint
+//        really running as `core`'s PID 1 (qa-verification on T-180, QA-F3);
+//      * the CONSTANT is one numeric literal, READ FROM THE DECLARATION THE
+//        CODE USES rather than from a line a text match found (T-182's D13:
+//        until then the value came from a line-anchored regex, so the matched
+//        line could be a COMMENT while the real declaration said 60 000 —
+//        measured, gate green, case 189). Raising it past a declared grace
+//        reds this gate (case 148);
+//      * and its ONE USE is held: GROUP_DRAIN_MS is DECLARED exactly once in
+//        the file's syntax tree (a same-named let/var/const in an inner scope
+//        would shadow it — cases 166-168, T-180 rework 1) and USED at exactly
+//        one place, the statement `deadline = signalledAt + GROUP_DRAIN_MS;`,
+//        counted as identifiers in the syntax tree so comments and strings are
+//        not uses. A multiplier or an environment override there, a second read,
+//        or the deadline counted from Date.now() reds this gate (cases
+//        156-159; QA-7's `g02`/`g03`), and a mention in a comment or a string
+//        does not (case 160).
+//    A literal `30s` checked against a literal `30s` would stay green the day
+//    someone raised GROUP_DRAIN_MS. The two numbers live in two files owned for
+//    two different reasons, which is PROTOCOL §5.1's "anchor one of them
+//    outside".
+//
+//    WHAT THE USE-SITE CHECK DOES NOT HOLD (T-180, stated rather than chased):
+//    WHERE that statement sits — the same text moved into child.on('exit')
+//    would count from the child's exit again with this gate green — nor what
+//    waitForGroup then does with `deadline` or `signalledAt`. It holds the one
+//    statement that fixes the deadline. The origin itself is held by
+//    scripts/negative-tests/entrypoint-lifecycle.sh, which RUNS the file
+//    (case L02 is tech-lead's probe shape; it is red at 36a41d1).
+//
+//    EXIT_MARGIN_MS IS A CHOSEN FLOOR, NOT A MEASUREMENT. It covers what comes
+//    after the deadline: one poll (100 ms), the process exit and docker
+//    noticing — tech-lead measured about 0.25 s for those (one run, this host,
+//    TL-A1 on T-179). 5 s is the headroom T-151 § contract §2 published. Since
+//    T-180 it no longer has to absorb the app's own drain time, because the
+//    deadline no longer starts after it. It does not bound the APPLICATION: an
+//    app still draining at the grace is docker's to SIGKILL, and 137 is then
+//    true. Lowering the margin is a decision to make in this file, in review —
+//    not a thing an edit elsewhere does.
+//
+//    WHICH SERVICES ARE "APPLICATION SERVICES" IS DERIVED, NEVER LISTED — a
+//    hand list of five names is T-005's Deviation 6, and a sixth service would
+//    silently take 10 s. A service is held to this rule when ANY of these holds,
+//    in ANY composed file (the OD-37 set, from scripts/svc):
+//      (a) it is in the image-contract set above (`protectedServices`: an
+//          apps/* directory, anchored outside docker/ per OD-38, or the
+//          io.kinvara.built-by label);
+//      (b) some composed file declares an APPLICATION BUILD for it (the same
+//          `isApplicationBuild` §2 uses — pnpm workspace or an APP arg), i.e.
+//          it is built from the application Dockerfile and so runs this
+//          entrypoint;
+//      (c) its `image:` is one that a service in (a) or (b) declares — a
+//          second container running `kinvara/worker:dev` runs the same PID 1
+//          and has the same wait, whether or not anybody labelled it (case 145).
+//          COMPARED AS LITERAL TEXT (QA-7): the same image spelled differently —
+//          `docker.io/kinvara/worker:dev`, or `${VAR:-kinvara/worker:dev}` —
+//          is not recognised. A copied image line is caught; a re-spelled one
+//          is not.
+//    Services outside all three are NOT held to it, deliberately: postgres
+//    (10s), valkey, fake-telephony and hibp-fake (5s) declare short graces on
+//    purpose and run no entrypoint.mjs. Nothing names them here.
+//
+//    OVER-APPROXIMATION, stated: a service that runs an application image for
+//    some other purpose (a one-shot migrator, say) is held to the floor too.
+//    That is visible and arguable; the other direction is silent.
+//
+//    HOW THE EFFECTIVE GRACE IS JUDGED ACROSS FILES. Compose merges the base
+//    file with whichever overlays a project gets, and an overlay can be applied
+//    without any other. So: (i) every declaration of `stop_grace_period` for an
+//    application service, in EVERY composed file, must meet the floor — an
+//    overlay may raise it, never lower it; and (ii) a service the base file
+//    declares must declare it THERE (the base is always applied), while a
+//    service the base does not declare must declare it in EVERY file that adds
+//    it, because each of those can be the only one applied.
+//
+//    WHAT IS NOT CLAIMED. That docker enforces what compose resolves: this gate
+//    reads source and starts nothing. Compose's own resolution was measured
+//    against this parser in state/EP-1/T-179.md (`docker compose config`, no
+//    container). Docker's StopTimeout is whole seconds, so the declared value is
+//    FLOORED to a whole second before comparing — the conservative direction
+//    whether compose truncates or rounds. A GROUP_DRAIN_MS that is not ONE
+//    TOP-LEVEL `const` whose initializer is one numeric literal is REFUSED, not
+//    guessed at — an expression (case 151), a `let` (case 191), a second
+//    declaration anywhere in the syntax tree (cases 166-168). A second,
+//    differently named constant doing the same job is a construction this gate
+//    does not model.
+//
+//    THAT FAMILY OF BOUNDS IS CLOSED (T-182), AND THESE ARE THE FOUR THINGS
+//    LEFT — the residue, at its measured width, each a construction rather
+//    than a Tuesday (PROTOCOL §5.1):
+//      * a RUN that rewrites the script WITHOUT NAMING IT: `runWritesPath`
+//        reads the in-image path, the basename as a token, and a glob in the
+//        script's own directory that matches it, and nothing else. `cd
+//        /srv/kinvara/app-runtime && sed -i s/25/60/ $(ls)` is not caught;
+//      * a PID 1 decided inside the BASE image rather than in this repository.
+//        §6 refuses a stage whose ancestry sets no ENTRYPOINT, and §7 refuses
+//        anything but `node <script>`, so what is left is a base image whose
+//        own `node` on PATH is not node. Nothing here reads the base image;
+//      * ECS. A task definition's `entryPoint`, `command`, `environment` or
+//        `stopTimeout` is not read here at all — T-003's obligation, and the
+//        reason T-182 was sequenced before it;
+//      * a flag typed at a shell (`docker run --entrypoint …`). This gate
+//        reads composed files, and evidence comes from a composed project
+//        (DOCKER.md §5), so a one-off invocation is outside it.
+// ---------------------------------------------------------------------------
+const EXIT_MARGIN_MS = 5_000;
+/**
+ * THE ONE STATEMENT THAT MAY READ GROUP_DRAIN_MS (T-180). The entrypoint fixes
+ * its group-wait deadline when the FIRST signal is forwarded, and this is the
+ * only place the constant may be used. Holding its exact shape is what closes
+ * QA-7's `g02` (a multiplier at the use site) and `g03` (an environment
+ * override there) on T-179: before T-180 this gate read the declaration and
+ * nothing else, so either one changed the real wait with the gate green.
+ */
+const DEADLINE_STATEMENT = 'deadline = signalledAt + GROUP_DRAIN_MS;';
+
+/** Shell-ish tokens, quotes kept together; `unquote` then strips one layer. */
+const tokenise = (s: string): string[] => s.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) ?? [];
+const unquote = (s: string): string =>
+  /^".*"$/s.test(s) ? s.slice(1, -1) : /^'.*'$/s.test(s) ? s.slice(1, -1) : s;
+const escapeRe = (s: string): string => s.replaceAll(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** `*` and `?` as a shell glob does, within one path segment. */
+const globMatches = (pattern: string, name: string): boolean =>
+  new RegExp(
+    `^${pattern
+      .split('')
+      .map((c) => (c === '*' ? '[^/]*' : c === '?' ? '[^/]' : escapeRe(c)))
+      .join('')}$`,
+  ).test(name);
+/**
+ * `docker build` EXTRACTS a local archive an ADD names, over whatever is
+ * already at the destination, and it fetches a URL. Neither content is in this
+ * repository in a form this gate can read, so a covering ADD of either is a
+ * REFUSAL rather than a mapping (T-182; T-180 § contract 4's fourth family
+ * member, which was declared and never planted).
+ */
+const ADD_ARCHIVE = /\.(?:tar|tar\.gz|tgz|tar\.bz2|tbz2?|tar\.xz|txz|tar\.zst|tzst)$/i;
+const ADD_URL = /^(?:https?|git|ssh):\/\//i;
+
+/**
+ * Does this RUN write the file at `imagePath`? It is read, not guessed at: the
+ * line NAMES the path, names its basename as a token, or names a glob in the
+ * script's own directory that matches it. A RUN that rewrites the file without
+ * naming it in any of those three ways is a construction this does not model,
+ * and § Published contract says so (T-182, closing T-180 § contract 4's third
+ * family member at that width).
+ */
+function runWritesPath(line: string, imagePath: string): boolean {
+  const body = line.replace(/^RUN\s+/i, '').replace(/^--mount=\S+\s+/, '');
+  const base = path.posix.basename(imagePath);
+  const dir = path.posix.dirname(imagePath);
+  if (body.includes(imagePath)) return true;
+  if (new RegExp(`(^|[\\s'"/=])${escapeRe(base)}([\\s'"]|$)`).test(body)) return true;
+  for (const tok of tokenise(body).map(unquote)) {
+    if (!/[*?]/.test(tok)) continue;
+    const full = tok.startsWith('/') ? tok : path.posix.join(dir, tok);
+    if (path.posix.dirname(full) === dir && globMatches(path.posix.basename(full), base)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * The WORKDIR in effect at the end of `chain`, and where a COPY/ADD put
+ * `imagePath` — plus, since T-182, a refusal when a LATER instruction in the
+ * chain writes that path again: an ADD of an archive or a URL (whose content
+ * this gate cannot read) and a RUN that names the file (whose effect it cannot
+ * read either). `startWorkdir` lets the caller resolve a relative ENTRYPOINT
+ * against the same WORKDIR walk this function does.
+ */
+function copySourceOf(
+  chain: readonly Stage[],
+  context: string,
+  imagePath: string,
+): { readonly file: string } | { readonly why: string } {
+  let workdir = '/';
+  let last: { readonly file: string } | { readonly why: string } | null = null;
+  /** Index into `flat` of the instruction `last` came from. */
+  let lastAt = -1;
+  const flat: { readonly stage: Stage; readonly line: string }[] = [];
+  for (const stage of chain) for (const line of stage.lines) flat.push({ stage, line });
+  const abs = (p: string): string => path.posix.resolve(workdir, p);
+  for (const [at, entry] of flat.entries()) {
+    {
+      const stage = entry.stage;
+      const line = entry.line;
+      const wd = /^WORKDIR\s+(.+)$/i.exec(line);
+      if (wd !== null) {
+        workdir = abs((wd[1] ?? '').trim());
+        continue;
+      }
+      const cp = /^(?:COPY|ADD)\s+(.*)$/i.exec(line);
+      if (cp === null) continue;
+      const isAdd = /^ADD\b/i.test(line);
+      let rest = (cp[1] ?? '').trim();
+      const flags: string[] = [];
+      for (let m = /^(--\S+)\s+(.*)$/.exec(rest); m !== null; m = /^(--\S+)\s+(.*)$/.exec(rest)) {
+        flags.push(m[1] ?? '');
+        rest = m[2] ?? '';
+      }
+      let parts: string[];
+      if (rest.startsWith('[')) {
+        let j: unknown;
+        try {
+          j = JSON.parse(rest);
+        } catch {
+          j = null;
+        }
+        parts = Array.isArray(j) ? j.map((x) => String(x)) : [];
+      } else {
+        parts = rest.split(/\s+/).filter((x) => x !== '');
+      }
+      if (parts.length < 2) continue;
+      const dest = parts[parts.length - 1] ?? '';
+      const srcs = parts.slice(0, -1);
+      const destAbs = abs(dest);
+      const destIsDir = dest.endsWith('/') || srcs.length > 1;
+      const fromStage = flags.some((f) => /^--from=/i.test(f));
+      for (const src of srcs) {
+        const underDest = imagePath.startsWith(`${destAbs}/`);
+        const asFile = destIsDir ? `${destAbs}/${path.posix.basename(src)}` : destAbs;
+        const covers = underDest || imagePath === asFile || imagePath === destAbs;
+        if (!covers) continue;
+        if (fromStage) {
+          last = { why: `'${line}' in stage '${stage.name}' puts it there FROM ANOTHER STAGE` };
+          lastAt = at;
+          continue;
+        }
+        if (isAdd && (ADD_ARCHIVE.test(src) || ADD_URL.test(src))) {
+          last = {
+            why:
+              `'${line}' in stage '${stage.name}' ADDs ${ADD_URL.test(src) ? 'a URL' : 'an ARCHIVE'}` +
+              ` over it, and docker ${ADD_URL.test(src) ? 'fetches' : 'extracts'} that content` +
+              ` into the image: this gate cannot read what PID 1 would then be`,
+          };
+          lastAt = at;
+          continue;
+        }
+        if (/[$*?[\]]/.test(src + dest)) {
+          last = {
+            why: `'${line}' in stage '${stage.name}' puts it there through a variable or a glob`,
+          };
+          lastAt = at;
+          continue;
+        }
+        const srcRepo = path.normalize(path.join(context, src));
+        if (srcRepo.startsWith('..') || path.isAbsolute(srcRepo)) {
+          last = { why: `'${line}' copies from outside the repository` };
+          lastAt = at;
+          continue;
+        }
+        const srcAbs = path.join(REPO_ROOT, srcRepo);
+        const srcIsDir = fs.existsSync(srcAbs) && fs.statSync(srcAbs).isDirectory();
+        if (srcIsDir && underDest) {
+          last = { file: path.join(srcRepo, imagePath.slice(destAbs.length + 1)) };
+          lastAt = at;
+        } else if (!srcIsDir && imagePath === asFile) {
+          last = { file: srcRepo };
+          lastAt = at;
+        }
+      }
+    }
+  }
+  if (last !== null && 'file' in last) {
+    for (const { line } of flat.slice(lastAt + 1)) {
+      if (/^RUN\b/i.test(line) && runWritesPath(line, imagePath)) {
+        return {
+          why:
+            `'${line}' runs AFTER the COPY that puts it there and names it, so what PID 1 ` +
+            `runs is whatever that RUN left behind — which is not in this repository`,
+        };
+      }
+    }
+  }
+  return last ?? { why: 'no COPY or ADD in the stage chain puts it there' };
+}
+
+// --- 7a. WHICH SERVICES ARE APPLICATION SERVICES (derived, T-179) ----------
+//     Moved above the PID-1 resolution by T-182, because that resolution is
+//     now per SERVICE rather than per Dockerfile stage: the question "what
+//     does PID 1 run" has no answer until you know whose PID 1.
+
+/** file -> its parsed services, for every composed file that parsed. */
+const composedServices: {
+  readonly rel: string;
+  readonly svcs: Record<string, Record<string, unknown>>;
+}[] = [];
+for (const f of composed.files) {
+  const svcs = servicesOf(f.rel);
+  if (svcs !== null) composedServices.push({ rel: f.rel, svcs });
+}
+const imageOf = (svcs: Record<string, Record<string, unknown>>, name: string): string | null => {
+  const own = svcs[name]?.['image'];
+  if (typeof own === 'string' && own.trim() !== '') return own.trim();
+  const fromBase = base?.[name]?.['image'];
+  return typeof fromBase === 'string' && fromBase.trim() !== '' ? fromBase.trim() : null;
+};
+/** service -> why it is an application service (the derivation, printed). */
+const graceWhy = new Map<string, Set<string>>();
+const markApp = (name: string, why: string): void => {
+  graceWhy.set(name, (graceWhy.get(name) ?? new Set<string>()).add(why));
+};
+const appImages = new Set<string>();
+for (const { svcs } of composedServices) {
+  for (const name of Object.keys(svcs)) {
+    if (protectedServices.has(name)) {
+      markApp(name, 'contract-set');
+      const img = imageOf(svcs, name);
+      if (img !== null) appImages.add(img);
+    }
+  }
+}
+for (const u of buildUses) {
+  markApp(u.service, 'app-build');
+  const svcs = composedServices.find((c) => c.rel === u.file)?.svcs;
+  const img = svcs === undefined ? null : imageOf(svcs, u.service);
+  if (img !== null) appImages.add(img);
+}
+for (const { svcs } of composedServices) {
+  for (const name of Object.keys(svcs)) {
+    const img = imageOf(svcs, name);
+    if (img !== null && appImages.has(img)) markApp(name, `runs ${img}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 7b. WHAT PID 1 ACTUALLY RUNS, FOR EACH APPLICATION SERVICE (T-182)
+//
+//     ONE READING, NOT A RULE PER ROUTE. Until T-182 this rule read the IMAGE
+//     ENTRYPOINT of each application STAGE and called the result "PID 1". A
+//     container's PID 1 is not decided there alone, and qa-verification
+//     measured SEVEN ways to decide it that the stage's ENTRYPOINT does not
+//     mention — a compose `entrypoint:`, a `volumes:` mount over the script, a
+//     `NODE_OPTIONS` preload (measured RUNNING INSIDE PID 1), a node flag
+//     whose value is a separate argument, a RUN that rewrites the script after
+//     its COPY, an ADDed archive, and `stop_signal:`, which decides whether
+//     PID 1 is signalled at all. Seven checks for seven routes would have left
+//     the eighth open, so what this does instead is RESOLVE the process:
+//
+//       for each application service, in each composed file that declares it,
+//       take every input that can change what PID 1 executes, resolve them the
+//       way docker and compose resolve them, and either arrive at ONE
+//       REPOSITORY FILE this gate then reads GROUP_DRAIN_MS out of — or REFUSE.
+//
+//     THE INPUTS IT READS, and this list is the claim (§ Published contract
+//     names the case that falsifies each):
+//       (1) the image's resolved ENTRYPOINT and CMD — §6, last-wins along the
+//           stage ancestry, for the stage COMPOSE builds for this service (or,
+//           for a service that only runs an application `image:`, the stage
+//           whose build produces that image);
+//       (2) compose `entrypoint:` and `command:`, which override (1). A STRING
+//           there is shell form, so /bin/sh becomes PID 1: refused;
+//       (3) `init: true`, which makes docker-init PID 1 and this whole
+//           resolution false: refused;
+//       (4) the node argv — flags are read, not skipped: a flag that makes node
+//           LOAD CODE (--import/--require/-r/--loader/--env-file/-e …) is
+//           refused, a flag that takes a SEPARATE VALUE cannot be mistaken for
+//           the script because any flag not on the inert list is refused;
+//       (5) `NODE_OPTIONS`, from the image's own ENV and from compose
+//           `environment:` — a preload there runs code in PID 1 (measured);
+//           `env_file:` is refused because this gate does not read env files;
+//       (6) `working_dir:`, which moves the WORKDIR a relative script resolves
+//           against;
+//       (7) anything MOUNTED over the resolved path — `volumes:`, `tmpfs:`,
+//           `configs:`, `secrets:` — because the file in the image is then not
+//           the file this gate read;
+//       (8) `stop_signal:`, because PID 1 forwards SIGTERM and SIGINT and
+//           nothing else, so any other stop signal means no forwarding, no
+//           drain and a SIGKILL at the grace (measured by qa-verification on
+//           T-180: `stop_signal: SIGQUIT` -> ExitCode=137 at 30.13 s);
+//       (9) the last COPY/ADD that puts the script there, and any later
+//           instruction in the stage chain that writes it again (an ADDed
+//           archive or URL, or a RUN that names it).
+//
+//     THE NINE ABOVE ANSWER ONE QUESTION — "WHICH FILE DOES NODE RUN". They
+//     are a resolution and every step either resolves or refuses, so a new
+//     spelling of "something else is at that path" lands in (7) and a new
+//     spelling of "node is started differently" lands in (2)/(4): the EIGHTH
+//     route this ticket planted — a compose `configs:` entry whose `target:`
+//     is the script, a key nobody in T-180's family named — is refused by (7)
+//     without a rule of its own, which is the property that shape is for.
+//
+//     WHAT THEY DO NOT ANSWER IS A SECOND QUESTION: "WHAT IS PID 1, AND WHAT
+//     CODE IS LOADED INTO IT." `init:` was always in that class (3);
+//     qa-verification then reached the identical condition through `pid:` and
+//     `LD_PRELOAD`, both invisible in all nine and both GREEN (QA-1). The two
+//     halves of that class are NOT the same shape, and rework 2 was cut because
+//     rework 1's text said they were:
+//
+//       (10) §7c — AN ALLOW-LIST, and it holds. An application service may
+//            declare only compose keys this gate has classified as MODELLED or
+//            as NEUTRAL (with the argument written beside each). Anything else
+//            is REFUSED, so a tenth KEY is impossible rather than uncaught.
+//            Independently attacked by the orchestrator with `userns_mode:`,
+//            a key nobody in this family had named: exit=1, GATE FAIL, 11 of 14
+//            (T-182 § Rework 2).
+//       (11) §7d — A DENY-LIST, and it is not the allow-list's twin. A variable
+//            in a MEASURED loader namespace (`LD_*`/`DYLD_*` per ld.so(8),
+//            `NODE_*` per node(1), `OPENSSL_*` for the OpenSSL 3.5.7 node links
+//            statically), or one of [`PATH` `SSL_CERT_FILE` `SSL_CERT_DIR`
+//            `CTLOG_FILE`], is REFUSED, from compose `environment:` and from
+//            the image's own ENV. NODE_OPTIONS (read, token by token) and
+//            NODE_ENV (loads nothing) are admitted. A NAME OUTSIDE THAT LIST IS
+//            ADMITTED WITHOUT BEING READ: rework 1 enumerated four namespaces
+//            and called the class closed, and the orchestrator then defeated it
+//            with `OPENSSL_CONF` inside `core`'s own `environment:` block —
+//            exit=0, GATE PASS, `14 of 14` printed as resolved (OE-44). Rework 2
+//            WIDENED the list by measuring which names actually load code into
+//            PID 1 in these images (§7d's docblock has every measurement) and
+//            states the shape honestly rather than claiming the class is shut.
+//            **`T-183` is the successor that ends it: the environment
+//            allow-list, anchored to a checked per-app manifest.**
+//
+//     So the fail-closed claim, at the width it actually holds: an input that
+//     changes what PID 1 RUNS is refused by the resolution; a compose KEY that
+//     changes what PID 1 IS is refused unless it has been classified here; and
+//     an ENVIRONMENT VARIABLE that changes what PID 1 is, or loads code into
+//     it, is refused if its name is in a measured loader namespace — and is
+//     NOT read at all if it is not. § Published contract §3's residue lists
+//     what else is out of reach: a RUN that rewrites the file without naming
+//     it, anything decided inside the application image's own base image, ECS,
+//     a flag typed at a shell, a hazard in the VALUE of an allow-listed key,
+//     and — since rework 2 — every environment variable name outside §7d's
+//     measured list.
+// ---------------------------------------------------------------------------
+
+/** The image's resolved ENTRYPOINT argv and stage chain, per (dockerfile, target). */
+const stageOfBuild = new Map<
+  string,
+  { readonly argv: readonly string[]; readonly chain: readonly Stage[] }
+>();
+const stageKey = (df: string, target: string): string => `${df}\u0000${target}`;
+for (const ep of entrypointsResolved) {
+  stageOfBuild.set(stageKey(ep.dockerfile, ep.target), {
+    argv: ep.argv.map((a) => String(a)),
+    chain: ep.chain,
+  });
+}
+/** service -> a build declared for it, and image text -> a build that produces it. */
+const buildOfService = new Map<string, BuildUse>();
+const buildOfImage = new Map<string, BuildUse>();
+for (const u of buildUses) {
+  if (!buildOfService.has(u.service)) buildOfService.set(u.service, u);
+  const svcs = composedServices.find((c) => c.rel === u.file)?.svcs;
+  const img = svcs === undefined ? null : imageOf(svcs, u.service);
+  if (img !== null && !buildOfImage.has(img)) buildOfImage.set(img, u);
+}
+
+/**
+ * Node flags this gate reads past: they take no separate value and they load
+ * no code. ANYTHING ELSE IS REFUSED — that is what makes "a flag whose value
+ * is a separate argument" (T-180 § contract 4's second family member, QA's E3)
+ * impossible to mistake for the script, without this gate having to know
+ * node's whole flag surface. Adding a flag here is a decision made in this
+ * file, in review.
+ */
+const INERT_NODE_FLAGS: readonly RegExp[] = [
+  /^--enable-source-maps$/,
+  /^--no-warnings$/,
+  /^--trace-warnings$/,
+  /^--trace-uncaught$/,
+  /^--use-strict$/,
+  /^--disable-proto=\S+$/,
+  /^--max-old-space-size=\d+$/,
+  /^--max-semi-space-size=\d+$/,
+  /^--stack-trace-limit=\d+$/,
+  /^--unhandled-rejections=\S+$/,
+  /^--dns-result-order=\S+$/,
+  /^--title=\S+$/,
+];
+/**
+ * Flags that make node execute code from somewhere else, or read more options
+ * from somewhere else. `--import` was MEASURED running inside PID 1 of
+ * kinvara/core:dev by qa-verification (T-180 rework 1, F6), and
+ * docker/app.Dockerfile already sets NODE_OPTIONS image-wide, so the hook
+ * point exists in the delivered image.
+ */
+const LOADS_CODE =
+  /^--?(?:import|require|r|loader|experimental-loader|experimental-require-module|env-file|env-file-if-exists|eval|e|print|p|experimental-policy|experimental-vm-modules|conditions|C|experimental-network-imports)(?:=|$)/;
+
+const flagVerdict = (arg: string): 'inert' | 'loads-code' | 'unmodelled' =>
+  LOADS_CODE.test(arg)
+    ? 'loads-code'
+    : INERT_NODE_FLAGS.some((re) => re.test(arg))
+      ? 'inert'
+      : 'unmodelled';
+
+/** The script `node` would run, or why this gate will not guess. */
+function nodeScriptOf(
+  argv: readonly string[],
+): { readonly script: string } | { readonly why: string } {
+  const bin = argv[0] ?? '';
+  if (!/(^|\/)node$/.test(bin)) {
+    return {
+      why:
+        `${JSON.stringify(argv)} is not \`node <script>\`, so the stop-grace rule (§7) cannot ` +
+        `tell which file is PID 1 and read GROUP_DRAIN_MS from it. Refusing rather than ` +
+        `reading a file this gate chose`,
+    };
+  }
+  for (const arg of argv.slice(1)) {
+    if (!arg.startsWith('-')) return { script: arg };
+    const v = flagVerdict(arg);
+    if (v === 'loads-code') {
+      return {
+        why:
+          `the node flag '${arg}' in ${JSON.stringify(argv)} makes node run code from another ` +
+          `file (or read more options from one) BEFORE the script, so the code PID 1 runs is ` +
+          `not only the script this gate reads`,
+      };
+    }
+    if (v === 'unmodelled') {
+      return {
+        why:
+          `the node flag '${arg}' in ${JSON.stringify(argv)} is not one this rule models — it ` +
+          `may take the next argument as its VALUE, in which case the script this gate read ` +
+          `would be the flag's value and not PID 1's code (T-180 § contract 4, QA's E3). Add ` +
+          `it to INERT_NODE_FLAGS in scripts/gates/app-images.ts, in review, if it is inert`,
+      };
+    }
+  }
+  return {
+    why:
+      `${JSON.stringify(argv)} names no script after node, so the stop-grace rule (§7) has no ` +
+      `file to read GROUP_DRAIN_MS from`,
+  };
+}
+
+/** Every ENV assignment the stage chain leaves in effect for `key` (last wins). */
+function dockerfileEnv(chain: readonly Stage[], key: string): string | null {
+  let value: string | null = null;
+  for (const stage of chain) {
+    for (const line of stage.lines) {
+      const m = /^ENV\s+(.*)$/i.exec(line);
+      if (m === null) continue;
+      const toks = tokenise((m[1] ?? '').trim());
+      const first = toks[0] ?? '';
+      if (first !== '' && !first.includes('=')) {
+        // The legacy `ENV KEY value with spaces` form.
+        if (first === key) value = unquote(toks.slice(1).join(' '));
+        continue;
+      }
+      for (const tok of toks) {
+        const i = tok.indexOf('=');
+        if (i <= 0) continue;
+        if (tok.slice(0, i) === key) value = unquote(tok.slice(i + 1));
+      }
+    }
+  }
+  return value;
+}
+
+/** A compose `environment:`/`env_file:` reading of one variable. */
+function composeEnv(
+  svc: Record<string, unknown>,
+  key: string,
+): { readonly value: string | null } | { readonly why: string } {
+  if (svc['env_file'] !== undefined) {
+    return {
+      why:
+        `declares env_file:, which can set ${key} — and this gate does not read env files (they ` +
+        `are not necessarily in the repository). Refusing rather than resolving PID 1's ` +
+        `environment from half of its sources`,
+    };
+  }
+  const env = svc['environment'];
+  if (env === undefined) return { value: null };
+  let value: string | null = null;
+  if (isRecord(env)) {
+    for (const [k, v] of Object.entries(env)) {
+      if (k !== key) continue;
+      if (typeof v !== 'string' && typeof v !== 'number') {
+        return { why: `declares ${key} as ${JSON.stringify(v)}, which this gate cannot read` };
+      }
+      value = String(v);
+    }
+  } else if (Array.isArray(env)) {
+    for (const entry of env) {
+      if (typeof entry !== 'string') {
+        return {
+          why: `declares an environment: entry ${JSON.stringify(entry)} this gate cannot read`,
+        };
+      }
+      const i = entry.indexOf('=');
+      const k = i < 0 ? entry : entry.slice(0, i);
+      if (k !== key) continue;
+      value = i < 0 ? '' : entry.slice(i + 1);
+    }
+  } else {
+    return { why: `declares environment: as ${JSON.stringify(env)}, which this gate cannot read` };
+  }
+  if (value !== null && value.includes('${')) {
+    return {
+      why:
+        `declares ${key} as '${value}', which compose INTERPOLATES from the environment of ` +
+        `whoever runs it — so what PID 1 loads is not decided in this repository`,
+    };
+  }
+  return { value };
+}
+
+/** Every in-container path this service mounts something over, or why it cannot be read. */
+function mountTargets(
+  svc: Record<string, unknown>,
+): { readonly targets: string[] } | { readonly why: string } {
+  const targets: string[] = [];
+  const push = (t: unknown, what: string): string | null => {
+    if (typeof t !== 'string' || t === '')
+      return `declares ${what} with a target this gate cannot read`;
+    if (t.includes('${')) return `declares ${what} with an INTERPOLATED target '${t}'`;
+    targets.push(path.posix.normalize(t));
+    return null;
+  };
+  const vols = svc['volumes'];
+  if (vols !== undefined) {
+    if (!Array.isArray(vols)) return { why: `declares volumes: as ${JSON.stringify(vols)}` };
+    for (const v of vols) {
+      if (typeof v === 'string') {
+        const parts = v.split(':');
+        const why = push(parts.length === 1 ? parts[0] : parts[1], `a volumes: entry '${v}'`);
+        if (why !== null) return { why };
+      } else if (isRecord(v)) {
+        const why = push(v['target'], `a volumes: entry ${JSON.stringify(v['target'] ?? v)}`);
+        if (why !== null) return { why };
+      } else {
+        return { why: `declares a volumes: entry ${JSON.stringify(v)} this gate cannot read` };
+      }
+    }
+  }
+  const tmpfs = svc['tmpfs'];
+  if (tmpfs !== undefined) {
+    for (const t of Array.isArray(tmpfs) ? tmpfs : [tmpfs]) {
+      const why = push(
+        typeof t === 'string' ? t.split(':')[0] : t,
+        `a tmpfs: entry ${JSON.stringify(t)}`,
+      );
+      if (why !== null) return { why };
+    }
+  }
+  // configs: and secrets: mount a file too, and neither is a `volumes:` key.
+  // The short form's target is derived the way compose derives it.
+  for (const [key, root] of [
+    ['configs', '/'],
+    ['secrets', '/run/secrets/'],
+  ] as const) {
+    const list = svc[key];
+    if (list === undefined) continue;
+    if (!Array.isArray(list)) return { why: `declares ${key}: as ${JSON.stringify(list)}` };
+    for (const c of list) {
+      if (typeof c === 'string') {
+        targets.push(path.posix.normalize(`${root}${c}`));
+      } else if (isRecord(c)) {
+        const t = c['target'];
+        if (t === undefined) {
+          const src = c['source'];
+          if (typeof src !== 'string')
+            return { why: `declares a ${key}: entry ${JSON.stringify(c)}` };
+          targets.push(path.posix.normalize(`${root}${src}`));
+        } else {
+          const why = push(t, `a ${key}: entry ${JSON.stringify(t)}`);
+          if (why !== null) return { why };
+        }
+      } else {
+        return { why: `declares a ${key}: entry ${JSON.stringify(c)} this gate cannot read` };
+      }
+    }
+  }
+  return { targets };
+}
+
+// --- 7c. THE KEY SPACE, AS AN ALLOW-LIST (T-182 rework 1, QA-1) ------------
+//
+//     TWO QUESTIONS, NOT ONE LIST. Every one of the nine inputs above answers
+//     "WHICH FILE does node run". qa-verification found a second question they
+//     do not answer — "WHAT IS PID 1, and what code is loaded into it" — and
+//     two compose keys that decide it while being invisible in all nine:
+//
+//       * `pid:`. MEASURED (T-182 § Rework 1 M1, reproducing QA-1): `pid: host`
+//         on `core` puts the HOST's /sbin/init at PID 1 (`/proc/1/comm` =
+//         `systemd`), so entrypoint.mjs is not PID 1 at all; `docker kill -s
+//         QUIT` then ends the container at ExitCode=131 in 2.19 s with no
+//         drain, against STILL RUNNING at 36.36 s without the flag. That is
+//         the same signature as `init: true`, which (3) refuses — reached
+//         through a key nothing here read.
+//       * `LD_PRELOAD`, through `environment:`. MEASURED: five mappings of the
+//         named object inside PID 1's OWN address space (`grep -c libz
+//         /proc/1/maps`), zero without it. That is (5)'s `--require` hazard by
+//         way of the dynamic loader instead of node, and it is the shape a
+//         native APM agent, a profiler or jemalloc actually uses.
+//
+//     TWO MORE DENY ENTRIES WOULD HAVE BEEN THE WRONG ANSWER, for the reason
+//     this ticket was cut in the first place: seven patches for seven members
+//     is a failed ticket even if every case is green. The second question's
+//     space is not a list of hazards — it is THE KEY SPACE ITSELF, which is far
+//     wider than the keys §7 reads (PID1_MODELLED_KEYS and PID1_NEUTRAL_KEYS
+//     below are the literals; no count of them is written here, because a hand
+//     count beside a live literal is OD-207's defect on sight, and the printed
+//     §7b line already emits both lists from the literals themselves) and grows
+//     with compose. (No count of the compose spec's keys is stated here either,
+//     because none was taken — PROTOCOL §5.3 R1, and the argument does not
+//     need one.) So this is an
+//     ALLOW-LIST:
+//
+//       an application service may declare ONLY keys this gate has classified,
+//       as MODELLED (§7 resolves or refuses on the value) or as NEUTRAL (it
+//       cannot change what PID 1 is, what it executes, or what is loaded into
+//       it — the argument is beside each). ANYTHING ELSE IS REFUSED and the
+//       pair is UNRESOLVED.
+//
+//     A tenth KEY is then IMPOSSIBLE rather than merely uncaught: a key nobody
+//     has thought of fails closed, and admitting one is a decision made in this
+//     file, in review, with its argument written down. The allow-list earned its
+//     keep immediately — it refused three keys nobody in this family had named
+//     (`pull_policy:`, `user:`, `userns_mode:`), and `pull_policy:` turned out
+//     to be MODELLED rather than neutral (below). It has also been attacked from
+//     outside: the orchestrator planted its own novel key `userns_mode: host`
+//     and got exit=1, GATE FAIL, 11 of 14 (OE-44, 2026-09-22T21:30:48Z). THAT
+//     SENTENCE IS ABOUT KEYS AND ONLY KEYS — the same orchestrator pass beat the
+//     ENVIRONMENT half in the same hour, which is why §7d below now says out
+//     loud that it is a deny-list.
+//
+//     WHAT IT DOES NOT CLOSE, stated rather than implied: a value inside an
+//     allow-listed key (`environment:` is allow-listed, and LD_PRELOAD lives
+//     in it) — which is why §7d below is a second, name-derived rule. The two
+//     together are the claim rather than either alone, AND THE SECOND ONE IS
+//     WEAKER THAN THIS ONE: §7d enumerates the loader namespaces measured to be
+//     in PID 1's process, so a variable name outside them is admitted without
+//     being read. `T-183` is the allow-list that ends that half.
+
+/**
+ * Keys §7 reads. Each either resolves (and its case is in § Published contract
+ * §1) or refuses. `image`/`build`/`pull_policy` decide WHICH IMAGE, and
+ * therefore which stage's ENTRYPOINT §6 resolved; the rest are inputs (2)-(9).
+ */
+const PID1_MODELLED_KEYS: readonly string[] = [
+  'image',
+  'build',
+  'pull_policy',
+  'entrypoint',
+  'command',
+  'init',
+  'working_dir',
+  'environment',
+  'env_file',
+  'volumes',
+  'tmpfs',
+  'configs',
+  'secrets',
+  'stop_signal',
+  'stop_grace_period',
+];
+
+/**
+ * Keys that cannot change what PID 1 is, what it executes, or what code is
+ * loaded into it. The argument for each is here because that is the thing a
+ * reviewer has to check when a key is added:
+ *
+ *   profiles      selects WHETHER the service starts, never what it runs.
+ *   labels        metadata; read by scripts/svc, never by exec — but NEUTRAL
+ *                 here is a statement about the EXEC PATH, and that is not the
+ *                 only axis a labels: edit moves. io.kinvara.built-by is one
+ *                 of the ways the APPLICATION-SERVICE SET is derived, so
+ *                 editing labels: changes WHICH services §7 holds to the rule
+ *                 at all. It is NEUTRAL only because that set's MEMBERSHIP is
+ *                 ANCHORED OUTSIDE the file being checked, against the
+ *                 workspace's own apps directory (OD-38 — asserted above,
+ *                 where appServices and declaredByLabel are cross-checked;
+ *                 search BUILT_BY in this file; recorded in CONTRACTS.md and
+ *                 pinned by T-039 cases 64/65). MEASURED, not argued:
+ *                 deleting safety-gw's two built-by lines gives exit=1 GATE
+ *                 FAIL while §7b still counts the service in its pair total,
+ *                 so it is a FAILURE and not a silent demotion (T-182
+ *                 § tech-lead TL-5). WEAKEN OR RELOCATE THAT ANCHOR AND THIS
+ *                 CLASSIFICATION IS WRONG.
+ *   networks      the namespace the process joins after exec (and the egress
+ *                 boundary's own subject — gate:egress-boundary).
+ *   expose        documentation of a port; publishes nothing.
+ *   ports         host publishing; §3's no-ports rule owns it. Not in the exec
+ *                 path.
+ *   depends_on    start ordering.
+ *   healthcheck   a SEPARATE process docker runs in the container; it cannot
+ *                 replace PID 1 (and §5 owns its presence).
+ *   restart       what docker does AFTER PID 1 exits.
+ *   mem_limit     cgroup limits. A container killed for memory is an OOM kill,
+ *   cpus          not a different PID 1; §4 owns the budgets.
+ *
+ * NOT here and deliberately: `user:` (it changes the uid PID 1 runs as, and §5
+ * reads USER in the Dockerfile only, so a compose `user:` would be an unread
+ * route), `pid:`, `init:` handled above, `privileged:`, `cap_add:`,
+ * `security_opt:`, `userns_mode:`, `ipc:`, `uts:`, `sysctls:`, `ulimits:`,
+ * `runtime:`, `platform:`, `extends:` (refused earlier, by its own
+ * pre-existing rule). Each of those either changes PID 1 or changes the
+ * process's privileges around it, and none is modelled.
+ */
+const PID1_NEUTRAL_KEYS: readonly string[] = [
+  'profiles',
+  'labels',
+  'networks',
+  'expose',
+  'ports',
+  'depends_on',
+  'healthcheck',
+  'restart',
+  'mem_limit',
+  'cpus',
+];
+
+/**
+ * A measured note for a refused key, so the message says what was measured
+ * rather than only that the key is unclassified. Message quality only: the
+ * MECHANISM is the allow-list above, and a key with no note here is refused
+ * exactly as loudly (case 197 plants one).
+ */
+const PID1_KEY_NOTES: Readonly<Record<string, string>> = {
+  pid:
+    ` MEASURED (T-182 § Rework 1 M1, reproducing qa-verification's QA-1): with \`pid: host\` the ` +
+    `HOST's /sbin/init is PID 1 inside the container (/proc/1/comm = systemd), so ` +
+    `docker/app-runtime/entrypoint.mjs is not PID 1 and forwards nothing; SIGQUIT then ended the ` +
+    `container at ExitCode=131 in 2.19 s with NO drain, against still running at 36.36 s without ` +
+    `it — the same signature as \`init: true\`, which this rule already refuses. ` +
+    `\`pid: service:<name>\` and \`pid: container:<id>\` are the same key.`,
+  user:
+    ` §5 reads USER in the Dockerfile; a compose \`user:\` is not read there, so the uid PID 1 ` +
+    `runs as would be decided somewhere no rule looks.`,
+};
+
+/**
+ * §7d — ENVIRONMENT VARIABLE NAMES THAT DECIDE WHAT IS LOADED INTO PID 1.
+ *
+ * `environment:` is allow-listed by §7c because §7 reads NODE_OPTIONS out of
+ * it — so the key-space rule cannot reach LD_PRELOAD, which lives INSIDE it.
+ * This rule is therefore over NAMES, and it is derived from the two loaders'
+ * own documented namespaces rather than from a list of spellings:
+ *
+ *   * the dynamic loader reads `LD_*` (ld.so(8): LD_PRELOAD, LD_AUDIT,
+ *     LD_LIBRARY_PATH, …) and `DYLD_*` on Darwin;
+ *   * node reads `NODE_*` (node(1) ENVIRONMENT: NODE_OPTIONS, NODE_REPL_*,
+ *     NODE_EXTRA_CA_CERTS, …).
+ *
+ * So a new spelling INSIDE a listed namespace is refused without this gate
+ * knowing it exists. Two names are read rather than refused: NODE_OPTIONS
+ * (input (5), resolved token by token) and NODE_ENV (it selects behaviour in
+ * the application, loads nothing, and every application service declares it).
+ *
+ * ================= THIS RULE IS A DENY-LIST, NOT AN ALLOW-LIST =============
+ * READ THIS BEFORE TRUSTING A GREEN RUN. §7c (the KEY space) is an allow-list:
+ * a key nobody classified fails closed. §7d is NOT its twin. It enumerates the
+ * namespaces of the loaders MEASURED to be in PID 1's process, and a variable
+ * name OUTSIDE them is ADMITTED WITHOUT BEING READ. T-182 rework 1 stated four
+ * namespaces and treated the class as closed; the orchestrator then defeated it
+ * with `OPENSSL_CONF` placed inside `core`'s own `environment:` block —
+ * exit=0, GATE PASS, `14 of 14` pairs printed as resolved (T-182 § Rework 2,
+ * the OE-44 route, stakeholder ruling B: widen by measurement, merge, cut a
+ * successor). THE SUCCESSOR IS `T-183`: the environment ALLOW-LIST, anchored to
+ * a checked per-app manifest. Until it lands, the honest statement of what a
+ * green §7d run means is: "no variable in a MEASURED loader namespace", never
+ * "no variable that can load code".
+ *
+ * WHAT REWORK 2 MEASURED, on the five shipping application images (all five run
+ * the SAME node: sha256 3840e7a7…, v24.20.0, OpenSSL 3.5.7, Alpine 3.24.1, musl
+ * — kinvara/{core,safety-gw,web,admin,worker}:dev, T-182 § Rework 2 M4/M5):
+ *   * the objects mapped into a real node process are exactly four — the node
+ *     binary, libstdc++, libgcc_s and /lib/ld-musl-x86_64.so.1. So the loaders
+ *     in PID 1 are musl's ld.so, node/V8/libuv, and the OpenSSL 3.5.7 that node
+ *     links STATICALLY (there is no libcrypto.so in ldd output);
+ *   * instrument, over every env-name-shaped string in those four objects: set
+ *     the name to the path of a FIFO with no writer. If the process OPENs the
+ *     value, open(2) blocks and the run is killed (status >= 124); if the name
+ *     is never used as a path, the workload completes at 0. Measured OPENED:
+ *     LD_PRELOAD (the rework-1 hazard, positive control), NODE_EXTRA_CA_CERTS
+ *     (already in NODE_*), and **OPENSSL_CONF** — at startup, before any
+ *     application code. Measured not-opened: OPENSSL_MODULES, OPENSSL_ENGINES,
+ *     OPENSSL_CONF_INCLUDE, SSL_CERT_FILE, SSL_CERT_DIR, CTLOG_FILE,
+ *     ARES_RAND_FILE, ICU_TIMEZONE_FILES_DIR, MUSL_LOCPATH, NLSPATH, DATEMSK,
+ *     TZ, TMPDIR, GLIBCXX_TUNABLES, UV_THREADPOOL_SIZE, LD_LIBRARY_PATH, and
+ *     the negative control KINVARA_NOT_A_LOADER;
+ *   * OPENSSL_CONF LOADS CODE, and that is the point: with the app section
+ *     spelled `nodejs_conf` (node's own config appname — `openssl_conf` is
+ *     IGNORED, which is why a naive probe shows nothing), a `providers` section
+ *     whose `module` is a FIFO blocks the process at startup — the dlopen was
+ *     attempted — and a `module` naming a REAL shared object (/usr/lib/libz.so.1)
+ *     ends PID 1 inside node::InitializeOncePerProcessInternal with
+ *     `Assertion failed: ncrypto::CSPRNG(nullptr, 0)`, SIGABRT, container
+ *     ExitCode=139 against a control that boots the app. An `engines` section's
+ *     `dynamic_path` does the same, and OPENSSL_MODULES / OPENSSL_ENGINES /
+ *     OPENSSL_CONF_INCLUDE each decide WHERE that code is loaded from once a
+ *     config names one (each measured OPENED in that arrangement). So the whole
+ *     OPENSSL_ prefix is treated as a loader namespace, exactly as LD_ is;
+ *   * SSL_CERT_FILE, SSL_CERT_DIR and CTLOG_FILE are OpenSSL's other file
+ *     inputs in the same statically linked library. They are REFUSED on the
+ *     argument — not on a measurement: the sweep above did NOT reach them
+ *     (node uses its bundled CA store unless the application asks for the
+ *     OpenSSL one), and refusing them is the fail-closed direction.
+ *
+ * PATH is in the family for a measured reason: the image's resolved ENTRYPOINT
+ * is ["node", "/srv/kinvara/app-runtime/entrypoint.mjs"] — `node` with NO
+ * directory — so PATH decides WHICH BINARY is PID 1. Measured on
+ * kinvara/core:dev 7cb5b84358b6: `-e PATH=/nonexistent` and the container
+ * cannot start at all (`exec: "node": executable file not found in $PATH`,
+ * docker run exit 127). The loud direction is docker's; the silent one needs a
+ * second key to put a `node` on the new PATH, and it is refused here either
+ * way rather than argued about.
+ */
+/**
+ * The loader namespaces MEASURED to be in PID 1's process (see the docblock
+ * above for each measurement). OPENSSL_ was added by T-182 rework 2 after the
+ * OE-44 route: node links OpenSSL 3.5.7 statically, and OPENSSL_CONF loads a
+ * shared object into PID 1 at startup. `DYLD_` is not reachable on these Linux
+ * images and is kept because the same compose file describes the estate T-003
+ * owns; it costs nothing and it is the ld.so namespace on Darwin.
+ */
+const ENV_LOADER_NAMESPACE = /^(?:LD_|DYLD_|NODE_|OPENSSL_)/;
+/**
+ * Exact names outside every prefix above. PATH is measured (it decides which
+ * binary is PID 1); the three OpenSSL file inputs are refused on the argument
+ * that the library reading them is in this process, with the measurement that
+ * did NOT reach them stated rather than hidden (T-182 § Rework 2).
+ */
+const ENV_LOADER_EXACT = new Set(['SSL_CERT_FILE', 'SSL_CERT_DIR', 'CTLOG_FILE']);
+const ENV_FAMILY_READ = new Set(['NODE_OPTIONS']);
+const ENV_FAMILY_INERT = new Set(['NODE_ENV']);
+const envNameVerdict = (k: string): 'ok' | 'loader' | 'path' | 'ossl-file' => {
+  if (k === 'PATH') return 'path';
+  if (ENV_FAMILY_READ.has(k) || ENV_FAMILY_INERT.has(k)) return 'ok';
+  if (ENV_LOADER_EXACT.has(k)) return 'ossl-file';
+  return ENV_LOADER_NAMESPACE.test(k) ? 'loader' : 'ok';
+};
+
+/** Every environment variable NAME this service declares, or why it cannot be read. */
+function composeEnvNames(
+  svc: Record<string, unknown>,
+): { readonly names: string[] } | { readonly why: string } {
+  const env = svc['environment'];
+  if (env === undefined) return { names: [] };
+  if (isRecord(env)) return { names: Object.keys(env) };
+  if (Array.isArray(env)) {
+    const names: string[] = [];
+    for (const entry of env) {
+      if (typeof entry !== 'string') {
+        return {
+          why: `declares an environment: entry ${JSON.stringify(entry)} this gate cannot read`,
+        };
+      }
+      const i = entry.indexOf('=');
+      names.push(i < 0 ? entry : entry.slice(0, i));
+    }
+    return { names };
+  }
+  return { why: `declares environment: as ${JSON.stringify(env)}, which this gate cannot read` };
+}
+
+/** Every environment variable NAME the stage chain assigns (both ENV forms). */
+function dockerfileEnvNames(chain: readonly Stage[]): string[] {
+  const names: string[] = [];
+  for (const stage of chain) {
+    for (const line of stage.lines) {
+      const m = /^ENV\s+(.*)$/i.exec(line);
+      if (m === null) continue;
+      const toks = tokenise((m[1] ?? '').trim());
+      const first = toks[0] ?? '';
+      if (first !== '' && !first.includes('=')) {
+        names.push(first); // the legacy `ENV KEY value with spaces` form
+        continue;
+      }
+      for (const tok of toks) {
+        const i = tok.indexOf('=');
+        if (i > 0) names.push(tok.slice(0, i));
+      }
+    }
+  }
+  return names;
+}
+
+/** PID 1's script, as a repository file, for one (composed file, service). */
+function resolvePid1(
+  rel: string,
+  name: string,
+): { readonly file: string } | { readonly why: string } {
+  const own = composedServices.find((c) => c.rel === rel)?.svcs[name] ?? {};
+  const fromBase = base?.[name] ?? {};
+  // Compose merges the base with the overlay; for every key this rule reads,
+  // the overlay's value REPLACES the base's (sequences and scalars both), which
+  // is compose's own rule for these keys. `environment` is the one exception
+  // and is merged per variable, so the base's NODE_OPTIONS is still read when
+  // the overlay sets something else.
+  const svc: Record<string, unknown> = { ...fromBase, ...own };
+  const envMerged: Record<string, unknown> = {};
+  for (const src of [fromBase, own]) {
+    const e = src['environment'];
+    if (isRecord(e)) Object.assign(envMerged, e);
+  }
+  if (
+    Object.keys(envMerged).length > 0 &&
+    !Array.isArray(own['environment']) &&
+    !Array.isArray(fromBase['environment'])
+  ) {
+    svc['environment'] = envMerged;
+  }
+
+  // (10) §7c — THE KEY SPACE. Every key this service declares must be one this
+  // gate has classified. An unclassified key is refused and the pair is
+  // UNRESOLVED, because a key that might decide what PID 1 is makes the rest of
+  // this resolution a statement about a process that may not exist.
+  for (const key of Object.keys(svc).sort()) {
+    if (PID1_MODELLED_KEYS.includes(key) || PID1_NEUTRAL_KEYS.includes(key)) continue;
+    return {
+      why:
+        `declares the compose key '${key}:', which the stop-grace rule (§7) has not classified. ` +
+        `An application service may declare only keys §7 RESOLVES (${PID1_MODELLED_KEYS.join(', ')}) ` +
+        `or has argued cannot change what PID 1 is (${PID1_NEUTRAL_KEYS.join(', ')}).` +
+        (PID1_KEY_NOTES[key] ?? '') +
+        ` This is an ALLOW-LIST and it is deliberate (T-182 rework 1, QA-1): the keys that decide ` +
+        `WHAT PID 1 IS are not a list this gate can enumerate, so an unclassified key fails ` +
+        `closed. If it cannot change PID 1, add it to PID1_NEUTRAL_KEYS in ` +
+        `scripts/gates/app-images.ts with the argument; if it can, §7 must resolve it`,
+    };
+  }
+  // `pull_policy:` decides whether the image PID 1 comes from is BUILT here or
+  // FETCHED. Only the two values that mean "not fetched" are read.
+  const pullPolicy = svc['pull_policy'];
+  if (pullPolicy !== undefined && !['build', 'never'].includes(String(pullPolicy).trim())) {
+    return {
+      why:
+        `declares pull_policy: ${String(pullPolicy)}, so the image that becomes PID 1 may be ` +
+        `FETCHED instead of built from this repository — and §7 resolves PID 1 from the build in ` +
+        `this repository, so a fetched image would be a PID 1 this gate never read. Only ` +
+        `'build' and 'never' are read`,
+    };
+  }
+
+  const img = composedServices.find((c) => c.rel === rel)?.svcs;
+  const image = img === undefined ? null : imageOf(img, name);
+  const build = buildOfService.get(name) ?? (image === null ? undefined : buildOfImage.get(image));
+  if (build === undefined) {
+    return {
+      why:
+        `runs ${image === null ? 'no image this gate can name' : `image '${image}'`} and no ` +
+        `composed file declares an application build for it, so this gate cannot resolve which ` +
+        `image — and therefore which PID 1 — it runs`,
+    };
+  }
+  const stage = stageOfBuild.get(stageKey(build.dockerfile, build.target));
+  if (stage === undefined) {
+    return {
+      why:
+        `is built from ${build.dockerfile} stage '${build.target}', for which §6 resolved no ` +
+        `exec-form ENTRYPOINT (see §6's failures above), so there is no PID 1 to read`,
+    };
+  }
+
+  // (2) compose entrypoint:/command: override the image's ENTRYPOINT/CMD.
+  const epRaw = svc['entrypoint'];
+  const cmdRaw = svc['command'];
+  const shellForm = (key: string, v: string): { readonly why: string } => ({
+    why:
+      `declares ${key}: as the STRING '${v}'. Compose reads that as SHELL form, so PID 1 is ` +
+      `/bin/sh -c and not node at all — and sh does not forward SIGTERM to its child`,
+  });
+  if (typeof epRaw === 'string') return shellForm('entrypoint', epRaw);
+  if (typeof cmdRaw === 'string') return shellForm('command', cmdRaw);
+  const argvOf = (v: unknown): string[] | null =>
+    Array.isArray(v) ? v.map((x) => String(x)) : null;
+  const epCompose = argvOf(epRaw);
+  const cmdCompose = argvOf(cmdRaw);
+  if (epRaw !== undefined && epCompose === null) {
+    return { why: `declares entrypoint: as ${JSON.stringify(epRaw)}, which this gate cannot read` };
+  }
+  if (cmdRaw !== undefined && cmdCompose === null) {
+    return { why: `declares command: as ${JSON.stringify(cmdRaw)}, which this gate cannot read` };
+  }
+  // A compose `entrypoint:` also CLEARS the image's CMD (compose's documented
+  // behaviour), so the image's CMD is only appended when compose overrides
+  // neither.
+  const imageCmd = ((): string[] => {
+    if (epCompose !== null) return [];
+    const cmd = resolveSetting(stage.chain, 'CMD');
+    if (cmd === null) return [];
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(cmd.value);
+    } catch {
+      parsed = null;
+    }
+    return Array.isArray(parsed) ? parsed.map((x) => String(x)) : [];
+  })();
+  const argv = [...(epCompose ?? stage.argv), ...(cmdCompose ?? imageCmd)];
+
+  // (4) the node argv.
+  const script = nodeScriptOf(argv);
+  if ('why' in script) return script;
+
+  // (5) NODE_OPTIONS: the image's own ENV, overridden by compose's.
+  const fromCompose = composeEnv(svc, 'NODE_OPTIONS');
+  if ('why' in fromCompose) return fromCompose;
+  const nodeOptions = fromCompose.value ?? dockerfileEnv(stage.chain, 'NODE_OPTIONS');
+  if (nodeOptions !== null) {
+    for (const tok of tokenise(nodeOptions).map(unquote)) {
+      const v = flagVerdict(tok);
+      if (v === 'inert') continue;
+      return {
+        why:
+          `has NODE_OPTIONS='${nodeOptions}' in effect, and '${tok}' ` +
+          (v === 'loads-code'
+            ? `makes node run code from another file INSIDE PID 1 before the script — measured ` +
+              `running in PID 1 of kinvara/core:dev (T-180 rework 1, F6). The code PID 1 runs is ` +
+              `then not the file this gate read`
+            : `is not a NODE_OPTIONS token this rule models, so what PID 1 loads is not resolved ` +
+              `(add it to INERT_NODE_FLAGS in scripts/gates/app-images.ts, in review, if it is inert)`),
+      };
+    }
+  }
+
+  // (11) §7d — the environment variable NAMES that decide what is loaded into
+  // PID 1, from compose and from the image's own ENV, judged by the loaders'
+  // namespaces rather than by a list of spellings.
+  const composeNames = composeEnvNames(svc);
+  if ('why' in composeNames) return composeNames;
+  for (const [source, names] of [
+    ['compose environment:', composeNames.names],
+    [`${build.dockerfile} stage '${build.target}' ENV`, dockerfileEnvNames(stage.chain)],
+  ] as const) {
+    for (const key of names) {
+      const v = envNameVerdict(key);
+      if (v === 'ok') continue;
+      if (v === 'ossl-file') {
+        return {
+          why:
+            `sets ${key} in ${source}. node links OpenSSL 3.5.7 STATICALLY into PID 1's own ` +
+            `binary (measured: no libcrypto.so in ldd, T-182 § Rework 2 M4), and ${key} is one ` +
+            `of that library's file inputs. REFUSED ON THE ARGUMENT, NOT ON A MEASUREMENT: the ` +
+            `FIFO sweep of § Rework 2 M5 did NOT observe this name being opened under either ` +
+            `workload, because node uses its bundled CA store unless the application asks for ` +
+            `OpenSSL's — refusing it is the fail-closed direction, and admitting it is a review ` +
+            `decision in ENV_LOADER_EXACT in scripts/gates/app-images.ts (T-182 rework 2, §7d)`,
+        };
+      }
+      return {
+        why:
+          v === 'path'
+            ? `sets PATH in ${source}, and PID 1's argv[0] is ${JSON.stringify(argv[0] ?? '')} — ` +
+              `so PATH decides WHICH BINARY is PID 1, not this gate. MEASURED on ` +
+              `kinvara/core:dev: with PATH=/nonexistent the container cannot start at all ` +
+              `('exec: "node": executable file not found in $PATH', docker run exit 127). The ` +
+              `silent direction puts a different \`node\` first on the path. Refused rather than ` +
+              `resolved (T-182 rework 1, §7d)`
+            : `sets ${key} in ${source}, which is in a LOADER's own namespace. The loaders in ` +
+              `PID 1's process are MEASURED, not assumed (T-182 § Rework 2 M4): musl's ld.so ` +
+              `(LD_*, and DYLD_* where it is Darwin's), node/V8 (NODE_*, node(1) ENVIRONMENT), ` +
+              `and the OpenSSL 3.5.7 node links STATICALLY (OPENSSL_*). A variable there can put ` +
+              `code into PID 1 without naming a file this gate reads: MEASURED for LD_PRELOAD ` +
+              `(five mappings of the named object in PID 1's own /proc/1/maps against zero ` +
+              `without it — § Rework 1 M2) and for OPENSSL_CONF (a \`providers\` section under ` +
+              `the \`nodejs_conf\` app name dlopens the module it names; with a real .so PID 1 ` +
+              `dies in node::InitializeOncePerProcessInternal, SIGABRT, ExitCode=139 — ` +
+              `§ Rework 2 M5/M6). Only NODE_OPTIONS (resolved token by token, input (5)) and ` +
+              `NODE_ENV (it loads nothing) are read; every other name in those namespaces is ` +
+              `refused AS THE COMPOSED FILE SPELLS IT. NOTE THE TWO BOUNDS. (1) §7d is a ` +
+              `DENY-LIST over measured namespaces, so a name OUTSIDE them is admitted WITHOUT ` +
+              `being read. (2) IT IS THE COMMITTED SPELLING THAT IS READ, so a name INSIDE ` +
+              `them is unread too when compose ASSEMBLES it: a list-form environment: entry ` +
+              `whose \${...} interpolation splits the namespace prefix is admitted — MEASURED, ` +
+              `with the interpolating variable UNSET (compose interpolates a blank string): ` +
+              `- L\${X}D_PRELOAD=/usr/lib/libz.so.1 and - PAT\${X}H=/opt/qa:... reach GATE ` +
+              `PASS while compose resolves LD_PRELOAD and PATH, against plainly-spelled ` +
+              `controls that are refused; - LD_\${X}=..., - OPENSSL_\${X}=... and an ` +
+              `interpolated VALUE are all still refused (T-182 § tech-lead TL-1). T-183 is ` +
+              `the allow-list that ends BOTH bounds (T-182 rework 2, §7d)`,
+      };
+    }
+  }
+
+  // (6) the WORKDIR a relative script resolves against, and compose's override.
+  let workdir = '/';
+  for (const st of stage.chain) {
+    for (const l of st.lines) {
+      const wd = /^WORKDIR\s+(.+)$/i.exec(l);
+      if (wd !== null) workdir = path.posix.resolve(workdir, (wd[1] ?? '').trim());
+    }
+  }
+  const wdCompose = svc['working_dir'];
+  if (wdCompose !== undefined) {
+    if (typeof wdCompose !== 'string' || wdCompose.includes('${')) {
+      return {
+        why: `declares working_dir: as ${JSON.stringify(wdCompose)}, which this gate cannot read`,
+      };
+    }
+    workdir = path.posix.resolve('/', wdCompose);
+  }
+  const imagePath = path.posix.resolve(workdir, script.script);
+
+  // (7) anything mounted over that path.
+  const mounts = mountTargets(svc);
+  if ('why' in mounts) {
+    return {
+      why: `${mounts.why}, so this gate cannot tell whether PID 1's own script is mounted over`,
+    };
+  }
+  for (const t of mounts.targets) {
+    if (imagePath === t || imagePath.startsWith(`${t.replace(/\/$/, '')}/`)) {
+      return {
+        why:
+          `mounts something over ${t}, which covers PID 1's script ${imagePath}: the file in the ` +
+          `container is then not the file this gate read, whatever the image was built from`,
+      };
+    }
+  }
+
+  // (9) the COPY/ADD that puts the script there, and anything that rewrites it.
+  const src = copySourceOf(stage.chain, build.context, imagePath);
+  if ('why' in src) {
+    return {
+      why:
+        `PID 1 runs ${imagePath}, and this gate cannot map it to a repository file: ${src.why}. ` +
+        `§7 reads GROUP_DRAIN_MS from the file the container actually runs, and refuses rather ` +
+        `than falling back to a fixed path (T-180, T-182)`,
+    };
+  }
+  return { file: src.file };
+}
+
+/**
+ * repository file -> the `<composed file>:<service>` list whose PID 1 runs it.
+ * One entry per (file, service), because an overlay can make one service's PID
+ * 1 different from the same service's in the base file.
+ */
+const entrypointFiles = new Map<string, string[]>();
+/** Printed: every resolution, and its inputs, so a green run is readable. */
+const pid1Resolved: string[] = [];
+let pid1Attempted = 0;
+for (const name of [...graceWhy.keys()].sort()) {
+  for (const { rel, svcs } of composedServices) {
+    if (svcs[name] === undefined) continue;
+    pid1Attempted += 1;
+    const who = `${rel.replace('docker/', '')}:${name}`;
+
+    // (3) init: — docker-init becomes PID 1 and everything below is false of it.
+    const svcHere: Record<string, unknown> = { ...(base?.[name] ?? {}), ...svcs[name] };
+    const init = svcHere['init'];
+    if (init === true || init === 'true') {
+      failures.push(
+        `${rel}: application service '${name}' declares init: true, so /sbin/docker-init is PID 1 ` +
+          `and the entrypoint this rule reads is its CHILD. MEASURED, both directions, same ` +
+          `image and app (T-182 § Evidence E6): the group wait gets SHORTER, because tini reaps ` +
+          `the leftover child — 4.12 s and ExitCode=0 against 25.18 s and ExitCode=0 without it, ` +
+          `so tech-lead's judgement on that axis holds. What also changes is the SIGNAL ` +
+          `DISPOSITION: the entrypoint is no longer a namespace init, so a signal it installs no ` +
+          `handler for KILLS it instead of being ignored — SIGQUIT ended the container in 2.17 s ` +
+          `with ExitCode=131 and no drain, where without init: true it was still running 35 s ` +
+          `later. That is a different lifecycle from the one §7 holds the grace against, so it is ` +
+          `refused here and argued in review, not assumed harmless.`,
+      );
+    }
+    // (8) stop_signal: — PID 1 handles SIGTERM and SIGINT and nothing else.
+    const stopSignal = svcHere['stop_signal'];
+    if (stopSignal !== undefined) {
+      const sig = String(stopSignal).trim().toUpperCase();
+      if (!['SIGTERM', 'TERM', 'SIGINT', 'INT'].includes(sig)) {
+        failures.push(
+          `${rel}: application service '${name}' declares stop_signal: ${String(stopSignal)}, and ` +
+            `PID 1 (docker/app-runtime/entrypoint.mjs) installs handlers for SIGTERM and SIGINT ` +
+            `only. A namespace init with no handler IGNORES the signal, so nothing is forwarded, ` +
+            `the application never drains, and docker SIGKILLs at stop_grace_period: measured ` +
+            `ExitCode=137 at 30.13 s (qa-verification on T-180, X1). Use SIGTERM or SIGINT, or ` +
+            `teach PID 1 to forward this signal in a ticket that changes the image (T-182).`,
+        );
+      }
+    }
+
+    const r = resolvePid1(rel, name);
+    if ('why' in r) {
+      failures.push(`${rel}: application service '${name}' ${r.why}.`);
+      continue;
+    }
+    entrypointFiles.set(r.file, [...(entrypointFiles.get(r.file) ?? []), who]);
+    pid1Resolved.push(`${who}->${r.file}`);
+  }
+}
+if (graceWhy.size > 0 && pid1Attempted === 0) {
+  failures.push(
+    `the stop-grace rule (§7) resolved PID 1 for ZERO (composed file, application service) ` +
+      `pairs while ${String(graceWhy.size)} application service(s) were derived — it would then ` +
+      `read GROUP_DRAIN_MS from nothing while reporting a pass (PROTOCOL §5.1).`,
+  );
+}
+if (entrypointsResolved.length === 0) {
+  failures.push(
+    `the stop-grace rule (§7) resolved no exec-form ENTRYPOINT for any application stage, ` +
+      `so it has no PID 1 to read GROUP_DRAIN_MS from (see §6's failures above).`,
+  );
+}
+
+/**
+ * GROUP_DRAIN_MS as ONE numeric literal on ONE top-level `const`, used in code
+ * at exactly ONE place, the DEADLINE_STATEMENT (T-180).
+ *
+ * D13 (T-182, from qa-verification's second pass on T-180): THE VALUE IS READ
+ * FROM THE DECLARATION THE CODE USES, not from a line a text match found.
+ * Until T-182 the number came from a line-anchored regex while the syntax tree
+ * was consulted only for the COUNTS — so putting `const GROUP_DRAIN_MS =
+ * 25_000;` inside a comment and writing the real declaration across two lines
+ * gave the gate 25 000 to hold the graces against while PID 1 waited 60 s,
+ * with one declaration and one use in the tree and the gate green (measured).
+ * The declaration, its value, its line and its one use are now all the same
+ * node.
+ */
+function readGroupDrain(file: string): { readonly ms: number; readonly at: string } | null {
+  const text = read(file);
+  if (text === null) {
+    failures.push(
+      `${file} does not exist, so the stop-grace rule (§7) cannot read ` +
+        `GROUP_DRAIN_MS — the wait every application service's grace must cover. Refusing ` +
+        `rather than checking the graces against a number this gate made up.`,
+    );
+    return null;
+  }
+  const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const refs: ts.Identifier[] = [];
+  const visit = (n: ts.Node): void => {
+    if (ts.isIdentifier(n) && n.text === 'GROUP_DRAIN_MS') refs.push(n);
+    ts.forEachChild(n, visit);
+  };
+  visit(sf);
+  const lineOf = (n: ts.Node): number => sf.getLineAndCharacterOfPosition(n.getStart(sf)).line + 1;
+  // T-180 rework 1 (QA-F4): EVERY binding of the name, not only a line that
+  // STARTS `const GROUP_DRAIN_MS`. A same-named `let`/`var`, or a `const` with
+  // a second declarator (`const pad = 0, GROUP_DRAIN_MS = 60_000;`), inside a
+  // function SHADOWS the constant, and the held statement then reads the
+  // shadow — green, before this count (cases 166-168). A parameter, a
+  // destructured binding or a function of that name is not a
+  // VariableDeclaration, so it counts as a use below and is refused there.
+  const decls = refs.filter((r) => ts.isVariableDeclaration(r.parent) && r.parent.name === r);
+  const decl = decls[0];
+  if (decls.length !== 1 || decl === undefined) {
+    failures.push(
+      `${file}: GROUP_DRAIN_MS is declared ${String(decls.length)} time(s) in the syntax tree ` +
+        `(line ${decls.map((d) => String(lineOf(d))).join(', ')}); exactly one declaration is ` +
+        `allowed. A same-named let/var/const in an inner scope shadows the constant, and the ` +
+        `held statement would read the shadow (T-180 rework 1, QA-F4).`,
+    );
+    return null;
+  }
+  const declaration = decl.parent;
+  if (!ts.isVariableDeclaration(declaration)) return null; // unreachable: `decls` filtered on it
+  const list = declaration.parent;
+  const statement = ts.isVariableDeclarationList(list) ? list.parent : undefined;
+  const isConst = ts.isVariableDeclarationList(list) && (list.flags & ts.NodeFlags.Const) !== 0;
+  if (
+    !isConst ||
+    statement === undefined ||
+    !ts.isVariableStatement(statement) ||
+    statement.parent !== sf
+  ) {
+    failures.push(
+      `${file}:${String(lineOf(decl))}: GROUP_DRAIN_MS must be declared as a TOP-LEVEL \`const\`. ` +
+        `The stop-grace rule (§7) holds every application service's grace against this one ` +
+        `declaration, so a re-assignable or scoped binding is refused rather than read (T-182).`,
+    );
+    return null;
+  }
+  const init = declaration.initializer;
+  const rhs = init === undefined ? '(none)' : init.getText(sf).trim();
+  if (init === undefined || !ts.isNumericLiteral(init) || !/^\d[\d_]*$/.test(rhs)) {
+    failures.push(
+      `${file}:${String(lineOf(decl))}: GROUP_DRAIN_MS = ${rhs} is not a single ` +
+        `numeric literal, so the stop-grace rule (§7) cannot read the group wait. Write it ` +
+        `as one literal (e.g. 25_000); an expression is refused rather than evaluated.`,
+    );
+    return null;
+  }
+  const uses = refs.filter((r) => !(ts.isVariableDeclaration(r.parent) && r.parent.name === r));
+  if (uses.length !== 1) {
+    failures.push(
+      `${file}: GROUP_DRAIN_MS is used in code at ${String(uses.length)} place(s)` +
+        (uses.length === 0 ? '' : ` (line ${uses.map((u) => String(lineOf(u))).join(', ')})`) +
+        `; it must be used at exactly one, \`${DEADLINE_STATEMENT}\`, where the deadline is ` +
+        `fixed at the first forwarded signal. A second read is a second wait this rule does ` +
+        `not hold (T-180).`,
+    );
+    return null;
+  }
+  const use = uses[0];
+  const add = use?.parent;
+  const assign = add?.parent;
+  const shaped =
+    use !== undefined &&
+    add !== undefined &&
+    assign !== undefined &&
+    ts.isBinaryExpression(add) &&
+    add.operatorToken.kind === ts.SyntaxKind.PlusToken &&
+    add.right === use &&
+    ts.isIdentifier(add.left) &&
+    add.left.text === 'signalledAt' &&
+    ts.isBinaryExpression(assign) &&
+    assign.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+    assign.right === add &&
+    ts.isIdentifier(assign.left) &&
+    assign.left.text === 'deadline' &&
+    ts.isExpressionStatement(assign.parent);
+  if (!shaped) {
+    const stmt = use === undefined ? '' : (text.split('\n')[lineOf(use) - 1] ?? '').trim();
+    failures.push(
+      `${file}:${String(use === undefined ? 0 : lineOf(use))}: the one use of GROUP_DRAIN_MS is ` +
+        `\`${stmt}\`, not \`${DEADLINE_STATEMENT}\`. The stop-grace rule (§7) holds the ` +
+        `grace against the constant, so a multiplier or an override where it is used would ` +
+        `change the real wait with this gate green (T-180; QA-7 g02/g03 on T-179).`,
+    );
+    return null;
+  }
+  return { ms: Number(rhs.replaceAll('_', '')), at: `${file}:${String(lineOf(decl))}` };
+}
+
+let groupDrainMs: number | null = null;
+const groupDrainReads: string[] = [];
+let groupDrainUnread = entrypointFiles.size === 0;
+for (const [file, stages] of [...entrypointFiles].sort(([a], [b]) => a.localeCompare(b))) {
+  const r = readGroupDrain(file);
+  if (r === null) {
+    groupDrainUnread = true;
+    continue;
+  }
+  groupDrainReads.push(
+    `${String(r.ms)} ms at ${r.at} (PID 1 of ${[...new Set(stages)].join(', ')})`,
+  );
+  groupDrainMs = Math.max(groupDrainMs ?? 0, r.ms);
+}
+if (groupDrainUnread) groupDrainMs = null;
+const groupDrainAt = groupDrainReads.join('; ');
+const graceFloorMs = groupDrainMs === null ? null : groupDrainMs + EXIT_MARGIN_MS;
+
+/**
+ * A compose duration in milliseconds, following Go's time.ParseDuration, which
+ * is what compose uses. `docker compose config` REFUSES a bare number ("must be
+ * a string") and a unit-less string ("missing unit in duration"), measured in
+ * state/EP-1/T-179.md — so both are refused here too, never read as seconds.
+ * It does NOT refuse everything compose refuses (QA-7): surrounding whitespace
+ * is trimmed, so `"30s "` / `" 30s"` / `"30s\t"` pass here while compose
+ * rejects the file. Harmless — compose then refuses at `svc up` — but the claim
+ * is only that a bare number and a unit-less string are refused.
+ */
+const DURATION_UNIT_MS: Readonly<Record<string, number>> = {
+  ns: 1e-6,
+  us: 1e-3,
+  µs: 1e-3,
+  μs: 1e-3,
+  ms: 1,
+  s: 1_000,
+  m: 60_000,
+  h: 3_600_000,
+};
+const parseDurationMs = (v: unknown): number | null => {
+  if (typeof v !== 'string') return null;
+  const s = v.trim();
+  if (s === '0') return 0;
+  if (!/^\+?(?:(?:\d+(?:\.\d*)?|\.\d+)(?:ns|us|µs|μs|ms|s|m|h))+$/.test(s)) return null;
+  let total = 0;
+  for (const m of s.matchAll(/(\d+(?:\.\d*)?|\.\d+)(ns|us|µs|μs|ms|s|m|h)/g)) {
+    total += Number(m[1]) * (DURATION_UNIT_MS[m[2] ?? ''] ?? Number.NaN);
+  }
+  return Number.isFinite(total) ? total : null;
+};
+
+/** Printed per service: `<file>=<declared>` for every file that declares one. */
+const graceSeen: string[] = [];
+for (const name of [...graceWhy.keys()].sort()) {
+  const why = [...(graceWhy.get(name) ?? [])].join('+');
+  const declaring = composedServices.filter((c) => c.svcs[name] !== undefined);
+  const inBase = base?.[name] !== undefined;
+  const mustDeclare = inBase ? declaring.filter((c) => c.rel === BASE_FILE) : declaring;
+  const seen: string[] = [];
+  for (const { rel, svcs } of declaring) {
+    const svc = svcs[name];
+    if (svc === undefined) continue;
+    const raw = svc['stop_grace_period'];
+    if (raw === undefined) {
+      if (mustDeclare.some((c) => c.rel === rel)) {
+        failures.push(
+          `${rel}: application service '${name}' (${why}) declares no stop_grace_period, ` +
+            `so it takes compose's 10 s default. Its PID 1 (${groupDrainAt === '' ? 'unread' : groupDrainAt}) may ` +
+            `wait until GROUP_DRAIN_MS${groupDrainMs === null ? '' : ` = ${String(groupDrainMs)} ms`} ` +
+            `after the first forwarded SIGTERM for the app's process group; docker's SIGKILL would land inside ` +
+            `that wait and the container would report 137 for a clean drain (T-179, TL-1; T-180). ` +
+            `Declare stop_grace_period${graceFloorMs === null ? '' : ` of at least ${String(Math.ceil(graceFloorMs / 1000))}s`} ` +
+            `${inBase ? `in ${BASE_FILE}, which every project applies` : `in ${rel}, which adds this service and may be the only file that does`}.`,
+        );
+      }
+      continue;
+    }
+    const ms = parseDurationMs(raw);
+    seen.push(`${rel.replace('docker/', '')}=${String(raw)}`);
+    if (ms === null || ms < 0) {
+      failures.push(
+        `${rel}: application service '${name}' declares stop_grace_period ` +
+          `${JSON.stringify(raw)}, which is not a non-negative compose duration ` +
+          `(a string such as '30s' or '1m' — compose refuses a bare number and a unit-less ` +
+          `string). The stop-grace rule (§7) refuses rather than guessing a unit.`,
+      );
+      continue;
+    }
+    if (graceFloorMs === null) continue; // the unreadable wait is already a failure
+    const wholeSecondsMs = Math.floor(ms / 1000) * 1000;
+    if (wholeSecondsMs < graceFloorMs) {
+      failures.push(
+        `${rel}: application service '${name}' (${why}) declares stop_grace_period ` +
+          `${String(raw)}, BELOW the floor of ${String(graceFloorMs)} ms = GROUP_DRAIN_MS ` +
+          `${String(groupDrainMs)} ms (${groupDrainAt}) + ${String(EXIT_MARGIN_MS)} ms exit ` +
+          `margin. docker's SIGKILL would land inside PID 1's group wait, and a clean drain ` +
+          `would report 137 (T-179, TL-1; T-180). Raise the grace, or lower the wait, in the same ` +
+          `change.` +
+          (wholeSecondsMs !== ms
+            ? ` (Judged as ${String(wholeSecondsMs / 1000)} s: docker's StopTimeout is whole seconds.)`
+            : ''),
+      );
+    }
+  }
+  graceSeen.push(`${name}[${why}; ${seen.length === 0 ? 'none declared' : seen.join(' ')}]`);
+}
+if (graceWhy.size === 0) {
+  failures.push(
+    `the stop-grace rule (§7) judged ZERO application services. It derives them from ` +
+      `apps/*, the built-by label, every application build and every service running one of ` +
+      `their images, over every composed file — and found none, so it would report a pass ` +
+      `while asserting nothing (PROTOCOL §5.1).`,
+  );
+}
+
+console.log(
+  `  stop_grace_period floor (§7)    ` +
+    (graceFloorMs === null
+      ? '(unreadable — see the failure above)'
+      : `${String(graceFloorMs)} ms = GROUP_DRAIN_MS ${String(groupDrainMs)} ms + ${String(EXIT_MARGIN_MS)} ms exit margin; read ${groupDrainAt}, its one use \`${DEADLINE_STATEMENT}\` held (T-180)`),
+);
+console.log(
+  `  PID 1 resolved, per service (§7b, T-182)  ${String(pid1Resolved.length)} of ` +
+    `${String(pid1Attempted)} (composed file, application service) pair(s): ` +
+    `${pid1Resolved.join(' ')}` +
+    `  (WHICH FILE: the image ENTRYPOINT/CMD, compose entrypoint:/command:/init:/working_dir:/` +
+    `stop_signal:/env_file:, NODE_OPTIONS, every mount target, and the COPY/ADD that puts the ` +
+    `script there — anything unresolved is REFUSED, never defaulted. WHAT PID 1 IS: an ` +
+    `ALLOW-LIST over compose KEYS — only these on an application service ` +
+    `[${[...PID1_MODELLED_KEYS].sort().join(' ')} | ${[...PID1_NEUTRAL_KEYS].sort().join(' ')}], ` +
+    `anything else REFUSED as unclassified — plus a DENY-LIST over environment NAMES: the ` +
+    `MEASURED loader namespaces [LD_* DYLD_* NODE_* OPENSSL_*] and [PATH SSL_CERT_FILE ` +
+    `SSL_CERT_DIR CTLOG_FILE], less NODE_OPTIONS and NODE_ENV, EACH READ AS THE COMPOSED FILE ` +
+    `SPELLS IT. NOTE THE ASYMMETRY, BOTH HALVES OF IT: a NAME OUTSIDE that deny-list is ` +
+    `ADMITTED WITHOUT BEING READ — OPENSSL_CONF was, until rework 2 measured it loading a ` +
+    `shared object into PID 1 (OE-44) — AND a name ON it is admitted too when the committed ` +
+    `spelling does not carry it, because §7d reads the NAME AS THE FILE SPELLS IT: a list-form ` +
+    `environment: entry whose \${...} interpolation splits the namespace prefix is unread ` +
+    `(MEASURED with the variable UNSET: - L\${X}D_PRELOAD= and - PAT\${X}H= reach GATE PASS ` +
+    `with this line counting the pair as RESOLVED, while compose resolves LD_PRELOAD and ` +
+    `PATH — T-182 § tech-lead TL-1). T-183 is the allow-list that ends BOTH halves — ` +
+    `T-182 rework 2)`,
+);
+console.log(
+  `  app services held to it (§7)    ${String(graceWhy.size)}: ${graceSeen.join(' ')}` +
+    `  (derived: contract-set = apps/* ∪ built-by label; app-build; runs <an app image> — T-179)`,
+);
 
 console.log(
   `  pins (from .tool-versions)      ` +

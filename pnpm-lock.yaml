@@ -67,6 +67,9 @@ importers:
       '@kinvara/integration-kit':
         specifier: workspace:*
         version: link:../../packages/integration-kit
+      '@kinvara/observability':
+        specifier: workspace:*
+        version: link:../../packages/observability
       '@nestjs/common':
         specifier: 11.2.3
         version: 11.2.3(reflect-metadata@0.2.2)(rxjs@7.8.2)(supports-color@7.2.0)
@@ -113,6 +116,9 @@ importers:
       '@kinvara/domain-types':
         specifier: workspace:*
         version: link:../domain-types
+      '@kinvara/i18n':
+        specifier: workspace:*
+        version: link:../i18n
       zod:
         specifier: 4.5.4
         version: 4.5.4
@@ -167,13 +173,13 @@ importers:
 
   packages/i18n:
     dependencies:
+      '@formatjs/icu-messageformat-parser':
+        specifier: 3.5.17
+        version: 3.5.17
       intl-messageformat:
         specifier: 11.2.14
         version: 11.2.14
     devDependencies:
-      '@formatjs/icu-messageformat-parser':
-        specifier: 3.5.17
-        version: 3.5.17
       prettier:
         specifier: 3.9.6
         version: 3.9.6
@@ -189,6 +195,15 @@ importers:
       '@kinvara/domain-types':
         specifier: workspace:*
         version: link:../domain-types
+    devDependencies:
+      vite:
+        specifier: 8.2.2
+        version: 8.2.2(@types/node@26.4.1)(esbuild@0.28.2)(tsx@4.23.13)(yaml@2.8.1)
+      vitest:
+        specifier: 5.0.0
+        version: 5.0.0(@types/node@26.4.1)(@vitest/coverage-v8@5.0.0)(vite@8.2.2(@types/node@26.4.1)(esbuild@0.28.2)(tsx@4.23.13)(yaml@2.8.1))
+
+  packages/observability:
     devDependencies:
       vite:
         specifier: 8.2.2

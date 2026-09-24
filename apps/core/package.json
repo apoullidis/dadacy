@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "NestJS 11 / Fastify — the modular monolith API (SD §DH-1). HTTP scaffold + the single problem+json exception filter: T-135.",
+  "description": "NestJS 11 / Fastify \u2014 the modular monolith API (SD \u00a7DH-1). HTTP scaffold + the single problem+json exception filter: T-135.",
   "scripts": {
     "start": "node src/main.ts",
     "build": "node tools/build.ts",
@@ -15,6 +15,7 @@
     "@kinvara/contracts": "workspace:*",
     "@kinvara/domain-types": "workspace:*",
     "@kinvara/integration-kit": "workspace:*",
+    "@kinvara/observability": "workspace:*",
     "@nestjs/common": "11.2.3",
     "@nestjs/core": "11.2.3",
     "@nestjs/platform-fastify": "11.2.3",

@@ -1,0 +1,144 @@
+# Kinvara — the HEAVY stage, mirrored from SD §QD-4's "PR (heavy)" row. T-006.
+#
+# THIS FILE IS AUTHORED AND SCHEMA-VALIDATED. IT IS NEVER EXECUTED.
+#
+# Same standing as .github/workflows/pr.yml and as Terraform: there is no git
+# remote on this machine and none may be added (PROTOCOL §3), so GitHub Actions
+# never runs here. `pnpm gate:workflow` validates this file's structure (W1, W2,
+# W3, W6, W7) and holds its two matrices against scripts/gates/lib/heavy-roster.ts
+# in both directions (W8). NOTHING HERE PROVES A JOB WOULD PASS — `pnpm
+# gate:heavy` is the only evidence this build accepts that these gates block
+# (PROTOCOL §5.1: "A gate whose only proof is a green YAML file is not wired to
+# anything").
+#
+# THE AUTHORITY IS `pnpm gate:heavy`, NOT THIS FILE.
+#
+# ---------------------------------------------------------------------------
+# WHAT THIS FILE WOULD NEED THAT pr.yml DOES NOT, stated so the difference is
+# recorded rather than discovered on the day someone first has a runner:
+#
+#   gate:constraint-suite     Testcontainers. Needs a Docker daemon the job can
+#                             reach. Locally that is `scripts/dev --docker`,
+#                             which is the ONLY entry point given the socket
+#                             (T-034 § contract §2; `scripts/svc run` refuses it
+#                             by name). ubuntu-latest runners have a daemon; the
+#                             image it needs is kinvara/postgres:18-3.6-kinvara1,
+#                             which is BUILT here (docker/postgres.Dockerfile),
+#                             so a runner would have to build it first. The
+#                             harness never pulls (T-115 § contract §5).
+#   gate:drizzle-parity       Needs a real database. The `services:` block below
+#                             is the runner equivalent of `scripts/svc up
+#                             <ticket> db --verify`, and it is pinned to the
+#                             tag docker/compose.yml declares, because compose
+#                             and this file must never name two Postgres images
+#                             (DOCKER.md §1).
+#   gate:db-introspect-suite  The same database, plus a clean working tree —
+#                             the suite refuses a dirty one before it starts.
+#
+# Locally those are TWO INVOCATIONS and cannot be one, because the socket and a
+# ticket's `kinvara-int` may not be attached to the same toolbox (DOCKER.md §7
+# rule b). `scripts/gates/heavy.ts` prints both commands and refuses to report a
+# pass for a segment it did not run.
+
+name: Heavy
+
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: heavy-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Every BLOCKING and BLOCKED sub-gate in scripts/gates/lib/heavy-roster.ts,
+  # one matrix leg each. fail-fast is off for the reason this ticket's
+  # acceptance row names in terms: ONE FAILURE MUST NOT MASK THE OTHERS.
+  #
+  #   gate:db-introspect-suite is BLOCKED, not BLOCKING: it is a known, owned
+  #   red (OD-154, owner T-165, PARKED awaiting OE-37) pinned to its exact
+  #   failure, so it fails this stage if it changes in EITHER direction. On a
+  #   runner it would be red today, which is correct and is the point of the
+  #   class.
+  blocking:
+    name: heavy gate (blocking)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: kinvara/postgres:18-3.6-kinvara1
+        env:
+          POSTGRES_USER: app
+          POSTGRES_PASSWORD: app_local_dev_only
+          POSTGRES_DB: kinvara
+        options: >-
+          --health-cmd "pg_isready -U app -d kinvara"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      PGHOST: postgres
+      PGPORT: '5432'
+      PGUSER: app
+      PGPASSWORD: app_local_dev_only
+      PGDATABASE: kinvara
+      KINVARA_PROJECT: github-heavy
+    strategy:
+      fail-fast: false
+      matrix:
+        gate:
+          - gate:constraint-suite
+          - gate:drizzle-parity
+          - gate:db-introspect-suite
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .tool-versions
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run ${{ matrix.gate }}
+
+  # The three sub-gates SD's heavy row names that have NOTHING TO RUN AGAINST.
+  # `continue-on-error: true` mirrors the local aggregate exactly: `gate:heavy`
+  # runs these, asserts each fails with the GATE NOT YET SUPPLIED banner, and
+  # does not let their failure fail the stage — while FAILING if one of them
+  # starts passing without being promoted. They are listed, never omitted.
+  #
+  #   gate:lighthouse            T-051 — frontend-developer
+  #   gate:axe                   T-051 — frontend-developer
+  #   gate:playwright-journeys   T-120 — qa-verification
+  #
+  # All three wait on the same fact: `apps/web` is a declared placeholder
+  # (T-001 — topology only, no source, no dependencies, no scripts) owned by
+  # `frontend-developer`, so there is no page to load, no flow to scan and no
+  # journey to drive. T-050, T-051 and T-120 are themselves blocked. W8
+  # compares both matrices against the roster's classes, so supplying one of
+  # them is two edits or gate:workflow reds.
+  advisory:
+    name: heavy gate (not yet supplied)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        gate:
+          - gate:lighthouse
+          - gate:axe
+          - gate:playwright-journeys
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .tool-versions
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run ${{ matrix.gate }}

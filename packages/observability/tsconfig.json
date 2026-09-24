@@ -1,0 +1,6 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "//": "SD §DH-2 strict baseline. The repo-wide typecheck runs from the root tsconfig.json, which globs packages/**/*.ts, so src/ and tools/ are both in `pnpm -w typecheck`.",
+  "extends": "../../tsconfig.base.json",
+  "include": ["src/**/*", "tools/**/*"]
+}
