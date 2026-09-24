@@ -71,6 +71,16 @@
 # no check at all and the run passed. The catalogue read now also takes every relation of kind
 # r/p/v/m/f in those schemas whose oid is >= 16384, so it is I-SCOPE. Each case plants one as the
 # superuser (two need allow_system_table_mods) and is then re-run with main's schema filter restored.
+# T-165 rework 1 — K150a, K172–K180 (OD-155, OD-156): every partition's own constraints, indexes,
+# triggers and policies are read, not only the template's; each `m` variant restores the old reading.
+# T-165 rework 2 (OE-37 (A)) — K181–K189. K181/K182a/K182b (OD-157): the mirror — every constraint and
+# index the PARENT owns needs a counterpart on EVERY partition, including after an attach that changes
+# the template; each `m` variant restores the template-only mirror. K183–K186 (OD-158): a RULE, an
+# extended statistics object and a non-default REPLICA IDENTITY on a partition are read (never cloned
+# by PostgreSQL, so always the partition's own); each `m` variant removes that branch of the read.
+# K187 is the control (the same three on the PARENT), K188 a stated bound (a partition disabling its
+# cloned trigger is NOT read). K189: the merge with T-153 — step 5a's partition exclusion removed.
+# (T-165's cases were K50–K80 until rework 2 renumbered them by +100 past T-153's K50–K62r.)
 #
 #   cd /home/alex/projects/nanny/app && ./scripts/svc run <ticket> -- bash scripts/negative-tests/db-introspect.sh
 #
@@ -1181,22 +1191,22 @@ NO_POLICY_READ_FROM="                              FROM pg_policy pol
 NO_POLICY_READ_TO="                              FROM pg_policy pol
                              WHERE false AND pol.polrelid = ch.oid) m))"
 
-# write_judge <id> <desc> <expected exit> <expected tag set or 'none'> <name that must be absent from db/schema.ts>
+# write_judge <id> <desc> <expected exit> <expected tag set or 'none'> <name> [times it must be in db/schema.ts, default 0]
 write_judge() {
-  local id=$1 desc=$2 want_code=$3 want_tags=$4 absent=$5 code banners tags n v
+  local id=$1 desc=$2 want_code=$3 want_tags=$4 absent=$5 want_n=${6:-0} code banners tags n v
   node scripts/db-introspect.ts --write >"$OUT" 2>&1
   code=$?
   total=$((total + 1))
   banners=$(grep -cE '^GATE (PASS|FAIL|CRASH)  db:introspect($| — |: )' "$OUT")
   tags=$(grep -oE '^  - \[I-[A-Z]+\]' "$OUT" | sed -E 's/^  - \[(.*)\]$/\1/' | sort -u | tr '\n' ' ' | sed 's/ $//')
   n=$(grep -c -- "$absent" "$SCHEMA")
-  if [ "$code" -eq "$want_code" ] && [ "$banners" -eq 1 ] && [ "${tags:-none}" = "$want_tags" ] && [ "$n" -eq 0 ]; then
+  if [ "$code" -eq "$want_code" ] && [ "$banners" -eq 1 ] && [ "${tags:-none}" = "$want_tags" ] && [ "$n" -eq "$want_n" ]; then
     v=ok
   else
     v=BAD
     bad=$((bad + 1))
   fi
-  printf '%-4s %s  %s\n       write exit %s (expected %s); banners %s; tags %s (expected %s); "%s" in db/schema.ts: %s (expected 0)\n' "$v" "$id" "$desc" "$code" "$want_code" "$banners" "${tags:-none}" "$want_tags" "$absent" "$n"
+  printf '%-4s %s  %s\n       write exit %s (expected %s); banners %s; tags %s (expected %s); "%s" in db/schema.ts: %s (expected %s)\n' "$v" "$id" "$desc" "$code" "$want_code" "$banners" "${tags:-none}" "$want_tags" "$absent" "$n" "$want_n"
   grep -E '^  - \[|^GATE |^  partitions: ' "$OUT" | cut -c1-240 | sed 's/^/       /'
 }
 
@@ -1226,13 +1236,15 @@ partlocal_case() {
   echo "   plant landed, read from the catalogue: [$got]"
   node scripts/db-introspect.ts --check >"$OUT" 2>&1
   judge "$id" "$desc" I-PART "$?" "$re"
-  if [ "$mkind" = no-policy-read ]; then
-    mutate "$PARTITION" "$NO_POLICY_READ_FROM" "$NO_POLICY_READ_TO"
-  else
-    mutate "$PARTITION" "$TEMPLATE_ONLY_FROM" "$TEMPLATE_ONLY_TO"
-  fi
+  case "$mkind" in
+    no-policy-read) mutate "$PARTITION" "$NO_POLICY_READ_FROM" "$NO_POLICY_READ_TO" ;;
+    no-rule-read) mutate "$PARTITION" "$NO_RULE_READ_FROM" "$NO_RULE_READ_TO" ;;
+    no-statistics-read) mutate "$PARTITION" "$NO_STATS_READ_FROM" "$NO_STATS_READ_TO" ;;
+    no-replica-identity-read) mutate "$PARTITION" "$NO_REPLIDENT_READ_FROM" "$NO_REPLIDENT_READ_TO" ;;
+    *) mutate "$PARTITION" "$TEMPLATE_ONLY_FROM" "$TEMPLATE_ONLY_TO" ;;
+  esac
   git diff -U0 -- "$PARTITION" | grep -E '^[-+][^-+]' | sed 's/^/   mutation:   /'
-  write_judge "${id}m" "(T-165 r1) RED BEFORE: the $mkind reading restored (asserted above), which is what the step did before this rework" "$mcode" "$mtags" "$absent"
+  write_judge "${id}m" "(T-165) RED BEFORE: the $mkind reading restored (asserted above), which is what the step did before the rework that added the case" "$mcode" "$mtags" "$absent"
   restore
 }
 
@@ -1326,6 +1338,147 @@ got=$(psql -X -A -t -q -c "SELECT c.relname || '/' || pol.polname FROM pg_policy
 [ "$got" = "t165_part_q2/t165_part_q2_only" ] || abort "K180: the policy is no longer there: [$got]"
 echo "   attach landed: partitions [$(psql -X -A -t -q -c "SELECT string_agg(c.relname, ',' ORDER BY c.relname) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relispartition AND c.relkind = 'r' AND c.relname LIKE 't165\_part\_%'")], the template is now t165_part_a0; pg_policy STILL [$got]"
 check K180 "(T-165 r1, OD-155) QA's A17 stage 2: a partition that sorts FIRST attached, so the template changes — the policy on t165_part_q2 is refused just the same" I-PART 'partition "t165_part_q2" has its own policy "t165_part_q2_only"'
+
+echo "== T-165 rework 2 (OE-37 (A)): the mirror is read on EVERY partition (OD-157); a partition's rule, statistics object and replica identity are read (OD-158)"
+# OD-157: until rework 2 the parent -> partition mirror (every constraint and index the PARENT owns
+# must have a counterpart) was built from the TEMPLATE's names alone. qa-verification measured an
+# index the parent has and a NON-template partition lacks passing twice (E19), and a refusal on the
+# template disappearing when a partition that sorts first was attached (T1). K181 and K182a/b are
+# those two shapes; each `m` variant restores the template-only mirror and shows the defect writing.
+MIRROR_TEMPLATE_ONLY_FROM="    for (const p of local) {
+      const counterparts = new Set(p.names.map((n) => n.to).filter((t) => t !== null));"
+MIRROR_TEMPLATE_ONLY_TO="    for (const p of local.filter((q) => q.name === template.name)) {
+      const counterparts = new Set(p.names.map((n) => n.to).filter((t) => t !== null));"
+# parent_index_children: the partitions whose index is attached to the parent's t165_part_tag_idx,
+# and whether the parent's index is valid, read from the catalogue (pg_inherits over index relations).
+parent_index_children() {
+  psql -X -A -t -q -c "SELECT coalesce(string_agg(tc.relname, ',' ORDER BY tc.relname), '') || '/' || (SELECT i.indisvalid::text FROM pg_index i JOIN pg_class ci ON ci.oid = i.indexrelid WHERE ci.relname = 't165_part_tag_idx') FROM pg_inherits h JOIN pg_class ci ON ci.oid = h.inhparent JOIN pg_index x ON x.indexrelid = h.inhrelid JOIN pg_class tc ON tc.oid = x.indrelid WHERE ci.relname = 't165_part_tag_idx'"
+}
+# mirror_plant <partition that gets the child index>: the parent with q1 (the template) and q2, an
+# index on the parent ONLY, and a child index created and ATTACHed on that one partition alone.
+mirror_plant() {
+  plant_two_partitions "CREATE INDEX t165_part_tag_idx ON ONLY public.t165_part (note);
+CREATE INDEX t165_part_$1_tag_idx ON public.t165_part_$1 (note);
+ALTER INDEX public.t165_part_tag_idx ATTACH PARTITION public.t165_part_$1_tag_idx;" ""
+  sed 's/^/   plant up:   /' "$UP"
+  node scripts/db-migrate.ts up >"$OUT.p" 2>&1 || { cat "$OUT.p"; abort "mirror_plant $1: the plant did not apply"; }
+}
+
+mirror_plant q1
+got=$(parent_index_children)
+[ "$got" = "t165_part_q1/false" ] || abort "K181: the plant did not land: parent index children/valid [$got], expected [t165_part_q1/false]"
+echo "   plant landed, read from the catalogue: the parent's index is attached on [t165_part_q1] only, and is valid=false"
+node scripts/db-introspect.ts --check >"$OUT" 2>&1
+judge K181 "(T-165 r2, OD-157) QA's E19: an index the PARENT has that the NON-template partition lacks: refused, naming that partition" I-PART "$?" 'it owns "t165_part_tag_idx", which partition "t165_part_q2" has no counterpart for'
+mutate "$PARTITION" "$MIRROR_TEMPLATE_ONLY_FROM" "$MIRROR_TEMPLATE_ONLY_TO"
+git diff -U0 -- "$PARTITION" | grep -E '^[-+][^-+]' | sed 's/^/   mutation:   /'
+write_judge K181m "(T-165 r2) RED BEFORE: the template-only mirror restored (asserted above), which is what the step did before rework 2: the write succeeds, and the parent's index is rendered as though every partition had it" 0 none t165_part_tag_idx 1
+restore
+
+mirror_plant q2
+got=$(parent_index_children)
+[ "$got" = "t165_part_q2/false" ] || abort "K182a: the plant did not land: parent index children/valid [$got], expected [t165_part_q2/false]"
+echo "   plant landed, read from the catalogue: the parent's index is attached on [t165_part_q2] only; the TEMPLATE t165_part_q1 lacks it"
+node scripts/db-introspect.ts --check >"$OUT" 2>&1
+judge K182a "(T-165 r2, OD-157) QA's T1 stage 1: the same index attached on the NON-template partition only, so the TEMPLATE lacks it: refused, naming the template" I-PART "$?" 'it owns "t165_part_tag_idx", which partition "t165_part_q1" has no counterpart for'
+psql -X -q -v ON_ERROR_STOP=1 -c "CREATE TABLE public.t165_part_a0 PARTITION OF public.t165_part FOR VALUES FROM (TIMESTAMPTZ '2025-01-01Z') TO (TIMESTAMPTZ '2026-01-01Z')" >/dev/null || abort "K182b: the attach failed"
+got=$(psql -X -A -t -q -c "SELECT string_agg(c.relname, ',' ORDER BY c.relname) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relispartition AND c.relkind = 'r' AND c.relname LIKE 't165\_part\_%'")
+[ "$got" = "t165_part_a0,t165_part_q1,t165_part_q2" ] || abort "K182b: the attach did not land: [$got]"
+got=$(parent_index_children)
+[ "$got" = "t165_part_a0,t165_part_q2/false" ] || abort "K182b: after the attach the parent's index children/valid are [$got], expected [t165_part_a0,t165_part_q2/false]"
+echo "   attach landed: partitions [t165_part_a0,t165_part_q1,t165_part_q2], the template is now t165_part_a0 (PostgreSQL gave it a child index); the parent's index is attached on [t165_part_a0,t165_part_q2], so t165_part_q1 STILL lacks it"
+node scripts/db-introspect.ts --check >"$OUT" 2>&1
+judge K182b "(T-165 r2, OD-157) QA's T1 stage 2: a partition that sorts FIRST attached, so the template changes and nothing else does: STILL refused, naming t165_part_q1" I-PART "$?" 'it owns "t165_part_tag_idx", which partition "t165_part_q1" has no counterpart for'
+mutate "$PARTITION" "$MIRROR_TEMPLATE_ONLY_FROM" "$MIRROR_TEMPLATE_ONLY_TO"
+git diff -U0 -- "$PARTITION" | grep -E '^[-+][^-+]' | sed 's/^/   mutation:   /'
+write_judge K182m "(T-165 r2) RED BEFORE: the template-only mirror restored (asserted above): the attach that changed the template makes the refusal disappear and the write succeeds (QA's T1)" 0 none t165_part_tag_idx 1
+restore
+
+# OD-158: a RULE, an extended statistics object and a REPLICA IDENTITY on a partition were read by
+# nothing and named in no list. PostgreSQL 18 clones none of them from the parent (rework 2, M1), so
+# each is always the partition's own, exactly like a policy. Each case plants one on the NON-template
+# partition; each `m` variant removes that one branch of the partition read.
+NO_RULE_READ_FROM="                              FROM pg_rewrite r
+                             WHERE r.ev_class = ch.oid"
+NO_RULE_READ_TO="                              FROM pg_rewrite r
+                             WHERE false AND r.ev_class = ch.oid"
+NO_STATS_READ_FROM="                              FROM pg_statistic_ext s
+                             WHERE s.stxrelid = ch.oid"
+NO_STATS_READ_TO="                              FROM pg_statistic_ext s
+                             WHERE false AND s.stxrelid = ch.oid"
+NO_REPLIDENT_READ_FROM="                             WHERE ch.relreplident <> 'd') m))"
+NO_REPLIDENT_READ_TO="                             WHERE false AND ch.relreplident <> 'd') m))"
+
+partlocal_case K183 "(T-165 r2, OD-158) a RULE on the non-template partition (QA's E3): refused" \
+  "CREATE RULE t165_part_q2_rule AS ON DELETE TO public.t165_part_q2 DO INSTEAD NOTHING;" \
+  "" \
+  "SELECT c.relname || '/' || r.rulename FROM pg_rewrite r JOIN pg_class c ON c.oid = r.ev_class WHERE c.relname LIKE 't165\_part%'" \
+  "t165_part_q2/t165_part_q2_rule" \
+  'partition "t165_part_q2" has its own rule "t165_part_q2_rule", which the parent has no counterpart for \(PostgreSQL clones no rule to a partition' \
+  0 none t165_part_q2_rule no-rule-read
+
+partlocal_case K184 "(T-165 r2, OD-158) an extended STATISTICS object on the non-template partition (QA's E9): refused" \
+  "CREATE STATISTICS public.t165_part_q2_stat ON id, note FROM public.t165_part_q2;" \
+  "" \
+  "SELECT c.relname || '/' || s.stxname FROM pg_statistic_ext s JOIN pg_class c ON c.oid = s.stxrelid WHERE c.relname LIKE 't165\_part%'" \
+  "t165_part_q2/t165_part_q2_stat" \
+  'partition "t165_part_q2" has its own statistics object "t165_part_q2_stat", which the parent has no counterpart for' \
+  0 none t165_part_q2_stat no-statistics-read
+
+partlocal_case K185 "(T-165 r2, OD-158) REPLICA IDENTITY FULL on the non-template partition (QA's E16): refused" \
+  "ALTER TABLE public.t165_part_q2 REPLICA IDENTITY FULL;" \
+  "" \
+  "SELECT string_agg(relname || '=' || relreplident, ',' ORDER BY relname) FROM pg_class WHERE relname LIKE 't165\_part%' AND relkind IN ('r', 'p')" \
+  "t165_part=d,t165_part_q1=d,t165_part_q2=f" \
+  'partition "t165_part_q2" has its own replica identity "FULL", which the parent has no counterpart for' \
+  0 none 'REPLICA IDENTITY' no-replica-identity-read
+
+partlocal_case K186 "(T-165 r2, OD-158) REPLICA IDENTITY USING INDEX on the TEMPLATE partition, the same answer: refused" \
+  "ALTER TABLE public.t165_part_q1 REPLICA IDENTITY USING INDEX t165_part_q1_pkey;" \
+  "" \
+  "SELECT string_agg(relname || '=' || relreplident, ',' ORDER BY relname) FROM pg_class WHERE relname LIKE 't165\_part%' AND relkind IN ('r', 'p')" \
+  "t165_part=d,t165_part_q1=i,t165_part_q2=d" \
+  'partition "t165_part_q1" has its own replica identity "USING INDEX", which the parent has no counterpart for' \
+  0 none 'REPLICA IDENTITY' no-replica-identity-read
+
+# CONTROL, and a stated bound: the same three on the PARENT reach no partition (M1), so the read of
+# partitions finds nothing to refuse and the write succeeds. What it also shows: none of the three is
+# described by db/schema.ts for the parent either, as for every table (T-138 § contract §6).
+plant_two_partitions "ALTER TABLE public.t165_part REPLICA IDENTITY FULL;
+CREATE RULE t165_part_rule AS ON DELETE TO public.t165_part DO INSTEAD NOTHING;
+CREATE STATISTICS public.t165_part_stat ON id, note FROM public.t165_part;" ""
+sed 's/^/   plant up:   /' "$UP"
+node scripts/db-migrate.ts up >"$OUT.p" 2>&1 || { cat "$OUT.p"; abort "K187: the plant did not apply"; }
+got=$(psql -X -A -t -q -c "SELECT string_agg(c.relname || '=' || c.relreplident || '/' || (SELECT count(*) FROM pg_rewrite r WHERE r.ev_class = c.oid) || '/' || (SELECT count(*) FROM pg_statistic_ext s WHERE s.stxrelid = c.oid), ',' ORDER BY c.relname) FROM pg_class c WHERE c.relname LIKE 't165\_part%' AND c.relkind IN ('r', 'p')")
+[ "$got" = "t165_part=f/1/1,t165_part_q1=d/0/0,t165_part_q2=d/0/0" ] || abort "K187: the plant did not land: [$got]"
+echo "   plant landed, read from the catalogue (relreplident/rules/statistics): [$got]"
+write_judge K187 "(T-165 r2) CONTROL: a rule, a statistics object and REPLICA IDENTITY FULL on the PARENT reach no partition, so nothing is refused; none is described by db/schema.ts" 0 none t165_part_rule
+restore
+
+# BOUND, stated in the contract's residue (R2): a partition can DISABLE the trigger it was cloned from
+# its parent. pg_trigger.tgenabled is not read, so this changes what DML on that partition does and
+# the check passes. Kept as a case so the residue is measured, not assumed.
+plant_two_partitions "CREATE FUNCTION public.t165_noop() RETURNS trigger LANGUAGE plpgsql AS \$fn\$ BEGIN RETURN NEW; END \$fn\$;
+CREATE TRIGGER t165_part_trg BEFORE INSERT ON public.t165_part FOR EACH ROW EXECUTE FUNCTION public.t165_noop();
+ALTER TABLE public.t165_part_q2 DISABLE TRIGGER t165_part_trg;" "DROP FUNCTION public.t165_noop();"
+sed 's/^/   plant up:   /' "$UP"
+node scripts/db-migrate.ts up >"$OUT.p" 2>&1 || { cat "$OUT.p"; abort "K188: the plant did not apply"; }
+got=$(psql -X -A -t -q -c "SELECT string_agg(c.relname || '=' || t.tgenabled, ',' ORDER BY c.relname) FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid WHERE t.tgname = 't165_part_trg'")
+[ "$got" = "t165_part=O,t165_part_q1=O,t165_part_q2=D" ] || abort "K188: the plant did not land: [$got]"
+echo "   plant landed, read from the catalogue (tgenabled): [$got]"
+write_judge K188 "(T-165 r2) BOUND: a partition DISABLEs the trigger cloned from its parent; tgenabled is not read, so the write succeeds (R2's residue)" 0 none DISABLE
+restore
+
+echo "== T-165 rework 2: the merge with T-153 — a partition's int8 columns are held through its parent"
+# T-153's per-column int8 match (step 5a) reads every relation of kind r/p/v/m/f in public, which
+# includes partitions; step 4b removes them from the rendering. Measured on the merge commit 32eab2d:
+# every partition int8 column was then [I-MAP] "the rendering declares no relation". K150 is the
+# control (its fixture has `seq bigserial` and `amount bigint` on the parent); K189 removes the
+# exclusion and the same fixture is refused exactly that way.
+policy_fixture "$PART_FIXTURE"
+mutate "$SCRIPT" "  const partitionNames = new Set(partitions.map((r) => r.name));" "  const partitionNames = new Set<string>();"
+git diff -U0 -- "$SCRIPT" | grep -E '^[-+][^-+]' | sed 's/^/   mutation:   /'
+check K189 "(T-165 r2) RED BEFORE: step 5a's partition exclusion removed, so each partition's int8 column is matched on its own: refused" I-MAP 'int8 column "t165_part_q1"."seq" but the rendering declares no relation "t165_part_q1"'
 
 echo "== T-153 (OD-107): bigint in drizzle's bigint mode, counted against the catalogue; geometry admitted only as a scalar 2D point"
 # The plant: an identity PK, an FK to an identity PK, NOT NULL, nullable, DEFAULT 0, a bigint[] with a

@@ -33,6 +33,9 @@ CREATE POLICY t165_part_omega ON public.t165_part FOR INSERT TO app_rw WITH CHEC
 -- expect: index("t165_part_when_idx")
 -- expect: check("t165_part_nonneg_ck", sql`amount >= 0`)
 -- expect: pgSequence("t165_part_seq_seq"
+-- The parent's int8 columns in drizzle's bigint mode (T-153 LIVE §1; held through the parent, T-165 rework 2):
+-- expect: amount: bigint({ mode: "bigint" }).notNull(),
+-- absent: mode: "number"
 -- The parent's policies, which no partition carries, as pg_policy has them:
 -- expect: pgPolicy("t165_part_zulu", { as: "permissive", for: "select", to: ["app_rw"], using: sql`(amount > 0)` })
 -- expect: pgPolicy("t165_part_omega", { as: "permissive", for: "insert", to: ["app_rw"], withCheck: sql`(amount > 1)`  })
