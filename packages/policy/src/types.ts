@@ -269,6 +269,20 @@ export interface ResourceRef {
   /** SA §SA-4 I-5: the second, different actor who has countersigned. */
   readonly countersignedBy?: AccountId | undefined;
   /**
+   * SA §SA-4 I-5, clause (b), as `decisions.md` OE-21 ruled it (`T-030`): the
+   * roles the COUNTERSIGNER holds, as the caller read them from
+   * `account_role` (unrevoked rows). `four_eyes` allows only when this is an
+   * actual array containing exactly `'ts_senior'`; absent, junk or any other
+   * role set denies with `four_eyes_required`.
+   *
+   * This is the DETECTIVE half. It checks what the caller says the
+   * countersigner holds, and a caller can say anything: the INVARIANT is the
+   * database trigger `trg_approval_four_eyes` on `approval` (migration
+   * `0007`), which reads `account_role` itself and refuses a countersignature
+   * without an unrevoked `ts_senior` (KV052). PROTOCOL §9.1.
+   */
+  readonly countersignerRoles?: readonly Role[] | undefined;
+  /**
    * A block between the two parties suppresses every decision on the pair.
    *
    * Read as "not absent and not explicitly `false`" (TL-A1), so a truthy

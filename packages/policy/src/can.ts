@@ -114,7 +114,14 @@ function breakGlassActive(actor: Actor, ctx: PolicyContext): boolean {
  */
 
 /**
- * SA §SA-4 I-5: the second actor must differ from the first.
+ * `decisions.md` OE-21 (`T-030`): the ONLY role whose countersignature
+ * satisfies SA §SA-4 I-5, whoever performed the action.
+ */
+const COUNTERSIGNING_ROLE: Role = 'ts_senior';
+
+/**
+ * SA §SA-4 I-5: the second actor must differ from the first — clause (a) —
+ * AND hold `ts_senior` — clause (b), `T-030`, OE-21.
  *
  * `T-134`: this was `countersignedBy === undefined` and then a bare `!==`, and
  * it was the worst member of the family because it needed only ONE junk field,
@@ -124,9 +131,20 @@ function breakGlassActive(actor: Actor, ctx: PolicyContext): boolean {
  * including `safeguarding_referral#make` and `retention_run#approve`. Six
  * spellings allowed; measured in § Evidence B2. `differentId` requires both
  * ends to be well-formed before it will call them different.
+ *
+ * `T-030`: until then this read no role, so any well-formed second account —
+ * a parent's, a sitter's — satisfied four-eyes on all nine `F4` cells (OD-66).
+ * The role list is caller-supplied, so it is read as `unknown` and must be an
+ * actual array holding exactly `'ts_senior'`: a string `'ts_senior'` (whose
+ * `.includes` would match), `['TS_SENIOR']`, an array-like object, `null` and
+ * absence all deny. This is DETECTIVE: the database trigger on `approval`
+ * (migration `0007`) is the invariant, and it reads `account_role` itself.
  */
 function countersigned(actor: Actor, resource: ResourceRef): boolean {
-  return differentId(resource.countersignedBy, actor.accountId);
+  if (!differentId(resource.countersignedBy, actor.accountId)) return false;
+  const roles: unknown = resource.countersignerRoles;
+  if (!Array.isArray(roles)) return false;
+  return (roles as readonly unknown[]).includes(COUNTERSIGNING_ROLE);
 }
 
 /**
