@@ -1432,7 +1432,7 @@ partlocal_case K184 "(T-165 r2, OD-158) an extended STATISTICS object on the non
 partlocal_case K185 "(T-165 r2, OD-158) REPLICA IDENTITY FULL on the non-template partition (QA's E16): refused" \
   "ALTER TABLE public.t165_part_q2 REPLICA IDENTITY FULL;" \
   "" \
-  "SELECT string_agg(relname || '=' || relreplident, ',' ORDER BY relname) FROM pg_class WHERE relname LIKE 't165\_part%' AND relkind IN ('r', 'p')" \
+  "SELECT string_agg(relname || '=' || relreplident::text, ',' ORDER BY relname) FROM pg_class WHERE relname LIKE 't165\_part%' AND relkind IN ('r', 'p')" \
   "t165_part=d,t165_part_q1=d,t165_part_q2=f" \
   'partition "t165_part_q2" has its own replica identity "FULL", which the parent has no counterpart for' \
   0 none 'REPLICA IDENTITY' no-replica-identity-read
@@ -1440,7 +1440,7 @@ partlocal_case K185 "(T-165 r2, OD-158) REPLICA IDENTITY FULL on the non-templat
 partlocal_case K186 "(T-165 r2, OD-158) REPLICA IDENTITY USING INDEX on the TEMPLATE partition, the same answer: refused" \
   "ALTER TABLE public.t165_part_q1 REPLICA IDENTITY USING INDEX t165_part_q1_pkey;" \
   "" \
-  "SELECT string_agg(relname || '=' || relreplident, ',' ORDER BY relname) FROM pg_class WHERE relname LIKE 't165\_part%' AND relkind IN ('r', 'p')" \
+  "SELECT string_agg(relname || '=' || relreplident::text, ',' ORDER BY relname) FROM pg_class WHERE relname LIKE 't165\_part%' AND relkind IN ('r', 'p')" \
   "t165_part=d,t165_part_q1=i,t165_part_q2=d" \
   'partition "t165_part_q1" has its own replica identity "USING INDEX", which the parent has no counterpart for' \
   0 none 'REPLICA IDENTITY' no-replica-identity-read
@@ -1453,7 +1453,7 @@ CREATE RULE t165_part_rule AS ON DELETE TO public.t165_part DO INSTEAD NOTHING;
 CREATE STATISTICS public.t165_part_stat ON id, note FROM public.t165_part;" ""
 sed 's/^/   plant up:   /' "$UP"
 node scripts/db-migrate.ts up >"$OUT.p" 2>&1 || { cat "$OUT.p"; abort "K187: the plant did not apply"; }
-got=$(psql -X -A -t -q -c "SELECT string_agg(c.relname || '=' || c.relreplident || '/' || (SELECT count(*) FROM pg_rewrite r WHERE r.ev_class = c.oid) || '/' || (SELECT count(*) FROM pg_statistic_ext s WHERE s.stxrelid = c.oid), ',' ORDER BY c.relname) FROM pg_class c WHERE c.relname LIKE 't165\_part%' AND c.relkind IN ('r', 'p')")
+got=$(psql -X -A -t -q -c "SELECT string_agg(c.relname || '=' || c.relreplident::text || '/' || (SELECT count(*) FROM pg_rewrite r WHERE r.ev_class = c.oid) || '/' || (SELECT count(*) FROM pg_statistic_ext s WHERE s.stxrelid = c.oid), ',' ORDER BY c.relname) FROM pg_class c WHERE c.relname LIKE 't165\_part%' AND c.relkind IN ('r', 'p')")
 [ "$got" = "t165_part=f/1/1,t165_part_q1=d/0/0,t165_part_q2=d/0/0" ] || abort "K187: the plant did not land: [$got]"
 echo "   plant landed, read from the catalogue (relreplident/rules/statistics): [$got]"
 write_judge K187 "(T-165 r2) CONTROL: a rule, a statistics object and REPLICA IDENTITY FULL on the PARENT reach no partition, so nothing is refused; none is described by db/schema.ts" 0 none t165_part_rule
@@ -1467,7 +1467,7 @@ CREATE TRIGGER t165_part_trg BEFORE INSERT ON public.t165_part FOR EACH ROW EXEC
 ALTER TABLE public.t165_part_q2 DISABLE TRIGGER t165_part_trg;" "DROP FUNCTION public.t165_noop();"
 sed 's/^/   plant up:   /' "$UP"
 node scripts/db-migrate.ts up >"$OUT.p" 2>&1 || { cat "$OUT.p"; abort "K188: the plant did not apply"; }
-got=$(psql -X -A -t -q -c "SELECT string_agg(c.relname || '=' || t.tgenabled, ',' ORDER BY c.relname) FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid WHERE t.tgname = 't165_part_trg'")
+got=$(psql -X -A -t -q -c "SELECT string_agg(c.relname || '=' || t.tgenabled::text, ',' ORDER BY c.relname) FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid WHERE t.tgname = 't165_part_trg'")
 [ "$got" = "t165_part=O,t165_part_q1=O,t165_part_q2=D" ] || abort "K188: the plant did not land: [$got]"
 echo "   plant landed, read from the catalogue (tgenabled): [$got]"
 write_judge K188 "(T-165 r2) BOUND: a partition DISABLEs the trigger cloned from its parent; tgenabled is not read, so the write succeeds (R2's residue)" 0 none DISABLE
