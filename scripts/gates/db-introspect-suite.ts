@@ -2,21 +2,23 @@
  * gate:db-introspect-suite — the one committed negative suite that no stage
  * could run. T-006.
  *
- * `scripts/negative-tests/db-introspect.sh` is 81 cases attacking T-138's
- * parity check. `gate:negative-suites` rosters it NEEDS-SERVICE and pins its
- * SHA-256 instead of running it, because the PR stage declares `svc: none`
+ * `scripts/negative-tests/db-introspect.sh` is 141 cases at 3119884 attacking
+ * T-138's parity check. `gate:negative-suites` rosters it NEEDS-SERVICE and pins
+ * its SHA-256 instead of running it, because the PR stage declares `svc: none`
  * (T-005 § contract §6). Its own entry there says, in terms: "its home is
  * gate:heavy (T-006) even once green". This is that home.
  *
- * IT IS RED, AND THAT IS WHY IT IS `BLOCKED` AND NOT `BLOCKING`. T-146's
- * migration `0006` created schema `pgboss` with twelve relations; the K36–K49
- * cases were written before it existed. OD-154, owner T-165 (tech-lead),
- * PARKED awaiting stakeholder ruling OE-37. The heavy roster pins the exact
- * failure, so:
+ * IT IS GREEN, AND `gate:heavy` ROSTERS IT `BLOCKING` (T-190, OD-220). It was
+ * `BLOCKED` against a pinned failure while OD-154 held K36-K49m red; T-165
+ * (merged 3119884) re-cut those plants and the suite printed `ALL 141 CASES
+ * BEHAVED AS EXPECTED` on a fresh `db` project. So now ANY misbehaving case,
+ * and any run with no footer, fails gate:heavy.
  *
- *   - if it goes GREEN, gate:heavy fails and demands the promotion — an
- *     allowance must not outlive its reason;
- *   - if it goes red in some OTHER way, gate:heavy fails and says so.
+ * THE PASS BANNER IS EXACTLY `GATE PASS  gate:db-introspect-suite`, with the
+ * counts on the line after it. gate:heavy's BLOCKING judgement requires that
+ * exact line (T-006 § contract §4); the old banner carried the counts on the
+ * same line, which the BLOCKED class never read and the BLOCKING class refuses
+ * (T-190, finding F1).
  *
  * WHAT THIS ADDS OVER THE DIGEST PIN IT SITS BESIDE. The digest in
  * `gate:negative-suites` detects that the FILE changed; it cannot detect that
@@ -32,7 +34,7 @@
  * target moves it, the suite ABORTS at exit 2 WITH NO FOOTER, which is the one
  * shape a harness must be able to tell from a refusal: this gate prints
  * `GATE CRASH` for it, and `gate:heavy` refuses the run rather than reading
- * exit 2 as "the pinned red". A second run on a used database with the derived
+ * exit 2 as a verdict. A second run on a used database with the derived
  * walk was measured ONCE (qa-verification, T-188 at f748b73): it reached its
  * footer, `!! 25 of 81`, exit 1, with K18 `ok` at `down --to 0006`. One run is
  * not a guarantee. The walk it replaced was fixed at `down --to 0005` /
@@ -120,14 +122,15 @@ if (green !== null) {
     );
     process.exit(1);
   }
-  console.log(`\nGATE PASS  ${NAME}  (${green[1] ?? '?'} cases, ${String(secs)}s)`);
+  console.log(`\nGATE PASS  ${NAME}`);
+  console.log(`  ${green[1] ?? '?'} cases, ${String(secs)}s`);
   process.exit(0);
 }
 
 console.error(
   `\nGATE FAIL  ${NAME} — !! ${String(red?.[1])} of ${String(red?.[2])} cases misbehaved  (exit ${String(code)}, ${String(secs)}s)`,
 );
-console.error('  This suite is a known, owned red: OD-154, owner T-165 (tech-lead), PARKED');
-console.error('  awaiting stakeholder ruling OE-37. `gate:heavy` rosters it BLOCKED against the');
-console.error('  exact count above and fails if it changes IN EITHER DIRECTION.');
+console.error('  gate:heavy rosters this suite BLOCKING (T-190, OD-220): every case must behave.');
+console.error("  This gate prints the suite's last six lines only; the suite's own `BAD` lines");
+console.error('  name the cases (run `bash scripts/negative-tests/db-introspect.sh` under svc run).');
 process.exit(1);

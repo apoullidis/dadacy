@@ -220,7 +220,7 @@ mut "$HROSTER" "    segment: 'socket',
     segment: 'socket'," "    cls: 'PENDING',
     segment: 'socket'," &&
   run_case "H6 one BLOCKING sub-gate demoted: the floor bites" FAIL \
-    'the floor is 2' 'A sub-gate was demoted or deleted' -- node "$HEAVY" --roster-only
+    'the floor is 3' 'A sub-gate was demoted or deleted' -- node "$HEAVY" --roster-only
 
 CASE="H7"
 mut "$HROSTER" "    anchors: [
@@ -231,10 +231,49 @@ mut "$HROSTER" "    anchors: [
   run_case "H7 a BLOCKING sub-gate with no evidence anchor" FAIL \
     'is BLOCKING with no evidence anchor' 'a sub-gate that did nothing' -- node "$HEAVY" --roster-only
 
+# THE BLOCKED FIXTURE (T-190, OD-220). Until T-190 the BLOCKED class had one
+# real entry, gate:db-introspect-suite, and H8/C1/C8/C9/C10 used it as their
+# vehicle. T-190 promoted it to BLOCKING, so the committed roster now has NO
+# BLOCKED entry — and a class nothing exercises is a class whose judgement can
+# rot unseen. So the cases that need one PLANT one: a synthetic entry appended
+# to HEAVY_ROSTER by `mut` (anchor asserted present, file asserted changed),
+# removed again by `restore` like every other mutation. It is an ADDITIONAL
+# entry, not a demotion of a real one, so MIN_HEAVY_BLOCKING (3) is untouched
+# and no case below is red for the floor instead of for its own reason. It has
+# no pnpm script: it is only ever judged on the CARRIED path, from a receipt.
+# plant_blocked <pinned|unpinned>
+FIX=gate:fixture-blocked
+FIX_PIN='!! 25 of 141 cases misbehaved'
+plant_blocked() {
+  local pin=""
+  [ "$1" = pinned ] && pin="
+    pinnedFailure: '$FIX_PIN',"
+  mut "$HROSTER" "
+  },
+];
+
+/**
+ * The problems in the roster itself" "
+  },
+  {
+    name: '$FIX',
+    spec: PROGRAMME,
+    cls: 'BLOCKED',
+    segment: 'service',
+    why: 'FIXTURE planted by heavy-gates.sh: the committed roster has no BLOCKED entry since T-190',
+    owner: 'heavy-gates.sh (fixture, one case only)',
+    unblocks: 'never: restore() removes it after the case',$pin
+  },
+];
+
+/**
+ * The problems in the roster itself"
+}
+
 CASE="H8"
-mut "$HROSTER" "    pinnedFailure: '!! 25 of 81" "    xinnedFailure: '!! 25 of 81" &&
+plant_blocked unpinned &&
   run_case "H8 a BLOCKED sub-gate with no pinned expected failure" FAIL \
-    'is BLOCKED with no pinned expected failure' -- node "$HEAVY" --roster-only
+    'gate:fixture-blocked is BLOCKED with no pinned expected failure' -- node "$HEAVY" --roster-only
 
 echo
 echo "=== X. the cross-file anchor — a SERVICE gate that runs in NO stage ==="
@@ -279,7 +318,14 @@ receipt() {
     "$1" "$2" "$3" > "$RCPT/$1.json"
 }
 OK_SOCKET='[{"name":"gate:constraint-suite","code":0,"banners":["GATE PASS  gate:constraint-suite"],"anchorLines":["tests 171 / passed 171 / failed 0 / skipped 0 / todo 0 / files 12 of 12"],"seconds":60}]'
-OK_SERVICE='[{"name":"gate:drizzle-parity","code":0,"banners":["GATE PASS  gate:drizzle-parity"],"anchorLines":["MIGRATE OK  up: 0000 -> 0006","drizzle-kit 0.31.10: 4 relation(s) introspected from public","db/schema.ts: byte-identical to a fresh introspection"],"seconds":7},{"name":"gate:db-introspect-suite","code":1,"banners":["GATE FAIL  gate:db-introspect-suite — !! 25 of 81 cases misbehaved  (exit 1, 205.9s)"],"anchorLines":["!! 25 of 81 cases misbehaved"],"seconds":206}]'
+# The service segment's observations, one JSON object per entry, so a case can
+# compose exactly the receipt it needs. Since T-190 the suite is BLOCKING and
+# green, so its green observation carries the exact pass banner and the footer
+# its anchor floors at 141.
+OBS_DRIZZLE='{"name":"gate:drizzle-parity","code":0,"banners":["GATE PASS  gate:drizzle-parity"],"anchorLines":["MIGRATE OK  up: 0000 -> 0006","drizzle-kit 0.31.10: 4 relation(s) introspected from public","db/schema.ts: byte-identical to a fresh introspection"],"seconds":7}'
+OBS_SUITE='{"name":"gate:db-introspect-suite","code":0,"banners":["GATE PASS  gate:db-introspect-suite"],"anchorLines":["ALL 141 CASES BEHAVED AS EXPECTED"],"seconds":206}'
+OBS_FIX_PINNED='{"name":"gate:fixture-blocked","code":1,"banners":["GATE FAIL  gate:fixture-blocked — !! 25 of 141 cases misbehaved"],"anchorLines":[],"seconds":1}'
+OK_SERVICE="[$OBS_DRIZZLE,$OBS_SUITE]"
 
 CASE="C0"
 rm -rf "$RCPT"
@@ -293,8 +339,23 @@ CASE="C1"
 receipt socket "$FP" "$OK_SOCKET"; receipt service "$FP" "$OK_SERVICE"
 run_case "C1 CONTROL: both receipts at THIS tree state, green" PASS \
   'GATE PASS  gate:heavy' 'the socket segment was carried by a receipt' \
+  '3 BLOCKING, 0 BLOCKED, 0 SERVICE, 3 PENDING' \
+  'PASS (206s)               gate:db-introspect-suite   [BLOCKING]' \
   '3/3 sub-gate(s) whose outcome must match their class, matched' \
-  '4 rostered sub-gate(s) are NOT GREEN' -- node "$HEAVY"
+  '3 rostered sub-gate(s) are NOT GREEN' -- node "$HEAVY"
+
+# The BLOCKED class's own CONTROL. Without it, C8 and C9 would still pass
+# against a judge that refused EVERY BLOCKED observation — the class's
+# acceptance path would be tested by nothing (T-190).
+CASE="C1b"
+plant_blocked pinned &&
+  receipt socket "$FP" "$OK_SOCKET" &&
+  receipt service "$FP" "[$OBS_DRIZZLE,$OBS_SUITE,$OBS_FIX_PINNED]" &&
+  run_case "C1b CONTROL: a BLOCKED fixture red exactly as pinned is accepted" PASS \
+    'GATE PASS  gate:heavy' '3 BLOCKING, 1 BLOCKED, 0 SERVICE, 3 PENDING' \
+    'RED AS PINNED (1s)        gate:fixture-blocked       [BLOCKED]' \
+    '4/4 sub-gate(s) whose outcome must match their class, matched' \
+    '4 rostered sub-gate(s) are NOT GREEN' -- node "$HEAVY"
 
 CASE="C2"
 receipt socket "deadbeefdeadbeef" "$OK_SOCKET"; receipt service "$FP" "$OK_SERVICE"
@@ -330,30 +391,63 @@ run_case "C6 a GREEN sub-gate that ran 3 of its 12 files" FAIL \
 
 CASE="C7"
 receipt socket "$FP" "$OK_SOCKET"
-receipt service "$FP" '[{"name":"gate:drizzle-parity","code":0,"banners":["GATE PASS  gate:drizzle-parity"],"anchorLines":["MIGRATE OK  up: 0000 -> 0006","drizzle-kit 0.31.10: 0 relation(s) introspected from public","db/schema.ts: byte-identical to a fresh introspection"],"seconds":7},{"name":"gate:db-introspect-suite","code":1,"banners":["GATE FAIL  gate:db-introspect-suite — !! 25 of 81 cases misbehaved"],"anchorLines":["!! 25 of 81 cases misbehaved"],"seconds":206}]'
+receipt service "$FP" '[{"name":"gate:drizzle-parity","code":0,"banners":["GATE PASS  gate:drizzle-parity"],"anchorLines":["MIGRATE OK  up: 0000 -> 0006","drizzle-kit 0.31.10: 0 relation(s) introspected from public","db/schema.ts: byte-identical to a fresh introspection"],"seconds":7},'"$OBS_SUITE"']'
 run_case "C7 Drizzle parity green over ZERO relations (T-138 K07's bound)" FAIL \
-  'evidence anchor' 'a pass over an empty set' -- node "$HEAVY"
+  'evidence anchor' 'a pass over an empty set' 'gate:heavy — 1 problem(s)' -- node "$HEAVY"
 
+# C8/C9 run on the BLOCKED FIXTURE since T-190 (see plant_blocked). What each
+# tests is unchanged; only the vehicle is. C9's red count differs from the pin
+# in the MISBEHAVED count alone, as QR-F1 (T-188) required: a comparator that
+# ignored that count would pass `!! 31 of 141` against `!! 25 of 141`.
 CASE="C8"
-receipt socket "$FP" "$OK_SOCKET"
-receipt service "$FP" '[{"name":"gate:drizzle-parity","code":0,"banners":["GATE PASS  gate:drizzle-parity"],"anchorLines":["MIGRATE OK  up: 0000 -> 0006","drizzle-kit 0.31.10: 4 relation(s) introspected from public","db/schema.ts: byte-identical to a fresh introspection"],"seconds":7},{"name":"gate:db-introspect-suite","code":0,"banners":["GATE PASS  gate:db-introspect-suite  (65 cases, 205.9s)"],"anchorLines":["ALL 65 CASES BEHAVED AS EXPECTED"],"seconds":206}]'
-run_case "C8 the BLOCKED suite goes GREEN: an allowance that outlives its reason" FAIL \
-  'an allowance that outlives its reason' -- node "$HEAVY"
+plant_blocked pinned &&
+  receipt socket "$FP" "$OK_SOCKET" &&
+  receipt service "$FP" "[$OBS_DRIZZLE,$OBS_SUITE,"'{"name":"gate:fixture-blocked","code":0,"banners":["GATE PASS  gate:fixture-blocked"],"anchorLines":[],"seconds":1}]' &&
+  run_case "C8 the BLOCKED suite goes GREEN: an allowance that outlives its reason" FAIL \
+    'gate:fixture-blocked is rostered BLOCKED against a pinned failure and is GREEN' \
+    'an allowance that outlives its reason' 'gate:heavy — 1 problem(s)' -- node "$HEAVY"
 
 CASE="C9"
-receipt socket "$FP" "$OK_SOCKET"
-receipt service "$FP" '[{"name":"gate:drizzle-parity","code":0,"banners":["GATE PASS  gate:drizzle-parity"],"anchorLines":["MIGRATE OK  up: 0000 -> 0006","drizzle-kit 0.31.10: 4 relation(s) introspected from public","db/schema.ts: byte-identical to a fresh introspection"],"seconds":7},{"name":"gate:db-introspect-suite","code":1,"banners":["GATE FAIL  gate:db-introspect-suite — !! 31 of 81 cases misbehaved"],"anchorLines":["!! 31 of 81 cases misbehaved"],"seconds":206}]'
-run_case "C9 the BLOCKED suite red on a DIFFERENT count than the pin" FAIL \
-  'RED IN A WAY THAT IS NOT THE PINNED ONE' -- node "$HEAVY"
+plant_blocked pinned &&
+  receipt socket "$FP" "$OK_SOCKET" &&
+  receipt service "$FP" "[$OBS_DRIZZLE,$OBS_SUITE,"'{"name":"gate:fixture-blocked","code":1,"banners":["GATE FAIL  gate:fixture-blocked — !! 31 of 141 cases misbehaved"],"anchorLines":[],"seconds":1}]' &&
+  run_case "C9 the BLOCKED suite red on a DIFFERENT count than the pin" FAIL \
+    'gate:fixture-blocked is RED IN A WAY THAT IS NOT THE PINNED ONE' \
+    'the pin is "!! 25 of 141 cases misbehaved"' 'gate:heavy — 1 problem(s)' -- node "$HEAVY"
 
+# Since T-190: one failing BLOCKING entry beside a GREEN BLOCKING suite and the
+# BLOCKED fixture red as pinned, so every result kind the summary can print is
+# on the page at once and none may be masked by the failure.
 CASE="C10"
+plant_blocked pinned &&
+  receipt socket "$FP" "$OK_SOCKET" &&
+  receipt service "$FP" '[{"name":"gate:drizzle-parity","code":1,"banners":["GATE FAIL  gate:drizzle-parity"],"anchorLines":["","",""],"seconds":7},'"$OBS_SUITE,$OBS_FIX_PINNED"']' &&
+  run_case "C10 ONE failing sub-gate does not mask the others' results" FAIL \
+    'gate:drizzle-parity FAILED (exit 1)' \
+    'gate:constraint-suite      [BLOCKING]' \
+    'PASS (206s)               gate:db-introspect-suite   [BLOCKING]' \
+    'RED AS PINNED (1s)        gate:fixture-blocked       [BLOCKED]' \
+    '3/4 sub-gate(s) whose outcome must match their class, matched' \
+    'gate:heavy — 1 problem(s)' -- node "$HEAVY"
+
+# THE PROMOTION ITSELF (T-190, OD-220). A BLOCKING suite is judged on its exit
+# status and its anchor, with no pin to absorb anything: ONE misbehaving case
+# is a FAIL. (The same attack against a real database, a planted case in a
+# scratch worktree, is tasks/state/EP-1/T-190.md § Evidence; this is its
+# carried-path guard.)
+CASE="C11"
 receipt socket "$FP" "$OK_SOCKET"
-receipt service "$FP" '[{"name":"gate:drizzle-parity","code":1,"banners":["GATE FAIL  gate:drizzle-parity"],"anchorLines":["","",""],"seconds":7},{"name":"gate:db-introspect-suite","code":1,"banners":["GATE FAIL  gate:db-introspect-suite — !! 25 of 81 cases misbehaved"],"anchorLines":["!! 25 of 81 cases misbehaved"],"seconds":206}]'
-run_case "C10 ONE failing sub-gate does not mask the others' results" FAIL \
-  'gate:drizzle-parity FAILED (exit 1)' \
-  'gate:constraint-suite      [BLOCKING]' \
-  'RED AS PINNED' \
-  '2/3 sub-gate(s) whose outcome must match their class, matched' -- node "$HEAVY"
+receipt service "$FP" "[$OBS_DRIZZLE,"'{"name":"gate:db-introspect-suite","code":1,"banners":["GATE FAIL  gate:db-introspect-suite — !! 1 of 142 cases misbehaved  (exit 1, 600.0s)"],"anchorLines":[""],"seconds":600}]'
+run_case "C11 the promoted suite with ONE misbehaving case fails gate:heavy" FAIL \
+  'gate:db-introspect-suite FAILED (exit 1)' 'gate:heavy — 1 problem(s)' -- node "$HEAVY"
+
+# The anchor's ratchet: a green footer over fewer cases than the suite was
+# promoted at (141) is refused, the way C5 refuses a green run over zero tests.
+CASE="C12"
+receipt socket "$FP" "$OK_SOCKET"
+receipt service "$FP" "[$OBS_DRIZZLE,"'{"name":"gate:db-introspect-suite","code":0,"banners":["GATE PASS  gate:db-introspect-suite"],"anchorLines":["ALL 140 CASES BEHAVED AS EXPECTED"],"seconds":600}]'
+run_case "C12 the promoted suite GREEN over 140 cases, below its floor of 141" FAIL \
+  'evidence anchor' 'capture 1 is 140, and the floor is 141' 'gate:heavy — 1 problem(s)' -- node "$HEAVY"
 
 echo
 echo "=== S. the SERVICE class is a RESULT, not a label (gate:pr, T-005 §2) ==="
@@ -454,6 +548,11 @@ WHAT THIS SUITE DOES NOT COVER, stated rather than left to be discovered:
   * A receipt is not a security boundary. .cache/gate-heavy/ is gitignored and
     a person can write one by hand — these cases do exactly that. It defends
     against FORGETTING a segment, not against FAKING one.
+  * Since T-190 the committed heavy roster has NO BLOCKED entry. H8, C1b, C8,
+    C9 and C10 exercise the BLOCKED class on a FIXTURE (gate:fixture-blocked)
+    planted into heavy-roster.ts inside the case and removed by restore. It
+    has no command, so it is judged on the CARRIED path only: the LIVE
+    BLOCKED path is exercised by nothing until a real entry is BLOCKED again.
   * MIN_HEAVY_BLOCKING is attacked in one direction here (H6, at the committed
     floor). The other direction — the same mutated tree at a floor one lower,
     GATE PASS, the refusal silently lost — is measured in
