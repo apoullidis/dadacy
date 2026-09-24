@@ -570,7 +570,10 @@ describe('I-5 clause (b) — LIMITATION (T-030 QA-F1): app_rw can write account_
     assert.equal(committed, `${ACC.revoked}|approve`, 'B2: the countersignature committed');
     assert.equal(liveAfter, '0', 'B2: the committed approver holds no live ts_senior');
     assert.equal(after, before, 'B2: account_role is byte-identical before and after');
-    assert.equal(await db.value(`SELECT count(*)::text FROM public.approval WHERE id = '${a}'`), '0');
+    assert.equal(
+      await db.value(`SELECT count(*)::text FROM public.approval WHERE id = '${a}'`),
+      '0',
+    );
   });
 
   test('LIMITATION B3 — app_rw, ONE transaction: move a live ts_senior row onto a no-role account, countersign as it, move the row back, COMMIT: ACCEPTED, and account_role is byte-identical afterwards', async () => {
@@ -597,7 +600,10 @@ describe('I-5 clause (b) — LIMITATION (T-030 QA-F1): app_rw can write account_
     assert.equal(committed, ACC.noRole, 'B3: the countersignature by a no-role account committed');
     assert.equal(noRoleRows, '0', 'B3: the approver holds no role row in any committed state');
     assert.equal(after, before, 'B3: account_role is byte-identical before and after');
-    assert.equal(await db.value(`SELECT count(*)::text FROM public.approval WHERE id = '${a}'`), '0');
+    assert.equal(
+      await db.value(`SELECT count(*)::text FROM public.approval WHERE id = '${a}'`),
+      '0',
+    );
   });
 
   test('LIMITATION B4 — app_rw grants ts_senior to a no-role account and commits; a later countersignature by it is ACCEPTED', async () => {
