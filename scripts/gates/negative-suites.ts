@@ -257,12 +257,16 @@ const SUITES: readonly Suite[] = [
     file: 'scripts/negative-tests/db-introspect.sh',
     // 65 -> 81, 2026-09-24, T-153 merging main 3385ede: T-153 added K50-K62r (sixteen cases). NOT a
     // green count: see the digest note below for what was and was not measured.
-    cases: 81,
+    // 81 -> 141, 2026-09-24, T-165 rework 2 (OE-37 (A)) merging main b71408e: T-165's own cases
+    // (renumbered K150-K189, 44 from cycles 0/1 and 16 from rework 2) join T-153's. A GREEN count:
+    // `ALL 141 CASES BEHAVED AS EXPECTED` on a fresh db project at 4feb38f (T-165.md § Rework 2, S3).
+    cases: 141,
     state: 'NEEDS-SERVICE',
     why: 'db:introspect:check: the closed type map, canonical order, RLS policies, the pgboss exclusion (T-138, T-150, T-152, T-145)',
-    owner: 'T-165 — tech-lead, PARKED awaiting stakeholder ruling OE-37',
+    owner:
+      'T-165 — tech-lead (the cases); the gate:heavy promotion of gate:db-introspect-suite is platform-infrastructure (OD-220)',
     unblocks:
-      "T-146's 0006 created schema `pgboss` with twelve relations; every K36-K49 case was written when it did not exist, so `!! 25 of 65 cases misbehaved` on `main` (OD-154, measured twice: tech-lead 2026-09-17 at 3b4e570, qa-verification 2026-09-18 at 3c54c71). T-165 re-cuts the plants to add to 0006's schema and takes the admitted counts from the catalogue. It ALSO needs the `db` profile, so its home is gate:heavy (T-006) even once green — AND SINCE T-006 IT IS THERE: `gate:db-introspect-suite` is rostered BLOCKED in scripts/gates/lib/heavy-roster.ts against the exact footer below, so the count is re-measured against a real database on every heavy run and this gate's digest pin is no longer the only thing watching it. Run it with `scripts/svc run <ticket> -- pnpm -w gate:db-introspect-suite`.",
+      "NEEDS-SERVICE is structural: the suite needs the `db` profile and the PR stage has none, so its home is gate:heavy (T-006), where `gate:db-introspect-suite` runs it against a real database. OD-154 (K36-K49m red since 0006) is closed by T-165's re-cut plants: 141/141 on a fresh db project at 4feb38f. gate:heavy still rosters that entry BLOCKED against `!! 25 of 81`, so a green run is refused there until it is promoted to BLOCKING (T-006 § contract §8/§10; OD-220). Run it with `scripts/svc run <ticket> -- pnpm -w gate:db-introspect-suite`.",
     // RE-MEASURED 2026-09-20 on the rebase onto main 6582596. T-168 added
     // EXIT/INT/TERM traps to this suite (9b35d3e), so the digest moved and this
     // gate went RED — the tripwire firing, exactly as § contract 6 said it
@@ -294,7 +298,14 @@ const SUITES: readonly Suite[] = [
     // MEASURED against a real database at d126c68 (tasks/state/EP-2/T-188.md § Evidence B): the
     // committed suite now reaches its footer, `!! 25 of 81 cases misbehaved`, exit 1; K18 is `ok`
     // (down --to 0004 moved the order); the 25 are OD-154's K36-K49m, unchanged.
-    digest: 'c21c64120c03a473144fe9d7ce9dfd1d1b38f0e2d232d61be54753817aa4ebd3',
+    // RE-PINNED 2026-09-24 by T-165 rework 2 (OE-37 (A)): the merge of main b71408e, the renumbering
+    // of T-165's cases past T-153's (K50-K80 -> K150-K180) and K181-K189 moved the digest, and this
+    // gate went RED (T-165.md § Rework 2, NS-red). Taken with the instrument, never edited by hand:
+    //   $ git cat-file blob 4feb38f:scripts/negative-tests/db-introspect.sh | sha256sum
+    //   99c2400f0f07e5871396ec88e79efcb654476600187aee11f5b95195f8fd4f72
+    // MEASURED against a real database at 4feb38f (§ Rework 2, S3): `ALL 141 CASES BEHAVED AS
+    // EXPECTED`, exit 0, on a fresh never-analysed db project.
+    digest: '99c2400f0f07e5871396ec88e79efcb654476600187aee11f5b95195f8fd4f72',
   },
 ];
 
