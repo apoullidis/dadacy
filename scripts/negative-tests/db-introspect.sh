@@ -40,7 +40,7 @@
 # FK, NOT NULL, nullable, DEFAULT 0, bigint[] with a default above 2^53, int8, a view) is written in
 # drizzle's bigint mode, read and written exactly through pg/drizzle, re-checked after ANALYZE, and an
 # importer is refused a number with exactly TS2322. K51 deletes the rewrite (the text guard refuses), K52
-# the rewrite and its guard (the catalogue's int8 count refuses), K53 the whole mapping (RED BEFORE: number
+# the rewrite and its guard (the per-column catalogue match refuses; rework 1 replaced the count), K53 the whole mapping (RED BEFORE: number
 # mode, 9007199254740993 read as ...992, the importer's refusals inverted). K54 makes the column-type query
 # unreadable. K55 is the geometry control (scalar Point with and without SRID, read and written); K56/K56w
 # plant every other geometry shape and a Point[] (I-MAP, check and write mode); K57 deletes the rule (RED
@@ -49,9 +49,11 @@
 # T-153 rework 1 — K58-K62 (OD-147, OD-148): the per-relation COUNT is replaced by a PER-COLUMN match
 # against the catalogue, over the rendering parsed as TypeScript. K58/K59 plant a VIEW and a
 # MATERIALIZED VIEW over a bigint[] column, which drizzle-kit renders with no `.array()`; K60 is the
-# RED BEFORE with the count restored (they pass, and drizzle's read of each throws) - while the text[]
-# control in the same view keeps its .array() and reads correctly, so the loss is drizzle-kit's bigint
-# path, measured, not a general view-array defect. K61/K62 are the
+# RED BEFORE with the count restored (they pass, and drizzle's read of each throws). The loss is NOT
+# specific to bigint: drizzle-kit 0.31.10 renders EVERY array column of a view or materialized view with
+# no .array() (text[], numeric[], timestamptz[] too; OD-149). K60 asserts it for the text[] column of the
+# same view, from db/schema.ts. The per-column match holds int8 only, so a non-int8 view array column
+# passes the gate typed as a scalar; that general case is T-187's (OE-35 (A)). K61/K62 are the
 # false refusals the old text-shaped mechanisms produced on drizzle-kit's own output — a text DEFAULT
 # holding a bigint-mode call, and one equal to the hint sentence - each with its own RED BEFORE.
 #
@@ -1129,7 +1131,8 @@ count_mutation() {
   git diff --numstat -- "$RENDER" | sed 's/^/   count mutation landed (added removed file): /'
 }
 
-# The array plant: an int8[] and a text[] control, in a table, a view and a materialized view.
+# The array plant: an int8[] and a text[], in a table, a view and a materialized view. The text[] is NOT a
+# control for the view: drizzle-kit renders it with no .array() there too (OD-149; K60 asserts it).
 # <rels> picks which of the two derived relations the plant creates.
 plant_arrays() {
   local v='' d=''
@@ -1201,8 +1204,13 @@ node --input-type=module -e "$T153_ARR_ROUNDTRIP" >"$OUT.rt" 2>&1
 fact "driver: the TABLE's bigint[] reads exactly" "$(grep -cxF 'READ table amounts [bigint 9007199254740993, bigint -9223372036854775808]' "$OUT.rt")" 1
 fact "driver: the VIEW's bigint[] read THREW" "$(grep -c '^READ view amounts THREW SyntaxError' "$OUT.rt")" 1
 fact "driver: the MATERIALIZED VIEW's bigint[] read THREW" "$(grep -c '^READ matview amounts THREW SyntaxError' "$OUT.rt")" 1
-fact "driver: the text[] control, the TABLE's (drizzle-kit renders it .array())" "$(grep -cxF 'READ table labels [string alpha, string beta]' "$OUT.rt")" 1
-fact "driver: the text[] control IN THE SAME VIEW keeps .array() and reads correctly, so the lost .array() is specific to drizzle-kit's bigint rendering" "$(grep -cxF 'READ view labels [string alpha, string beta]' "$OUT.rt")" 1
+# OE-35 (A): the lost .array() is not bigint's. Read from the RENDERING, because a driver read cannot
+# tell: node-postgres parses a text[] result field into a JS array by its type OID, and drizzle's scalar
+# text() reader is the identity, so a view rendered WITHOUT .array() still reads [alpha, beta] (OD-149).
+fact "db/schema.ts: the TABLE's text[] keeps .array()" "$(grep -cF 'labels: text().array()' "$SCHEMA")" 1
+fact "db/schema.ts: the VIEW's and MATVIEW's text[] are rendered WITHOUT .array() too, so the loss is not bigint's (OD-149, T-187)" "$(grep -cxF '	labels: text(),' "$SCHEMA")" 2
+fact "driver: the TABLE's text[] reads as an array" "$(grep -cxF 'READ table labels [string alpha, string beta]' "$OUT.rt")" 1
+fact "driver: the VIEW's text[] reads as the same array although rendered scalar (node-postgres parses by OID; this read cannot tell .array() from none)" "$(grep -cxF 'READ view labels [string alpha, string beta]' "$OUT.rt")" 1
 sed 's/^/driver: /' "$OUT.rt" >>"$OUT.f"
 [ "$nok" -eq "$nf" ] && echo "ALL $nf RED-BEFORE FACTS HOLD" >>"$OUT.f"
 cat "$OUT.f" >>"$OUT"

@@ -406,6 +406,12 @@ function expected(dims: number): string {
  *       lossy column and a spurious bigint-mode column in the same relation cannot cancel out.
  *   Nothing here counts, and nothing here reads the rendering as text: `body` is parsed, so a string
  *   literal containing `bigint(` is a string literal, and a call split over lines is still the call.
+ *
+ * WIDTH (OE-35 (A), OD-149): rule 2 holds int8 columns ONLY. drizzle-kit 0.31.10 renders EVERY array
+ * column of a view or materialized view with no `.array()`, whatever its element type (text[],
+ * numeric[], timestamptz[] measured, as well as bigint[]). A view's int8[] is refused here; a view's
+ * array of any OTHER type is read by nothing in this file, passes the gate typed as a scalar, and
+ * reads a wrong value with no throw (numeric[] and timestamptz[] measured). That case is T-187's.
  */
 export function checkCatalogueColumns(
   body: string,
