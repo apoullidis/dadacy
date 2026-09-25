@@ -209,7 +209,7 @@ describe('T-204: the exporter cannot starve the request path', () => {
     }
   });
 
-  test('bound 3: after a failure no export starts for 5000 ms, then 10000, then 20000; a success resets it', async () => {
+  test('bound 3: after a failure no export starts for 5000 ms, then 10000, then 20000; exports resume once the collector answers', async () => {
     vi.useFakeTimers();
     try {
       resetExporterCounters();
@@ -240,7 +240,9 @@ describe('T-204: the exporter cannot starve the request path', () => {
       expect(gaps[3]).toBeGreaterThanOrEqual(20000);
       expect(gaps[1]).toBeLessThan(5400);
       expect(gaps[2]).toBeLessThan(10400);
-      // A success resets the cool-down: exports resume at the flush cadence.
+      // Once the collector answers, exports resume at the flush cadence. This
+      // does NOT show that a success resets the backoff (it holds with the reset
+      // deleted, QA's QM7): 'bound 3: a success resets the backoff …' does.
       fail = false;
       await vi.advanceTimersByTimeAsync(60_000);
       const before = starts.length;
@@ -277,6 +279,103 @@ describe('T-204: the exporter cannot starve the request path', () => {
       expect(starts.length).toBeGreaterThan(6);
       expect(last).toBeGreaterThanOrEqual(60000);
       expect(last).toBeLessThan(60400);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Rework 1 (QF-1): QA's QA-a, committed. The case above feeds one span per
+  // 100 ms, so at a failure the buffer never reaches `maxBatch` (64) and the
+  // full-batch branch of `schedule()` is never taken. Under load it is: with the
+  // full-batch check ahead of the cool-down (QA's QM9) exports restart every
+  // 5000 ms with no cool-down at all, and every other case stays green.
+  test('bound 3 under load: a failure with 64 or more spans buffered is still followed by the 5000 ms, then 10000 ms, cool-down', async () => {
+    vi.useFakeTimers();
+    try {
+      resetExporterCounters();
+      const starts: number[] = [];
+      const failures: { at: number; buffered: number }[] = [];
+      const probe = { pending: (): number => -1 };
+      const fetchImpl = ((_url: string, init?: RequestInit) => {
+        starts.push(Date.now());
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            reject(new DOMException('aborted', 'AbortError'));
+          });
+        });
+      }) as unknown as typeof fetch;
+      const exporter = createExporter({
+        endpoint: 'http://otel-collector:4318',
+        serviceName: 'kinvara-core',
+        fetchImpl,
+        onFailure: () => failures.push({ at: Date.now(), buffered: probe.pending() }),
+      });
+      probe.pending = () => exporter.pending();
+      // 50 spans/s for 30 s; every export fails by the 5000 ms deadline.
+      for (let i = 0; i < 1500; i += 1) {
+        exporter.record(span());
+        await vi.advanceTimersByTimeAsync(20);
+      }
+      // Anti-vacuity: the case reached the under-load shape it is about.
+      expect(failures.length).toBeGreaterThanOrEqual(2);
+      expect(starts.length).toBeGreaterThanOrEqual(2);
+      for (const f of failures) expect(f.buffered).toBeGreaterThanOrEqual(64);
+      for (let i = 1; i < starts.length; i += 1) {
+        const coolDown = 5000 * 2 ** (i - 1);
+        const gap = (starts[i] ?? 0) - (failures[i - 1]?.at ?? 0);
+        expect(gap).toBeGreaterThanOrEqual(coolDown);
+        expect(gap).toBeLessThan(coolDown + 400);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Rework 1 (QF-1): QA's QA-b, committed. The reset shows only at the NEXT
+  // failure after a success; with the reset deleted (QA's QM7) exports still
+  // resume at cadence, so the first bound-3 case cannot see it.
+  test('bound 3: a success resets the backoff, so the next failure cools down 5000 ms, not the 40000 ms armed before it', async () => {
+    vi.useFakeTimers();
+    try {
+      resetExporterCounters();
+      let fail = true;
+      const starts: number[] = [];
+      const fetchImpl = (async () => {
+        starts.push(Date.now());
+        if (fail) throw new Error('getaddrinfo EAI_AGAIN otel-collector');
+        return ok();
+      }) as unknown as typeof fetch;
+      const exporter = createExporter({
+        endpoint: 'http://otel-collector:4318',
+        serviceName: 'kinvara-core',
+        fetchImpl,
+        onFailure: () => undefined,
+      });
+      // 40 s failing: cool-downs 5000, 10000, 20000, and 40000 armed.
+      for (let i = 0; i < 400; i += 1) {
+        exporter.record(span());
+        await vi.advanceTimersByTimeAsync(100);
+      }
+      expect(starts.length).toBe(4);
+      expect((starts[3] ?? 0) - (starts[2] ?? 0)).toBeGreaterThanOrEqual(20000);
+      // 50 s answering: the 40000 ms cool-down lapses and an export succeeds.
+      fail = false;
+      for (let i = 0; i < 500; i += 1) {
+        exporter.record(span());
+        await vi.advanceTimersByTimeAsync(100);
+      }
+      expect(exporterCounters.exported).toBeGreaterThan(0);
+      // Failing again: the first cool-down is 5000 ms again, not 60000.
+      fail = true;
+      const n = starts.length;
+      for (let i = 0; i < 300; i += 1) {
+        exporter.record(span());
+        await vi.advanceTimersByTimeAsync(100);
+      }
+      const after = starts.slice(n);
+      expect(after.length).toBeGreaterThanOrEqual(2);
+      expect((after[1] ?? 0) - (after[0] ?? 0)).toBeGreaterThanOrEqual(5000);
+      expect((after[1] ?? 0) - (after[0] ?? 0)).toBeLessThan(5400);
     } finally {
       vi.useRealTimers();
     }
