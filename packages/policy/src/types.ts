@@ -294,8 +294,10 @@ export interface ResourceRef {
    * them and refuses a countersignature without an unrevoked `ts_senior`
    * (KV052) or on an account that is not active (KV054). Since `0008`
    * (`T-186`, `decisions.md` OE-47) `app_rw` cannot write a `ts_senior` row
-   * (KV053), so QA-F1's B2/B3/B4 are refused at the database; `app_rw` can
-   * still write `account.status` (`decisions.md` OD-222). PROTOCOL §9.1.
+   * (KV053), so QA-F1's B2/B3/B4 are refused at the database; since `0011`
+   * (`T-192`, `decisions.md` OE-48) it cannot change the `status` or
+   * `dob_verified_18` of an account holding a live `ts_senior` either
+   * (KV055; OD-222 closed). PROTOCOL §9.1.
    */
   readonly countersignerRoles?: readonly Role[] | undefined;
   /**
