@@ -16,12 +16,13 @@
  *       ts_senior row (`trg_account_role_ts_senior_admin_only`, KV053; OE-47), so QA's B2/B3/B4
  *       routes are REFUSED below, each with an app_admin_rw CONTROL.
  *
- * T-192 — migration 0011: OE-48 as narrowed by OE-57 (for an account holding a live ts_senior role,
- * only app_admin_rw may make it MORE eligible to countersign: status INTO active, dob_verified_18
- * false -> true, a changed id; `trg_account_ts_senior_status_admin_only`, KV055), so decisions.md
- * OD-222's routes are REFUSED below, each with a control, while app_rw's suspension, removal and
- * erasure of such an account are ACCEPTED controls (OE-57; the suspended holder's countersignature
- * is still KV054). The guard reads the account's ts_senior rows FOR SHARE (T-192 QA-A2), raced
+ * T-192 — migration 0011: OE-48 as narrowed by OE-57 and OE-58 (for an account holding a live
+ * ts_senior role, app_rw may only move it towards less eligibility — status active -> suspended,
+ * removed or erased; pending -> removed or erased; suspended -> removed or erased; removed ->
+ * erased; dob_verified_18 true -> false — and every other change of status, dob_verified_18 or id
+ * is app_admin_rw's; `trg_account_ts_senior_status_admin_only`, KV055), so decisions.md OD-222's
+ * routes and every lifting of a suspension are REFUSED below, each with a control, while the
+ * listed moves are ACCEPTED controls (the suspended holder's countersignature is still KV054). The guard reads the account's ts_senior rows FOR SHARE (T-192 QA-A2), raced
  * below. The admin-writer test hardened (T-186 C4 (iv): a writer that also holds app_rw's
  * privileges is refused WHEN IT WRITES AS ITSELF, the superuser included); and TRUNCATE
  * account_role refused while it holds a ts_senior row (OD-224 A4, KV053).
@@ -191,7 +192,7 @@ const ERR_NOT_ACTIVE =
 /** T-186, OE-47: a ts_senior row written by a role without app_admin_rw's privileges. */
 const errTsSeniorWrite = (op: 'INSERT' | 'UPDATE' | 'DELETE' | 'TRUNCATE', role: string): string =>
   `ERROR:  KV053: I5_TS_SENIOR_WRITE_REFUSED: ${op} of a ts_senior row in public.account_role by role ${role}`;
-/** T-192, OE-48 as narrowed by OE-57: a move towards what OE-45's read admits (status into active, dob_verified_18 to true, id), for an account holding a live ts_senior. */
+/** T-192, OE-48/OE-57/OE-58: a change app_rw may not make to an account holding a live ts_senior (any status move but the eight towards less eligibility, dob_verified_18 to true, id). */
 const errAccountWrite = (columns: string, role: string): string =>
   `ERROR:  KV055: I5_TS_SENIOR_ACCOUNT_WRITE_REFUSED: UPDATE of ${columns} on public.account for an account holding a live ts_senior role, by role ${role}`;
 
@@ -836,17 +837,20 @@ const statusOf = (acc: string): string =>
 
 /**
  * T-192, OE-48 (decisions.md; from OD-222, widened by T-186 QA-A1) as narrowed by OE-57 (T-192
- * QA-A3): for an account holding a LIVE ts_senior role, only app_admin_rw may make it more eligible
- * to countersign — a status change INTO active, dob_verified_18 false -> true, a changed id.
+ * QA-A3) and OE-58 (OD-236): for an account holding a LIVE ts_senior role, app_rw may only move
+ * it TOWARDS LESS ELIGIBILITY — status active -> suspended, removed or erased; pending -> removed or
+ * erased; suspended -> removed or erased; removed -> erased; dob_verified_18 true -> false. Every
+ * other change of status (into active, into pending, lifting a suspension, out of removed other
+ * than to erased, out of erased), dob_verified_18 false -> true and a changed id is app_admin_rw's.
  * Migration 0011's `trg_account_ts_senior_status_admin_only` refuses everyone else with KV055, so
  * QA's OD-a..OD-d routes (flip, countersign, flip back in one transaction; a committed activation)
- * are REFUSED. A move AWAY from eligibility (suspend, remove, erase, dob_verified_18 -> false) is
- * ACCEPTED for app_rw: before OE-57 it was refused, so an automated suspension failed open (QA-A3).
+ * are REFUSED. Before OE-57 a suspension by app_rw was refused too, so an automated suspension
+ * failed open (QA-A3); before OE-58 app_rw could lift one by moving it to pending (OD-236).
  * Each refusal runs over the real app_rw login and asserts the account table unchanged; the
  * controls show every ordinary app_rw write to an account (signup, verification, other columns)
  * still passes, and that app_admin_rw may make the same change.
  */
-describe('I-5 clause (b), OE-48 as narrowed by OE-57 — app_rw cannot make a live ts_senior holder more eligible (status INTO active, dob_verified_18 to true, id) (KV055); it may suspend, remove or erase it; app_admin_rw may do both', () => {
+describe('I-5 clause (b), OE-48 as narrowed by OE-57 and OE-58 — app_rw may only move a live ts_senior holder towards less eligibility (suspend, remove, erase, dob_verified_18 to false); every other change of status, dob_verified_18 or id is KV055; app_admin_rw may do both', () => {
   test('OD-222 (QA OD-a) — app_rw, ONE transaction: set a SUSPENDED ts_senior account active, countersign, set it back: REFUSED (KV055) at the first status write, nothing stored', async () => {
     const acc = ACC.suspended;
     const before = await db.value(ACCOUNT_TABLE);
@@ -946,7 +950,7 @@ describe('I-5 clause (b), OE-48 as narrowed by OE-57 — app_rw cannot make a li
     assert.equal(await db.value(statusOf(acc)), 'active,true', 'restored');
   });
 
-  test('OE-57 — every other move AWAY from eligibility is ACCEPTED for app_rw on a live ts_senior holder: active -> removed, active -> erased with erased_at, pending -> removed, pending -> erased, dob_verified_18 true -> false, active -> suspended with dob_verified_18 false, suspended -> pending, removed -> suspended, erased -> pending (each rolled back, read inside the transaction)', async () => {
+  test('OE-57/OE-58 — every other listed move TOWARDS less eligibility is ACCEPTED for app_rw on a live ts_senior holder: active -> removed, active -> erased with erased_at, pending -> removed, pending -> erased, suspended -> removed, suspended -> erased, removed -> erased, dob_verified_18 true -> false, active -> suspended with dob_verified_18 false (each rolled back, read inside the transaction)', async () => {
     const before = await db.value(ACCOUNT_TABLE);
     const moves: readonly [string, string, string, string][] = [
       ['active -> removed', ACC.tsSeniorScratch, `status = 'removed'`, 'removed,true'],
@@ -970,9 +974,9 @@ describe('I-5 clause (b), OE-48 as narrowed by OE-57 — app_rw cannot make a li
         `status = 'suspended', dob_verified_18 = false`,
         'suspended,false',
       ],
-      ['suspended -> pending', ACC.suspended, `status = 'pending'`, 'pending,true'],
-      ['removed -> suspended', ACC.removed, `status = 'suspended'`, 'suspended,true'],
-      ['erased -> pending', ACC.erased, `status = 'pending'`, 'pending,true'],
+      ['suspended -> removed', ACC.suspended, `status = 'removed'`, 'removed,true'],
+      ['suspended -> erased', ACC.suspended, `status = 'erased'`, 'erased,true'],
+      ['removed -> erased', ACC.removed, `status = 'erased'`, 'erased,true'],
     ];
     for (const [what, acc, set, expected] of moves) {
       assert.equal(await db.value(liveTsSenior(acc)), '1', `${what}: precondition, ts_senior live`);
@@ -995,30 +999,29 @@ describe('I-5 clause (b), OE-48 as narrowed by OE-57 — app_rw cannot make a li
     assert.equal(await db.value(ACCOUNT_TABLE), before, 'every move rolled back');
   });
 
-  test('OE-57 — suspended -> pending makes the account no more eligible: a countersignature by it is REFUSED (KV054), and pending -> active is REFUSED (KV055)', async () => {
-    const acc = ACC.suspended;
-    const a = nextApprovalId();
-    assertRefusedWith(
-      'countersign after suspended -> pending',
-      await asApp(
-        'BEGIN',
-        `UPDATE public.account SET status = 'pending' WHERE id = '${acc}'`,
-        insertPending(a, 'safeguarding_referral#make', ACC.dsl),
-        countersign(a, acc),
-      ),
-      ERR_NOT_ACTIVE,
-    );
-    assertRefusedWith(
-      'pending -> active after suspended -> pending',
-      await asApp(
-        'BEGIN',
-        `UPDATE public.account SET status = 'pending' WHERE id = '${acc}'`,
-        `UPDATE public.account SET status = 'active' WHERE id = '${acc}'`,
-      ),
-      errAccountWrite('status', LOGINS.app_rw),
-    );
-    assert.equal(await db.value(storedRow(a)), '(none)', 'nothing stored');
-    assert.equal(await db.value(statusOf(acc)), 'suspended,true', 'unchanged');
+  test('OE-58 — app_rw may not move a live ts_senior holder OUT of suspended, removed or erased except towards less eligibility: suspended -> pending, suspended -> active, removed -> pending, removed -> active, removed -> suspended, erased -> pending, erased -> active, erased -> suspended, erased -> removed, and pending -> suspended are each REFUSED (KV055), the account unchanged', async () => {
+    const before = await db.value(ACCOUNT_TABLE);
+    const moves: readonly [string, string, string][] = [
+      ['suspended -> pending (OD-236)', ACC.suspended, 'pending'],
+      ['suspended -> active', ACC.suspended, 'active'],
+      ['removed -> pending', ACC.removed, 'pending'],
+      ['removed -> active', ACC.removed, 'active'],
+      ['removed -> suspended', ACC.removed, 'suspended'],
+      ['erased -> pending', ACC.erased, 'pending'],
+      ['erased -> active', ACC.erased, 'active'],
+      ['erased -> suspended', ACC.erased, 'suspended'],
+      ['erased -> removed', ACC.erased, 'removed'],
+      ['pending -> suspended (not in OE-58 list)', ACC.pendingTs, 'suspended'],
+    ];
+    for (const [what, acc, to] of moves) {
+      assert.equal(await db.value(liveTsSenior(acc)), '1', `${what}: precondition, ts_senior live`);
+      assertRefusedWith(
+        what,
+        await asApp('BEGIN', `UPDATE public.account SET status = '${to}' WHERE id = '${acc}'`),
+        errAccountWrite('status', LOGINS.app_rw),
+      );
+    }
+    assert.equal(await db.value(ACCOUNT_TABLE), before, 'account unchanged');
   });
 
   test('app_rw is refused every other way to the same columns: a changed id (of an active and of a suspended holder), an upsert (ON CONFLICT DO UPDATE), a MERGE, a data-modifying CTE in both orders, a TEMP view (each KV055)', async () => {
