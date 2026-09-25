@@ -76,8 +76,10 @@
 -- GRANTS. There are no default privileges (T-020 § contract §4), so each is explicit:
 --   app_rw             SELECT, INSERT, UPDATE on approval. No DELETE: an approval is a record of
 --                      who countersigned what. `apps/core` serves /v1/admin/approvals/{id}/countersign.
---   app_admin_rw       nothing. An admin grant needs its FORCE ROW LEVEL SECURITY policy (T-020
---                      § contract §3, SA §SEC-9); the admin ticket requests both.
+--   app_admin_rw       nothing. approval is not one of the tables SD lines 1309 and 3906 give
+--                      RLS, so an admin grant here would need no policy (SA §SEC-7; OD-223;
+--                      corrected 2026-09-25 under R-MERGED, T-192: this said every admin grant
+--                      needs a policy and cited SA §SEC-9); the admin ticket requests the grant.
 --   app_safety_rw      nothing (T-020 § contract §3).
 --   answering_service  nothing. SA §INT-10.
 -- The trigger function is SECURITY INVOKER, so the role writing `approval` must itself be able to

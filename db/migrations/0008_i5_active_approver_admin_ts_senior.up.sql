@@ -36,7 +36,9 @@
 --    locks the role row FOR SHARE, which needs UPDATE. app_rw keeps SELECT, INSERT and UPDATE
 --    on the table and keeps writing every other role.
 --    Who passes the check: a role holding app_admin_rw's privileges, and a superuser (PostgreSQL
---    answers pg_has_role true for one). Who does not: app_rw, app_ddl, app_safety_rw,
+--    answers pg_has_role true for one). [0011 (T-192) replaces this function: a writer that also
+--    holds app_rw's privileges is refused, the superuser acting as itself included. Corrected
+--    2026-09-25 under R-MERGED, comment lines only.] Who does not: app_rw, app_ddl, app_safety_rw,
 --    answering_service, and the table owner when PostgreSQL runs a foreign-key action as it
 --    (an ON DELETE CASCADE from account reaching a ts_senior row is refused; no application
 --    role holds DELETE on account).
@@ -46,20 +48,25 @@
 --                     write the rows the trigger reserves to it. No DELETE: a role is revoked by
 --                     revoked_at (T-140 § contract §5). Nothing on account, account's foreign key
 --                     is checked as the table owner.
---    RLS. T-020 § contract §3 says RLS with FORCE ROW LEVEL SECURITY applies to app_admin_rw
---    (SA §SEC-9). SD names the tables that carry it (software-design.md lines 1309 and 3906:
+--    RLS. T-020 § contract §3 said RLS with FORCE ROW LEVEL SECURITY applies to app_admin_rw
+--    (SA §SEC-7's Database row; §SEC-9, cited here until 2026-09-25, is break-glass: corrected
+--    under R-MERGED, T-192). SD names the tables that carry it (software-design.md lines 1309 and 3906:
 --    child, child_health, sitter_credential, idv_result, message, case_note, reference_check),
 --    and account_role is not one of them, so no policy is written here (T-186 evidence,
 --    Deviations).
 --
 -- WHAT THIS DOES NOT CLOSE. account.status is written by app_rw (UPDATE on account, 0005), so
--- app_rw can set a suspended approver's account to 'active', countersign and set it back, in
--- one transaction, exactly as it could un-revoke a role before this migration. OE-45's status
--- clause therefore holds only against a principal that cannot write account.status; that is a
--- finding reported by T-186, not a route this migration closes. The superuser bounds of 0007
--- stand (session_replication_role = replica), and app_ddl, as owner of account_role and
--- approval, can still DISABLE either trigger at the database; gate:migration-lint refuses a
--- migration that does (R-PROTECTED, R-TRIGGER-BYPASS).
+-- with this migration alone app_rw can set a non-active approver's account to 'active' and
+-- countersign, in one transaction or committed with no flip-back (T-186 OD-222; QA OD-a..OD-d),
+-- exactly as it could un-revoke a role before this migration. 0011 (T-192, decisions.md OE-48)
+-- closes that for an account holding a live ts_senior role. The superuser bounds of 0007 stand
+-- (session_replication_role = replica), and app_ddl, as owner of account_role and approval, can
+-- still DISABLE either trigger at the database. gate:migration-lint refuses a migration that
+-- disables either trigger BY NAME (R-TRIGGER-BYPASS; naming it at all needs R-PROTECTED's
+-- marker); until T-192 it did not refuse one marked migration that renamed a trigger and then
+-- disabled it under the new name (T-186 QA X5), which R-PROTECTED-RENAME now refuses.
+-- (Corrected 2026-09-25 under R-MERGED, comment lines only, T-192: this said the lint "refuses a
+-- migration that does", which was wider than the by-name rule.)
 --
 -- PRINCIPAL. app_ddl (T-136 § contract §6): it owns the function, account_role and account.
 -- No -- @run-as marker. Transactional; no -- @no-transaction marker.

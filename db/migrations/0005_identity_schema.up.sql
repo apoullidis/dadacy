@@ -49,8 +49,12 @@
 --                      1766, 1772, 1793); a role is revoked by revoked_at (line 1802); a session is
 --                      revoked by revoked_at (lines 1819-1821). The retention hard-delete of
 --                      expired sessions (SD line 3143) is the retention ticket's to request.
---   app_admin_rw       nothing. An admin grant needs its FORCE ROW LEVEL SECURITY policy
---                      (T-020 § contract §3, SA §SEC-9); the admin ticket requests both.
+--   app_admin_rw       nothing here. None of these three tables is one SD lines 1309 and 3906
+--                      give RLS, so an admin grant on them needs no policy (SA §SEC-7; OD-223).
+--                      Since 0008 it holds SELECT, INSERT, UPDATE on account_role (T-186), and
+--                      since 0011 SELECT (id, status, dob_verified_18) and UPDATE (status,
+--                      dob_verified_18) on account (T-192). (Corrected 2026-09-25 under R-MERGED,
+--                      T-192: this said every admin grant needs a policy and cited SA §SEC-9.)
 --   app_safety_rw      nothing (T-020 § contract §3). SD line 923 has safety-gw reading
 --                      app_session; that tension is OD-95, not a grant made here.
 --   answering_service  nothing. SA §INT-10.

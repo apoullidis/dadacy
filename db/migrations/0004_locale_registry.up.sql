@@ -30,9 +30,11 @@
 -- GRANTS. There are no default privileges (T-020 § contract §4), so each grant is explicit:
 --   app_rw             SELECT only. core reads the registry; no INSERT/UPDATE/DELETE, because
 --                      adding a locale is a data migration, not application code (SD line 3385).
---   app_admin_rw       nothing. No admin code reads it yet, and an admin grant needs an RLS
---                      policy SA §SEC-9 leaves undecided for reference data; the admin ticket
---                      that needs this table requests its grant and policy.
+--   app_admin_rw       nothing. No admin code reads it yet; the admin ticket that needs this
+--                      table requests its grant. locale_registry is not one of the tables SD
+--                      lines 1309 and 3906 give RLS, so such a grant needs no policy (SA §SEC-7;
+--                      OD-223; corrected 2026-09-25 under R-MERGED, T-192: this cited SA §SEC-9,
+--                      which is break-glass access).
 --   app_safety_rw      nothing. T-020 § contract §3: SELECT on session_safety_projection and
 --                      INSERT on its four tables, "and nothing else".
 --   answering_service  nothing. SA §INT-10.

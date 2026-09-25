@@ -3,7 +3,7 @@
 -- Ticket:  T-020 (tech-lead)
 -- Spec:    SD §DH-1 "First thirteen tickets" #3; SD §DB-13 (migration strategy);
 --          SD §DB-16 (collation); SD §DB-11 (session_safety_projection / app_safety_rw);
---          SA §INT-10 (the answering-service write-only seam); SA §SEC-9, §SEC-8;
+--          SA §INT-10 (the answering-service write-only seam); SA §SEC-7, §SEC-8, §SEC-9;
 --          SA §DV-13 (ILIKE banned; the collation half of the reason).
 --
 -- WHO RUNS THIS FILE. 0001 is the bootstrap migration and runs as a superuser (locally
@@ -160,7 +160,7 @@ CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
 
 
 -- ===========================================================================
--- Section 2 — the five roles (SD §DH-1 first-ticket #3; SA §SEC-9; SD §DB-11)
+-- Section 2 — the five roles (SD §DH-1 first-ticket #3; SA §SEC-7, §SEC-9; SD §DB-11)
 -- ===========================================================================
 --
 -- All five are NOLOGIN group roles with NO password. Login principals are created per
@@ -182,9 +182,14 @@ COMMENT ON ROLE app_rw IS
 
 -- app_admin_rw — the back-office role for `admin`. A DISTINCT role from app_rw so that
 -- SA §T2 (compromise of the back-office) is bounded by grants rather than by application
--- code, and so PgBouncer can hold a separate pool per role (SD §DB-14). RLS is enforced
--- with FORCE ROW LEVEL SECURITY on the tables it reaches, which is the owning table's
--- migration to write, not this one (SA §SEC-9).
+-- code, and so PgBouncer can hold a separate pool per role (SD §DB-14). RLS with ENABLE and
+-- FORCE ROW LEVEL SECURITY is required on the tables SD names (software-design.md lines 1309
+-- and 3906: child, child_health, sitter_credential, idv_result, message, case_note,
+-- reference_check; SA §SEC-7, §TS-7 layer 2), which is the owning table's migration to write,
+-- not this one; a table outside that list needs no policy (OD-223). The COMMENT ON ROLE below
+-- still cites SA SEC-9 as installed: it ships into pg_shdescription, so 0010 (T-192) re-issues
+-- it. (Corrected 2026-09-25 under R-MERGED, comment lines only, T-192: this said "on the tables
+-- it reaches" and cited SA §SEC-9, which is break-glass access.)
 CREATE ROLE app_admin_rw
   NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS INHERIT;
 COMMENT ON ROLE app_admin_rw IS
