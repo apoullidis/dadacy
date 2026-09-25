@@ -15,9 +15,13 @@
  * WHAT THIS DOES. The exporter's own transport resolves the collector with
  * `dns.Resolver` (c-ares), which sends DNS queries from the event loop and
  * does not use the thread pool (Node's `dns` docs). A stalled query here
- * therefore holds no lane. Each resolution gets its own `Resolver`, with a
- * query timeout and one try, and it is cancelled when the export's deadline
- * aborts. `localhost` and IP literals are answered without a query.
+ * therefore holds no lane. Each resolution gets its own `Resolver`, and its
+ * query is cancelled when the export's deadline aborts (case `an aborted
+ * resolution cancels its c-ares query and rejects`). That cancellation is what
+ * bounds the query. No case holds the `Resolver`'s own `timeout`/`tries`
+ * settings (QA's mutant S4, a default `Resolver`, passes every case), and the
+ * bound does not need them: the export deadline cancels the query whatever
+ * they are. `localhost` and IP literals are answered without a query.
  *
  * WHAT IT COSTS, stated rather than hidden:
  *   - c-ares sends a DNS query. It does NOT read `/etc/hosts`, and it does not
@@ -25,7 +29,8 @@
  *     `/etc/hosts`, or only as a short name completed by a search domain, does
  *     not resolve. The export then fails as `export_network` and its spans are
  *     dropped and counted. The request path is not affected. `localhost` is the
- *     one hosts-file name answered here, as 127.0.0.1 (RFC 6761).
+ *     one hosts-file name answered here, as 127.0.0.1 (RFC 6761) and ONLY
+ *     127.0.0.1: a collector listening only on `::1` is not reached.
  *   - Only the address of the FIRST A record is used (AAAA if there is no A).
  *   - Nothing is cached. A new connection resolves again. The HTTP agent keeps
  *     connections alive, so a healthy collector costs a query per new

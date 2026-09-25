@@ -48,8 +48,13 @@
  *   1. AT MOST ONE EXPORT IN FLIGHT. A flush while one is in flight does not
  *      start a second request.
  *   2. A DEADLINE PER EXPORT (`exportTimeoutMs`, default 5000). The request's
- *      signal is aborted, and the export is reported as `export_network`. This
- *      bounds a collector that resolves but never answers.
+ *      signal is aborted, and the export is reported as `export_network`. On
+ *      the default transport the abort also closes the socket, and that is what
+ *      bounds a collector that accepts the connection but never answers. The
+ *      case that holds it is `bound 2 on the default transport: …` under
+ *      `describe('T-205: …')` (a silent TCP collector, no `fetchImpl`). The
+ *      `bound 2: …` case here pins "at 5000 ms, not at 4999" through a
+ *      `fetchImpl`, so it does not exercise the default transport.
  *   3. A COOL-DOWN AFTER EVERY FAILED EXPORT (`backoffMs`, default 5000,
  *      doubling to `maxBackoffMs`, default 60000). No export starts during it,
  *      however many spans are buffered, and after a success the next failure

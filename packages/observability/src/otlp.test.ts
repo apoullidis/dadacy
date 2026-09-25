@@ -4,7 +4,7 @@
  */
 import dns, { Resolver } from 'node:dns';
 import { createServer, type IncomingMessage } from 'node:http';
-import type { AddressInfo } from 'node:net';
+import { createServer as createTcpServer, type AddressInfo, type Socket } from 'node:net';
 import { describe, expect, test, vi } from 'vitest';
 import { resolveOffLane } from './offlane.ts';
 import {
@@ -725,8 +725,16 @@ describe('T-205: the collector is resolved off the DNS lane', () => {
   });
 
   test('a collector answering non-2xx through the default transport is export_status', async () => {
-    const server = createServer((_req, res) => {
-      res.statusCode = 503;
+    // The range check is this package's own (`status < 200 || status > 299`),
+    // not `fetch`'s `response.ok`, so both sides of it are exercised: a 5xx,
+    // and a 3xx (QA-A1: QA's mutant S5, "a 3xx counts as success", survived
+    // the 503 alone). The 307 carries a Location, and it is not followed.
+    const answers = [503, 307];
+    const paths: string[] = [];
+    const server = createServer((req, res) => {
+      paths.push(req.url ?? '');
+      res.statusCode = answers[paths.length - 1] ?? 200;
+      if (res.statusCode === 307) res.setHeader('location', '/followed');
       res.end();
     });
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
@@ -742,9 +750,72 @@ describe('T-205: the collector is resolved off the DNS lane', () => {
       exporter.record(span());
       const result = await exporter.flush();
       expect(result).toEqual({ ok: false, spans: 1, failure: 'export_status' });
-      expect(failures).toEqual(['export_status']);
+      exporter.record(span());
+      const redirected = await exporter.flush();
+      expect(redirected).toEqual({ ok: false, spans: 1, failure: 'export_status' });
+      expect(failures).toEqual(['export_status', 'export_status']);
+      expect(paths).toEqual(['/v1/traces', '/v1/traces']);
     } finally {
       server.closeAllConnections();
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+
+  test('bound 2 on the default transport: a collector that accepts the connection and never answers is abandoned at the export deadline as export_network, and its socket closed', async () => {
+    // T205-QF-1. `T-204`'s *bound 2: …* case passes a `fetchImpl`, so it does
+    // not exercise the transport production uses. This one does: no
+    // `fetchImpl`, an IP literal (no DNS at all), and a TCP server that
+    // accepts, reads the request, and never answers. Red under QA's mutant S1
+    // (`signal` removed from the `http.request` options): the export is then
+    // still pending long after the deadline and the socket stays open.
+    const DEADLINE = 300;
+    const sockets: Socket[] = [];
+    let bytesSeen = 0;
+    let closedAt: number | undefined;
+    const server = createTcpServer((socket) => {
+      sockets.push(socket);
+      socket.on('data', (chunk: Buffer) => {
+        bytesSeen += chunk.length;
+      });
+      socket.on('close', () => {
+        closedAt = Date.now();
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const { port } = server.address() as AddressInfo;
+    try {
+      resetExporterCounters();
+      const failures: string[] = [];
+      const exporter = createExporter({
+        endpoint: `http://127.0.0.1:${String(port)}`,
+        serviceName: 'kinvara-core',
+        onFailure: (f) => failures.push(f),
+        exportTimeoutMs: DEADLINE,
+      });
+      exporter.record(span());
+      const started = Date.now();
+      const outcome = await Promise.race([
+        exporter.flush(),
+        new Promise<'still pending'>((r) => {
+          setTimeout(() => r('still pending'), DEADLINE * 5).unref();
+        }),
+      ]);
+      const took = Date.now() - started;
+      // It reached the socket: one connection, and the request's bytes arrived.
+      // So the failure below is the deadline, not an earlier one.
+      expect(sockets).toHaveLength(1);
+      expect(bytesSeen).toBeGreaterThan(0);
+      expect(outcome).toEqual({ ok: false, spans: 1, failure: 'export_network' });
+      expect(failures).toEqual(['export_network']);
+      expect(took).toBeGreaterThanOrEqual(DEADLINE - 10);
+      expect(took).toBeLessThan(DEADLINE * 5);
+      for (let i = 0; i < 100 && closedAt === undefined; i += 1) {
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      expect(closedAt).toBeDefined();
+      expect((closedAt ?? 0) - started).toBeGreaterThanOrEqual(DEADLINE - 10);
+    } finally {
+      for (const socket of sockets) socket.destroy();
       await new Promise<void>((r) => server.close(() => r()));
     }
   });
