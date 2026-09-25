@@ -430,7 +430,8 @@ describe('0005 — grants: app_rw reads, inserts and updates; nothing else is gr
               `SELECT 1 FROM public.${table}`,
             ],
             ['app_safety_rw SELECT', LOGINS.app_safety_rw, table, `SELECT 1 FROM public.${table}`],
-            ...(table === 'account_role'
+            // account_role since 0008 (T-186); account since 0011 (T-192), column-level: below.
+            ...(table === 'account_role' || table === 'account'
               ? []
               : ([
                   [
@@ -467,6 +468,29 @@ describe('0005 — grants: app_rw reads, inserts and updates; nothing else is gr
       await asLogin(LOGINS.app_safety_rw, 'SELECT 1 FROM public.account_role'),
       { message: 'ERROR:  42501: permission denied for table account_role' },
     );
+  });
+
+  test('T-192: since 0011 app_admin_rw holds column privileges on account — SELECT (id, status, dob_verified_18), UPDATE (status, dob_verified_18) — and nothing else on it; the table ACL is unchanged', async () => {
+    assert.equal(
+      await db.value(
+        `SELECT string_agg(attname || '=' || attacl::text, ' ' ORDER BY attnum) FROM pg_attribute
+          WHERE attrelid = 'public.account'::regclass AND attacl IS NOT NULL`,
+      ),
+      'id={app_admin_rw=r/app_ddl} status={app_admin_rw=rw/app_ddl} dob_verified_18={app_admin_rw=rw/app_ddl}',
+    );
+    assertPermitted(
+      'app_admin_rw SELECT its three columns',
+      await asLogin(LOGINS.app_admin_rw, 'SELECT id, status, dob_verified_18 FROM public.account'),
+    );
+    for (const sql of [
+      'SELECT * FROM public.account',
+      'SELECT email_ci FROM public.account',
+      'SELECT password_hash FROM public.account',
+    ]) {
+      assertRefused(`app_admin_rw ${sql}`, await asLogin(LOGINS.app_admin_rw, sql), {
+        message: 'ERROR:  42501: permission denied for table account',
+      });
+    }
   });
 
   test('after the refusals: still one account and one session', async () => {

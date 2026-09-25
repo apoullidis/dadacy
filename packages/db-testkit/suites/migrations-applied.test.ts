@@ -40,7 +40,7 @@ import {
 import { assertPermitted, assertRefused, INT10_RAISE } from '../src/expect.ts';
 
 const SUITE = 'migrations-applied';
-const HIGHEST_COMMITTED = '0009';
+const HIGHEST_COMMITTED = '0011';
 const COMMITTED_DIR = path.join(REPO_ROOT, MIGRATIONS_DIR);
 const RECORD_SQL = `SELECT coalesce(shobj_description(oid, 'pg_database'), '(no comment)')
                       FROM pg_database WHERE datname = current_database()`;
@@ -261,6 +261,65 @@ const CREATED_BY: Readonly<
                WHERE conname = 'app_session_auth_method_check'
                  AND conrelid = to_regclass('public.app_session')
                  AND pg_get_constraintdef(oid) LIKE '%''registration''::text%'`,
+        holds: '1',
+      },
+    ],
+  },
+  '0010': {
+    source: 'T-192',
+    // 0010 creates no object: it re-issues app_admin_rw's COMMENT (T-186 C4 (i), OD-223). The
+    // probe reads that COMMENT from pg_shdescription for the SA SEC-7 citation 0010 adds; 0001's
+    // text, which the down restores, cites SEC-9 and not SEC-7. The role exists from 0001 on, so
+    // the reading never raises. This suite's down step reverts only the highest migration (0011),
+    // so this probe is checked after up only; 0010's down is measured in T-192's evidence (E1).
+    probes: [
+      {
+        title: "app_admin_rw's COMMENT cites SA SEC-7 and SD's RLS tables (T-186 C4 (i))",
+        sql: `SELECT (shobj_description(oid, 'pg_authid') LIKE '%per SA SEC-7%'
+                      AND shobj_description(oid, 'pg_authid') LIKE '%lines 1309 and 3906%')::text
+                FROM pg_roles WHERE rolname = 'app_admin_rw'`,
+        holds: 'true',
+      },
+    ],
+  },
+  '0011': {
+    source: 'T-192',
+    // Each probe names one object 0011 creates, or the replacement or grant it makes, and each
+    // returns a value rather than raising once it is gone: to_regprocedure returns NULL for a
+    // missing name, the trigger reads are counts, the privilege read names a column 0005 creates
+    // and a role 0001 creates, and the prosrc read is a count over the function 0008 creates and
+    // 0011 replaces (its down restores 0008's body, which has no app_rw clause).
+    probes: [
+      {
+        title: 'function public.assert_ts_senior_account_written_by_admin() exists',
+        sql: `SELECT (to_regprocedure('public.assert_ts_senior_account_written_by_admin()') IS NOT NULL)::text`,
+        holds: 'true',
+      },
+      {
+        title: 'trigger trg_account_ts_senior_status_admin_only exists on account (OE-48)',
+        sql: `SELECT count(*)::text FROM pg_trigger
+               WHERE tgname = 'trg_account_ts_senior_status_admin_only'
+                 AND tgrelid = 'public.account'::regclass`,
+        holds: '1',
+      },
+      {
+        title: 'trigger trg_account_role_ts_senior_no_truncate exists on account_role (OD-224)',
+        sql: `SELECT count(*)::text FROM pg_trigger
+               WHERE tgname = 'trg_account_role_ts_senior_no_truncate'
+                 AND tgrelid = 'public.account_role'::regclass`,
+        holds: '1',
+      },
+      {
+        title: 'app_admin_rw holds UPDATE on account.status',
+        sql: `SELECT has_column_privilege('app_admin_rw', 'public.account', 'status', 'UPDATE')::text`,
+        holds: 'true',
+      },
+      {
+        title:
+          "assert_ts_senior_written_by_admin() refuses a writer holding app_rw's privileges (T-186 C4 (iv))",
+        sql: `SELECT count(*)::text FROM pg_proc
+               WHERE oid = 'public.assert_ts_senior_written_by_admin()'::regprocedure
+                 AND prosrc LIKE '%NOT pg_has_role(current_user, ''app_rw'', ''USAGE'')%'`,
         holds: '1',
       },
     ],

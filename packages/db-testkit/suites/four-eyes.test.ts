@@ -16,14 +16,22 @@
  *       ts_senior row (`trg_account_role_ts_senior_admin_only`, KV053; OE-47), so QA's B2/B3/B4
  *       routes are REFUSED below, each with an app_admin_rw CONTROL.
  *
- * What is still open is pinned as LIMITATION cases, each asserting the stored row: app_rw
- * writes account.status, so it can make a suspended approver active around a countersignature
- * (decisions.md OD-222); and RP1/RP2 pin what a countersigned row does not bind (T-030 QA-F2):
- * the consumer obligation is in T-186 § Published contract.
+ * T-192 — migration 0011: OE-48 (only app_admin_rw may change id, status or dob_verified_18 of an
+ * account holding a live ts_senior role; `trg_account_ts_senior_status_admin_only`, KV055), so
+ * decisions.md OD-222's routes are REFUSED below, each with a control; the admin-writer test
+ * hardened (T-186 C4 (iv): a writer that also holds app_rw's privileges is refused, the superuser
+ * acting as itself included); and TRUNCATE account_role refused while it holds a ts_senior row
+ * (OD-224 A4, KV053).
  *
- * Every fixture account is ACTIVE (with dob_verified_18, which account_min_age_verified requires)
- * unless the test names its status, so a ts_senior CONTROL is refused only by what the test changes.
- * ts_senior rows are written by the superuser in fixtures and by the app_admin_rw login in tests.
+ * What is still open is pinned as LIMITATION cases, each asserting the stored row: RP1/RP2 pin
+ * what a countersigned row does not bind (T-030 QA-F2): the consumer obligation is in T-186 §
+ * Published contract.
+ *
+ * Every fixture account is ACTIVE with dob_verified_18 true (account_min_age_verified requires it)
+ * unless the test names its status or DOB_FALSE lists it, so a ts_senior CONTROL is refused only by
+ * what the test changes. ts_senior rows, and the status of an account holding one, are written in
+ * fixtures and restores by the superuser under SET ROLE app_admin_rw (since 0011 the superuser
+ * acting as itself is refused), and by the app_admin_rw login in tests.
  *
  * Every refusal asserts psql's exit status AND the exact `ERROR:  <SQLSTATE>: …` line, so a
  * crash, a connection failure or a refusal for another reason cannot read as this one
@@ -61,6 +69,10 @@ const LOGINS = {
 } as const;
 /** A login holding privileges on `approval` and NOTHING on `account_role` (invoker test). */
 const APPROVAL_ONLY_LOGIN = 't030_approval_only_probe';
+/** T-192: a login in BOTH app_rw and app_admin_rw, INHERIT (T-186 QA P1). */
+const DUAL_LOGIN = 't192_rw_and_admin_probe';
+/** The bootstrap superuser's name, as current_user reports it (the compose default, T-020 §1). */
+const SUPERUSER_NAME = 'app';
 
 /** A 26-character fixture id. */
 const id = (tag: string): string => {
@@ -98,6 +110,8 @@ const ACC = {
   pendingTs: id('PENDINGTS'),
   /** An active ts_senior used by the tests that revoke, suspend or re-check (T-186). */
   tsSeniorScratch: id('TSSCRATCH'),
+  /** T-192: status 'pending' AND dob_verified_18 false, with a LIVE ts_senior (QA OD-b, OD-d). */
+  pendingNoDob: id('PENDNODOB'),
   /** An account whose id is the LOWER-CASE spelling of `tsSenior2`'s, holding ts_senior. */
   lowerOfTsSenior2: id('TSSENIORTWO').toLowerCase(),
   /** sod_finance_ts fixtures (T-140 QA-A3): finance REVOKED + ts_operator live. */
@@ -125,6 +139,7 @@ const ROLES_OF: Readonly<Record<string, readonly string[]>> = {
   [ACC.erased]: ['ts_senior'],
   [ACC.pendingTs]: ['ts_senior'],
   [ACC.tsSeniorScratch]: ['ts_senior'],
+  [ACC.pendingNoDob]: ['ts_senior'],
   [ACC.lowerOfTsSenior2]: ['ts_senior'],
   [ACC.sodFinance]: ['ts_operator'],
   [ACC.sodB]: ['ts_operator', 'parent'],
@@ -171,8 +186,11 @@ const ERR_NOT_TS_SENIOR =
 const ERR_NOT_ACTIVE =
   'ERROR:  KV054: I5_APPROVER_NOT_ACTIVE: public.approval.approver_id holds ts_senior on an account that is not active';
 /** T-186, OE-47: a ts_senior row written by a role without app_admin_rw's privileges. */
-const errTsSeniorWrite = (op: 'INSERT' | 'UPDATE' | 'DELETE', role: string): string =>
+const errTsSeniorWrite = (op: 'INSERT' | 'UPDATE' | 'DELETE' | 'TRUNCATE', role: string): string =>
   `ERROR:  KV053: I5_TS_SENIOR_WRITE_REFUSED: ${op} of a ts_senior row in public.account_role by role ${role}`;
+/** T-192, OE-48: a change to what OE-45's read depends on, for an account holding a live ts_senior. */
+const errAccountWrite = (columns: string, role: string): string =>
+  `ERROR:  KV055: I5_TS_SENIOR_ACCOUNT_WRITE_REFUSED: UPDATE of ${columns} on public.account for an account holding a live ts_senior role, by role ${role}`;
 
 /** The status each fixture account is created with: ACTIVE unless named here (T-186). */
 const STATUS_OF: Readonly<Record<string, string>> = {
@@ -180,7 +198,10 @@ const STATUS_OF: Readonly<Record<string, string>> = {
   [ACC.removed]: 'removed',
   [ACC.erased]: 'erased',
   [ACC.pendingTs]: 'pending',
+  [ACC.pendingNoDob]: 'pending',
 };
+/** T-192: fixture accounts created with dob_verified_18 false (never age-verified). */
+const DOB_FALSE: ReadonlySet<string> = new Set([ACC.pendingNoDob]);
 
 let seq = 0;
 /** A fresh approval id per statement, so no two tests collide on the primary key. */
@@ -212,13 +233,14 @@ beforeAll(async () => {
     (acc, i) =>
       `INSERT INTO public.account (id, pseudonym, tos_version, status, dob_verified_18)
          VALUES ('${acc}', '${id(`PSEUDO${String(i).padStart(2, '0')}`)}', 't030-tos',
-                 '${STATUS_OF[acc] ?? 'active'}', true)`,
+                 '${STATUS_OF[acc] ?? 'active'}', ${DOB_FALSE.has(acc) ? 'false' : 'true'})`,
   );
-  const roleRows = Object.entries(ROLES_OF).flatMap(([acc, roles]) =>
-    roles.map(
-      (r) => `INSERT INTO public.account_role (account_id, role) VALUES ('${acc}', '${r}')`,
-    ),
-  );
+  const rowsFor = (tsSenior: boolean): string[] =>
+    Object.entries(ROLES_OF).flatMap(([acc, roles]) =>
+      roles
+        .filter((r) => (r === 'ts_senior') === tsSenior)
+        .map((r) => `INSERT INTO public.account_role (account_id, role) VALUES ('${acc}', '${r}')`),
+    );
   await db.sql({
     commands: [
       ...Object.entries(LOGINS).map(
@@ -226,9 +248,14 @@ beforeAll(async () => {
           `CREATE ROLE ${login} LOGIN PASSWORD '${PROBE_PASSWORD}' IN ROLE ${role}`,
       ),
       `CREATE ROLE ${APPROVAL_ONLY_LOGIN} LOGIN PASSWORD '${PROBE_PASSWORD}'`,
+      `CREATE ROLE ${DUAL_LOGIN} LOGIN PASSWORD '${PROBE_PASSWORD}' IN ROLE app_rw, app_admin_rw`,
       ...accountRows,
-      ...roleRows,
+      ...rowsFor(false),
+      // T-192: since 0011 the superuser acting as itself may not write a ts_senior row.
+      'SET ROLE app_admin_rw',
+      ...rowsFor(true),
       `UPDATE public.account_role SET revoked_at = now() WHERE account_id = '${ACC.revoked}'`,
+      'RESET ROLE',
       // sod fixture: ts_operator live, finance present but REVOKED (legal).
       `INSERT INTO public.account_role (account_id, role, revoked_at)
          VALUES ('${ACC.sodFinance}', 'finance', now())`,
@@ -259,6 +286,13 @@ const asApp = (...commands: string[]): Promise<PsqlResult> => asLogin(LOGINS.app
 /** T-186: the one principal OE-47 lets write a ts_senior row. */
 const asAdmin = (...commands: string[]): Promise<PsqlResult> =>
   asLogin(LOGINS.app_admin_rw, ...commands);
+/**
+ * T-192: fixture writes and restores that touch a ts_senior row, or the status of an account holding
+ * one, as the superuser under SET ROLE app_admin_rw. Since 0011 the superuser acting as itself is
+ * refused (it holds app_rw's privileges; T-186 C4 (iv)). Asserts exit 0.
+ */
+const asFixtureAdmin = (...commands: string[]): Promise<PsqlResult> =>
+  db.sql({ commands: ['SET ROLE app_admin_rw', ...commands, 'RESET ROLE'] });
 
 /** Revoke / un-revoke an account's ts_senior, as app_admin_rw (OE-47), committed. */
 const REVOKE_TS = (acc: string): string =>
@@ -336,13 +370,18 @@ describe('0007 — what exists', () => {
         .sort()
         .join(','),
     );
-    // T-186 (QA2-A4, QM5): every account is ACTIVE except the four named non-active ones.
+    // T-186 (QA2-A4, QM5): every account is ACTIVE except the five named non-active ones (T-192
+    // adds pendingNoDob), and only pendingNoDob has dob_verified_18 false.
     assert.equal(
       await db.value(
         `SELECT string_agg(status::text || '=' || n::text, ',' ORDER BY status::text)
            FROM (SELECT status, count(*) AS n FROM public.account GROUP BY status) s`,
       ),
-      `active=${String(Object.keys(ACC).length - 4)},erased=1,pending=1,removed=1,suspended=1`,
+      `active=${String(Object.keys(ACC).length - 5)},erased=1,pending=2,removed=1,suspended=1`,
+    );
+    assert.equal(
+      await db.value(`SELECT string_agg(id, ',') FROM public.account WHERE NOT dob_verified_18`),
+      ACC.pendingNoDob,
     );
   });
 
@@ -502,7 +541,9 @@ describe('I-5 clause (b) — every other kind of approver is refused (KV052)', (
       'un-revoked ts_senior',
       await asSuperuser(
         'BEGIN',
+        'SET LOCAL ROLE app_admin_rw',
         `UPDATE public.account_role SET revoked_at = NULL WHERE account_id = '${ACC.revoked}' AND role = 'ts_senior'`,
+        'RESET ROLE',
         insertPending(a, 'retention_run#approve', ACC.compliance),
         countersign(a, ACC.revoked),
         'ROLLBACK',
@@ -538,8 +579,9 @@ describe('I-5 clause (b) — every other kind of approver is refused (KV052)', (
       ],
     });
     const stored = await db.value(storedRow(a));
-    // Restore before judging (superuser: the fixture writer), and prove it.
-    await db.sql({ commands: [UNREVOKE_TS(acc), `DELETE FROM public.approval WHERE id = '${a}'`] });
+    // Restore before judging (the fixture writer, under SET ROLE app_admin_rw), and prove it.
+    await asFixtureAdmin(UNREVOKE_TS(acc));
+    await db.sql({ commands: [`DELETE FROM public.approval WHERE id = '${a}'`] });
     assertRefusedWith('approver revoked, row re-written', rewrite, ERR_NOT_TS_SENIOR);
     assertPermitted('nulling approver_id', nulled);
     assert.ok(nulled.stdout.includes('nulled=-'), `approver_id nulled.\n${nulled.output}`);
@@ -600,11 +642,7 @@ describe('I-5 clause (b) — the role row is read FOR SHARE, so a concurrent rev
     const cs = await asApp(countersign(a, ACC.tsSenior));
     const rv = await revoking;
     // Restore before judging, so a failure here cannot leak a revoked fixture into later tests.
-    await db.sql({
-      commands: [
-        `UPDATE public.account_role SET revoked_at = NULL WHERE account_id = '${ACC.tsSenior}' AND role = 'ts_senior'`,
-      ],
-    });
+    await asFixtureAdmin(UNREVOKE_TS(ACC.tsSenior));
     assertPermitted('the revoke transaction', rv);
     assertRefusedWith('the waiting countersignature', cs, ERR_NOT_TS_SENIOR);
     // Prove the restore, and that nothing was countersigned.
@@ -621,7 +659,8 @@ describe('I-5 clause (b) — the role row is read FOR SHARE, so a concurrent rev
 /**
  * T-186, OE-45: only an ACTIVE account's ts_senior satisfies I-5. Each non-active status is
  * refused (KV054) over the real app_rw login, and nothing is stored; each has a CONTROL in
- * which the same account, made active by the superuser and committed, IS accepted and the
+ * which the same account, made active by app_admin_rw (the superuser under SET ROLE, T-192) and
+ * committed, IS accepted and the
  * countersignature IS stored, so the status is what refused it. Until T-186 the suspended
  * case was pinned as a LIMITATION (ACCEPTED), asserting psql's exit status only (QA2-A1).
  */
@@ -653,21 +692,15 @@ describe('I-5 clause (b), OE-45 — a live ts_senior on an account that is NOT A
 
     test(`CONTROL — the same ${status} account, made ACTIVE, is accepted and its countersignature is stored`, async () => {
       const a = nextApprovalId();
-      await db.sql({
-        commands: [`UPDATE public.account SET status = 'active' WHERE id = '${acc}'`],
-      });
+      await asFixtureAdmin(`UPDATE public.account SET status = 'active' WHERE id = '${acc}'`);
       const r = await asApp(
         insertPending(a, 'retention_run#approve', ACC.compliance),
         countersign(a, acc),
       );
       const stored = await db.value(storedRow(a));
       // Restore before judging, and prove it.
-      await db.sql({
-        commands: [
-          `UPDATE public.account SET status = '${status}' WHERE id = '${acc}'`,
-          `DELETE FROM public.approval WHERE id = '${a}'`,
-        ],
-      });
+      await asFixtureAdmin(`UPDATE public.account SET status = '${status}' WHERE id = '${acc}'`);
+      await db.sql({ commands: [`DELETE FROM public.approval WHERE id = '${a}'`] });
       assertPermitted(`${status} made active`, r);
       assert.ok(stored.startsWith(`${acc}|approve|t030|`), `${status} control stored: ${stored}`);
       assert.equal(
@@ -710,8 +743,8 @@ describe('I-5 clause (b), OE-45 — a live ts_senior on an account that is NOT A
       await asApp(insertPending(a, 'retention_run#approve', ACC.compliance), countersign(a, acc)),
     );
     assertPermitted(
-      'app_rw suspends the approver, committed',
-      await asApp(`UPDATE public.account SET status = 'suspended' WHERE id = '${acc}'`),
+      'app_admin_rw suspends the approver, committed (OE-48: app_rw may not, T-192)',
+      await asAdmin(`UPDATE public.account SET status = 'suspended' WHERE id = '${acc}'`),
     );
     const rewrite = await asApp(
       'BEGIN',
@@ -722,12 +755,8 @@ describe('I-5 clause (b), OE-45 — a live ts_senior on an account that is NOT A
       `UPDATE public.approval SET approver_id = NULL WHERE id = '${a}'`,
       'ROLLBACK',
     );
-    await db.sql({
-      commands: [
-        `UPDATE public.account SET status = 'active' WHERE id = '${acc}'`,
-        `DELETE FROM public.approval WHERE id = '${a}'`,
-      ],
-    });
+    await asFixtureAdmin(`UPDATE public.account SET status = 'active' WHERE id = '${acc}'`);
+    await db.sql({ commands: [`DELETE FROM public.approval WHERE id = '${a}'`] });
     assertRefusedWith('suspended approver, row re-written', rewrite, ERR_NOT_ACTIVE);
     assertPermitted('nulling approver_id', nulled);
   });
@@ -740,7 +769,8 @@ describe('I-5 clause (b), OE-45 — the account row is read FOR SHARE too, so a 
     await asSuperuser(insertPending(a, 'safeguarding_referral#make', ACC.dsl));
     const countersigning = asApp('BEGIN', countersign(a, acc), 'SELECT pg_sleep(4)', 'ROLLBACK');
     await sleep(1500);
-    const suspend = await asApp(
+    // app_admin_rw suspends: since 0011 app_rw may not change a ts_senior holder's status (OE-48).
+    const suspend = await asAdmin(
       'BEGIN',
       "SET LOCAL lock_timeout = '1s'",
       `UPDATE public.account SET status = 'suspended' WHERE id = '${acc}'`,
@@ -769,7 +799,8 @@ describe('I-5 clause (b), OE-45 — the account row is read FOR SHARE too, so a 
     );
     const a = nextApprovalId();
     await asSuperuser(insertPending(a, 'safeguarding_referral#make', ACC.dsl));
-    const suspending = asApp(
+    // app_admin_rw suspends (OE-48, T-192).
+    const suspending = asAdmin(
       'BEGIN',
       `UPDATE public.account SET status = 'suspended' WHERE id = '${acc}'`,
       'SELECT pg_sleep(3)',
@@ -779,21 +810,35 @@ describe('I-5 clause (b), OE-45 — the account row is read FOR SHARE too, so a 
     const cs = await asApp(countersign(a, acc));
     const sp = await suspending;
     const stored = await db.value(storedRow(a));
-    await db.sql({
-      commands: [
-        `UPDATE public.account SET status = 'active' WHERE id = '${acc}'`,
-        `DELETE FROM public.approval WHERE id = '${a}'`,
-      ],
-    });
+    await asFixtureAdmin(`UPDATE public.account SET status = 'active' WHERE id = '${acc}'`);
+    await db.sql({ commands: [`DELETE FROM public.approval WHERE id = '${a}'`] });
     assertPermitted('the suspend transaction', sp);
     assertRefusedWith('the waiting countersignature', cs, ERR_NOT_ACTIVE);
     assert.ok(stored.startsWith('-|'), `nothing countersigned: ${stored}`);
   });
 });
 
-describe('I-5 clause (b), OE-45 — LIMITATION (decisions.md OD-222): app_rw writes account.status, so it can make a non-active approver active around a countersignature', () => {
-  test('LIMITATION — app_rw, ONE transaction: set a SUSPENDED ts_senior account active, countersign, set it back, COMMIT: ACCEPTED, and the stored approver is suspended', async () => {
+/** T-192: every account row's id, status and dob_verified_18, so a refused write can be shown to leave no trace. */
+const ACCOUNT_TABLE = `SELECT string_agg(id || ':' || status::text || ':' || dob_verified_18::text, ' | '
+                           ORDER BY id COLLATE "C")
+                        FROM public.account`;
+/** One account's status and dob_verified_18, as `status,dob`. */
+const statusOf = (acc: string): string =>
+  `SELECT status::text || ',' || dob_verified_18::text FROM public.account WHERE id = '${acc}'`;
+
+/**
+ * T-192, OE-48 (decisions.md; from OD-222, widened by T-186 QA-A1): only app_admin_rw may change
+ * id, status or dob_verified_18 of an account holding a LIVE ts_senior role. Migration 0011's
+ * `trg_account_ts_senior_status_admin_only` refuses everyone else with KV055, so QA's OD-a..OD-d
+ * routes (flip, countersign, flip back in one transaction; a committed activation) are REFUSED.
+ * Each refusal runs over the real app_rw login and asserts the account table unchanged; the
+ * controls show every ordinary app_rw write to an account (signup, verification, other columns)
+ * still passes, and that app_admin_rw may make the same change.
+ */
+describe('I-5 clause (b), OE-48 — app_rw cannot change id, status or dob_verified_18 of an account holding a live ts_senior (KV055); app_admin_rw may', () => {
+  test('OD-222 (QA OD-a) — app_rw, ONE transaction: set a SUSPENDED ts_senior account active, countersign, set it back: REFUSED (KV055) at the first status write, nothing stored', async () => {
     const acc = ACC.suspended;
+    const before = await db.value(ACCOUNT_TABLE);
     const a = nextApprovalId();
     const r = await asApp(
       'BEGIN',
@@ -803,16 +848,194 @@ describe('I-5 clause (b), OE-45 — LIMITATION (decisions.md OD-222): app_rw wri
       `UPDATE public.account SET status = 'suspended' WHERE id = '${acc}'`,
       'COMMIT',
     );
-    const stored = await db.value(
-      `SELECT (${storedRow(a)}) || '#' || (SELECT status::text FROM public.account WHERE id = '${acc}')`,
+    assertRefusedWith('OD-a', r, errAccountWrite('status', LOGINS.app_rw));
+    assert.equal(await db.value(storedRow(a)), '(none)', 'OD-a: nothing stored');
+    assert.equal(await db.value(ACCOUNT_TABLE), before, 'OD-a: account unchanged');
+  });
+
+  for (const acc of [ACC.removed, ACC.erased, ACC.pendingTs] as const) {
+    test(`app_rw sets the ${STATUS_OF[acc] ?? '?'} ts_senior holder active (QA OD-c shape): REFUSED (KV055)`, async () => {
+      const before = await db.value(ACCOUNT_TABLE);
+      assertRefusedWith(
+        `${STATUS_OF[acc] ?? '?'} -> active`,
+        await asApp('BEGIN', `UPDATE public.account SET status = 'active' WHERE id = '${acc}'`),
+        errAccountWrite('status', LOGINS.app_rw),
+      );
+      assert.equal(await db.value(ACCOUNT_TABLE), before, 'account unchanged');
+    });
+  }
+
+  test('QA OD-b — a PENDING account never age-verified: dob_verified_18 true AND active in one statement is REFUSED (KV055, both columns named); dob_verified_18 alone is REFUSED too', async () => {
+    const acc = ACC.pendingNoDob;
+    assert.equal(await db.value(statusOf(acc)), 'pending,false', 'precondition');
+    assertRefusedWith(
+      'OD-b both columns',
+      await asApp(
+        'BEGIN',
+        `UPDATE public.account SET dob_verified_18 = true, status = 'active' WHERE id = '${acc}'`,
+      ),
+      errAccountWrite('status, dob_verified_18', LOGINS.app_rw),
     );
+    assertRefusedWith(
+      'OD-b dob_verified_18 alone',
+      await asApp('BEGIN', `UPDATE public.account SET dob_verified_18 = true WHERE id = '${acc}'`),
+      errAccountWrite('dob_verified_18', LOGINS.app_rw),
+    );
+    assert.equal(await db.value(statusOf(acc)), 'pending,false', 'unchanged');
+  });
+
+  test('QA OD-d — a COMMITTED activation with no flip-back is REFUSED (KV055), so a later countersignature by that account is still REFUSED (KV054)', async () => {
+    const acc = ACC.pendingNoDob;
+    assertRefusedWith(
+      'OD-d activation',
+      await asApp(
+        `UPDATE public.account SET status = 'active', dob_verified_18 = true WHERE id = '${acc}'`,
+      ),
+      errAccountWrite('status, dob_verified_18', LOGINS.app_rw),
+    );
+    const a = nextApprovalId();
+    await asSuperuser(insertPending(a, 'safeguarding_referral#make', ACC.dsl));
+    const cs = await asApp(countersign(a, acc));
+    const stored = await db.value(storedRow(a));
     await db.sql({ commands: [`DELETE FROM public.approval WHERE id = '${a}'`] });
-    assertPermitted('OD-222 transaction', r);
-    assert.ok(
-      stored.startsWith(`${acc}|approve|t030|`) && stored.endsWith('#suspended'),
-      `OD-222: a suspended approver's countersignature committed: ${stored}`,
+    assertRefusedWith('OD-d later countersignature', cs, ERR_NOT_ACTIVE);
+    assert.ok(stored.startsWith('-|'), `OD-d: nothing countersigned: ${stored}`);
+    assert.equal(await db.value(statusOf(acc)), 'pending,false', 'OD-d: unchanged');
+  });
+
+  test('app_rw may not make a live ts_senior holder LESS privileged either: suspending an ACTIVE one is REFUSED (KV055)', async () => {
+    const acc = ACC.tsSeniorScratch;
+    assertRefusedWith(
+      'app_rw suspends an active ts_senior holder',
+      await asApp(`UPDATE public.account SET status = 'suspended' WHERE id = '${acc}'`),
+      errAccountWrite('status', LOGINS.app_rw),
     );
-    assert.equal(await db.value(storedRow(a)), '(none)', 'cleaned up');
+    assert.equal(await db.value(statusOf(acc)), 'active,true', 'unchanged');
+  });
+
+  test('app_rw is refused every other way to the same columns: a changed id, an upsert (ON CONFLICT DO UPDATE), a MERGE (each KV055)', async () => {
+    const before = await db.value(ACCOUNT_TABLE);
+    const cases: readonly [string, string, string][] = [
+      [
+        'id changed',
+        `UPDATE public.account SET id = '${id('MOVEDTS')}' WHERE id = '${ACC.tsSeniorScratch}'`,
+        'id',
+      ],
+      [
+        'upsert',
+        `INSERT INTO public.account (id, pseudonym, tos_version) VALUES ('${ACC.suspended}', '${id('PSEUDOUPS')}', 't192')
+           ON CONFLICT (id) DO UPDATE SET status = 'active'`,
+        'status',
+      ],
+      [
+        'MERGE',
+        `MERGE INTO public.account a USING (SELECT '${ACC.suspended}'::bpchar AS id) s ON a.id = s.id
+           WHEN MATCHED THEN UPDATE SET status = 'active'`,
+        'status',
+      ],
+    ];
+    for (const [what, sql, columns] of cases) {
+      assertRefusedWith(what, await asApp('BEGIN', sql), errAccountWrite(columns, LOGINS.app_rw));
+    }
+    assert.equal(await db.value(ACCOUNT_TABLE), before, 'account unchanged');
+  });
+
+  test('T-186 C4 (iv): a login in BOTH app_rw and app_admin_rw, and the superuser acting as itself, are REFUSED (KV055)', async () => {
+    const before = await db.value(ACCOUNT_TABLE);
+    assertRefusedWith(
+      'dual login',
+      await asLogin(
+        DUAL_LOGIN,
+        'BEGIN',
+        `UPDATE public.account SET status = 'active' WHERE id = '${ACC.suspended}'`,
+      ),
+      errAccountWrite('status', DUAL_LOGIN),
+    );
+    assertRefusedWith(
+      'superuser as itself',
+      await asSuperuser(
+        'BEGIN',
+        `UPDATE public.account SET status = 'active' WHERE id = '${ACC.suspended}'`,
+      ),
+      errAccountWrite('status', SUPERUSER_NAME),
+    );
+    assert.equal(await db.value(ACCOUNT_TABLE), before, 'account unchanged');
+  });
+
+  test('CONTROL — ordinary app_rw writes still pass: signup then verification of a new account, a parent’s verification, a REVOKED ts_senior’s account, other columns of a live ts_senior holder, and a status set to the value it has (each rolled back)', async () => {
+    const r = await db.psql({
+      user: LOGINS.app_rw,
+      password: PROBE_PASSWORD,
+      raw: true,
+      verbose: true,
+      stopOnError: true,
+      commands: [
+        'BEGIN',
+        `INSERT INTO public.account (id, pseudonym, tos_version) VALUES ('${id('SIGNUP')}', '${id('PSEUDOSIGNUP')}', 't192')`,
+        `UPDATE public.account SET dob_verified_18 = true, status = 'active' WHERE id = '${id('SIGNUP')}'`,
+        `UPDATE public.account SET status = 'suspended' WHERE id = '${ACC.parent}'`,
+        `UPDATE public.account SET status = 'active' WHERE id = '${ACC.parent}'`,
+        `UPDATE public.account SET status = 'suspended' WHERE id = '${ACC.revoked}'`,
+        `UPDATE public.account SET locale = 'el', locale_source = 'chosen', email_verified_at = now() WHERE id = '${ACC.tsSenior}'`,
+        `UPDATE public.account SET status = 'active', dob_verified_18 = true WHERE id = '${ACC.tsSenior}'`,
+        `SELECT 'signup=' || (${statusOf(id('SIGNUP'))}) || ';revoked=' || (${statusOf(ACC.revoked)})
+                || ';ts=' || (SELECT locale FROM public.account WHERE id = '${ACC.tsSenior}')`,
+        'ROLLBACK',
+      ],
+    });
+    assertPermitted('app_rw ordinary writes', r);
+    assert.ok(
+      r.stdout.includes('signup=active,true;revoked=suspended,true;ts=el'),
+      `the writes landed inside the transaction.\n${r.output}`,
+    );
+  });
+
+  test('CONTROL — app_admin_rw suspends a live ts_senior holder and makes it active again; so does the superuser after SET ROLE app_admin_rw (each rolled back)', async () => {
+    const acc = ACC.tsSeniorScratch;
+    const adm = await db.psql({
+      user: LOGINS.app_admin_rw,
+      password: PROBE_PASSWORD,
+      raw: true,
+      verbose: true,
+      stopOnError: true,
+      commands: [
+        'BEGIN',
+        `UPDATE public.account SET status = 'suspended' WHERE id = '${acc}'`,
+        `SELECT 'in txn=' || status::text FROM public.account WHERE id = '${acc}'`,
+        `UPDATE public.account SET status = 'active' WHERE id = '${acc}'`,
+        'ROLLBACK',
+      ],
+    });
+    assertPermitted('app_admin_rw', adm);
+    assert.ok(adm.stdout.includes('in txn=suspended'), `the suspend landed.\n${adm.output}`);
+    assertPermitted(
+      'superuser SET ROLE app_admin_rw',
+      await asSuperuser(
+        'BEGIN',
+        'SET LOCAL ROLE app_admin_rw',
+        `UPDATE public.account SET status = 'suspended' WHERE id = '${acc}'`,
+        'ROLLBACK',
+      ),
+    );
+    assert.equal(await db.value(statusOf(acc)), 'active,true', 'rolled back');
+  });
+
+  test('app_admin_rw reads and writes only the columns 0011 grants: id, status, dob_verified_18 readable; status and dob_verified_18 writable; email_ci and a locale write REFUSED (42501)', async () => {
+    assertPermitted(
+      'app_admin_rw reads its columns',
+      await asAdmin(`SELECT id, status, dob_verified_18 FROM public.account`),
+    );
+    for (const sql of [
+      `SELECT email_ci FROM public.account`,
+      `UPDATE public.account SET locale = 'el' WHERE id = '${ACC.tsSenior}'`,
+      `INSERT INTO public.account (id, pseudonym, tos_version) VALUES ('${id('ADMININS')}', '${id('PSEUDOADM')}', 't192')`,
+    ]) {
+      assertRefusedWith(
+        sql,
+        await asAdmin('BEGIN', sql),
+        'ERROR:  42501: permission denied for table account',
+      );
+    }
   });
 });
 
@@ -937,10 +1160,16 @@ describe('I-5 clause (b), OE-47 — app_rw cannot write a ts_senior row, so QA-F
       countersign(a, ACC.noRole),
     );
     const stored = await db.value(storedRow(a));
+    // No role may DELETE a ts_senior row (KV053; app_admin_rw holds no DELETE), and since 0011 the
+    // superuser acting as itself is refused too: the cleanup uses the superuser's stated bypass
+    // (session_replication_role = replica, T-186 § contract §3), inside one transaction.
     await db.sql({
       commands: [
         `DELETE FROM public.approval WHERE id = '${a}'`,
+        'BEGIN',
+        'SET LOCAL session_replication_role = replica',
         `DELETE FROM public.account_role WHERE account_id = '${ACC.noRole}'`,
+        'COMMIT',
       ],
     });
     assertPermitted('B4 control grant by app_admin_rw', grant);
@@ -1037,6 +1266,91 @@ describe('I-5 clause (b), OE-47 — app_rw cannot write a ts_senior row, so QA-F
     }
     assert.equal(await db.value(ROLE_TABLE), before, 'account_role unchanged');
   });
+
+  test('T-192 (T-186 C4 (iv)): the admin test refuses a writer that ALSO holds app_rw’s privileges — a login in both roles (QA P1), the superuser acting as itself, and every app_rw login once app_admin_rw is granted to app_rw (QA P10) (each KV053)', async () => {
+    const before = await db.value(ROLE_TABLE);
+    const grantTs = `INSERT INTO public.account_role (account_id, role) VALUES ('${ACC.noRole}', 'ts_senior')`;
+    assertRefusedWith(
+      'dual login',
+      await asLogin(DUAL_LOGIN, 'BEGIN', grantTs),
+      errTsSeniorWrite('INSERT', DUAL_LOGIN),
+    );
+    assertRefusedWith(
+      'superuser as itself',
+      await asSuperuser('BEGIN', grantTs),
+      errTsSeniorWrite('INSERT', SUPERUSER_NAME),
+    );
+    // P10, inside ONE superuser transaction so the membership never commits: the grant, then the
+    // app_rw login's identity (SET LOCAL ROLE to it), whose admin_usage now reads true.
+    const p10 = await asSuperuser(
+      'BEGIN',
+      'GRANT app_admin_rw TO app_rw',
+      `SET LOCAL ROLE ${LOGINS.app_rw}`,
+      `SELECT 'p10 admin_usage=' || pg_has_role(current_user, 'app_admin_rw', 'USAGE')::text`,
+      grantTs,
+    );
+    assertRefusedWith('P10', p10, errTsSeniorWrite('INSERT', LOGINS.app_rw));
+    assert.ok(
+      p10.output.includes('p10 admin_usage=true'),
+      `P10 premise: app_rw login held app_admin_rw's privileges.\n${p10.output}`,
+    );
+    assert.equal(
+      await db.value(`SELECT pg_has_role('app_rw', 'app_admin_rw', 'MEMBER')::text`),
+      'false',
+      'P10 membership rolled back',
+    );
+    assert.equal(await db.value(ROLE_TABLE), before, 'account_role unchanged');
+  });
+
+  test('T-192 CONTROL: an app_admin_rw-only login, and the superuser after SET ROLE app_admin_rw, still write a ts_senior row (rolled back)', async () => {
+    const grantTs = `INSERT INTO public.account_role (account_id, role) VALUES ('${ACC.noRole}', 'ts_senior')`;
+    assertPermitted('app_admin_rw login', await asAdmin('BEGIN', grantTs, 'ROLLBACK'));
+    assertPermitted(
+      'superuser SET ROLE app_admin_rw',
+      await asSuperuser('BEGIN', 'SET LOCAL ROLE app_admin_rw', grantTs, 'ROLLBACK'),
+    );
+  });
+
+  test('T-192 (OD-224 A4): TRUNCATE account_role while it holds a ts_senior row is REFUSED (KV053) — by its owner app_ddl, through TRUNCATE account CASCADE, and by the superuser acting as itself', async () => {
+    const before = await db.value(ROLE_TABLE);
+    assertRefusedWith(
+      'app_ddl TRUNCATE account_role',
+      await asLogin(LOGINS.app_ddl, 'BEGIN', 'TRUNCATE public.account_role'),
+      errTsSeniorWrite('TRUNCATE', LOGINS.app_ddl),
+    );
+    assertRefusedWith(
+      'app_ddl TRUNCATE account CASCADE',
+      await asLogin(LOGINS.app_ddl, 'BEGIN', 'TRUNCATE public.account CASCADE'),
+      errTsSeniorWrite('TRUNCATE', LOGINS.app_ddl),
+    );
+    assertRefusedWith(
+      'superuser TRUNCATE account_role',
+      await asSuperuser('BEGIN', 'TRUNCATE public.account_role'),
+      errTsSeniorWrite('TRUNCATE', SUPERUSER_NAME),
+    );
+    assert.equal(await db.value(ROLE_TABLE), before, 'account_role unchanged');
+  });
+
+  test('T-192 CONTROL: once app_admin_rw has re-roled every ts_senior row away, app_ddl’s TRUNCATE account_role is accepted (rolled back)', async () => {
+    const r = await db.psql({
+      raw: true,
+      verbose: true,
+      stopOnError: true,
+      commands: [
+        'BEGIN',
+        'SET LOCAL ROLE app_admin_rw',
+        `UPDATE public.account_role SET role = 'parent' WHERE role = 'ts_senior'`,
+        'RESET ROLE',
+        'SET LOCAL ROLE app_ddl',
+        'TRUNCATE public.account_role',
+        `SELECT 'rows after=' || count(*)::text FROM public.account_role`,
+        'ROLLBACK',
+      ],
+    });
+    assertPermitted('truncate with no ts_senior row', r);
+    assert.ok(r.stdout.includes('rows after=0'), `the truncate landed.\n${r.output}`);
+    assert.equal(await db.value(liveTsSenior(ACC.tsSenior)), '1', 'rolled back');
+  });
 });
 
 /**
@@ -1112,11 +1426,7 @@ describe('I-5 clause (b) — the race under REPEATABLE READ and SERIALIZABLE (T-
       const revoke = await asAdmin(REVOKE_TS(ACC.tsSenior));
       const cs = await countersigning;
       // Restore before judging.
-      await db.sql({
-        commands: [
-          `UPDATE public.account_role SET revoked_at = NULL WHERE account_id = '${ACC.tsSenior}' AND role = 'ts_senior'`,
-        ],
-      });
+      await asFixtureAdmin(UNREVOKE_TS(ACC.tsSenior));
       assertPermitted('the committed revoke', revoke);
       assertRefusedWith(
         `${level} countersignature`,
