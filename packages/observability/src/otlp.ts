@@ -48,15 +48,29 @@
  *      signal is aborted, and the export is reported as `export_network`. This
  *      bounds a collector that resolves but never answers. ABORTING A `fetch`
  *      DOES NOT CANCEL ITS `getaddrinfo`: Node cannot cancel a lookup, so the
- *      lookup keeps its lane until the resolver gives up. Bound 3 is what keeps
- *      those leftover lookups from piling up.
+ *      lookup keeps its lane until the resolver gives up. Bound 3 spaces those
+ *      leftover lookups out; whether they still overlap depends on the
+ *      resolver (below).
  *   3. A COOL-DOWN AFTER EVERY FAILED EXPORT (`backoffMs`, default 5000,
- *      doubling to `maxBackoffMs`, default 60000; reset by a success). No export
- *      starts during it. Consecutive export STARTS are therefore at least
- *      `backoffMs` apart once one has failed. With a resolver that stalls for
- *      T ms, telemetry holds at most ceil(T / backoffMs) + 1 DNS lanes, at the
- *      defaults, and 1 when T is below 5000 ms. Compose's T was measured at
- *      ~5000 ms. A production resolver's T is not measured here.
+ *      doubling to `maxBackoffMs`, default 60000). No export starts during it,
+ *      however many spans are buffered, and after a success the next failure
+ *      cools down `backoffMs` again. The four `bound 3` cases hold this. Two of
+ *      them were added in T-204 rework 1, because the first two stayed green
+ *      with the under-load ordering or the reset broken (QA's QM9, QM7).
+ *      HOW MANY DNS LANES TELEMETRY HOLDS depends on the resolver, and is
+ *      stated as runs, not as a formula (state/EP-1/T-204.md, one run a line):
+ *      - compose's resolver, a failing collector lookup stalling 5012 ms (QA
+ *        Q6, at 97e94b4): failed exports logged 10, 15, 25, 45, 65, 65, 65 s
+ *        apart. In the author's M2 (at 01979fd), no `hibp-fake` lookup waited
+ *        more than 1 ms over 26 one-second samples, so telemetry never held
+ *        both default lanes then.
+ *      - a musl resolver with `timeout:15` (QA Q8, at 97e94b4): two telemetry
+ *        lookups overlapped once, one registration took 2857 ms, 24 of 24
+ *        registrations were answered correctly.
+ *      - `timeout:30` (QA Q8, at 97e94b4): both default lanes filled,
+ *        `hibp-fake` lookups waited up to 19758 ms, and a breached password
+ *        was ACCEPTED. That residual is OD-230, owned by T-205. OD-227 is
+ *        closed for compose's resolver only.
  *   4. A BOUNDED BUFFER (`maxQueue`, default 2048). A span recorded when the
  *      buffer is full is dropped and counted in `exporterCounters.dropped`. It
  *      is not queued. Memory cannot grow with the length of an outage.
