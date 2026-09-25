@@ -1,5 +1,7 @@
 -- 0007_approval_four_eyes.down.sql
 --
+-- @compliance-review: assert_second_actor_differs — T-030, two-approval path (PROTOCOL §3); protected from T-186 (OD-217)
+--
 -- Ticket: T-030 (tech-lead). The inverse of the up file. After this file the database is the
 -- 0006 state: no `approval` table and no `assert_second_actor_differs()` function.
 --

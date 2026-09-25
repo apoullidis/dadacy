@@ -1,6 +1,8 @@
 -- 0007_approval_four_eyes.up.sql
 --
 -- @phase: expand
+-- @compliance-review: trg_approval_four_eyes — T-030, two-approval path (PROTOCOL §3); protected from T-186 (OD-217)
+-- @compliance-review: assert_second_actor_differs — T-030, two-approval path (PROTOCOL §3); protected from T-186 (OD-217)
 --
 -- Ticket:  T-030 (tech-lead). SA §SA-4 I-5, four-eyes approvals, at the DATABASE layer: the
 --          `approval` table SD writes for it, its CHECK (clause a), and the trigger that holds
@@ -36,8 +38,9 @@
 -- (T-030 QA-F1, B2/B3/B4): un-revoke a revoked ts_senior, countersign and restore revoked_at, in
 -- one transaction; move another account's live ts_senior row onto the approver, countersign and
 -- move it back, in one transaction; or grant ts_senior, commit, and countersign. Each commits.
--- The route is OPEN until T-186 (decisions.md OE-47: only app_admin_rw may write ts_senior rows,
--- app_rw refused at the database). Pinned as LIMITATION cases in four-eyes.test.ts.
+-- Against 0007 alone the route is open. T-186's 0008 closes it (decisions.md OE-47): a BEFORE
+-- trigger on account_role refuses a ts_senior INSERT/UPDATE/DELETE by any role without
+-- app_admin_rw's privileges (KV053); four-eyes.test.ts carries B2/B3/B4 as refusals.
 --
 -- WHAT A CONSUMER MUST STILL BIND. After a countersignature, action, subject_type, subject_id and
 -- submitter_id stay writable by app_rw, decision may be NULL or 'reject', and nothing here names
@@ -49,11 +52,12 @@
 -- fire, so an exact self-countersignature is refused by SD's own CHECK, by name, and the trigger
 -- is what refuses the rest.
 --
--- WHAT IT DOES NOT READ. The approver account's `status`. A live ts_senior role on a SUSPENDED
--- account satisfies this trigger. SA §SA-4 I-5, OE-21 and SD name the role only and say nothing
--- about account status, so this was reported (OD-214), not decided here (T-140 TL-A3 (i)). The
--- stakeholder has since ruled that only an ACTIVE account's ts_senior satisfies I-5 (OE-45);
--- T-186 builds it. Until then the LIMITATION case in four-eyes.test.ts pins the acceptance.
+-- WHAT IT DOES NOT READ. The function as THIS file defines it does not read the approver
+-- account's `status`: SA §SA-4 I-5, OE-21 and SD name the role only, so this was reported
+-- (OD-214), not decided here (T-140 TL-A3 (i)). The stakeholder ruled that only an ACTIVE
+-- account's ts_senior satisfies I-5 (OE-45), and T-186's 0008 replaces this function with one
+-- whose read joins account and requires status = 'active' (KV054). four-eyes.test.ts refuses a
+-- suspended, a removed and an erased account's ts_senior.
 --
 -- GENERIC. `public.assert_second_actor_differs(<first column>, <second column>)` is written so
 -- any table that records a second actor can attach it; the two column names are its trigger
