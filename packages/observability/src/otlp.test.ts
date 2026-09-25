@@ -2,7 +2,11 @@
  * The exporter, and the clause of `T-142` § contract (rework 1) §8 that says
  * the exporter must surface its own failures.
  */
+import dns, { Resolver } from 'node:dns';
+import { createServer, type IncomingMessage } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { describe, expect, test, vi } from 'vitest';
+import { resolveOffLane } from './offlane.ts';
 import {
   EXPORTER_BOUNDS,
   EXPORT_FAILURE,
@@ -133,7 +137,7 @@ describe('the exporter surfaces its own failures (T-142 § contract (rework 1) �
  * `otlp.ts`'s header has a case here. The expected values are typed from
  * T-204's decision, never read back from `EXPORTER_BOUNDS`, except in the pin case.
  */
-describe('T-204: the exporter cannot starve the request path', () => {
+describe("T-204: the exporter's four bounds", () => {
   const never = (): { fetchImpl: typeof fetch; calls: { signal: AbortSignal | undefined }[] } => {
     const calls: { signal: AbortSignal | undefined }[] = [];
     const fetchImpl = ((_url: string, init?: RequestInit) => {
@@ -427,5 +431,354 @@ describe('T-204: the exporter cannot starve the request path', () => {
     expect(maxOpen).toBe(1);
     expect(exporterCounters.exported).toBe(2);
     expect(results.every((r) => r.ok)).toBe(true);
+  });
+
+  // QA's QA-c (state/EP-1/T-204.md § QA round 2, R2-2), committed by T-205. Red under QM13
+  // (the cool-down armed for export_network only): 200 starts instead of 4.
+  test('bound 3 for export_status: a non-2xx failure is followed by the same 5000/10000/20000 ms cool-down', async () => {
+    vi.useFakeTimers();
+    try {
+      resetExporterCounters();
+      const starts: number[] = [];
+      const failures: string[] = [];
+      const fetchImpl = (async () => {
+        starts.push(Date.now());
+        return new Response('{}', { status: 503 });
+      }) as unknown as typeof fetch;
+      const exporter = createExporter({
+        endpoint: 'http://otel-collector:4318',
+        serviceName: 'kinvara-core',
+        fetchImpl,
+        onFailure: (f) => failures.push(f),
+      });
+      for (let i = 0; i < 400; i += 1) {
+        exporter.record(span());
+        await vi.advanceTimersByTimeAsync(100);
+      }
+      const t0 = starts[0] ?? 0;
+      expect(new Set(failures)).toEqual(new Set(['export_status']));
+      expect(starts.map((t) => t - t0)).toEqual([0, 5000, 15000, 35000]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // T-205: the third failure class. A span that JSON cannot serialise (a bigint) fails every
+  // export as export_serialise before any request is made; the cool-down must still apply.
+  test('bound 3 for export_serialise: a batch that cannot be serialised is followed by the same cool-down', async () => {
+    vi.useFakeTimers();
+    try {
+      resetExporterCounters();
+      const failures: string[] = [];
+      const attemptsAt: number[] = [];
+      const fetchImpl = (async () => ok()) as unknown as typeof fetch;
+      const exporter = createExporter({
+        endpoint: 'http://otel-collector:4318',
+        serviceName: 'kinvara-core',
+        fetchImpl,
+        onFailure: (f) => {
+          failures.push(f);
+          attemptsAt.push(Date.now());
+        },
+      });
+      const poisoned = { ...span(), poison: 1n } as unknown as OtlpSpan;
+      for (let i = 0; i < 400; i += 1) {
+        exporter.record(poisoned);
+        await vi.advanceTimersByTimeAsync(100);
+      }
+      const t0 = attemptsAt[0] ?? 0;
+      expect(new Set(failures)).toEqual(new Set(['export_serialise']));
+      expect(attemptsAt.map((t) => t - t0)).toEqual([0, 5000, 15000, 35000]);
+      expect(exporterCounters.exportAttempts).toBe(4);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // QA's QA-d (state/EP-1/T-204.md § QA round 2, R2-2), committed by T-205. Red under QM12
+  // (flush() honours the cool-down): 1 start and 0 spans instead of 2 and 1.
+  test('flush() during a cool-down starts an export anyway (it ignores the cool-down)', async () => {
+    vi.useFakeTimers();
+    try {
+      resetExporterCounters();
+      const starts: number[] = [];
+      let fail = true;
+      const fetchImpl = (async () => {
+        starts.push(Date.now());
+        if (fail) throw new Error('getaddrinfo EAI_AGAIN otel-collector');
+        return ok();
+      }) as unknown as typeof fetch;
+      const exporter = createExporter({
+        endpoint: 'http://otel-collector:4318',
+        serviceName: 'kinvara-core',
+        fetchImpl,
+        onFailure: () => undefined,
+      });
+      exporter.record(span());
+      await vi.advanceTimersByTimeAsync(300); // the first export, at 200 ms, fails: 5000 ms cool-down
+      expect(starts).toHaveLength(1);
+      exporter.record(span());
+      await vi.advanceTimersByTimeAsync(1000); // still inside the cool-down: no timed start
+      expect(starts).toHaveLength(1);
+      fail = false;
+      const result = await exporter.flush();
+      expect(starts).toHaveLength(2);
+      expect(result).toEqual({ ok: true, spans: 1 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // QA-B2 (state/EP-1/T-204.md § QA round 2): the four ExporterOptions override keys were held by
+  // the type alone (QM14, maxQueue ignored, survived). Each override here moves a measured value
+  // away from its EXPORTER_BOUNDS default.
+  test('ExporterOptions overrides: exportTimeoutMs, backoffMs, maxBackoffMs and maxQueue each replace their default', async () => {
+    vi.useFakeTimers();
+    try {
+      resetExporterCounters();
+      const { fetchImpl, calls } = never();
+      const starts: number[] = [];
+      const counting = ((url: string, init?: RequestInit) => {
+        starts.push(Date.now());
+        return fetchImpl(url, init);
+      }) as unknown as typeof fetch;
+      const exporter = createExporter({
+        endpoint: 'http://otel-collector:4318',
+        serviceName: 'kinvara-core',
+        fetchImpl: counting,
+        onFailure: () => undefined,
+        exportTimeoutMs: 1000,
+        backoffMs: 700,
+        maxBackoffMs: 1500,
+        maxQueue: 3,
+      });
+      exporter.record(span());
+      await vi.advanceTimersByTimeAsync(200); // flushAfterMs: the first export starts
+      expect(calls).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(999);
+      expect(calls[0]?.signal?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1); // exportTimeoutMs 1000, not 5000
+      expect(calls[0]?.signal?.aborted).toBe(true);
+      for (let i = 0; i < 10; i += 1) exporter.record(span());
+      expect(exporter.pending()).toBe(3); // maxQueue 3, not 2048
+      expect(exporterCounters.dropped).toBe(1 + 7); // the aborted export's span, and 7 over the cap
+      for (let i = 0; i < 100; i += 1) {
+        exporter.record(span());
+        await vi.advanceTimersByTimeAsync(100);
+      }
+      const gaps = starts.slice(1).map((t, i) => t - (starts[i] ?? 0));
+      // start-to-start = the 1000 ms deadline + the cool-down: 700, then 1400, then capped at 1500
+      expect(gaps.slice(0, 4)).toEqual([1700, 2400, 2500, 2500]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('T-205: the collector is resolved off the DNS lane', () => {
+  const collector = async (): Promise<{
+    port: number;
+    requests: { method: string; url: string; type: string; body: string }[];
+    close: () => Promise<void>;
+  }> => {
+    const requests: { method: string; url: string; type: string; body: string }[] = [];
+    const server = createServer((req: IncomingMessage, res) => {
+      let body = '';
+      req.on('data', (c: Buffer) => (body += c.toString()));
+      req.on('end', () => {
+        requests.push({
+          method: req.method ?? '',
+          url: req.url ?? '',
+          type: req.headers['content-type'] ?? '',
+          body,
+        });
+        res.end('{}');
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const { port } = server.address() as AddressInfo;
+    return {
+      port,
+      requests,
+      close: () =>
+        new Promise<void>((r) => {
+          server.closeAllConnections();
+          server.close(() => r());
+        }),
+    };
+  };
+
+  test('resolveOffLane answers an IP literal and localhost without a DNS query', async () => {
+    const query = vi.spyOn(Resolver.prototype, 'resolve4');
+    try {
+      const signal = new AbortController().signal;
+      await expect(resolveOffLane('10.1.2.3', signal, 5000)).resolves.toEqual({
+        address: '10.1.2.3',
+        family: 4,
+      });
+      await expect(resolveOffLane('[::1]', signal, 5000)).resolves.toEqual({
+        address: '::1',
+        family: 6,
+      });
+      await expect(resolveOffLane('localhost', signal, 5000)).resolves.toEqual({
+        address: '127.0.0.1',
+        family: 4,
+      });
+      expect(query).not.toHaveBeenCalled();
+    } finally {
+      query.mockRestore();
+    }
+  });
+
+  test('resolveOffLane asks c-ares (Resolver.resolve4), never dns.lookup, and falls back to AAAA', async () => {
+    const lookup = vi.spyOn(dns, 'lookup');
+    const a = vi.spyOn(Resolver.prototype, 'resolve4').mockImplementation(((
+      name: string,
+      cb: (e: NodeJS.ErrnoException | null, x: string[]) => void,
+    ) => {
+      if (name === 'v6only.t205.invalid')
+        cb(Object.assign(new Error('ENODATA'), { code: 'ENODATA' }), []);
+      else cb(null, ['10.9.8.7']);
+    }) as never);
+    const aaaa = vi.spyOn(Resolver.prototype, 'resolve6').mockImplementation(((
+      _name: string,
+      cb: (e: NodeJS.ErrnoException | null, x: string[]) => void,
+    ) => {
+      cb(null, ['fd00::7']);
+    }) as never);
+    try {
+      const signal = new AbortController().signal;
+      await expect(resolveOffLane('otel-collector', signal, 5000)).resolves.toEqual({
+        address: '10.9.8.7',
+        family: 4,
+      });
+      await expect(resolveOffLane('v6only.t205.invalid', signal, 5000)).resolves.toEqual({
+        address: 'fd00::7',
+        family: 6,
+      });
+      expect(a.mock.calls.map((c) => c[0])).toEqual(['otel-collector', 'v6only.t205.invalid']);
+      expect(aaaa.mock.calls.map((c) => c[0])).toEqual(['v6only.t205.invalid']);
+      expect(lookup).not.toHaveBeenCalled();
+    } finally {
+      lookup.mockRestore();
+      a.mockRestore();
+      aaaa.mockRestore();
+    }
+  });
+
+  test('an aborted resolution cancels its c-ares query and rejects', async () => {
+    const a = vi
+      .spyOn(Resolver.prototype, 'resolve4')
+      .mockImplementation((() => undefined) as never);
+    const cancel = vi.spyOn(Resolver.prototype, 'cancel');
+    try {
+      const controller = new AbortController();
+      const pending = resolveOffLane('otel-collector', controller.signal, 5000);
+      expect(cancel).not.toHaveBeenCalled();
+      controller.abort();
+      expect(cancel).toHaveBeenCalledTimes(1);
+      await expect(pending).rejects.toThrow('resolution aborted');
+    } finally {
+      a.mockRestore();
+      cancel.mockRestore();
+    }
+  });
+
+  test('the default exporter posts through c-ares resolution and never calls dns.lookup', async () => {
+    const server = await collector();
+    const lookup = vi.spyOn(dns, 'lookup');
+    const a = vi.spyOn(Resolver.prototype, 'resolve4').mockImplementation(((
+      _name: string,
+      cb: (e: NodeJS.ErrnoException | null, x: string[]) => void,
+    ) => {
+      cb(null, ['127.0.0.1']);
+    }) as never);
+    try {
+      resetExporterCounters();
+      const failures: string[] = [];
+      const exporter = createExporter({
+        endpoint: `http://collector.t205.invalid:${String(server.port)}/`,
+        serviceName: 'kinvara-core',
+        onFailure: (f) => failures.push(f),
+      });
+      const sent = span();
+      exporter.record(sent);
+      const result = await exporter.flush();
+      expect(failures).toEqual([]);
+      expect(result).toEqual({ ok: true, spans: 1 });
+      expect(a.mock.calls.map((c) => c[0])).toEqual(['collector.t205.invalid']);
+      expect(lookup).not.toHaveBeenCalled();
+      expect(server.requests).toHaveLength(1);
+      expect(server.requests[0]).toMatchObject({
+        method: 'POST',
+        url: '/v1/traces',
+        type: 'application/json',
+      });
+      expect(JSON.parse(server.requests[0]?.body ?? '{}')).toEqual(
+        tracePayload([sent], 'kinvara-core'),
+      );
+    } finally {
+      lookup.mockRestore();
+      a.mockRestore();
+      await server.close();
+    }
+  });
+
+  test('a collector answering non-2xx through the default transport is export_status', async () => {
+    const server = createServer((_req, res) => {
+      res.statusCode = 503;
+      res.end();
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const { port } = server.address() as AddressInfo;
+    try {
+      resetExporterCounters();
+      const failures: string[] = [];
+      const exporter = createExporter({
+        endpoint: `http://127.0.0.1:${String(port)}`,
+        serviceName: 'kinvara-core',
+        onFailure: (f) => failures.push(f),
+      });
+      exporter.record(span());
+      const result = await exporter.flush();
+      expect(result).toEqual({ ok: false, spans: 1, failure: 'export_status' });
+      expect(failures).toEqual(['export_status']);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+
+  test('a resolution that never answers is abandoned at the export deadline as export_network, and its query cancelled', async () => {
+    const lookup = vi.spyOn(dns, 'lookup');
+    const a = vi
+      .spyOn(Resolver.prototype, 'resolve4')
+      .mockImplementation((() => undefined) as never);
+    const cancel = vi.spyOn(Resolver.prototype, 'cancel');
+    try {
+      resetExporterCounters();
+      const failures: string[] = [];
+      const exporter = createExporter({
+        endpoint: 'http://otel-collector:4318',
+        serviceName: 'kinvara-core',
+        onFailure: (f) => failures.push(f),
+        exportTimeoutMs: 150,
+      });
+      exporter.record(span());
+      const started = Date.now();
+      const result = await exporter.flush();
+      const took = Date.now() - started;
+      expect(result).toEqual({ ok: false, spans: 1, failure: 'export_network' });
+      expect(failures).toEqual(['export_network']);
+      expect(took).toBeGreaterThanOrEqual(140);
+      expect(took).toBeLessThan(2000);
+      expect(a).toHaveBeenCalledTimes(1);
+      expect(cancel).toHaveBeenCalledTimes(1);
+      expect(lookup).not.toHaveBeenCalled();
+    } finally {
+      lookup.mockRestore();
+      a.mockRestore();
+      cancel.mockRestore();
+    }
   });
 });

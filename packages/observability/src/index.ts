@@ -86,6 +86,8 @@ export {
   type ExporterOptions,
 } from './otlp.ts';
 
+export { resolveOffLane, type ResolveHost, type ResolvedAddress } from './offlane.ts';
+
 export {
   createRequestObserver,
   resolveRoute,

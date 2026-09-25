@@ -1,6 +1,8 @@
 /**
- * THE EXPORTER — OTLP over HTTP with the JSON encoding, written against
- * `fetch`, with NO npm dependency.
+ * THE EXPORTER — OTLP over HTTP with the JSON encoding, with NO npm
+ * dependency. Its default transport is `node:http`/`node:https` with an
+ * off-lane name lookup (`offlane.ts`, T-205); a `fetch` can be passed in for
+ * tests.
  *
  * WHY NOT `@opentelemetry/sdk-node` AND THE AUTO-INSTRUMENTATIONS. Two reasons,
  * and the first is the load-bearing one:
@@ -31,54 +33,52 @@
  * message is free text and free text is what this package does not put in
  * telemetry.
  *
- * TELEMETRY MAY NOT STARVE THE REQUEST PATH (T-204, OD-227). Measured in
- * state/EP-1/T-204.md § Finding: the exporter used to start one `fetch` per
- * flush with no bound on how many were in flight. With the collector absent,
- * each `fetch`'s `getaddrinfo` blocks ~5 s on compose's resolver, and libuv
- * runs at most HALF its pool (2 of the default 4 threads) as slow I/O. So
- * collector lookups filled the DNS lanes, and every other lookup in the process
- * queued behind them: `hibp-fake` (the breached-password check, which then
- * FAILED OPEN with `hibp-fake` up) and `postgres`. Queue waits of 590 s were
- * measured. Four bounds now apply, each with a case in `otlp.test.ts`:
+ * TELEMETRY MAY NOT STARVE THE REQUEST PATH (T-204, OD-227; T-205, OD-230).
+ * Measured in state/EP-1/T-204.md § Finding: the exporter used to start one
+ * `fetch` per flush with no bound on how many were in flight. With the
+ * collector absent, each `fetch`'s `getaddrinfo` blocks ~5 s on compose's
+ * resolver, and libuv runs at most ceil(n/2) of its n pool threads as slow I/O
+ * (2 of the default 4; OD-229). So collector lookups filled that DNS lane, and
+ * every other lookup in the process queued behind them: `hibp-fake` (the
+ * breached-password check, which then FAILED OPEN with `hibp-fake` up) and
+ * `postgres`. Queue waits of 590 s were measured. Four bounds now apply, each
+ * with cases in `otlp.test.ts` under `describe('T-204: the exporter's four
+ * bounds')`:
  *
  *   1. AT MOST ONE EXPORT IN FLIGHT. A flush while one is in flight does not
- *      start a second request. So telemetry starts at most one name lookup at a
- *      time.
+ *      start a second request.
  *   2. A DEADLINE PER EXPORT (`exportTimeoutMs`, default 5000). The request's
  *      signal is aborted, and the export is reported as `export_network`. This
- *      bounds a collector that resolves but never answers. ABORTING A `fetch`
- *      DOES NOT CANCEL ITS `getaddrinfo`: Node cannot cancel a lookup, so the
- *      lookup keeps its lane until the resolver gives up. Bound 3 spaces those
- *      leftover lookups out; whether they still overlap depends on the
- *      resolver (below).
+ *      bounds a collector that resolves but never answers.
  *   3. A COOL-DOWN AFTER EVERY FAILED EXPORT (`backoffMs`, default 5000,
  *      doubling to `maxBackoffMs`, default 60000). No export starts during it,
  *      however many spans are buffered, and after a success the next failure
- *      cools down `backoffMs` again. The four `bound 3` cases hold this. Two of
- *      them were added in T-204 rework 1, because the first two stayed green
- *      with the under-load ordering or the reset broken (QA's QM9, QM7).
- *      HOW MANY DNS LANES TELEMETRY HOLDS depends on the resolver, and is
- *      stated as runs, not as a formula (state/EP-1/T-204.md, one run a line):
- *      - compose's resolver, a failing collector lookup stalling 5012 ms (QA
- *        Q6, at 97e94b4): failed exports logged 10, 15, 25, 45, 65, 65, 65 s
- *        apart. In the author's M2 (at 01979fd), no `hibp-fake` lookup waited
- *        more than 1 ms over 26 one-second samples, so telemetry never held
- *        both default lanes then.
- *      - a musl resolver with `timeout:15` (QA Q8, at 97e94b4): two telemetry
- *        lookups overlapped once, one registration took 2857 ms, 24 of 24
- *        registrations were answered correctly.
- *      - `timeout:30` (QA Q8, at 97e94b4): both default lanes filled,
- *        `hibp-fake` lookups waited up to 19758 ms, and a breached password
- *        was ACCEPTED. That residual is OD-230, owned by T-205. OD-227 is
- *        closed for compose's resolver only.
+ *      cools down `backoffMs` again. Cases: the four `bound 3` cases, which all
+ *      fail with `export_network`; `bound 3 for export_status` (QA's QA-c,
+ *      committed in T-205) and `bound 3 for export_serialise` (T-205) for the
+ *      other two classes. `flush()` is the one path that ignores the cool-down
+ *      (see `Exporter.flush`).
  *   4. A BOUNDED BUFFER (`maxQueue`, default 2048). A span recorded when the
  *      buffer is full is dropped and counted in `exporterCounters.dropped`. It
  *      is not queued. Memory cannot grow with the length of an outage.
+ *
+ * THE BOUNDS WERE NOT ENOUGH ON THEIR OWN (T-205, OD-230). Node cannot cancel a
+ * `getaddrinfo`, so each abandoned export left its lookup holding a lane until
+ * the resolver gave up. On compose's resolver (~5 s) the leftovers did not
+ * overlap. With a resolver that stalls a failing lookup 30 s or 60 s they did,
+ * and a breached password was accepted (state/EP-1/T-205.md E2, E3). So the
+ * default transport now resolves the collector with c-ares, off the thread
+ * pool, and cancels that query at the deadline: see `offlane.ts` for the
+ * mechanism and its costs. The runs that show it are in state/EP-1/T-205.md;
+ * the cases are under `describe('T-205: the collector is resolved off the DNS
+ * lane')`. A `fetchImpl` passed in (tests only) still resolves through
+ * `getaddrinfo`.
  *
  * The cost: during a collector outage spans are DROPPED, and counted. That is
  * the intended trade. A missing trace is an observability defect; a
  * breached-password check switched off is a safety defect.
  */
+import { offLaneTransport, resolveOffLane, type ResolveHost, type Transport } from './offlane.ts';
 import type { OtlpSpan } from './span.ts';
 
 export const SCOPE_NAME = '@kinvara/observability';
@@ -99,7 +99,20 @@ export interface ExporterOptions {
   readonly endpoint: string;
   /** `OTEL_SERVICE_NAME`, e.g. `kinvara-core`. */
   readonly serviceName: string;
+  /**
+   * TESTS ONLY. When given, this `fetch` is the transport, and it resolves the
+   * collector's name however it does: the real `fetch` uses `getaddrinfo`, on
+   * libuv's DNS lane, which is what T-205 moved the exporter off. Production
+   * passes none (`apps/core/src/observability/install.ts`), and so gets the
+   * off-lane transport of `offlane.ts`.
+   */
   readonly fetchImpl?: typeof fetch;
+  /**
+   * T-205: how the default transport resolves the collector's host name.
+   * Default `resolveOffLane` (c-ares, not the thread pool). Ignored when
+   * `fetchImpl` is given.
+   */
+  readonly resolveHost?: ResolveHost;
   readonly onFailure?: (failure: ExportFailure, detail: string) => void;
   /** Flush when this many spans are buffered. */
   readonly maxBatch?: number;
@@ -166,9 +179,12 @@ export interface Exporter {
   /** Buffer a span. Never throws, never returns a promise the caller must await. */
   record(span: OtlpSpan): void;
   /**
-   * Wait for any export in flight, then send everything buffered, cool-down or
-   * not. Resolves with the result of the one request it made. Still never more
-   * than one request in flight (T-204 bound 1).
+   * Wait for any export in flight, then send everything buffered. It does NOT
+   * wait for a cool-down (bound 3): case `flush() during a cool-down starts an
+   * export anyway` (QA's QA-d). So never call it on a timer: that would start
+   * an export every period whatever the collector's state. Call it at shutdown.
+   * Resolves with the result of the one request it made. Still never more than
+   * one request in flight (T-204 bound 1).
    */
   flush(): Promise<ExportResult>;
   shutdown(): Promise<ExportResult>;
@@ -182,7 +198,7 @@ const defaultOnFailure = (failure: ExportFailure, detail: string): void => {
 };
 
 export function createExporter(options: ExporterOptions): Exporter {
-  const doFetch = options.fetchImpl ?? globalThis.fetch;
+  const fetchImpl = options.fetchImpl;
   const onFailure = options.onFailure ?? defaultOnFailure;
   const maxBatch = options.maxBatch ?? 64;
   const flushAfterMs = options.flushAfterMs ?? 200;
@@ -191,6 +207,19 @@ export function createExporter(options: ExporterOptions): Exporter {
   const maxBackoffMs = options.maxBackoffMs ?? EXPORTER_BOUNDS.maxBackoffMs;
   const maxQueue = options.maxQueue ?? EXPORTER_BOUNDS.maxQueue;
   const url = `${options.endpoint.replace(/\/+$/, '')}/v1/traces`;
+  /** T-205: the default transport resolves the collector off libuv's DNS lane. */
+  const post: Transport =
+    fetchImpl === undefined
+      ? offLaneTransport(options.resolveHost ?? resolveOffLane, exportTimeoutMs)
+      : async (target, body, signal) => {
+          const response = await fetchImpl(target, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body,
+            signal,
+          });
+          return response.status;
+        };
 
   let buffer: OtlpSpan[] = [];
   let timer: NodeJS.Timeout | undefined;
@@ -232,14 +261,9 @@ export function createExporter(options: ExporterOptions): Exporter {
     }, exportTimeoutMs);
     deadline.unref?.();
     try {
-      const response = await doFetch(url, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body,
-        signal: controller.signal,
-      });
-      if (!response.ok) {
-        return failed(spans.length, EXPORT_FAILURE.status, `http ${String(response.status)}`);
+      const status = await post(url, body, controller.signal);
+      if (status < 200 || status > 299) {
+        return failed(spans.length, EXPORT_FAILURE.status, `http ${String(status)}`);
       }
       exporterCounters.exported += spans.length;
       consecutiveFailures = 0;
