@@ -191,7 +191,7 @@ const ERR_NOT_ACTIVE =
 /** T-186, OE-47: a ts_senior row written by a role without app_admin_rw's privileges. */
 const errTsSeniorWrite = (op: 'INSERT' | 'UPDATE' | 'DELETE' | 'TRUNCATE', role: string): string =>
   `ERROR:  KV053: I5_TS_SENIOR_WRITE_REFUSED: ${op} of a ts_senior row in public.account_role by role ${role}`;
-/** T-192, OE-48: a change to what OE-45's read depends on, for an account holding a live ts_senior. */
+/** T-192, OE-48 as narrowed by OE-57: a move towards what OE-45's read admits (status into active, dob_verified_18 to true, id), for an account holding a live ts_senior. */
 const errAccountWrite = (columns: string, role: string): string =>
   `ERROR:  KV055: I5_TS_SENIOR_ACCOUNT_WRITE_REFUSED: UPDATE of ${columns} on public.account for an account holding a live ts_senior role, by role ${role}`;
 
@@ -746,7 +746,7 @@ describe('I-5 clause (b), OE-45 — a live ts_senior on an account that is NOT A
       await asApp(insertPending(a, 'retention_run#approve', ACC.compliance), countersign(a, acc)),
     );
     assertPermitted(
-      'app_admin_rw suspends the approver, committed (OE-48: app_rw may not, T-192)',
+      'app_admin_rw suspends the approver, committed (app_rw may too since OE-57, T-192)',
       await asAdmin(`UPDATE public.account SET status = 'suspended' WHERE id = '${acc}'`),
     );
     const rewrite = await asApp(
@@ -772,7 +772,8 @@ describe('I-5 clause (b), OE-45 — the account row is read FOR SHARE too, so a 
     await asSuperuser(insertPending(a, 'safeguarding_referral#make', ACC.dsl));
     const countersigning = asApp('BEGIN', countersign(a, acc), 'SELECT pg_sleep(4)', 'ROLLBACK');
     await sleep(1500);
-    // app_admin_rw suspends: since 0011 app_rw may not change a ts_senior holder's status (OE-48).
+    // app_admin_rw suspends. Since OE-57 (T-192 rework 1) app_rw may suspend a ts_senior holder too;
+    // the lock this case measures is the countersignature's, whoever suspends.
     const suspend = await asAdmin(
       'BEGIN',
       "SET LOCAL lock_timeout = '1s'",
@@ -802,7 +803,7 @@ describe('I-5 clause (b), OE-45 — the account row is read FOR SHARE too, so a 
     );
     const a = nextApprovalId();
     await asSuperuser(insertPending(a, 'safeguarding_referral#make', ACC.dsl));
-    // app_admin_rw suspends (OE-48, T-192).
+    // app_admin_rw suspends (app_rw may too since OE-57, T-192).
     const suspending = asAdmin(
       'BEGIN',
       `UPDATE public.account SET status = 'suspended' WHERE id = '${acc}'`,
