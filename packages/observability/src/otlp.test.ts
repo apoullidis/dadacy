@@ -187,6 +187,10 @@ describe("T-204: the exporter's four bounds", () => {
   });
 
   test('bound 2: a collector that never answers is abandoned at 5000 ms, not at 4999, as export_network', async () => {
+    // Through a `fetchImpl`, so this pins the 5000 ms default and the abort of
+    // the signal, NOT the default transport. On that transport the deadline
+    // closing the socket is held by `bound 2 on the default transport: …`
+    // under `describe('T-205: …')` (T205-QF-1).
     vi.useFakeTimers();
     try {
       resetExporterCounters();
