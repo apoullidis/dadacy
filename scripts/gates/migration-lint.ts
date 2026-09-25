@@ -62,6 +62,23 @@
  *                        `ALTER EVENT TRIGGER <name> DISABLE | ENABLE REPLICA`, for every PROTECTED
  *                        entry marked `trigger`. R-PROTECTED's marker does not permit it either:
  *                        a reviewed change may replace a protected trigger, never switch it off.
+ *   [R-PROTECTED-RENAME] (T-192, OD-224 A2) no statement containing RENAME names a protected object:
+ *                        `ALTER TRIGGER <name> ON … RENAME TO`, `ALTER FUNCTION|ROUTINE|PROCEDURE <name>
+ *                        RENAME TO`, `ALTER EVENT TRIGGER <name> RENAME TO`, and any other RENAME whose
+ *                        text names one (as the old name or the new). A protected trigger or function
+ *                        renamed away can then be disabled or no-op-replaced under a name no rule
+ *                        protects, in the same marked file or a later unmarked one (T-186 QA X5, X6 →
+ *                        X8, X9). R-PROTECTED's marker does not permit it.
+ *   [R-ADMIN-MEMBERSHIP] (T-192, OD-224 A3) no migration confers membership in app_admin_rw: the role
+ *                        granted to anyone (`GRANT app_admin_rw TO …`), `CREATE ROLE|USER|GROUP`
+ *                        naming it (`IN ROLE app_admin_rw`, `ADMIN app_admin_rw`), or `ALTER
+ *                        ROLE|USER|GROUP app_admin_rw` (`ADD USER` included). OE-47 and OE-48 admit
+ *                        only app_admin_rw's privileges to write a ts_senior row or a ts_senior
+ *                        holder's status, so `GRANT app_admin_rw TO app_rw` would admit every app_rw
+ *                        login (T-186 QA X10, X11, P10); since 0011 the database refuses such a
+ *                        writer too (it also holds app_rw's privileges), and this rule refuses the
+ *                        migration that would try. Login principals are created outside migrations
+ *                        (T-020 § contract §3). Privileges granted TO app_admin_rw are not read here.
  *   [R-CASCADE]          no `DROP … CASCADE` and no `DROP OWNED`. Both remove objects the statement does not
  *                        name, and no rule that reads names can see what it removed:
  *                        `DROP FUNCTION assert_sitter_bookable() CASCADE` takes
@@ -242,9 +259,27 @@ const PROTECTED: readonly Protected[] = [
   },
   {
     id: 'assert_ts_senior_written_by_admin',
-    why: 'decisions.md OE-47, the function trg_account_role_ts_senior_admin_only calls (T-186)',
+    why: 'decisions.md OE-47, the function trg_account_role_ts_senior_admin_only and trg_account_role_ts_senior_no_truncate call (T-186, T-192)',
+  },
+  {
+    id: 'trg_account_role_ts_senior_no_truncate',
+    why: 'decisions.md OD-224 A4: TRUNCATE account_role refused while it holds a ts_senior row (T-192)',
+    trigger: true,
+  },
+  {
+    id: 'trg_account_ts_senior_status_admin_only',
+    why: "SA §SA-4 I-5 / decisions.md OE-48: only app_admin_rw may change a ts_senior holder's id, status or dob_verified_18 (T-192)",
+    trigger: true,
+  },
+  {
+    id: 'assert_ts_senior_account_written_by_admin',
+    why: 'decisions.md OE-48, the function trg_account_ts_senior_status_admin_only calls (T-192)',
   },
 ];
+
+/** A protected object's name as it appears in a normalised fragment (R-PROTECTED, R-PROTECTED-RENAME). */
+const protectedNameRe = (p: Protected): RegExp =>
+  new RegExp(`(^|[^A-Z0-9_$])${p.id.toUpperCase()}([^A-Z0-9_$]|$)`);
 
 /** The protected triggers, upper-cased as the fragments are (R-TRIGGER-BYPASS, T-186). */
 const PROTECTED_TRIGGERS: readonly string[] = PROTECTED.filter((p) => p.trigger === true).map((p) =>
@@ -1363,7 +1398,7 @@ for (const m of migrations) {
 
   // R-PROTECTED.
   for (const p of PROTECTED) {
-    const re = new RegExp(`(^|[^A-Z0-9_$])${p.id.toUpperCase()}([^A-Z0-9_$]|$)`);
+    const re = protectedNameRe(p);
     const hit = frags.find((f) => re.test(f));
     if (hit === undefined) continue;
     protectedMentions += 1;
@@ -1407,6 +1442,33 @@ for (const m of migrations) {
           `switches off the protected trigger ${t.toLowerCase()} by name; a reviewed migration may replace a protected trigger (R-PROTECTED's marker), never switch it off: ${snippet(f)}`,
         );
       }
+    }
+  }
+
+  // R-PROTECTED-RENAME (T-192, OD-224 A2). No marker permits it.
+  for (const f of frags) {
+    if (!/\bRENAME\b/.test(f)) continue;
+    for (const p of PROTECTED) {
+      if (!protectedNameRe(p).test(f)) continue;
+      problem(
+        'R-PROTECTED-RENAME',
+        m.rel,
+        `a RENAME that names the protected object ${p.id}; renamed away, it can be disabled or no-op-replaced under a name no rule protects (T-186 QA X5, X8), so no marker permits it: ${snippet(f)}`,
+      );
+    }
+  }
+
+  // R-ADMIN-MEMBERSHIP (T-192, OD-224 A3), the routes that are not a GRANT.
+  for (const f of frags) {
+    if (
+      /\bCREATE (?:ROLE|USER|GROUP)\b.*\bAPP_ADMIN_RW\b/.test(f) ||
+      /\bALTER (?:ROLE|USER|GROUP) APP_ADMIN_RW\b/.test(f)
+    ) {
+      problem(
+        'R-ADMIN-MEMBERSHIP',
+        m.rel,
+        `confers membership in app_admin_rw without a GRANT (CREATE ROLE … IN ROLE, ALTER GROUP … ADD USER), or alters app_admin_rw; only app_admin_rw's privileges may write a ts_senior row or a ts_senior holder's status (OE-47, OE-48): ${snippet(f)}`,
+      );
     }
   }
 
@@ -1522,6 +1584,14 @@ for (const m of migrations) {
             );
           }
         }
+      }
+
+      if (g.targets === null && g.privileges.split(',').some((r) => r.trim() === 'APP_ADMIN_RW')) {
+        problem(
+          'R-ADMIN-MEMBERSHIP',
+          m.rel,
+          `grants the role app_admin_rw, which makes each grantee a holder of its privileges; only app_admin_rw may write a ts_senior row or a ts_senior holder's status (OE-47, OE-48), and GRANT app_admin_rw TO app_rw would admit every app_rw login (T-186 QA P10): ${snippet(g.clause)}`,
+        );
       }
 
       if (

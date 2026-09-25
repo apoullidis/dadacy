@@ -448,6 +448,77 @@ check C5I "CONTROL: ENABLE ALWAYS TRIGGER (fires in every mode), with a marker" 
 pair expand "ALTER TABLE public.approval DISABLE TRIGGER trg_approval_four_eyes_audit;"
 check C5J "CONTROL: DISABLE TRIGGER naming a longer identifier that contains a protected name" PASS
 
+# T-192 (OE-48, OD-224 A4): 0011's three objects are protected too.
+pair expand "DROP TRIGGER trg_account_ts_senior_status_admin_only ON public.account;"
+check CP1 "T-192: DROP TRIGGER trg_account_ts_senior_status_admin_only (OE-48)" R-PROTECTED
+pair expand "CREATE OR REPLACE FUNCTION public.assert_ts_senior_account_written_by_admin() RETURNS trigger LANGUAGE plpgsql AS \$fn\$ BEGIN RETURN NEW; END \$fn\$;"
+check CP2 "T-192: assert_ts_senior_account_written_by_admin() replaced with a no-op (OE-48)" R-PROTECTED
+pair expand "-- @compliance-review: trg_account_ts_senior_status_admin_only — T-192, OE-48
+ALTER TABLE public.account DISABLE TRIGGER trg_account_ts_senior_status_admin_only;"
+check CP3 "T-192: DISABLE TRIGGER trg_account_ts_senior_status_admin_only, with a marker" R-TRIGGER-BYPASS
+pair expand "DROP TRIGGER trg_account_role_ts_senior_no_truncate ON public.account_role;"
+check CP4 "T-192: DROP TRIGGER trg_account_role_ts_senior_no_truncate (OD-224 A4)" R-PROTECTED
+pair expand "-- @compliance-review: trg_account_role_ts_senior_no_truncate — T-192, OD-224
+ALTER TABLE public.account_role DISABLE TRIGGER trg_account_role_ts_senior_no_truncate;"
+check CP5 "T-192: DISABLE TRIGGER trg_account_role_ts_senior_no_truncate, with a marker" R-TRIGGER-BYPASS
+
+echo "== R-PROTECTED-RENAME (T-192, OD-224 A2): a protected trigger or function is never renamed; no marker permits it"
+pair contract "-- @compliance-review: trg_approval_four_eyes — T-192, OD-224
+ALTER TRIGGER trg_approval_four_eyes ON public.approval RENAME TO t192_off;
+ALTER TABLE public.approval DISABLE TRIGGER t192_off;"
+check CN1 "T-186 QA X5: ONE contract file WITH a marker renames trg_approval_four_eyes, then disables it under the new name" R-PROTECTED-RENAME
+pair contract "ALTER TRIGGER trg_approval_four_eyes ON public.approval RENAME TO t192_off;"
+check CN2 "T-186 QA X4: the rename alone, NO marker" "R-PROTECTED R-PROTECTED-RENAME"
+pair contract "-- @compliance-review: assert_second_actor_differs — T-192, OD-224
+ALTER FUNCTION public.assert_second_actor_differs() RENAME TO t192_fn;"
+check CN3 "T-186 QA X6: ALTER FUNCTION assert_second_actor_differs() RENAME, with a marker" R-PROTECTED-RENAME
+pair contract "-- @compliance-review: assert_second_actor_differs — T-192, OD-224
+ALTER FUNCTION public.assert_second_actor_differs() RENAME TO t192_fn;
+CREATE OR REPLACE FUNCTION public.t192_fn() RETURNS trigger LANGUAGE plpgsql AS \$fn\$ BEGIN RETURN NULL; END \$fn\$;"
+check CN4 "T-186 QA X7: rename the function, then no-op-replace it under the new name, with a marker (the CREATE is an expand)" "R-CONTRACT-PURE R-PROTECTED-RENAME"
+pair contract "-- @compliance-review: trg_int10_answering_service — T-192, OD-224
+ALTER EVENT TRIGGER trg_int10_answering_service RENAME TO t192_evt;"
+check CN5 "ALTER EVENT TRIGGER trg_int10_answering_service RENAME, with a marker" R-PROTECTED-RENAME
+pair contract '-- @compliance-review: trg_account_role_ts_senior_admin_only — T-192, OD-224
+DO $do$ BEGIN EXECUTE '"'"'alter trigger "trg_account_role_ts_senior_admin_only"
+  on public.account_role rename to t192_off'"'"'; END $do$;'
+check CN6 "lower case, a quoted name, across two lines, as an EXECUTE string in a DO block, with a marker" R-PROTECTED-RENAME
+pair contract "-- @compliance-review: trg_account_ts_senior_status_admin_only — T-192, OE-48
+ALTER TRIGGER trg_account_ts_senior_status_admin_only ON public.account RENAME TO t192_off;"
+check CN7 "T-192: 0011's OE-48 trigger renamed, with a marker" R-PROTECTED-RENAME
+pair contract "-- @compliance-review: assert_second_actor_differs — T-192, OD-224
+ALTER FUNCTION public.t192_noop() RENAME TO assert_second_actor_differs;"
+check CN8 "a function renamed TO a protected name (a shadow), with a marker" R-PROTECTED-RENAME
+pair contract "ALTER TRIGGER t192_scratch_trigger ON public.approval RENAME TO t192_scratch_two;"
+check CN9 "CONTROL: renaming a trigger that is not protected" PASS
+pair contract "ALTER TABLE public.approval RENAME TO approval_t192;"
+check CNA "CONTROL: renaming the table that holds a protected trigger (the trigger stays on it and names nothing protected)" PASS
+pair contract "ALTER TRIGGER trg_approval_four_eyes_audit ON public.approval RENAME TO t192_audit;"
+check CNB "CONTROL: renaming a longer identifier that contains a protected name" PASS
+
+echo "== R-ADMIN-MEMBERSHIP (T-192, OD-224 A3): no migration makes anyone a holder of app_admin_rw's privileges"
+pair expand "GRANT app_admin_rw TO app_rw;"
+check CA1 "T-186 QA X10: GRANT app_admin_rw TO app_rw" R-ADMIN-MEMBERSHIP
+pair expand "ALTER GROUP app_admin_rw ADD USER app_rw;"
+check CA2 "T-186 QA X11: ALTER GROUP app_admin_rw ADD USER app_rw" R-ADMIN-MEMBERSHIP
+pair expand "CREATE ROLE t192_login LOGIN IN ROLE app_admin_rw;"
+check CA3 "CREATE ROLE … IN ROLE app_admin_rw" R-ADMIN-MEMBERSHIP
+pair expand 'grant app_rw, "app_admin_rw"
+  to t192_login with inherit true;'
+check CA4 "lower case, a quoted name second in the role list, across two lines, WITH INHERIT" R-ADMIN-MEMBERSHIP
+pair expand "DO \$do\$ BEGIN EXECUTE 'GRANT app_admin_rw TO app_rw'; END \$do\$;"
+check CA5 "inside a DO block, as an EXECUTE string" R-ADMIN-MEMBERSHIP
+pair expand "ALTER USER app_admin_rw WITH BYPASSRLS;"
+check CA6 "ALTER USER app_admin_rw (the role itself altered)" R-ADMIN-MEMBERSHIP
+pair expand "GRANT SELECT (id) ON public.account TO app_admin_rw;"
+check CA7 "CONTROL: a privilege granted TO app_admin_rw" PASS
+pair expand "REVOKE app_admin_rw FROM app_rw;"
+check CA8 "CONTROL: REVOKE app_admin_rw FROM app_rw" PASS
+pair expand "COMMENT ON ROLE app_admin_rw IS 'the back-office role';"
+check CA9 "CONTROL: COMMENT ON ROLE app_admin_rw" PASS
+pair expand "GRANT app_rw TO t192_login;"
+check CAA "CONTROL: membership in another role (app_rw) is not this rule's" PASS
+
 echo "== R-CASCADE"
 pair expand "DROP FUNCTION assert_sitter_bookable() CASCADE;"
 check C54 "DROP FUNCTION <a protected trigger's function> CASCADE, which names no protected object" R-CASCADE
