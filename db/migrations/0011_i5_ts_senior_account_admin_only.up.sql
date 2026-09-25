@@ -14,35 +14,33 @@
 --          T-140 § Published contract (account, account_role, their grants); T-020 § Published
 --          contract §3 (roles; RLS scoped by OD-223); T-021 / T-031 (lint).
 --
--- 1. OE-48 AS NARROWED BY OE-57: ONLY app_admin_rw MAY MAKE A ts_senior HOLDER MORE ELIGIBLE TO
---    COUNTERSIGN. assert_second_actor_differs() (0008) admits a countersigner whose account row
---    has status = 'active', joined on account.id; account_min_age_verified lets status be 'active'
---    only with dob_verified_18 true. app_rw holds UPDATE on account (0005), so it could set a
---    suspended ts_senior holder active around a countersignature, or commit the activation
---    (T-186 OD-222; QA OD-a..OD-d). A BEFORE UPDATE row trigger on account,
---    trg_account_ts_senior_status_admin_only, now refuses, for an account that holds an UNREVOKED
---    ts_senior row, exactly the moves TOWARDS eligibility, unless the writer is an admin writer
---    (3. below): KV055 I5_TS_SENIOR_ACCOUNT_WRITE_REFUSED. Those moves are:
---      status          a change INTO 'active' from any other value;
---      dob_verified_18 false -> true;
---      id              any change (OE-45's read joins on it).
---    Every move AWAY from eligibility is admitted for app_rw (OE-57): status active -> suspended,
---    removed or erased; pending -> removed or erased; any change between non-active values;
---    dob_verified_18 true -> false. So an automated suspension by app_rw takes effect, and the
+-- 1. OE-48 AS NARROWED BY OE-57 AND OE-58: FOR A ts_senior HOLDER, app_rw MAY ONLY MOVE THE
+--    ACCOUNT TOWARDS LESS ELIGIBILITY. assert_second_actor_differs() (0008) admits a countersigner
+--    whose account row has status = 'active', joined on account.id; account_min_age_verified lets
+--    status be 'active' only with dob_verified_18 true. app_rw holds UPDATE on account (0005), so
+--    it could set a suspended ts_senior holder active around a countersignature, or commit the
+--    activation (T-186 OD-222; QA OD-a..OD-d). A BEFORE UPDATE row trigger on account,
+--    trg_account_ts_senior_status_admin_only, now admits, for an account that holds an UNREVOKED
+--    ts_senior row and a writer that is not an admin writer (3. below), exactly these moves:
+--      status          active -> suspended, removed or erased; pending -> removed or erased;
+--                      suspended -> removed or erased; removed -> erased (OE-57, OE-58);
+--      dob_verified_18 true -> false.
+--    Everything else is refused, KV055 I5_TS_SENIOR_ACCOUNT_WRITE_REFUSED: any other status change
+--    (into active from anything; into pending from anything; out of suspended other than to
+--    removed or erased, which is lifting a suspension and is app_admin_rw's decision, OE-58; out of
+--    removed other than to erased; out of erased; pending -> suspended, which the stakeholder's list
+--    does not name), dob_verified_18 false -> true, and any id change (OE-45's read joins on it).
+--    So an automated suspension by app_rw takes effect and cannot be undone by app_rw, and the
 --    suspended holder's next countersignature is refused KV054 (0008). The guard is row-scoped, as
 --    OE-48 rules: every other account, and every other column of a ts_senior holder, stays
---    writable by app_rw, so signup and verification writes are unaffected. When a guarded move is
+--    writable by app_rw, so signup and verification writes are unaffected. When a refused move is
 --    attempted, the account's ts_senior rows (revoked or not) are read FOR SHARE and revoked_at is
 --    taken from the locked version (T-192 QA-A2): a concurrent app_admin_rw un-revoke WAITS for
 --    the writing transaction, and one committed after a REPEATABLE READ or SERIALIZABLE snapshot
 --    raises 40001 instead of going unseen. FOR SHARE and not FOR KEY SHARE: an un-revoke changes
 --    revoked_at, which is in no unique key, so it takes FOR NO KEY UPDATE, which FOR KEY SHARE
---    does not block (T-140 TL-A3 measured the same for OE-45's read). A new ts_senior row
---    INSERTed concurrently is not seen; the outcome is the permitted order (the move, then the
---    grant). suspended -> pending is admitted: it makes the account no more eligible (pending is
---    refused KV054 as suspended is, and pending -> active is itself a guarded move). It does let
---    the account log in again (T-026's LOGIN_STATUSES are pending and active), which is not I-5's
---    subject and is reported in T-192's evidence, not decided here.
+--    does not block (measured in T-192 rework 1). A new ts_senior row INSERTed concurrently is
+--    not seen; the outcome is the permitted order (the move, then the grant).
 --
 -- 2. OD-224 A4: TRUNCATE account_role. Row triggers do not fire on TRUNCATE, so the owner could
 --    remove every ts_senior row without KV053. Decided: refused at the database. A BEFORE TRUNCATE
@@ -130,12 +128,20 @@ DECLARE
   v_live    boolean := false;
   v_role    record;
 BEGIN
-  -- OE-57: only a move TOWARDS countersigning eligibility is guarded. Every other move of these
-  -- columns (a suspension, a removal, an erasure, dob_verified_18 true -> false) is not read.
+  -- OE-57 + OE-58: a writer that is not an admin writer may move a live ts_senior holder only
+  -- TOWARDS less eligibility. A status change is admitted only if it is one of the eight moves
+  -- below; every other status change (into active, into pending, and any move out of suspended
+  -- other than to removed or erased, out of removed other than to erased, out of erased) is refused.
+  -- dob_verified_18 true -> false is admitted, false -> true refused; any id change is refused.
   IF NEW.id IS DISTINCT FROM OLD.id THEN
     v_refused := v_refused || 'id'::text;
   END IF;
-  IF NEW.status = 'active' AND OLD.status IS DISTINCT FROM 'active' THEN
+  IF NEW.status IS DISTINCT FROM OLD.status
+     AND NOT (OLD.status::text || '>' || NEW.status::text) = ANY (ARRAY[
+           'active>suspended', 'active>removed', 'active>erased',
+           'pending>removed', 'pending>erased',
+           'suspended>removed', 'suspended>erased',
+           'removed>erased']) THEN
     v_refused := v_refused || 'status'::text;
   END IF;
   IF NEW.dob_verified_18 IS TRUE AND OLD.dob_verified_18 IS NOT TRUE THEN
@@ -167,14 +173,14 @@ BEGIN
     RAISE EXCEPTION 'I5_TS_SENIOR_ACCOUNT_WRITE_REFUSED: UPDATE of % on %.% for an account holding a live ts_senior role, by role %',
                     array_to_string(v_refused, ', '), TG_TABLE_SCHEMA, TG_TABLE_NAME, current_user
       USING ERRCODE = 'KV055',
-            HINT = 'decisions.md OE-48 as narrowed by OE-57: only app_admin_rw may make an account holding a live ts_senior role more eligible to countersign (status into active, dob_verified_18 to true, a changed id).';
+            HINT = 'decisions.md OE-48, OE-57, OE-58: for an account holding a live ts_senior role, app_rw may only move status towards less eligibility (active to suspended, removed or erased; pending to removed or erased; suspended to removed or erased; removed to erased) and dob_verified_18 from true to false; every other change of status, dob_verified_18 or id is app_admin_rw''s.';
   END IF;
   RETURN NEW;
 END
 $fn$;
 
 COMMENT ON FUNCTION public.assert_ts_senior_account_written_by_admin() IS
-  'SA §SA-4 I-5, decisions.md OE-48 as narrowed by OE-57 (T-192). BEFORE UPDATE row trigger on account: for an account holding an unrevoked ts_senior role, a change of status INTO active, of dob_verified_18 from false to true, or of id is refused (KV055) unless current_user holds the privileges of app_admin_rw and not those of app_rw. A move away from eligibility (suspend, remove, erase, dob_verified_18 to false) is not refused. The ts_senior rows are read FOR SHARE. Every other account and column is not read.';
+  'SA §SA-4 I-5, decisions.md OE-48, OE-57 and OE-58 (T-192). BEFORE UPDATE row trigger on account: for an account holding an unrevoked ts_senior role, a writer that does not hold the privileges of app_admin_rw, or that also holds those of app_rw, is refused (KV055) every change of status except active to suspended, removed or erased, pending to removed or erased, suspended to removed or erased, and removed to erased; a change of dob_verified_18 from false to true; and any change of id. dob_verified_18 true to false is admitted. The ts_senior rows are read FOR SHARE. Every other account and column is not read.';
 
 CREATE TRIGGER trg_account_ts_senior_status_admin_only
   BEFORE UPDATE ON public.account
