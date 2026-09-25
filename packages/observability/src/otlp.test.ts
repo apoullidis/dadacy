@@ -316,7 +316,12 @@ describe('T-204: the exporter cannot starve the request path', () => {
       open -= 1;
       return ok();
     }) as unknown as typeof fetch;
-    const exporter = createExporter({ endpoint: 'http://x', serviceName: 's', fetchImpl, maxBatch: 1 });
+    const exporter = createExporter({
+      endpoint: 'http://x',
+      serviceName: 's',
+      fetchImpl,
+      maxBatch: 1,
+    });
     exporter.record(span()); // maxBatch 1: starts at once
     exporter.record(span());
     const results = await Promise.all([exporter.flush(), exporter.flush(), exporter.flush()]);
