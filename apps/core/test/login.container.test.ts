@@ -373,7 +373,7 @@ test('a passwordless account (registered with no password, so password_hash is N
   const sessions = await sessionsOf(accountId);
   assert.deepEqual(
     sessions.map((s) => [s.authMethod, s.revokedAt]),
-    [['magic_link', null]],
+    [['registration', null]],
     'only the registration session exists',
   );
   const after = await database().query<{ unverified: boolean }>(
@@ -383,7 +383,7 @@ test('a passwordless account (registered with no password, so password_hash is N
   assert.deepEqual(
     after.rows,
     [{ unverified: true }],
-    'a magic_link session was read as email proof',
+    'a registration session was read as email proof',
   );
 });
 

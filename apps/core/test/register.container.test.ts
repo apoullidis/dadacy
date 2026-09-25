@@ -371,7 +371,7 @@ test('a body that is not the contract answers 400 invalid_input, never 500, and 
 
 // ---- T-141 rework 1 -------------------------------------------------------------------------
 
-test('no password (SD BE-4 password?, SA CC-1): 201 with one session cookie and Cache-Control private, no-store, password_hash IS NULL, and a magic_link session', async () => {
+test('no password (SD BE-4 password?, SA CC-1): 201 with one session cookie and Cache-Control private, no-store, password_hash IS NULL, and a registration session (OE-28 (B))', async () => {
   const email = uniqueEmail('passwordless');
   const answer = await post(
     JSON.stringify({
@@ -401,7 +401,7 @@ test('no password (SD BE-4 password?, SA CC-1): 201 with one session cookie and 
   );
   assert.equal(rows.length, 1, 'exactly one account with one session');
   assert.equal(rows[0]?.hash_is_null, true, 'a passwordless account has a password_hash');
-  assert.equal(rows[0]?.auth_method, 'magic_link');
+  assert.equal(rows[0]?.auth_method, 'registration', 'a passwordless registration session is not a registration session (OE-28 (B), 0009)');
   const digest = createHash('sha256').update(match[1], 'utf8').digest();
   assert.ok(rows[0]?.token_hash.equals(digest), 'token_hash is not SHA-256 of the cookie value');
 });

@@ -368,7 +368,7 @@ test('the seeded breached password is refused with a 422 password_breached error
   assert.equal(rows[0]?.n, 0);
 });
 
-test('no password: no HIBP request is made, nothing is logged, password_hash is NULL and the session is a magic_link session', async () => {
+test('no password: no HIBP request is made, nothing is logged, password_hash is NULL and the session is a registration session (OE-28 (B))', async () => {
   let requests = 0;
   const checker = new HibpChecker({
     base: env('HIBP_API_BASE'),
@@ -393,5 +393,5 @@ test('no password: no HIBP request is made, nothing is logged, password_hash is 
       'FROM public.account a JOIN public.app_session s ON s.account_id = a.id WHERE a.id = $1',
     [result.accountId],
   );
-  assert.deepEqual(rows, [{ hash_is_null: true, auth_method: 'magic_link' }]);
+  assert.deepEqual(rows, [{ hash_is_null: true, auth_method: 'registration' }]);
 });
