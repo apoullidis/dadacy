@@ -1360,9 +1360,10 @@ test('no decision ever carries both an allow basis and a deny reason', () => {
  * `ts_senior`, whoever performed the action. Before T-030 `countersigned()`
  * read no role, and every case below that expects `four_eyes_required` for a
  * non-ts_senior countersigner ALLOWED (OD-66). This is the detective layer.
- * The database trigger (packages/db-testkit/suites/four-eyes.test.ts) holds
- * clause (b) only against a principal that cannot write `ts_senior` rows;
- * `app_rw` can until T-186 (decisions.md OE-47; T-030 QA-F1).
+ * The database trigger (packages/db-testkit/suites/four-eyes.test.ts) reads
+ * account_role as the countersigning transaction sees it; since migration 0008
+ * (T-186, decisions.md OE-47) app_rw cannot write a `ts_senior` row, so QA-F1's
+ * B2/B3/B4 are refused there (KV053).
  */
 
 /**
