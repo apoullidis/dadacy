@@ -364,7 +364,7 @@ pair expand "CREATE OR REPLACE TRIGGER trg_booking_sitter_bookable
   EXECUTE FUNCTION assert_sitter_bookable();"
 check C41 "its WHEN clause narrowed by CREATE OR REPLACE TRIGGER" R-PROTECTED
 pair expand "ALTER TABLE booking DISABLE TRIGGER trg_booking_staffed_hours;"
-check C42 "DISABLE TRIGGER trg_booking_staffed_hours" R-PROTECTED
+check C42 "DISABLE TRIGGER trg_booking_staffed_hours (T-186: also R-TRIGGER-BYPASS, a protected trigger switched off by name)" "R-PROTECTED R-TRIGGER-BYPASS"
 pair expand "CREATE OR REPLACE FUNCTION assert_within_staffed_hours() RETURNS trigger LANGUAGE plpgsql AS \$f\$ BEGIN RETURN NEW; END \$f\$;"
 check C43 "assert_within_staffed_hours() replaced with a no-op" R-PROTECTED
 pair expand "DROP FUNCTION public.trg_assert_answering_service_write_only() CASCADE;"
@@ -373,7 +373,7 @@ pair expand "DROP FUNCTION public.assert_answering_service_write_only();
 CREATE FUNCTION public.assert_answering_service_write_only() RETURNS void LANGUAGE sql AS 'SELECT';"
 check C45 "OD-73 A4: DROP the guard function and install a no-op" R-PROTECTED
 pair expand "ALTER EVENT TRIGGER trg_int10_answering_service DISABLE;"
-check C46 "ALTER EVENT TRIGGER trg_int10_answering_service DISABLE" R-PROTECTED
+check C46 "ALTER EVENT TRIGGER trg_int10_answering_service DISABLE (T-186: also R-TRIGGER-BYPASS)" "R-PROTECTED R-TRIGGER-BYPASS"
 pair expand 'DROP TRIGGER "trg_booking_sitter_bookable" ON booking;'
 check C47 "a quoted identifier" R-PROTECTED
 pair expand "DO \$do\$ BEGIN EXECUTE 'DROP TRIGGER trg_booking_sitter_bookable ON booking'; END \$do\$;"
@@ -396,6 +396,18 @@ check C4D "CONTROL: the name in a comment only" PASS
 pair expand "CREATE TABLE public.trg_booking_sitter_bookable_audit (id int);
 GRANT SELECT ON public.trg_booking_sitter_bookable_audit TO app_rw;"
 check C4E "CONTROL: a longer identifier that contains a protected name" PASS
+# T-186 (OD-217, T-030 QA-A2 L1/L3): the I-5 objects, and 0008's OE-47 objects, are protected.
+pair expand "DROP TRIGGER trg_approval_four_eyes ON public.approval;"
+check C4F "T-186 (QA L1): DROP TRIGGER trg_approval_four_eyes" R-PROTECTED
+pair expand "CREATE OR REPLACE FUNCTION public.assert_second_actor_differs() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog AS \$fn\$ BEGIN RETURN NULL; END \$fn\$;"
+check C4G "T-186 (QA L3): assert_second_actor_differs() replaced with a no-op" R-PROTECTED
+pair expand "DROP TRIGGER trg_account_role_ts_senior_admin_only ON public.account_role;"
+check C4H "T-186: DROP TRIGGER trg_account_role_ts_senior_admin_only (OE-47)" R-PROTECTED
+pair expand "CREATE OR REPLACE FUNCTION public.assert_ts_senior_written_by_admin() RETURNS trigger LANGUAGE plpgsql AS \$fn\$ BEGIN RETURN NEW; END \$fn\$;"
+check C4I "T-186: assert_ts_senior_written_by_admin() replaced with a no-op (OE-47)" R-PROTECTED
+pair expand "-- @compliance-review: assert_second_actor_differs — T-186, OE-45
+CREATE OR REPLACE FUNCTION public.assert_second_actor_differs() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog AS \$fn\$ BEGIN RETURN NULL; END \$fn\$;"
+check C4J "CONTROL: the same replacement with a marker citing a ticket and a decision" PASS
 
 echo "== R-TRIGGER-BYPASS"
 pair expand "ALTER TABLE booking DISABLE TRIGGER ALL;"
@@ -406,6 +418,35 @@ pair expand "SET session_replication_role = replica;"
 check C52 "SET session_replication_role" R-TRIGGER-BYPASS
 pair expand "SELECT set_config('session_replication_role', 'replica', true);"
 check C53 "set_config('session_replication_role', …)" R-TRIGGER-BYPASS
+# T-186 (OD-217, T-030 QA-A2 L2): a protected trigger switched off BY NAME. No marker permits it.
+pair expand "ALTER TABLE public.approval DISABLE TRIGGER trg_approval_four_eyes;"
+check C5A "T-186 (QA L2): DISABLE TRIGGER trg_approval_four_eyes, no marker" "R-PROTECTED R-TRIGGER-BYPASS"
+pair expand "-- @compliance-review: trg_approval_four_eyes — T-186, OD-217
+ALTER TABLE public.approval DISABLE TRIGGER trg_approval_four_eyes;"
+check C5B "the same DISABLE with a marker: the marker does not permit it" R-TRIGGER-BYPASS
+pair expand "-- @compliance-review: trg_approval_four_eyes — T-186, OD-217
+ALTER TABLE public.approval ENABLE REPLICA TRIGGER trg_approval_four_eyes;"
+check C5C "ENABLE REPLICA TRIGGER trg_approval_four_eyes (fires only under replica), with a marker" R-TRIGGER-BYPASS
+pair expand '-- @compliance-review: trg_approval_four_eyes — T-186, OD-217
+alter table public.approval
+  disable trigger "trg_approval_four_eyes";'
+check C5D "lower case, a quoted name, across two lines, with a marker" R-TRIGGER-BYPASS
+pair expand "-- @compliance-review: trg_account_role_ts_senior_admin_only — T-186, OE-47
+ALTER TABLE public.account_role DISABLE TRIGGER trg_account_role_ts_senior_admin_only;"
+check C5E "DISABLE TRIGGER trg_account_role_ts_senior_admin_only (OE-47), with a marker" R-TRIGGER-BYPASS
+pair expand "-- @compliance-review: trg_int10_answering_service — T-186, OD-217
+ALTER EVENT TRIGGER trg_int10_answering_service ENABLE REPLICA;"
+check C5F "ALTER EVENT TRIGGER trg_int10_answering_service ENABLE REPLICA, with a marker" R-TRIGGER-BYPASS
+pair expand "DO \$do\$ BEGIN EXECUTE 'ALTER TABLE public.approval DISABLE TRIGGER trg_approval_four_eyes'; END \$do\$;
+-- @compliance-review: trg_approval_four_eyes — T-186, OD-217"
+check C5G "inside a DO block, as an EXECUTE string, with a marker" R-TRIGGER-BYPASS
+pair expand "ALTER TABLE public.approval DISABLE TRIGGER t186_scratch_trigger;"
+check C5H "CONTROL: DISABLE TRIGGER naming a trigger that is not protected" PASS
+pair expand "-- @compliance-review: trg_approval_four_eyes — T-186, OD-217
+ALTER TABLE public.approval ENABLE ALWAYS TRIGGER trg_approval_four_eyes;"
+check C5I "CONTROL: ENABLE ALWAYS TRIGGER (fires in every mode), with a marker" PASS
+pair expand "ALTER TABLE public.approval DISABLE TRIGGER trg_approval_four_eyes_audit;"
+check C5J "CONTROL: DISABLE TRIGGER naming a longer identifier that contains a protected name" PASS
 
 echo "== R-CASCADE"
 pair expand "DROP FUNCTION assert_sitter_bookable() CASCADE;"

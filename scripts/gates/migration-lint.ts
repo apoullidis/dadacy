@@ -55,7 +55,13 @@
  *                        `db/migrations` is the control.
  *   [R-TRIGGER-BYPASS]   no `DISABLE TRIGGER ALL|USER` and no `session_replication_role`. Both
  *                        switch protected triggers off without naming them. There is no
- *                        marker that permits either.
+ *                        marker that permits either. (T-186, OD-217) Also no statement that
+ *                        switches off a protected trigger BY NAME: `DISABLE TRIGGER <name>` and
+ *                        `ENABLE REPLICA TRIGGER <name>` (which fires it only under
+ *                        session_replication_role = replica, i.e. never in normal operation), and
+ *                        `ALTER EVENT TRIGGER <name> DISABLE | ENABLE REPLICA`, for every PROTECTED
+ *                        entry marked `trigger`. R-PROTECTED's marker does not permit it either:
+ *                        a reviewed change may replace a protected trigger, never switch it off.
  *   [R-CASCADE]          no `DROP … CASCADE` and no `DROP OWNED`. Both remove objects the statement does not
  *                        name, and no rule that reads names can see what it removed:
  *                        `DROP FUNCTION assert_sitter_bookable() CASCADE` takes
@@ -195,18 +201,22 @@ const CONTRACT_STATEMENTS: readonly (readonly [RegExp, string])[] = [
 interface Protected {
   readonly id: string;
   readonly why: string;
+  /** A trigger or event trigger: R-TRIGGER-BYPASS also refuses switching it off by name (T-186). */
+  readonly trigger?: true;
 }
 
 const PROTECTED: readonly Protected[] = [
   {
     id: 'trg_booking_sitter_bookable',
     why: 'I-1; its WHEN clause fires only on transitions INTO confirmed/in_progress, so a live session is never re-evaluated (SD §UC-4 part 1, §DB-13 rule 7)',
+    trigger: true,
   },
-  { id: 'trg_booking_staffed_hours', why: 'SD §DB-13 rule 7' },
+  { id: 'trg_booking_staffed_hours', why: 'SD §DB-13 rule 7', trigger: true },
   { id: 'assert_within_staffed_hours', why: 'SD §DB-13 rule 7' },
   {
     id: 'trg_int10_answering_service',
     why: 'the SA §INT-10 guard event trigger (T-020 contract §6)',
+    trigger: true,
   },
   {
     id: 'assert_answering_service_write_only',
@@ -216,7 +226,30 @@ const PROTECTED: readonly Protected[] = [
     id: 'trg_assert_answering_service_write_only',
     why: "the guard event trigger's function; DROP … CASCADE on it drops the event trigger (OD-73)",
   },
+  {
+    id: 'trg_approval_four_eyes',
+    why: 'SA §SA-4 I-5, the four-eyes trigger on approval (T-030; OD-217, T-186)',
+    trigger: true,
+  },
+  {
+    id: 'assert_second_actor_differs',
+    why: 'SA §SA-4 I-5 clauses (a) and (b), the function trg_approval_four_eyes calls; a no-op replacement silences it (T-030; OD-217, T-186)',
+  },
+  {
+    id: 'trg_account_role_ts_senior_admin_only',
+    why: 'SA §SA-4 I-5 / decisions.md OE-47: only app_admin_rw may write a ts_senior row (T-186)',
+    trigger: true,
+  },
+  {
+    id: 'assert_ts_senior_written_by_admin',
+    why: 'decisions.md OE-47, the function trg_account_role_ts_senior_admin_only calls (T-186)',
+  },
 ];
+
+/** The protected triggers, upper-cased as the fragments are (R-TRIGGER-BYPASS, T-186). */
+const PROTECTED_TRIGGERS: readonly string[] = PROTECTED.filter((p) => p.trigger === true).map((p) =>
+  p.id.toUpperCase(),
+);
 
 /**
  * Statements that make a migration expand-phase, which a file declared `contract` may not
@@ -1360,6 +1393,20 @@ for (const m of migrations) {
         m.rel,
         `switches off triggers without naming them, protected ones included: ${snippet(f)}`,
       );
+    }
+    // (T-186, OD-217) A protected trigger switched off by NAME. No marker permits it.
+    for (const t of PROTECTED_TRIGGERS) {
+      const name = `${t}(?![A-Z0-9_$])`;
+      if (
+        new RegExp(`\\b(?:DISABLE|ENABLE REPLICA) TRIGGER ${name}`).test(f) ||
+        new RegExp(`\\bALTER EVENT TRIGGER ${name} (?:DISABLE|ENABLE REPLICA)\\b`).test(f)
+      ) {
+        problem(
+          'R-TRIGGER-BYPASS',
+          m.rel,
+          `switches off the protected trigger ${t.toLowerCase()} by name; a reviewed migration may replace a protected trigger (R-PROTECTED's marker), never switch it off: ${snippet(f)}`,
+        );
+      }
     }
   }
 
