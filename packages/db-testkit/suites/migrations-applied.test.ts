@@ -287,8 +287,9 @@ const CREATED_BY: Readonly<
     // Each probe names one object 0011 creates, or the replacement or grant it makes, and each
     // returns a value rather than raising once it is gone: to_regprocedure returns NULL for a
     // missing name, the trigger reads are counts, the privilege read names a column 0005 creates
-    // and a role 0001 creates, and the prosrc read is a count over the function 0008 creates and
-    // 0011 replaces (its down restores 0008's body, which has no app_rw clause).
+    // and a role 0001 creates, and the prosrc reads are counts: one over the function 0008 creates
+    // and 0011 replaces (its down restores 0008's body, which has no app_rw clause), one over the
+    // function 0011 creates (absent after its down).
     probes: [
       {
         title: 'function public.assert_ts_senior_account_written_by_admin() exists',
@@ -320,6 +321,15 @@ const CREATED_BY: Readonly<
         sql: `SELECT count(*)::text FROM pg_proc
                WHERE oid = 'public.assert_ts_senior_written_by_admin()'::regprocedure
                  AND prosrc LIKE '%NOT pg_has_role(current_user, ''app_rw'', ''USAGE'')%'`,
+        holds: '1',
+      },
+      {
+        title:
+          'assert_ts_senior_account_written_by_admin() guards activation only and locks its ts_senior read FOR SHARE (OE-57; T-192 QA-A2)',
+        sql: `SELECT count(*)::text FROM pg_proc
+               WHERE oid = to_regprocedure('public.assert_ts_senior_account_written_by_admin()')
+                 AND prosrc LIKE '%NEW.status = ''active'' AND OLD.status IS DISTINCT FROM ''active''%'
+                 AND prosrc LIKE '%FOR SHARE%'`,
         holds: '1',
       },
     ],

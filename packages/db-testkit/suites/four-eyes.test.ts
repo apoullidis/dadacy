@@ -16,12 +16,15 @@
  *       ts_senior row (`trg_account_role_ts_senior_admin_only`, KV053; OE-47), so QA's B2/B3/B4
  *       routes are REFUSED below, each with an app_admin_rw CONTROL.
  *
- * T-192 — migration 0011: OE-48 (only app_admin_rw may change id, status or dob_verified_18 of an
- * account holding a live ts_senior role; `trg_account_ts_senior_status_admin_only`, KV055), so
- * decisions.md OD-222's routes are REFUSED below, each with a control; the admin-writer test
- * hardened (T-186 C4 (iv): a writer that also holds app_rw's privileges is refused, the superuser
- * acting as itself included); and TRUNCATE account_role refused while it holds a ts_senior row
- * (OD-224 A4, KV053).
+ * T-192 — migration 0011: OE-48 as narrowed by OE-57 (for an account holding a live ts_senior role,
+ * only app_admin_rw may make it MORE eligible to countersign: status INTO active, dob_verified_18
+ * false -> true, a changed id; `trg_account_ts_senior_status_admin_only`, KV055), so decisions.md
+ * OD-222's routes are REFUSED below, each with a control, while app_rw's suspension, removal and
+ * erasure of such an account are ACCEPTED controls (OE-57; the suspended holder's countersignature
+ * is still KV054). The guard reads the account's ts_senior rows FOR SHARE (T-192 QA-A2), raced
+ * below. The admin-writer test hardened (T-186 C4 (iv): a writer that also holds app_rw's
+ * privileges is refused WHEN IT WRITES AS ITSELF, the superuser included); and TRUNCATE
+ * account_role refused while it holds a ts_senior row (OD-224 A4, KV053).
  *
  * What is still open is pinned as LIMITATION cases, each asserting the stored row: RP1/RP2 pin
  * what a countersigned row does not bind (T-030 QA-F2): the consumer obligation is in T-186 §
@@ -822,20 +825,27 @@ describe('I-5 clause (b), OE-45 — the account row is read FOR SHARE too, so a 
 const ACCOUNT_TABLE = `SELECT string_agg(id || ':' || status::text || ':' || dob_verified_18::text, ' | '
                            ORDER BY id COLLATE "C")
                         FROM public.account`;
+/** Live ts_senior rows an account holds. */
+const liveTsSenior = (acc: string): string =>
+  `SELECT count(*)::text FROM public.account_role
+    WHERE account_id = '${acc}' AND role = 'ts_senior' AND revoked_at IS NULL`;
 /** One account's status and dob_verified_18, as `status,dob`. */
 const statusOf = (acc: string): string =>
   `SELECT status::text || ',' || dob_verified_18::text FROM public.account WHERE id = '${acc}'`;
 
 /**
- * T-192, OE-48 (decisions.md; from OD-222, widened by T-186 QA-A1): only app_admin_rw may change
- * id, status or dob_verified_18 of an account holding a LIVE ts_senior role. Migration 0011's
- * `trg_account_ts_senior_status_admin_only` refuses everyone else with KV055, so QA's OD-a..OD-d
- * routes (flip, countersign, flip back in one transaction; a committed activation) are REFUSED.
+ * T-192, OE-48 (decisions.md; from OD-222, widened by T-186 QA-A1) as narrowed by OE-57 (T-192
+ * QA-A3): for an account holding a LIVE ts_senior role, only app_admin_rw may make it more eligible
+ * to countersign — a status change INTO active, dob_verified_18 false -> true, a changed id.
+ * Migration 0011's `trg_account_ts_senior_status_admin_only` refuses everyone else with KV055, so
+ * QA's OD-a..OD-d routes (flip, countersign, flip back in one transaction; a committed activation)
+ * are REFUSED. A move AWAY from eligibility (suspend, remove, erase, dob_verified_18 -> false) is
+ * ACCEPTED for app_rw: before OE-57 it was refused, so an automated suspension failed open (QA-A3).
  * Each refusal runs over the real app_rw login and asserts the account table unchanged; the
  * controls show every ordinary app_rw write to an account (signup, verification, other columns)
  * still passes, and that app_admin_rw may make the same change.
  */
-describe('I-5 clause (b), OE-48 — app_rw cannot change id, status or dob_verified_18 of an account holding a live ts_senior (KV055); app_admin_rw may', () => {
+describe('I-5 clause (b), OE-48 as narrowed by OE-57 — app_rw cannot make a live ts_senior holder more eligible (status INTO active, dob_verified_18 to true, id) (KV055); it may suspend, remove or erase it; app_admin_rw may do both', () => {
   test('OD-222 (QA OD-a) — app_rw, ONE transaction: set a SUSPENDED ts_senior account active, countersign, set it back: REFUSED (KV055) at the first status write, nothing stored', async () => {
     const acc = ACC.suspended;
     const before = await db.value(ACCOUNT_TABLE);
@@ -903,18 +913,116 @@ describe('I-5 clause (b), OE-48 — app_rw cannot change id, status or dob_verif
     assert.equal(await db.value(statusOf(acc)), 'pending,false', 'OD-d: unchanged');
   });
 
-  test('app_rw may not make a live ts_senior holder LESS privileged either: suspending an ACTIVE one is REFUSED (KV055)', async () => {
+  test('OE-57 — app_rw SUSPENDS an ACTIVE live ts_senior holder, committed: ACCEPTED; its later countersignature is REFUSED (KV054), and app_rw cannot make it active again (KV055)', async () => {
     const acc = ACC.tsSeniorScratch;
+    assert.equal(await db.value(statusOf(acc)), 'active,true', 'precondition');
+    assert.equal(await db.value(liveTsSenior(acc)), '1', 'precondition: ts_senior live');
+    const suspend = await asApp(
+      `UPDATE public.account SET status = 'suspended' WHERE id = '${acc}'`,
+    );
+    const afterSuspend = await db.value(statusOf(acc));
+    const a = nextApprovalId();
+    await asSuperuser(insertPending(a, 'safeguarding_referral#make', ACC.dsl));
+    const cs = await asApp(countersign(a, acc));
+    const stored = await db.value(storedRow(a));
+    const reactivate = await asApp(
+      `UPDATE public.account SET status = 'active' WHERE id = '${acc}'`,
+    );
+    const afterReactivate = await db.value(statusOf(acc));
+    // Restore before judging, so a failure cannot leak a suspended fixture into later tests.
+    await asFixtureAdmin(`UPDATE public.account SET status = 'active' WHERE id = '${acc}'`);
+    await db.sql({ commands: [`DELETE FROM public.approval WHERE id = '${a}'`] });
+    assertPermitted('app_rw suspends a live ts_senior holder', suspend);
+    assert.equal(afterSuspend, 'suspended,true', 'the suspension was stored');
+    assertRefusedWith('the suspended holder countersigns', cs, ERR_NOT_ACTIVE);
+    assert.ok(stored.startsWith('-|'), `nothing countersigned: ${stored}`);
     assertRefusedWith(
-      'app_rw suspends an active ts_senior holder',
-      await asApp(`UPDATE public.account SET status = 'suspended' WHERE id = '${acc}'`),
+      'app_rw re-activates it',
+      reactivate,
       errAccountWrite('status', LOGINS.app_rw),
     );
-    assert.equal(await db.value(statusOf(acc)), 'active,true', 'unchanged');
+    assert.equal(afterReactivate, 'suspended,true', 'the suspension stuck');
+    assert.equal(await db.value(statusOf(acc)), 'active,true', 'restored');
   });
 
-  test('app_rw is refused every other way to the same columns: a changed id, an upsert (ON CONFLICT DO UPDATE), a MERGE (each KV055)', async () => {
+  test('OE-57 — every other move AWAY from eligibility is ACCEPTED for app_rw on a live ts_senior holder: active -> removed, active -> erased with erased_at, pending -> removed, pending -> erased, dob_verified_18 true -> false, active -> suspended with dob_verified_18 false, suspended -> pending, removed -> suspended, erased -> pending (each rolled back, read inside the transaction)', async () => {
     const before = await db.value(ACCOUNT_TABLE);
+    const moves: readonly [string, string, string, string][] = [
+      ['active -> removed', ACC.tsSeniorScratch, `status = 'removed'`, 'removed,true'],
+      [
+        'active -> erased',
+        ACC.tsSeniorScratch,
+        `status = 'erased', erased_at = now()`,
+        'erased,true',
+      ],
+      ['pending -> removed', ACC.pendingNoDob, `status = 'removed'`, 'removed,false'],
+      ['pending -> erased', ACC.pendingTs, `status = 'erased'`, 'erased,true'],
+      [
+        'dob_verified_18 true -> false',
+        ACC.suspended,
+        'dob_verified_18 = false',
+        'suspended,false',
+      ],
+      [
+        'active -> suspended, dob false',
+        ACC.tsSeniorScratch,
+        `status = 'suspended', dob_verified_18 = false`,
+        'suspended,false',
+      ],
+      ['suspended -> pending', ACC.suspended, `status = 'pending'`, 'pending,true'],
+      ['removed -> suspended', ACC.removed, `status = 'suspended'`, 'suspended,true'],
+      ['erased -> pending', ACC.erased, `status = 'pending'`, 'pending,true'],
+    ];
+    for (const [what, acc, set, expected] of moves) {
+      assert.equal(await db.value(liveTsSenior(acc)), '1', `${what}: precondition, ts_senior live`);
+      const r = await db.psql({
+        user: LOGINS.app_rw,
+        password: PROBE_PASSWORD,
+        raw: true,
+        verbose: true,
+        stopOnError: true,
+        commands: [
+          'BEGIN',
+          `UPDATE public.account SET ${set} WHERE id = '${acc}'`,
+          `SELECT 'in txn=' || (${statusOf(acc)})`,
+          'ROLLBACK',
+        ],
+      });
+      assertPermitted(what, r);
+      assert.ok(r.stdout.includes(`in txn=${expected}`), `${what}: the move landed.\n${r.output}`);
+    }
+    assert.equal(await db.value(ACCOUNT_TABLE), before, 'every move rolled back');
+  });
+
+  test('OE-57 — suspended -> pending makes the account no more eligible: a countersignature by it is REFUSED (KV054), and pending -> active is REFUSED (KV055)', async () => {
+    const acc = ACC.suspended;
+    const a = nextApprovalId();
+    assertRefusedWith(
+      'countersign after suspended -> pending',
+      await asApp(
+        'BEGIN',
+        `UPDATE public.account SET status = 'pending' WHERE id = '${acc}'`,
+        insertPending(a, 'safeguarding_referral#make', ACC.dsl),
+        countersign(a, acc),
+      ),
+      ERR_NOT_ACTIVE,
+    );
+    assertRefusedWith(
+      'pending -> active after suspended -> pending',
+      await asApp(
+        'BEGIN',
+        `UPDATE public.account SET status = 'pending' WHERE id = '${acc}'`,
+        `UPDATE public.account SET status = 'active' WHERE id = '${acc}'`,
+      ),
+      errAccountWrite('status', LOGINS.app_rw),
+    );
+    assert.equal(await db.value(storedRow(a)), '(none)', 'nothing stored');
+    assert.equal(await db.value(statusOf(acc)), 'suspended,true', 'unchanged');
+  });
+
+  test('app_rw is refused every other way to the same columns: a changed id (of an active and of a suspended holder), an upsert (ON CONFLICT DO UPDATE), a MERGE, a data-modifying CTE in both orders, a TEMP view (each KV055)', async () => {
+    const before = await db.value(ACCOUNT_TABLE);
+    const a = nextApprovalId();
     const cases: readonly [string, string, string][] = [
       [
         'id changed',
@@ -933,14 +1041,42 @@ describe('I-5 clause (b), OE-48 — app_rw cannot change id, status or dob_verif
            WHEN MATCHED THEN UPDATE SET status = 'active'`,
         'status',
       ],
+      [
+        'id of a suspended holder changed',
+        `UPDATE public.account SET id = '${id('MOVEDSUS')}' WHERE id = '${ACC.suspended}'`,
+        'id',
+      ],
+      [
+        'CTE: activate, then countersign as it (T-192 QA O2)',
+        `${insertPending(a, 'safeguarding_referral#make', ACC.dsl)};
+         WITH x AS (UPDATE public.account SET status = 'active' WHERE id = '${ACC.suspended}' RETURNING id)
+         UPDATE public.approval SET approver_id = (SELECT id FROM x), approved_at = now(), decision = 'approve'
+          WHERE id = '${a}'`,
+        'status',
+      ],
+      [
+        'CTE: countersign, then activate (T-192 QA O2r)',
+        `${insertPending(a, 'safeguarding_referral#make', ACC.dsl)};
+         WITH c AS (UPDATE public.approval SET approver_id = '${ACC.suspended}', approved_at = now(), decision = 'approve'
+                     WHERE id = '${a}' RETURNING 1)
+         UPDATE public.account SET status = 'active' WHERE id = '${ACC.suspended}' AND EXISTS (SELECT 1 FROM c)`,
+        'status',
+      ],
+      [
+        'TEMP view (T-192 QA O11)',
+        `CREATE TEMP VIEW t192_v AS SELECT id, status FROM public.account;
+         UPDATE t192_v SET status = 'active' WHERE id = '${ACC.suspended}'`,
+        'status',
+      ],
     ];
     for (const [what, sql, columns] of cases) {
       assertRefusedWith(what, await asApp('BEGIN', sql), errAccountWrite(columns, LOGINS.app_rw));
     }
+    assert.equal(await db.value(storedRow(a)), '(none)', 'nothing stored');
     assert.equal(await db.value(ACCOUNT_TABLE), before, 'account unchanged');
   });
 
-  test('T-186 C4 (iv): a login in BOTH app_rw and app_admin_rw, and the superuser acting as itself, are REFUSED (KV055)', async () => {
+  test('T-186 C4 (iv): a login in BOTH app_rw and app_admin_rw, and the superuser, each ACTING AS ITSELF, are REFUSED (KV055)', async () => {
     const before = await db.value(ACCOUNT_TABLE);
     assertRefusedWith(
       'dual login',
@@ -1039,15 +1175,102 @@ describe('I-5 clause (b), OE-48 — app_rw cannot change id, status or dob_verif
   });
 });
 
+/**
+ * T-192 QA-A2: when app_rw attempts a guarded move, the OE-48 guard reads every ts_senior row of the
+ * account (revoked or not) FOR SHARE and takes revoked_at from the locked version. So an
+ * app_admin_rw un-revoke of that account's ts_senior, racing an app_rw activation of the account
+ * while its role is revoked (which OE-57 permits), either waits for the activation (open) or, when
+ * it committed after a REPEATABLE READ or SERIALIZABLE snapshot, makes the activation fail 40001.
+ * Before this read was locked (0011 at 9f2a0a3), QA measured both RR and SERIALIZABLE activations
+ * accepted and a later countersignature stored. `ACC.revoked` is active with its ts_senior
+ * revoked; each case suspends it first (app_rw may: its role is revoked) and restores it.
+ */
+describe('I-5 clause (b), OE-48 — the guard reads the account’s ts_senior rows FOR SHARE, so an un-revoke cannot race an app_rw activation (T-192 QA-A2)', () => {
+  const acc = ACC.revoked;
+  const suspendFirst = async (): Promise<void> => {
+    assert.equal(await db.value(liveTsSenior(acc)), '0', 'precondition: ts_senior revoked');
+    assertPermitted(
+      'app_rw suspends the revoked holder',
+      await asApp(`UPDATE public.account SET status = 'suspended' WHERE id = '${acc}'`),
+    );
+  };
+  const restore = async (): Promise<void> => {
+    await asFixtureAdmin(
+      REVOKE_TS(acc),
+      `UPDATE public.account SET status = 'active' WHERE id = '${acc}'`,
+    );
+  };
+  const readState = (): Promise<string> =>
+    db.value(
+      `SELECT status::text || '|' || (${liveTsSenior(acc)}) FROM public.account WHERE id = '${acc}'`,
+    );
+
+  for (const [level, expected] of [
+    ['READ COMMITTED', errAccountWrite('status', LOGINS.app_rw)],
+    ['REPEATABLE READ', 'ERROR:  40001: could not serialize access due to concurrent update'],
+    ['SERIALIZABLE', 'ERROR:  40001: could not serialize access due to concurrent update'],
+  ] as const) {
+    test(`${level}: an app_rw activation whose transaction began before an app_admin_rw un-revoke COMMITTED is REFUSED (${expected.slice(8, 13)}), and the account stays suspended`, async () => {
+      await suspendFirst();
+      const activating = asApp(
+        `BEGIN ISOLATION LEVEL ${level}`,
+        // Takes the snapshot, which sees the ts_senior revoked.
+        `SELECT count(*) FROM public.account_role WHERE account_id = '${acc}' AND revoked_at IS NULL`,
+        'SELECT pg_sleep(3)',
+        `UPDATE public.account SET status = 'active' WHERE id = '${acc}'`,
+        'COMMIT',
+      );
+      await sleep(1500);
+      const unrevoke = await asAdmin(UNREVOKE_TS(acc));
+      const act = await activating;
+      const state = await readState();
+      await restore();
+      assertPermitted('the committed un-revoke', unrevoke);
+      assertRefusedWith(`${level} activation`, act, expected);
+      assert.equal(
+        state,
+        'suspended|1',
+        'the account stayed suspended while its ts_senior went live',
+      );
+      assert.equal(await readState(), 'active|0', 'restored');
+    });
+  }
+
+  test('an app_admin_rw un-revoke WAITS on an open app_rw activation of the same account, and times out (55P03)', async () => {
+    await suspendFirst();
+    const activating = asApp(
+      'BEGIN',
+      `UPDATE public.account SET status = 'active' WHERE id = '${acc}'`,
+      'SELECT pg_sleep(4)',
+      'ROLLBACK',
+    );
+    await sleep(1500);
+    // Inside BEGIN … ROLLBACK, so that if the lock did NOT block it, the un-revoke never commits.
+    const unrevoke = await asAdmin(
+      'BEGIN',
+      "SET LOCAL lock_timeout = '1s'",
+      UNREVOKE_TS(acc),
+      'ROLLBACK',
+    );
+    const act = await activating;
+    const state = await readState();
+    await restore();
+    assertPermitted('the activation transaction (its role is revoked, so OE-48 permits it)', act);
+    assertRefusedWith(
+      'the concurrent un-revoke',
+      unrevoke,
+      'ERROR:  55P03: canceling statement due to lock timeout',
+    );
+    assert.equal(state, 'suspended|0', 'neither committed');
+    assert.equal(await readState(), 'active|0', 'restored');
+  });
+});
+
 /** Every account_role row, byte for byte, so an attack can be shown to leave no trace. */
 const ROLE_TABLE = `SELECT string_agg(account_id || ':' || role || ':' || coalesce(granted_by, '-') || ':'
                         || granted_at::text || ':' || coalesce(revoked_at::text, 'LIVE'), ' | '
                         ORDER BY account_id COLLATE "C", role COLLATE "C")
                      FROM public.account_role`;
-/** Live ts_senior rows an account holds. */
-const liveTsSenior = (acc: string): string =>
-  `SELECT count(*)::text FROM public.account_role
-    WHERE account_id = '${acc}' AND role = 'ts_senior' AND revoked_at IS NULL`;
 
 /**
  * T-186, OE-47: only app_admin_rw may grant, revoke, un-revoke or move a ts_senior row. QA's
