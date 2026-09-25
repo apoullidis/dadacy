@@ -30,6 +30,40 @@
  * never a message: `errorClass`-style vocabulary only, because an exception
  * message is free text and free text is what this package does not put in
  * telemetry.
+ *
+ * TELEMETRY MAY NOT STARVE THE REQUEST PATH (T-204, OD-227). Measured in
+ * state/EP-1/T-204.md § Finding: the exporter used to start one `fetch` per
+ * flush with no bound on how many were in flight. With the collector absent,
+ * each `fetch`'s `getaddrinfo` blocks ~5 s on compose's resolver, and libuv
+ * runs at most HALF its pool (2 of the default 4 threads) as slow I/O. So
+ * collector lookups filled the DNS lanes, and every other lookup in the process
+ * queued behind them: `hibp-fake` (the breached-password check, which then
+ * FAILED OPEN with `hibp-fake` up) and `postgres`. Queue waits of 590 s were
+ * measured. Four bounds now apply, each with a case in `otlp.test.ts`:
+ *
+ *   1. AT MOST ONE EXPORT IN FLIGHT. A flush while one is in flight does not
+ *      start a second request. So telemetry starts at most one name lookup at a
+ *      time.
+ *   2. A DEADLINE PER EXPORT (`exportTimeoutMs`, default 5000). The request's
+ *      signal is aborted, and the export is reported as `export_network`. This
+ *      bounds a collector that resolves but never answers. ABORTING A `fetch`
+ *      DOES NOT CANCEL ITS `getaddrinfo`: Node cannot cancel a lookup, so the
+ *      lookup keeps its lane until the resolver gives up. Bound 3 is what keeps
+ *      those leftover lookups from piling up.
+ *   3. A COOL-DOWN AFTER EVERY FAILED EXPORT (`backoffMs`, default 5000,
+ *      doubling to `maxBackoffMs`, default 60000; reset by a success). No export
+ *      starts during it. Consecutive export STARTS are therefore at least
+ *      `backoffMs` apart once one has failed. With a resolver that stalls for
+ *      T ms, telemetry holds at most ceil(T / backoffMs) + 1 DNS lanes, at the
+ *      defaults, and 1 when T is below 5000 ms. Compose's T was measured at
+ *      ~5000 ms. A production resolver's T is not measured here.
+ *   4. A BOUNDED BUFFER (`maxQueue`, default 2048). A span recorded when the
+ *      buffer is full is dropped and counted in `exporterCounters.dropped`. It
+ *      is not queued. Memory cannot grow with the length of an outage.
+ *
+ * The cost: during a collector outage spans are DROPPED, and counted. That is
+ * the intended trade. A missing trace is an observability defect; a
+ * breached-password check switched off is a safety defect.
  */
 import type { OtlpSpan } from './span.ts';
 
@@ -57,7 +91,23 @@ export interface ExporterOptions {
   readonly maxBatch?: number;
   /** Flush this many milliseconds after the first buffered span. */
   readonly flushAfterMs?: number;
+  /** T-204 bound 2: abort an export after this many milliseconds. Default 5000. */
+  readonly exportTimeoutMs?: number;
+  /** T-204 bound 3: the first cool-down after a failed export. Default 5000. Doubles per consecutive failure. */
+  readonly backoffMs?: number;
+  /** T-204 bound 3: the cool-down never exceeds this. Default 60000. */
+  readonly maxBackoffMs?: number;
+  /** T-204 bound 4: spans buffered beyond this are dropped and counted. Default 2048. */
+  readonly maxQueue?: number;
 }
+
+/** T-204's defaults, pinned by `otlp.test.ts`. */
+export const EXPORTER_BOUNDS = Object.freeze({
+  exportTimeoutMs: 5000,
+  backoffMs: 5000,
+  maxBackoffMs: 60000,
+  maxQueue: 2048,
+});
 
 export interface ExportResult {
   readonly ok: boolean;
@@ -101,7 +151,11 @@ export function tracePayload(spans: readonly OtlpSpan[], serviceName: string): u
 export interface Exporter {
   /** Buffer a span. Never throws, never returns a promise the caller must await. */
   record(span: OtlpSpan): void;
-  /** Send everything buffered. Resolves with the result of the one request it made. */
+  /**
+   * Wait for any export in flight, then send everything buffered, cool-down or
+   * not. Resolves with the result of the one request it made. Still never more
+   * than one request in flight (T-204 bound 1).
+   */
   flush(): Promise<ExportResult>;
   shutdown(): Promise<ExportResult>;
   pending(): number;
@@ -118,16 +172,35 @@ export function createExporter(options: ExporterOptions): Exporter {
   const onFailure = options.onFailure ?? defaultOnFailure;
   const maxBatch = options.maxBatch ?? 64;
   const flushAfterMs = options.flushAfterMs ?? 200;
+  const exportTimeoutMs = options.exportTimeoutMs ?? EXPORTER_BOUNDS.exportTimeoutMs;
+  const backoffMs = options.backoffMs ?? EXPORTER_BOUNDS.backoffMs;
+  const maxBackoffMs = options.maxBackoffMs ?? EXPORTER_BOUNDS.maxBackoffMs;
+  const maxQueue = options.maxQueue ?? EXPORTER_BOUNDS.maxQueue;
   const url = `${options.endpoint.replace(/\/+$/, '')}/v1/traces`;
 
   let buffer: OtlpSpan[] = [];
   let timer: NodeJS.Timeout | undefined;
+  /** Bound 1: the one export in flight, if any. */
+  let inFlight: Promise<ExportResult> | undefined;
+  /** Bound 3: no export starts before this (Date.now() milliseconds). */
+  let coolDownUntil = 0;
+  let consecutiveFailures = 0;
 
   const clear = (): void => {
     if (timer !== undefined) {
       clearTimeout(timer);
       timer = undefined;
     }
+  };
+
+  const failed = (spans: number, failure: ExportFailure, detail: string): ExportResult => {
+    exporterCounters.exportFailures += 1;
+    exporterCounters.dropped += spans;
+    consecutiveFailures += 1;
+    const wait = Math.min(maxBackoffMs, backoffMs * 2 ** Math.min(consecutiveFailures - 1, 30));
+    coolDownUntil = Date.now() + wait;
+    onFailure(failure, detail);
+    return { ok: false, spans, failure };
   };
 
   const send = async (spans: readonly OtlpSpan[]): Promise<ExportResult> => {
@@ -137,53 +210,82 @@ export function createExporter(options: ExporterOptions): Exporter {
     try {
       body = JSON.stringify(tracePayload(spans, options.serviceName));
     } catch {
-      exporterCounters.exportFailures += 1;
-      exporterCounters.dropped += spans.length;
-      onFailure(EXPORT_FAILURE.serialise, `${String(spans.length)} span(s)`);
-      return { ok: false, spans: spans.length, failure: EXPORT_FAILURE.serialise };
+      return failed(spans.length, EXPORT_FAILURE.serialise, `${String(spans.length)} span(s)`);
     }
+    const controller = new AbortController();
+    const deadline = setTimeout(() => {
+      controller.abort();
+    }, exportTimeoutMs);
+    deadline.unref?.();
     try {
       const response = await doFetch(url, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body,
+        signal: controller.signal,
       });
       if (!response.ok) {
-        exporterCounters.exportFailures += 1;
-        exporterCounters.dropped += spans.length;
-        onFailure(EXPORT_FAILURE.status, `http ${String(response.status)}`);
-        return { ok: false, spans: spans.length, failure: EXPORT_FAILURE.status };
+        return failed(spans.length, EXPORT_FAILURE.status, `http ${String(response.status)}`);
       }
       exporterCounters.exported += spans.length;
+      consecutiveFailures = 0;
+      coolDownUntil = 0;
       return { ok: true, spans: spans.length };
     } catch {
-      exporterCounters.exportFailures += 1;
-      exporterCounters.dropped += spans.length;
-      onFailure(EXPORT_FAILURE.network, `${String(spans.length)} span(s)`);
-      return { ok: false, spans: spans.length, failure: EXPORT_FAILURE.network };
+      return failed(spans.length, EXPORT_FAILURE.network, `${String(spans.length)} span(s)`);
+    } finally {
+      clearTimeout(deadline);
     }
   };
 
-  const flush = async (): Promise<ExportResult> => {
+  /** Start one export of the whole buffer. Only ever called with nothing in flight. */
+  const start = (): Promise<ExportResult> => {
     clear();
     const batch = buffer;
     buffer = [];
-    return send(batch);
+    const running = send(batch).finally(() => {
+      inFlight = undefined;
+      schedule();
+    });
+    inFlight = running;
+    return running;
+  };
+
+  /** Decide when the next export may start; never starts a second one in flight. */
+  function schedule(): void {
+    if (inFlight !== undefined || buffer.length === 0 || timer !== undefined) return;
+    const coolDown = coolDownUntil - Date.now();
+    const delay = coolDown > 0 ? coolDown : buffer.length >= maxBatch ? 0 : flushAfterMs;
+    if (delay === 0) {
+      void start();
+      return;
+    }
+    timer = setTimeout(() => {
+      timer = undefined;
+      if (inFlight !== undefined || buffer.length === 0) return;
+      if (coolDownUntil > Date.now()) {
+        schedule();
+        return;
+      }
+      void start();
+    }, delay);
+    timer.unref?.();
+  }
+
+  const flush = async (): Promise<ExportResult> => {
+    while (inFlight !== undefined) await inFlight.catch(() => undefined);
+    return start();
   };
 
   return {
     record(span: OtlpSpan): void {
-      buffer.push(span);
-      if (buffer.length >= maxBatch) {
-        void flush();
+      if (buffer.length >= maxQueue) {
+        exporterCounters.dropped += 1;
         return;
       }
-      if (timer === undefined) {
-        timer = setTimeout(() => {
-          void flush();
-        }, flushAfterMs);
-        timer.unref?.();
-      }
+      buffer.push(span);
+      if (buffer.length >= maxBatch && timer !== undefined && coolDownUntil <= Date.now()) clear();
+      schedule();
     },
     flush,
     shutdown: flush,

@@ -76,6 +76,7 @@ export {
   SCOPE_NAME,
   SCOPE_VERSION,
   createExporter,
+  EXPORTER_BOUNDS,
   exporterCounters,
   resetExporterCounters,
   tracePayload,
