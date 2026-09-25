@@ -3,12 +3,13 @@
 -- @phase: expand
 -- @compliance-review: assert_ts_senior_written_by_admin — T-192 (T-186 C4 (iv) hardening; OD-224 A4), two-approval path (PROTOCOL §3); replaced: the admin test also refuses a writer holding app_rw's privileges, and a TRUNCATE branch is added
 -- @compliance-review: trg_account_role_ts_senior_no_truncate — T-192 (OD-224 A4), two-approval path (PROTOCOL §3); created here
--- @compliance-review: assert_ts_senior_account_written_by_admin — T-192 (OE-48 as narrowed by OE-57), two-approval path (PROTOCOL §3); created here
+-- @compliance-review: assert_ts_senior_account_written_by_admin — T-192 (OE-48 as narrowed by OE-57 and OE-58), two-approval path (PROTOCOL §3); created here
 -- @compliance-review: trg_account_ts_senior_status_admin_only — T-192 (OE-48), two-approval path (PROTOCOL §3); created here
 --
 -- Ticket:  T-192 (tech-lead). The last two routes to a ts_senior countersignature by app_rw.
 -- Spec:    SA §SA-4 I-5; decisions.md OE-48 (from OD-222, widened by T-186 QA-A1), narrowed by
---          OE-57 (T-192 QA-A3: activation only); OE-45, OE-47; OD-224 (T-186 QA-A2/A3/A4);
+--          OE-57 (T-192 QA-A3) and OE-58 (OD-236): towards less eligibility only; OE-45, OE-47;
+--          OD-224 (T-186 QA-A2/A3/A4);
 --          T-186 § tech-lead verification C4 (iv) and TL-RUN H; T-192 QA-A1, QA-A2.
 -- Contracts: T-186 § Published contract (what 0008 creates; its §3 routes this file closes);
 --          T-140 § Published contract (account, account_role, their grants); T-020 § Published
