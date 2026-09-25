@@ -567,7 +567,8 @@ check C6D "ALTER GROUP answering_service ADD USER (membership without a GRANT)" 
 pair expand "ALTER TABLE public.out_of_hours_report OWNER TO answering_service;"
 check C6E "ownership of a table transferred to answering_service" R-ANSWERING-SERVICE
 pair expand "GRANT app_admin_rw, answering_service TO t021_login_principal;"
-check C6F "answering_service second in a granted role list" R-ANSWERING-SERVICE
+# Re-classed by T-192: the first role in the list is app_admin_rw, which R-ADMIN-MEMBERSHIP refuses too.
+check C6F "answering_service second in a granted role list" "R-ADMIN-MEMBERSHIP R-ANSWERING-SERVICE"
 pair expand "CREATE TABLE public.out_of_hours_report (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, body text);
 GRANT INSERT ON TABLE public.out_of_hours_report TO answering_service;"
 check C6G "CONTROL: the permitted grant spelled ON TABLE public.out_of_hours_report" PASS
