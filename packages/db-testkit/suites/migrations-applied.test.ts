@@ -40,7 +40,7 @@ import {
 import { assertPermitted, assertRefused, INT10_RAISE } from '../src/expect.ts';
 
 const SUITE = 'migrations-applied';
-const HIGHEST_COMMITTED = '0007';
+const HIGHEST_COMMITTED = '0008';
 const COMMITTED_DIR = path.join(REPO_ROOT, MIGRATIONS_DIR);
 const RECORD_SQL = `SELECT coalesce(shobj_description(oid, 'pg_database'), '(no comment)')
                       FROM pg_database WHERE datname = current_database()`;
@@ -209,6 +209,41 @@ const CREATED_BY: Readonly<
       {
         title: 'trigger trg_approval_four_eyes exists',
         sql: `SELECT count(*)::text FROM pg_trigger WHERE tgname = 'trg_approval_four_eyes'`,
+        holds: '1',
+      },
+    ],
+  },
+  '0008': {
+    source: 'T-186',
+    // Each probe names one object 0008 creates, or the replacement it makes, and each returns a
+    // value rather than raising once it is gone: to_regprocedure returns NULL for a missing name,
+    // the trigger read is a count, the privilege read names only roles 0001 creates, and the
+    // prosrc read is a count over the function 0007 creates and 0008 replaces (its down restores
+    // 0007's body, which has no status clause).
+    probes: [
+      {
+        title: 'function public.assert_ts_senior_written_by_admin() exists',
+        sql: `SELECT (to_regprocedure('public.assert_ts_senior_written_by_admin()') IS NOT NULL)::text`,
+        holds: 'true',
+      },
+      {
+        title: 'trigger trg_account_role_ts_senior_admin_only exists on account_role',
+        sql: `SELECT count(*)::text FROM pg_trigger
+               WHERE tgname = 'trg_account_role_ts_senior_admin_only'
+                 AND tgrelid = 'public.account_role'::regclass`,
+        holds: '1',
+      },
+      {
+        title: 'app_admin_rw holds INSERT and UPDATE on account_role',
+        sql: `SELECT has_table_privilege('app_admin_rw', 'public.account_role', 'INSERT')::text || ','
+                     || has_table_privilege('app_admin_rw', 'public.account_role', 'UPDATE')::text`,
+        holds: 'true,true',
+      },
+      {
+        title: "assert_second_actor_differs() reads account.status = 'active' (OE-45)",
+        sql: `SELECT count(*)::text FROM pg_proc
+               WHERE oid = 'public.assert_second_actor_differs()'::regprocedure
+                 AND prosrc LIKE '%a.status = ''active''%'`,
         holds: '1',
       },
     ],
