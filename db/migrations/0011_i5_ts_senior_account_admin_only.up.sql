@@ -23,14 +23,16 @@
 --    activation (T-186 OD-222; QA OD-a..OD-d). A BEFORE UPDATE row trigger on account,
 --    trg_account_ts_senior_status_admin_only, now admits, for an account that holds an UNREVOKED
 --    ts_senior row and a writer that is not an admin writer (3. below), exactly these moves:
---      status          active -> suspended, removed or erased; pending -> removed or erased;
---                      suspended -> removed or erased; removed -> erased (OE-57, OE-58);
+--      status          active -> suspended, removed or erased; pending -> suspended, removed
+--                      or erased; suspended -> removed or erased; removed -> erased (OE-57:
+--                      app_rw MAY suspend, remove or erase; OE-58: nothing out of suspended,
+--                      removed or erased but towards less eligibility);
 --      dob_verified_18 true -> false.
 --    Everything else is refused, KV055 I5_TS_SENIOR_ACCOUNT_WRITE_REFUSED: any other status change
 --    (into active from anything; into pending from anything; out of suspended other than to
 --    removed or erased, which is lifting a suspension and is app_admin_rw's decision, OE-58; out of
---    removed other than to erased; out of erased; pending -> suspended, which the stakeholder's list
---    does not name), dob_verified_18 false -> true, and any id change (OE-45's read joins on it).
+--    removed other than to erased; out of erased), dob_verified_18 false -> true, and any id
+--    change (OE-45's read joins on it).
 --    So an automated suspension by app_rw takes effect and cannot be undone by app_rw, and the
 --    suspended holder's next countersignature is refused KV054 (0008). The guard is row-scoped, as
 --    OE-48 rules: every other account, and every other column of a ts_senior holder, stays
@@ -130,7 +132,7 @@ DECLARE
   v_role    record;
 BEGIN
   -- OE-57 + OE-58: a writer that is not an admin writer may move a live ts_senior holder only
-  -- TOWARDS less eligibility. A status change is admitted only if it is one of the eight moves
+  -- TOWARDS less eligibility. A status change is admitted only if it is one of the nine moves
   -- below; every other status change (into active, into pending, and any move out of suspended
   -- other than to removed or erased, out of removed other than to erased, out of erased) is refused.
   -- dob_verified_18 true -> false is admitted, false -> true refused; any id change is refused.
@@ -140,7 +142,7 @@ BEGIN
   IF NEW.status IS DISTINCT FROM OLD.status
      AND NOT (OLD.status::text || '>' || NEW.status::text) = ANY (ARRAY[
            'active>suspended', 'active>removed', 'active>erased',
-           'pending>removed', 'pending>erased',
+           'pending>suspended', 'pending>removed', 'pending>erased',
            'suspended>removed', 'suspended>erased',
            'removed>erased']) THEN
     v_refused := v_refused || 'status'::text;
@@ -174,14 +176,14 @@ BEGIN
     RAISE EXCEPTION 'I5_TS_SENIOR_ACCOUNT_WRITE_REFUSED: UPDATE of % on %.% for an account holding a live ts_senior role, by role %',
                     array_to_string(v_refused, ', '), TG_TABLE_SCHEMA, TG_TABLE_NAME, current_user
       USING ERRCODE = 'KV055',
-            HINT = 'decisions.md OE-48, OE-57, OE-58: for an account holding a live ts_senior role, app_rw may only move status towards less eligibility (active to suspended, removed or erased; pending to removed or erased; suspended to removed or erased; removed to erased) and dob_verified_18 from true to false; every other change of status, dob_verified_18 or id is app_admin_rw''s.';
+            HINT = 'decisions.md OE-48, OE-57, OE-58: for an account holding a live ts_senior role, app_rw may only move status towards less eligibility (active to suspended, removed or erased; pending to suspended, removed or erased; suspended to removed or erased; removed to erased) and dob_verified_18 from true to false; every other change of status, dob_verified_18 or id is app_admin_rw''s.';
   END IF;
   RETURN NEW;
 END
 $fn$;
 
 COMMENT ON FUNCTION public.assert_ts_senior_account_written_by_admin() IS
-  'SA §SA-4 I-5, decisions.md OE-48, OE-57 and OE-58 (T-192). BEFORE UPDATE row trigger on account: for an account holding an unrevoked ts_senior role, a writer that does not hold the privileges of app_admin_rw, or that also holds those of app_rw, is refused (KV055) every change of status except active to suspended, removed or erased, pending to removed or erased, suspended to removed or erased, and removed to erased; a change of dob_verified_18 from false to true; and any change of id. dob_verified_18 true to false is admitted. The ts_senior rows are read FOR SHARE. Every other account and column is not read.';
+  'SA §SA-4 I-5, decisions.md OE-48, OE-57 and OE-58 (T-192). BEFORE UPDATE row trigger on account: for an account holding an unrevoked ts_senior role, a writer that does not hold the privileges of app_admin_rw, or that also holds those of app_rw, is refused (KV055) every change of status except active to suspended, removed or erased, pending to suspended, removed or erased, suspended to removed or erased, and removed to erased; a change of dob_verified_18 from false to true; and any change of id. dob_verified_18 true to false is admitted. The ts_senior rows are read FOR SHARE. Every other account and column is not read.';
 
 CREATE TRIGGER trg_account_ts_senior_status_admin_only
   BEFORE UPDATE ON public.account
