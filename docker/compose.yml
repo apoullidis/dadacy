@@ -423,9 +423,11 @@ services:
       # 5 s deadline, a cool-down after a failure and a bounded buffer, so an
       # absent or blackholed collector cannot starve `core`'s name lookups on
       # compose's resolver and switch off the HIBP check (OD-227;
-      # state/EP-1/T-204.md). A resolver that stalls a failing lookup ~30 s
-      # still can (measured by QA on T-204): OD-230, owned by T-205. Every `api`
-      # run without `otel` exercises that degraded path, which is the point.
+      # state/EP-1/T-204.md). Since T-205 the collector is also resolved off
+      # libuv's DNS lane (c-ares), so a resolver that stalls a failing
+      # collector lookup 30 s or 60 s no longer can either (measured on two
+      # rigs, state/EP-1/T-205.md; OD-230). Every `api` run without `otel`
+      # exercises that degraded path, which is the point.
       # `true` makes the exporter a no-op; it is optional, not a safety switch.
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
       OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME_CORE:-kinvara-core}
