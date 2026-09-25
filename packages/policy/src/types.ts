@@ -163,6 +163,12 @@ export type Resource =
   | 'feature_flag.compliance'
   | 'production_data';
 
+/**
+ * SD §DB-2's `account_status` enum, verbatim (migration `0005`). Only
+ * `'active'` satisfies four-eyes (`decisions.md` OE-45, `T-186`).
+ */
+export type AccountStatus = 'pending' | 'active' | 'suspended' | 'removed' | 'erased';
+
 /** SD §BE-17 / SA §INT-1r.4's D14 branch. */
 export type Art10Model = 'platform_sights' | 'sitter_held';
 
@@ -283,14 +289,24 @@ export interface ResourceRef {
    *
    * This is the DETECTIVE half. It checks what the caller says the
    * countersigner holds, and a caller can say anything. The database trigger
-   * `trg_approval_four_eyes` on `approval` (migration `0007`) reads
-   * `account_role` as the countersigning transaction sees it and refuses a
-   * countersignature without an unrevoked `ts_senior` (KV052). That holds
-   * only against a principal that cannot WRITE `ts_senior` rows: `app_rw`
-   * can, and can meet the check for any account (`T-030` QA-F1, B2/B3/B4),
-   * until `T-186` closes that route (`decisions.md` OE-47). PROTOCOL §9.1.
+   * `trg_approval_four_eyes` on `approval` (migrations `0007`, `0008`) reads
+   * `account_role` joined to `account` as the countersigning transaction sees
+   * them and refuses a countersignature without an unrevoked `ts_senior`
+   * (KV052) or on an account that is not active (KV054). Since `0008`
+   * (`T-186`, `decisions.md` OE-47) `app_rw` cannot write a `ts_senior` row
+   * (KV053), so QA-F1's B2/B3/B4 are refused at the database; `app_rw` can
+   * still write `account.status` (`decisions.md` OD-222). PROTOCOL §9.1.
    */
   readonly countersignerRoles?: readonly Role[] | undefined;
+  /**
+   * SA §SA-4 I-5 as `decisions.md` OE-45 ruled it (`T-186`): the COUNTERSIGNER's
+   * `account.status`, as the caller read it. `four_eyes` requires it to be
+   * exactly the string `'active'`; absence, any other status, and any other
+   * spelling or shape (`'ACTIVE'`, `' active'`, a boxed `String`, an array)
+   * deny with `four_eyes_required`. Detective, like `countersignerRoles`: the
+   * database trigger is what refuses (KV054).
+   */
+  readonly countersignerStatus?: AccountStatus | undefined;
   /**
    * A block between the two parties suppresses every decision on the pair.
    *

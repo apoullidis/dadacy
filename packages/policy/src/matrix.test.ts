@@ -70,7 +70,9 @@ const SPEC_GRID: readonly (readonly [Cell, string])[] = [
   ['review#remove', '- - - - allow! allow! allow! - - -'],
   ['verification_decision#record', '- - - - allow! allow! allow! - - -'],
   ['non_clear_outcome#review', '- - - - - 4eyes! allow! - - -'],
-  ['four_eyes#countersign', '- - - - - allow! allow! - - -'],
+  // SD line 1270 prints `allow!` for dsl here. The stakeholder ruling decisions.md OE-46
+  // (T-186) supersedes that one cell, so the transcription follows the ruling, not SD.
+  ['four_eyes#countersign', '- - - - - allow! - - - -'],
   ['account_suspension#apply', '- - - - allow! allow! allow! - - -'],
   ['pairing_block#apply', '- - - - allow! allow! allow! - - -'],
   ['safeguarding_referral#make', '- - - - - - 4eyes! - - -'],

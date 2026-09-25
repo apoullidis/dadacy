@@ -16,6 +16,7 @@ export { ROLES, isRole } from './types.ts';
  */
 export { knownId } from './identity.ts';
 export type {
+  AccountStatus,
   Action,
   Actor,
   AllowBasis,

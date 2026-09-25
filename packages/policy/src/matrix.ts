@@ -188,7 +188,9 @@ export const MATRIX: ReadonlyMap<Cell, Row> = new Map<Cell, Row>([
   ['review#remove', row(D, D, D, D, AS, AS, AS, D, D, D)],
   ['verification_decision#record', row(D, D, D, D, AS, AS, AS, D, D, D)],
   ['non_clear_outcome#review', row(D, D, D, D, D, F4, AS, D, D, D)],
-  ['four_eyes#countersign', row(D, D, D, D, D, AS, AS, D, D, D)],
+  // decisions.md OE-46 (T-186) supersedes SD §BE-10 line 1270's `dsl` allow for this
+  // one row: under OE-21 countersigning IS approving, and only ts_senior may.
+  ['four_eyes#countersign', row(D, D, D, D, D, AS, D, D, D, D)],
   ['account_suspension#apply', row(D, D, D, D, AS, AS, AS, D, D, D)],
   ['pairing_block#apply', row(D, D, D, D, AS, AS, AS, D, D, D)],
   ['safeguarding_referral#make', row(D, D, D, D, D, D, F4, D, D, D)],

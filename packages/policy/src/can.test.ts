@@ -113,6 +113,7 @@ function satisfying(grant: Grant, role: Role, type: Resource): Probe {
     locale?: string;
     countersignedBy?: typeof OTHER;
     countersignerRoles?: Role[];
+    countersignerStatus?: 'active';
   } = { type };
   if (grant.stepUp === true) actor.stepUpUntil = FRESH_STEP_UP;
   if (grant.kind === 'own') resource.ownerAccountId = SELF;
@@ -139,6 +140,8 @@ function satisfying(grant: Grant, role: Role, type: Resource): Probe {
     // T-030 (OE-21): a second, different account that holds ts_senior.
     resource.countersignedBy = OTHER;
     resource.countersignerRoles = ['ts_senior'];
+    // T-186 (OE-45): on an ACTIVE account.
+    resource.countersignerStatus = 'active';
   }
   if (grant.kind === 'art10') resource.art10Model = 'platform_sights';
   if (grant.kind === 'locale') {
@@ -731,6 +734,7 @@ test('T-134: a countersigner that is not a well-formed id cannot satisfy four-ey
         type: 'account',
         countersignedBy: by,
         countersignerRoles: ['ts_senior'],
+        countersignerStatus: 'active',
       } as unknown as ResourceRef,
       CTX,
     );
@@ -981,7 +985,12 @@ test('SA §SA-4 I-5: the countersigner must be a different actor from the one ac
     can(
       actor,
       'remove_permanently',
-      { type: 'account', countersignedBy: OTHER, countersignerRoles: ['ts_senior'] },
+      {
+        type: 'account',
+        countersignedBy: OTHER,
+        countersignerRoles: ['ts_senior'],
+        countersignerStatus: 'active',
+      },
       CTX,
     ),
     'role_grant',
@@ -991,7 +1000,12 @@ test('SA §SA-4 I-5: the countersigner must be a different actor from the one ac
     can(
       actor,
       'remove_permanently',
-      { type: 'account', countersignedBy: SELF, countersignerRoles: ['ts_senior'] },
+      {
+        type: 'account',
+        countersignedBy: SELF,
+        countersignerRoles: ['ts_senior'],
+        countersignerStatus: 'active',
+      },
       CTX,
     ),
     'four_eyes_required',
@@ -1401,7 +1415,12 @@ for (const [type, action, role] of f4Cells()) {
       can(
         actor,
         action,
-        { type, countersignedBy: OTHER, countersignerRoles: roles } as unknown as ResourceRef,
+        {
+          type,
+          countersignedBy: OTHER,
+          countersignerRoles: roles,
+          countersignerStatus: 'active',
+        } as unknown as ResourceRef,
         CTX,
       );
     expectDeny(
@@ -1439,6 +1458,7 @@ test('T-030: a countersigner role list that is absent or junk cannot satisfy fou
         type: 'account',
         countersignedBy: OTHER,
         countersignerRoles: roles,
+        countersignerStatus: 'active',
       } as unknown as ResourceRef,
       CTX,
     );
@@ -1466,7 +1486,12 @@ test('T-030: a countersigner role list that is absent or junk cannot satisfy fou
     can(
       actor,
       'remove_permanently',
-      { type: 'account', countersignedBy: SELF, countersignerRoles: ['ts_senior'] },
+      {
+        type: 'account',
+        countersignedBy: SELF,
+        countersignerRoles: ['ts_senior'],
+        countersignerStatus: 'active',
+      },
       CTX,
     ),
     'four_eyes_required',
@@ -1474,6 +1499,101 @@ test('T-030: a countersigner role list that is absent or junk cannot satisfy fou
   );
   // The control, so the denials above are not a blanket denial.
   expectAllow(by(['ts_senior']), 'role_grant', 'a real ts_senior second actor');
+});
+
+/*
+ * T-186 — decisions.md OE-45: only an ACTIVE account's ts_senior satisfies
+ * I-5, at the database (migration 0008, KV054) and here, the detective layer.
+ * `countersignerStatus` is the countersigner's `account.status` as the caller
+ * read it; anything but exactly `'active'` denies.
+ */
+test('T-186 (OE-45): on every F4 cell, a ts_senior countersigner whose account is suspended, removed, erased or pending is refused, and an active one is allowed', () => {
+  const statuses: readonly unknown[] = ['suspended', 'removed', 'erased', 'pending'];
+  let cells = 0;
+  for (const [type, action, role] of f4Cells()) {
+    cells += 1;
+    const actor: Actor = { accountId: SELF, roles: [role], stepUpUntil: FRESH_STEP_UP };
+    const by = (status: unknown): Decision =>
+      can(
+        actor,
+        action,
+        {
+          type,
+          countersignedBy: OTHER,
+          countersignerRoles: ['ts_senior'],
+          countersignerStatus: status,
+        } as unknown as ResourceRef,
+        CTX,
+      );
+    for (const status of statuses) {
+      expectDeny(by(status), 'four_eyes_required', `${type}#${action}/${role}: ${String(status)}`);
+    }
+    expectAllow(by('active'), 'role_grant', `${type}#${action}/${role}: active`);
+  }
+  assert.equal(cells, 9, 'all nine F4 cells were exercised');
+});
+
+test('T-186 (OE-45): a countersigner status that is absent or junk cannot satisfy four-eyes', () => {
+  const actor: Actor = { accountId: SELF, roles: ['ts_senior'], stepUpUntil: FRESH_STEP_UP };
+  const by = (status: unknown): Decision =>
+    can(
+      actor,
+      'remove_permanently',
+      {
+        type: 'account',
+        countersignedBy: OTHER,
+        countersignerRoles: ['ts_senior'],
+        countersignerStatus: status,
+      } as unknown as ResourceRef,
+      CTX,
+    );
+  const junk: readonly unknown[] = [
+    undefined,
+    null,
+    '',
+    'ACTIVE',
+    ' active',
+    'active ',
+    'аctive', // Cyrillic a
+    new String('active'),
+    ['active'],
+    { status: 'active' },
+    true,
+    1,
+  ];
+  for (const status of junk) {
+    expectDeny(
+      by(status),
+      'four_eyes_required',
+      `countersignerStatus ${String(JSON.stringify(status))}`,
+    );
+  }
+  expectAllow(by('active'), 'role_grant', 'the control: exactly active');
+});
+
+test('T-186 (OE-46): four_eyes#countersign — a dsl without ts_senior is refused, a ts_senior is allowed with step-up', () => {
+  const countersign = (roles: Role[]): Decision =>
+    can(
+      { accountId: SELF, roles, stepUpUntil: FRESH_STEP_UP },
+      'countersign',
+      { type: 'four_eyes' },
+      CTX,
+    );
+  expectDeny(countersign(['dsl']), 'role_missing', 'dsl alone');
+  expectAllow(countersign(['ts_senior']), 'role_grant', 'ts_senior');
+  expectAllow(countersign(['dsl', 'ts_senior']), 'role_grant', 'dsl + ts_senior');
+  expectDeny(
+    can({ accountId: SELF, roles: ['ts_senior'] }, 'countersign', { type: 'four_eyes' }, CTX),
+    'step_up_required',
+    'ts_senior without a fresh step-up',
+  );
+  const row = MATRIX.get('four_eyes#countersign');
+  assert.ok(row !== undefined, 'the row exists');
+  assert.deepEqual(
+    ROLES.filter((r) => row[r].kind !== 'deny'),
+    ['ts_senior'],
+    'ts_senior is the only role the row grants',
+  );
 });
 
 /*
@@ -1497,6 +1617,7 @@ test('T-030 LIMITATION (QA-A1): a hostile array-shaped object holding no ts_seni
         type: 'account',
         countersignedBy: OTHER,
         countersignerRoles: roles,
+        countersignerStatus: 'active',
       } as unknown as ResourceRef,
       CTX,
     );

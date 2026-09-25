@@ -11,6 +11,7 @@
  * scope testable at all.
  */
 import type {
+  AccountStatus,
   Action,
   Actor,
   AllowBasis,
@@ -119,6 +120,9 @@ function breakGlassActive(actor: Actor, ctx: PolicyContext): boolean {
  */
 const COUNTERSIGNING_ROLE: Role = 'ts_senior';
 
+/** `decisions.md` OE-45 (`T-186`): only an ACTIVE account's countersignature counts. */
+const COUNTERSIGNER_STATUS: AccountStatus = 'active';
+
 /**
  * SA §SA-4 I-5: the second actor must differ from the first — clause (a) —
  * AND hold `ts_senior` — clause (b), `T-030`, OE-21.
@@ -140,13 +144,19 @@ const COUNTERSIGNING_ROLE: Role = 'ts_senior';
  * `['TS_SENIOR']`, an array-like object, `null` and absence all deny. A
  * hostile object can pass (an own or subclass `includes()`, a `Proxy`, a
  * polluted `Array.prototype`: `T-030` QA-A1), which is one more reason this
- * layer is DETECTIVE. The database trigger on `approval` (migration `0007`)
- * reads `account_role` as the countersigning transaction sees it; it holds
- * only against a principal that cannot write `ts_senior` rows, and `app_rw`
- * can until `T-186` (`decisions.md` OE-47; `T-030` QA-F1).
+ * layer is DETECTIVE. The database trigger on `approval` (migrations `0007`,
+ * `0008`) reads `account_role` joined to `account` as the countersigning
+ * transaction sees them; since `0008` `app_rw` cannot write a `ts_senior` row
+ * (`decisions.md` OE-47, `T-186`).
+ *
+ * `T-186` (OE-45): the countersigner's account must also be ACTIVE. The
+ * status is caller-supplied, so it is compared to the literal `'active'` with
+ * `===`: a boxed `String`, another case, padding, an array and absence all
+ * deny.
  */
 function countersigned(actor: Actor, resource: ResourceRef): boolean {
   if (!differentId(resource.countersignedBy, actor.accountId)) return false;
+  if (resource.countersignerStatus !== COUNTERSIGNER_STATUS) return false;
   const roles: unknown = resource.countersignerRoles;
   if (!Array.isArray(roles)) return false;
   return (roles as readonly unknown[]).includes(COUNTERSIGNING_ROLE);
