@@ -48,7 +48,7 @@ export interface NewSession {
   readonly accountId: AccountId;
   readonly tokenHash: Buffer;
   readonly absoluteExpiresAt: Date;
-  readonly authMethod: 'password' | 'magic_link';
+  readonly authMethod: 'password' | 'registration';
 }
 
 /** `status`, `locale`, `jurisdiction` and the other columns take SD §DB-2's defaults. */

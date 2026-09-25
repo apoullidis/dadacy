@@ -29,7 +29,8 @@
  * QR-A3). Its shape is `LoginRequest`'s, the same rule register applies, checked by the controller.
  *
  * NEVER EMAIL PROOF. Nothing here reads `app_session.auth_method` or writes `email_verified_at`. A
- * registration session carrying `magic_link` proves nothing about the address (OD-127, OE-28).
+ * passwordless registration's session carries `registration` and proves nothing about the address
+ * (OE-28 (B), OD-127).
  *
  * THE SESSION on success mirrors register's (T-141 LIVE §3–§4): a new 256-bit cookie value, only its
  * SHA-256 in `app_session`, `auth_method = 'password'`. Its absolute TTL is SD line 1235's: 30 days,

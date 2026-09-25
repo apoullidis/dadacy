@@ -62,13 +62,13 @@ export interface Registered {
 }
 
 /**
- * The `app_session.auth_method` of a passwordless registration's session. A READING, because the
- * spec is silent. SD §DB-2 line 1813 allows only `password`, `magic_link`, `passkey`, `otp` and
- * `sso`, and SD §BE-4 gives the session no method. `magic_link` is the passwordless path SA §CC-1
- * names, and the most restricted value: SA §SEC-5 says a magic link never grants admin. `password`
- * would claim a factor that was never presented. `decisions.md` OD-127 asks for a ruling.
+ * The `app_session.auth_method` of a passwordless registration's session: `registration`, as the
+ * stakeholder ruled (decisions.md OE-28 (B), 2026-09-25; OD-127). Migration `0009` (T-193) added the
+ * value to `app_session_auth_method_check`, beside SD §DB-2 line 1813's five. No factor is presented
+ * at a passwordless registration, so none of those five describes the session. It proves nothing
+ * about the address: `email_verified_at` stays NULL.
  */
-export const PASSWORDLESS_SESSION_AUTH_METHOD = 'magic_link';
+export const PASSWORDLESS_SESSION_AUTH_METHOD = 'registration';
 
 export const REGISTER_LOG = Object.freeze({
   hibpUnavailable:
