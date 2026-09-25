@@ -297,8 +297,8 @@ export interface ResourceRef {
    * (KV053), so QA-F1's B2/B3/B4 are refused at the database; since `0011`
    * (`T-192`, `decisions.md` OE-48 as narrowed by OE-57 and OE-58) it may
    * only move an account holding a live `ts_senior` towards less
-   * eligibility (active to suspended, removed or erased; pending to removed
-   * or erased; suspended to removed or erased; removed to erased;
+   * eligibility (active to suspended, removed or erased; pending to
+   * suspended, removed or erased; suspended to removed or erased; removed to erased;
    * `dob_verified_18` to false). Every other change of `status`,
    * `dob_verified_18` or `id`, activation and lifting a suspension
    * included, is refused (KV055; OD-222 closed for a writer acting as

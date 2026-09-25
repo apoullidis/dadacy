@@ -325,10 +325,11 @@ const CREATED_BY: Readonly<
       },
       {
         title:
-          'assert_ts_senior_account_written_by_admin() admits only the eight status moves towards less eligibility and locks its ts_senior read FOR SHARE (OE-57, OE-58; T-192 QA-A2)',
+          'assert_ts_senior_account_written_by_admin() admits only the nine status moves towards less eligibility and locks its ts_senior read FOR SHARE (OE-57, OE-58; T-192 QA-A2)',
         sql: `SELECT count(*)::text FROM pg_proc
                WHERE oid = to_regprocedure('public.assert_ts_senior_account_written_by_admin()')
                  AND prosrc LIKE '%''suspended>removed'', ''suspended>erased''%'
+                 AND prosrc LIKE '%''pending>suspended'', ''pending>removed'', ''pending>erased''%'
                  AND prosrc NOT LIKE '%''suspended>pending''%'
                  AND prosrc LIKE '%FOR SHARE%'`,
         holds: '1',
