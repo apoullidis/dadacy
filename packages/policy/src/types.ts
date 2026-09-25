@@ -295,11 +295,14 @@ export interface ResourceRef {
    * (KV052) or on an account that is not active (KV054). Since `0008`
    * (`T-186`, `decisions.md` OE-47) `app_rw` cannot write a `ts_senior` row
    * (KV053), so QA-F1's B2/B3/B4 are refused at the database; since `0011`
-   * (`T-192`, `decisions.md` OE-48 as narrowed by OE-57) it cannot make an
-   * account holding a live `ts_senior` more eligible either: a `status`
-   * change into `active`, `dob_verified_18` to true, or a changed `id` is
-   * refused (KV055; OD-222 closed for a writer acting as itself). It may
-   * still suspend, remove or erase such an account (OE-57). PROTOCOL §9.1.
+   * (`T-192`, `decisions.md` OE-48 as narrowed by OE-57 and OE-58) it may
+   * only move an account holding a live `ts_senior` towards less
+   * eligibility (active to suspended, removed or erased; pending to removed
+   * or erased; suspended to removed or erased; removed to erased;
+   * `dob_verified_18` to false). Every other change of `status`,
+   * `dob_verified_18` or `id`, activation and lifting a suspension
+   * included, is refused (KV055; OD-222 closed for a writer acting as
+   * itself). PROTOCOL §9.1.
    */
   readonly countersignerRoles?: readonly Role[] | undefined;
   /**

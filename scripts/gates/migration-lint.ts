@@ -73,9 +73,9 @@
  *                        granted to anyone (`GRANT app_admin_rw TO …`), `CREATE ROLE|USER|GROUP`
  *                        naming it (`IN ROLE app_admin_rw`, `ADMIN app_admin_rw`), or `ALTER
  *                        ROLE|USER|GROUP app_admin_rw` (`ADD USER` included). OE-47 and OE-48 (as
- *                        narrowed by OE-57) admit only app_admin_rw's privileges to write a ts_senior
- *                        row or to make a ts_senior holder's account more eligible (status into
- *                        active, dob_verified_18 to true, id), so `GRANT app_admin_rw TO app_rw`
+ *                        narrowed by OE-57 and OE-58) admit only app_admin_rw's privileges to write a
+ *                        ts_senior row or to change a ts_senior holder's account other than towards
+ *                        less eligibility (activation and lifting a suspension included), so `GRANT app_admin_rw TO app_rw`
  *                        would admit every app_rw login (T-186 QA X10, X11, P10); since 0011 the
  *                        database refuses such a writer acting as itself (it also holds app_rw's
  *                        privileges), but not after `SET ROLE app_admin_rw` (T-192 QA-A1, P10f),
@@ -270,7 +270,7 @@ const PROTECTED: readonly Protected[] = [
   },
   {
     id: 'trg_account_ts_senior_status_admin_only',
-    why: 'SA §SA-4 I-5 / decisions.md OE-48 as narrowed by OE-57: only app_admin_rw may make a ts_senior holder more eligible to countersign (status into active, dob_verified_18 to true, id) (T-192)',
+    why: "SA §SA-4 I-5 / decisions.md OE-48, OE-57, OE-58: app_rw may only move a ts_senior holder towards less eligibility; activation, lifting a suspension, dob_verified_18 to true and id are app_admin_rw's (T-192)",
     trigger: true,
   },
   {
@@ -1469,7 +1469,7 @@ for (const m of migrations) {
       problem(
         'R-ADMIN-MEMBERSHIP',
         m.rel,
-        `confers membership in app_admin_rw without a GRANT (CREATE ROLE … IN ROLE, ALTER GROUP … ADD USER), or alters app_admin_rw; only app_admin_rw's privileges may write a ts_senior row or activate a ts_senior holder's account (OE-47, OE-48/OE-57): ${snippet(f)}`,
+        `confers membership in app_admin_rw without a GRANT (CREATE ROLE … IN ROLE, ALTER GROUP … ADD USER), or alters app_admin_rw; only app_admin_rw's privileges may write a ts_senior row, or activate a ts_senior holder's account or lift its suspension (OE-47, OE-48/OE-57/OE-58): ${snippet(f)}`,
       );
     }
   }
@@ -1592,7 +1592,7 @@ for (const m of migrations) {
         problem(
           'R-ADMIN-MEMBERSHIP',
           m.rel,
-          `grants the role app_admin_rw, which makes each grantee a holder of its privileges; only app_admin_rw may write a ts_senior row or activate a ts_senior holder's account (OE-47, OE-48/OE-57), and GRANT app_admin_rw TO app_rw would admit every app_rw login (T-186 QA P10): ${snippet(g.clause)}`,
+          `grants the role app_admin_rw, which makes each grantee a holder of its privileges; only app_admin_rw may write a ts_senior row, or activate a ts_senior holder's account or lift its suspension (OE-47, OE-48/OE-57/OE-58), and GRANT app_admin_rw TO app_rw would admit every app_rw login (T-186 QA P10): ${snippet(g.clause)}`,
         );
       }
 
