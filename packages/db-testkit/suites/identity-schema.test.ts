@@ -351,7 +351,9 @@ describe('0005 — grants: app_rw reads, inserts and updates; nothing else is gr
     }
   });
 
-  test('each table ACL is exactly app_ddl as owner and app_rw SELECT, INSERT, UPDATE', async () => {
+  // T-186 (decisions.md OE-47): since migration 0008, app_admin_rw also holds SELECT, INSERT,
+  // UPDATE on account_role, so that it can write the ts_senior rows app_rw may no longer write.
+  test('each table ACL is exactly app_ddl as owner and app_rw SELECT, INSERT, UPDATE; account_role also app_admin_rw SELECT, INSERT, UPDATE since 0008', async () => {
     assert.equal(
       await db.value(
         `SELECT string_agg(relname || '=' || relacl::text, ' ' ORDER BY relname) FROM pg_class
@@ -360,7 +362,7 @@ describe('0005 — grants: app_rw reads, inserts and updates; nothing else is gr
       ),
       [
         'account={app_ddl=arwdDxtm/app_ddl,app_rw=arw/app_ddl}',
-        'account_role={app_ddl=arwdDxtm/app_ddl,app_rw=arw/app_ddl}',
+        'account_role={app_ddl=arwdDxtm/app_ddl,app_rw=arw/app_ddl,app_admin_rw=arw/app_ddl}',
         'app_session={app_ddl=arwdDxtm/app_ddl,app_rw=arw/app_ddl}',
       ].join(' '),
     );
@@ -415,9 +417,24 @@ describe('0005 — grants: app_rw reads, inserts and updates; nothing else is gr
               `SELECT 1 FROM public.${table}`,
             ],
             ['app_safety_rw SELECT', LOGINS.app_safety_rw, table, `SELECT 1 FROM public.${table}`],
-            ['app_admin_rw SELECT', LOGINS.app_admin_rw, table, `SELECT 1 FROM public.${table}`],
+            ...(table === 'account_role'
+              ? []
+              : ([
+                  [
+                    'app_admin_rw SELECT',
+                    LOGINS.app_admin_rw,
+                    table,
+                    `SELECT 1 FROM public.${table}`,
+                  ],
+                ] as const)),
           ] as const,
       ),
+      [
+        'app_admin_rw DELETE (T-186: 0008 grants it SELECT, INSERT, UPDATE only)',
+        LOGINS.app_admin_rw,
+        'account_role',
+        `DELETE FROM public.account_role WHERE account_id = '${ACCOUNT_A}'`,
+      ],
     ];
   for (const [what, login, table, sql] of REFUSED) {
     test(`${what} on ${table} is REFUSED (42501)`, async () => {
@@ -426,6 +443,18 @@ describe('0005 — grants: app_rw reads, inserts and updates; nothing else is gr
       });
     });
   }
+
+  test('T-186: app_admin_rw SELECT on account_role is PERMITTED since 0008 (OE-47), and a CONTROL login in app_safety_rw is still refused', async () => {
+    assertPermitted(
+      'app_admin_rw SELECT account_role',
+      await asLogin(LOGINS.app_admin_rw, 'SELECT count(*) FROM public.account_role'),
+    );
+    assertRefused(
+      'app_safety_rw SELECT account_role',
+      await asLogin(LOGINS.app_safety_rw, 'SELECT 1 FROM public.account_role'),
+      { message: 'ERROR:  42501: permission denied for table account_role' },
+    );
+  });
 
   test('after the refusals: still one account and one session', async () => {
     assert.equal(
