@@ -416,11 +416,15 @@ services:
       # because T-141's register route runs in this container and may not
       # edit this file (T-017 § contract 8).
       HIBP_API_BASE: ${HIBP_API_BASE:-http://hibp-fake:4100}
-      # T-008. The collector is on profile `otel`. `OTEL_SDK_DISABLED` is the
-      # switch an app without the `otel` profile uses: unset, `core` exports to
-      # a collector that is not there, every export fails and the failures are
-      # counted and printed (packages/observability/src/otlp.ts), which is
-      # noisy but honest. Set it to `true` when running `api` without `otel`.
+      # T-008. The collector is on profile `otel`. Left EMPTY (exporter on) by
+      # default on purpose: without `otel`, every export fails and is counted
+      # and printed (packages/observability/src/otlp.ts), and since T-204 that
+      # costs dropped spans only. The exporter keeps one export in flight, a
+      # 5 s deadline, a cool-down after a failure and a bounded buffer, so an
+      # absent or blackholed collector cannot starve `core`'s name lookups and
+      # switch off the HIBP check (OD-227; state/EP-1/T-204.md). Every `api`
+      # run without `otel` exercises that degraded path, which is the point.
+      # `true` makes the exporter a no-op; it is optional, not a safety switch.
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
       OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME_CORE:-kinvara-core}
       OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-}
