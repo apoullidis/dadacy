@@ -108,9 +108,9 @@ const SUITES: readonly Suite[] = [
   {
     id: 'migration-lint',
     file: 'scripts/negative-tests/migration-lint.sh',
-    cases: 227,
+    cases: 242,
     state: 'GREEN',
-    why: 'gate:migration-lint: expand/contract, protected objects, R-ROLE-SWITCH, R-RUN-AS, R-MERGED, R-TRAILER, R-VENDOR-SQL (T-021, T-031, T-167)',
+    why: 'gate:migration-lint: expand/contract, protected objects (the I-5 objects since T-186), R-TRIGGER-BYPASS by name, R-ROLE-SWITCH, R-RUN-AS, R-MERGED, R-TRAILER, R-VENDOR-SQL (T-021, T-031, T-167, T-186)',
   },
   {
     id: 'semgrep',
