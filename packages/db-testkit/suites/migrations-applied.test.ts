@@ -40,7 +40,7 @@ import {
 import { assertPermitted, assertRefused, INT10_RAISE } from '../src/expect.ts';
 
 const SUITE = 'migrations-applied';
-const HIGHEST_COMMITTED = '0008';
+const HIGHEST_COMMITTED = '0009';
 const COMMITTED_DIR = path.join(REPO_ROOT, MIGRATIONS_DIR);
 const RECORD_SQL = `SELECT coalesce(shobj_description(oid, 'pg_database'), '(no comment)')
                       FROM pg_database WHERE datname = current_database()`;
@@ -244,6 +244,23 @@ const CREATED_BY: Readonly<
         sql: `SELECT count(*)::text FROM pg_proc
                WHERE oid = 'public.assert_second_actor_differs()'::regprocedure
                  AND prosrc LIKE '%a.status = ''active''%'`,
+        holds: '1',
+      },
+    ],
+  },
+  '0009': {
+    source: 'T-193',
+    // 0009 creates no object: it replaces app_session_auth_method_check under the same name
+    // (OE-28 (B)). The probe names that constraint and reads whether its definition admits
+    // 'registration', which is what 0009 changes; after the down to 0008 the same constraint
+    // exists without it. to_regclass keeps the reading from raising if app_session is absent.
+    probes: [
+      {
+        title: "app_session_auth_method_check admits 'registration' (OE-28 (B))",
+        sql: `SELECT count(*)::text FROM pg_constraint
+               WHERE conname = 'app_session_auth_method_check'
+                 AND conrelid = to_regclass('public.app_session')
+                 AND pg_get_constraintdef(oid) LIKE '%''registration''::text%'`,
         holds: '1',
       },
     ],

@@ -265,10 +265,23 @@ describe('0005 — constraint refusals (as the superuser, so no privilege is wha
     );
   });
 
-  test('CONTROL — each of the five auth_method values SD names is accepted', async () => {
-    const methods = ['password', 'magic_link', 'passkey', 'otp', 'sso'];
+  // T-193 (0009, OE-28 (B)): the set is byte-exact, so a spelling of the new value that differs
+  // only in case or by a trailing space is an unknown value and is refused like 'sms'.
+  for (const variant of ['Registration', 'registration ']) {
+    test(`auth_method '${variant}' (a spelling of 0009's value) is REFUSED by app_session_auth_method_check (23514)`, async () => {
+      assertRefusedBy(
+        `auth_method '${variant}'`,
+        await asSuperuser(insertSession(SESSION_2, ACCOUNT_A, TOKEN_2, variant)),
+        'ERROR:  23514: new row for relation "app_session" violates check constraint "app_session_auth_method_check"',
+        'app_session_auth_method_check',
+      );
+    });
+  }
+
+  test("CONTROL — each of the five auth_method values SD names, and 0009's 'registration' (OE-28 (B)), is accepted", async () => {
+    const methods = ['password', 'magic_link', 'passkey', 'otp', 'sso', 'registration'];
     assertPermitted(
-      'five auth methods',
+      'six auth methods',
       await asSuperuser(
         'BEGIN',
         ...methods.map((m, i) =>
