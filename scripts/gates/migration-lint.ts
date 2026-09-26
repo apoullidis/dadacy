@@ -186,7 +186,10 @@
  * left as written; PostgreSQL refuses it at apply time.
  *
  * WHAT THIS GATE DOES NOT SEE. SQL assembled at run time from pieces (`format('GRANT %s ON
- * %I', …)`, concatenation) is not read as the statement it becomes. It is a static check
+ * %I', …)`, concatenation) is not read as the statement it becomes. (T-227) R-PROTECTED-TABLE names three
+ * tables and no others: `booking`, whose triggers SD §DB-13 rule 7 protects, does not exist yet and is
+ * not on its list; `SELECT … INTO <name>` is not read as a CREATE (T-021 § contract §5); a `U&'…'`
+ * STRING constant is still not decoded, only a `U&"…"` identifier. It is a static check
  * over source text and it proves nothing about a database. The database-side refusals are
  * `0001`'s guard and the constraint suites.
  */
