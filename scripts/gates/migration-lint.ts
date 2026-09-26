@@ -81,6 +81,23 @@
  *                        privileges), but not after `SET ROLE app_admin_rw` (T-192 QA-A1, P10f),
  *                        and this rule refuses the migration that would try. Login principals are created outside migrations
  *                        (T-020 § contract §3). Privileges granted TO app_admin_rw are not read here.
+ *   [R-PROTECTED-TABLE]  (T-227, OD-237 TL-2) the three tables I-5's protected functions read by name —
+ *                        `account`, `account_role`, `approval` — are never renamed away (`ALTER TABLE|VIEW|
+ *                        MATERIALIZED VIEW|FOREIGN TABLE <name> RENAME TO`), moved (`… SET SCHEMA`), or
+ *                        replaced: no other relation is renamed TO one of those names (`RENAME TO <name>`),
+ *                        and no migration but the one that created it (`0005`, `0007`) creates a table,
+ *                        view, materialized view or foreign table of that name in `public` (unqualified
+ *                        included). Renamed away, the protected triggers stay on the old table while
+ *                        `assert_second_actor_differs()` reads a replacement under the old name (T-192
+ *                        tech-lead RT2: an app_rw countersignature by a no-role account was stored). No
+ *                        marker permits it. A RENAME of a column, constraint or trigger ON those tables is
+ *                        not this rule's.
+ *   [R-PROTECTED-EXTENSION] (T-227, OD-235) no protected object is made removable by DROP EXTENSION:
+ *                        `DEPENDS ON EXTENSION` (not `NO DEPENDS ON EXTENSION`) in a statement naming a
+ *                        protected object, and `ALTER EXTENSION … ADD` naming a protected object or one
+ *                        of the three tables above. Step 2, `DROP EXTENSION`, names nothing protected
+ *                        (T-192 QA N17/N18r, DEP1: the two removed trg_approval_four_eyes). No marker
+ *                        permits it.
  *   [R-CASCADE]          no `DROP … CASCADE` and no `DROP OWNED`. Both remove objects the statement does not
  *                        name, and no rule that reads names can see what it removed:
  *                        `DROP FUNCTION assert_sitter_bookable() CASCADE` takes
@@ -162,6 +179,11 @@
  * for the content rules, because a function body is SQL. A single-quoted string is scanned
  * as raw text, because it may be dynamic SQL passed to EXECUTE. Errors in either direction
  * produce a false FAIL, never a false PASS.
+ *
+ * (T-227, OD-235) A Unicode-escaped identifier, `U&"…"` with an optional `UESCAPE '<c>'`, is decoded
+ * as PostgreSQL decodes it (`\XXXX`, `\+XXXXXX`, a doubled escape character) before any rule reads it,
+ * at the top level, in a dollar body, and inside a string literal (dynamic SQL). A malformed escape is
+ * left as written; PostgreSQL refuses it at apply time.
  *
  * WHAT THIS GATE DOES NOT SEE. SQL assembled at run time from pieces (`format('GRANT %s ON
  * %I', …)`, concatenation) is not read as the statement it becomes. It is a static check
@@ -287,6 +309,62 @@ const protectedNameRe = (p: Protected): RegExp =>
 const PROTECTED_TRIGGERS: readonly string[] = PROTECTED.filter((p) => p.trigger === true).map((p) =>
   p.id.toUpperCase(),
 );
+
+/**
+ * (T-227, OD-237 TL-2) The tables I-5's protected functions read by name, and the migration that
+ * created each (R-PROTECTED-TABLE). `assert_second_actor_differs()` reads `public.account_role` and
+ * `public.account`; the four-eyes trigger sits on `public.approval`.
+ */
+const PROTECTED_TABLES: readonly { readonly name: string; readonly createdBy: string }[] = [
+  { name: 'ACCOUNT', createdBy: '0005' },
+  { name: 'ACCOUNT_ROLE', createdBy: '0005' },
+  { name: 'APPROVAL', createdBy: '0007' },
+];
+/** A relation name in a normalised fragment: optionally `public.`, optionally quoted (raw strings keep quotes). */
+const relName = (name: string): string => `(?:"?PUBLIC"?\\.)?"?${name}"?(?![A-Z0-9_$])`;
+const RELATION_KIND = '(?:TABLE|VIEW|MATERIALIZED VIEW|FOREIGN TABLE)';
+
+/**
+ * (T-227, OD-235) PostgreSQL's Unicode-escape identifier, `U&"…"` [UESCAPE '<c>']: `<c>XXXX` (4 hex
+ * digits), `<c>+XXXXXX` (6), and `<c><c>` for the escape character itself. A malformed escape is
+ * returned as written (PostgreSQL refuses the file at apply time, so that errs towards a false FAIL
+ * elsewhere, never a false PASS here).
+ */
+export function decodeUnicodeIdent(body: string, esc = '\\'): string {
+  let out = '';
+  for (let i = 0; i < body.length; i += 1) {
+    const c = body.charAt(i);
+    if (c !== esc) {
+      out += c;
+      continue;
+    }
+    if (body.charAt(i + 1) === esc) {
+      out += esc;
+      i += 1;
+      continue;
+    }
+    const six = /^\+([0-9A-Fa-f]{6})/.exec(body.slice(i + 1));
+    const four = /^([0-9A-Fa-f]{4})/.exec(body.slice(i + 1));
+    if (six !== null) {
+      out += String.fromCodePoint(parseInt(six[1] ?? '0', 16));
+      i += 7;
+    } else if (four !== null) {
+      out += String.fromCodePoint(parseInt(four[1] ?? '0', 16));
+      i += 4;
+    } else {
+      return body;
+    }
+  }
+  return out;
+}
+/** `U&"…"` identifiers inside raw text (a string literal read as dynamic SQL), decoded in place. */
+function decodeUnicodeIdentsInText(text: string): string {
+  return text.replace(
+    /(^|[^A-Za-z0-9_$])[Uu]&"((?:[^"]|"")*)"(\s*[Uu][Ee][Ss][Cc][Aa][Pp][Ee]\s*'(.)')?/g,
+    (_m, pre: string, body: string, _u: string | undefined, esc: string | undefined) =>
+      `${pre}"${decodeUnicodeIdent(body.replace(/""/g, '"'), esc ?? '\\').replace(/"/g, '""')}"`,
+  );
+}
 
 /**
  * Statements that make a migration expand-phase, which a file declared `contract` may not
@@ -644,20 +722,42 @@ export function readFragments(
     ctx.bodyList.push(id);
     return [...chain, id];
   };
-  for (const s of segments) {
+  for (let k = 0; k < segments.length; k += 1) {
+    const s = segments[k];
+    if (s === undefined) continue;
     if (s.kind === 'code') {
       for (const ch of s.text) {
         if (ch === ';') push();
         else cur += ch;
       }
     } else if (s.kind === 'ident') {
-      cur += s.body;
+      // (T-227, OD-235) `U&"…"` [UESCAPE '<c>']: the `U&` is the tail of the code before it.
+      const uPrefix = /(^|[^A-Za-z0-9_$])[Uu]&$/.exec(cur);
+      if (uPrefix === null) {
+        cur += s.body;
+        continue;
+      }
+      cur = cur.slice(0, cur.length - 2);
+      let esc = '\\';
+      const n1 = segments[k + 1];
+      const n2 = segments[k + 2];
+      if (
+        n1?.kind === 'code' &&
+        /^\s*UESCAPE\s*$/i.test(n1.text) &&
+        n2?.kind === 'string' &&
+        n2.body.length === 1
+      ) {
+        esc = n2.body;
+        k += 2;
+        cur += ' ';
+      }
+      cur += decodeUnicodeIdent(s.body, esc);
     } else if (s.kind === 'line-comment' || s.kind === 'block-comment') {
       cur += ' ';
     } else if (s.kind === 'string') {
       const inside = descend();
       cur += ' ';
-      raw(s.body.replace(/''/g, "'"), inside);
+      raw(decodeUnicodeIdentsInText(s.body.replace(/''/g, "'")), inside);
     } else {
       const inside = descend();
       cur += ' ';
@@ -1470,6 +1570,63 @@ for (const m of migrations) {
         'R-ADMIN-MEMBERSHIP',
         m.rel,
         `confers membership in app_admin_rw without a GRANT (CREATE ROLE … IN ROLE, ALTER GROUP … ADD USER), or alters app_admin_rw; only app_admin_rw's privileges may write a ts_senior row, or activate a ts_senior holder's account or lift its suspension (OE-47, OE-48/OE-57/OE-58): ${snippet(f)}`,
+      );
+    }
+  }
+
+  // R-PROTECTED-TABLE (T-227, OD-237 TL-2). No marker permits it.
+  for (const f of frags) {
+    for (const t of PROTECTED_TABLES) {
+      const name = relName(t.name);
+      const hits: string[] = [];
+      if (
+        new RegExp(
+          `\\bALTER ${RELATION_KIND}(?: IF EXISTS)?(?: ONLY)? ?\\(? ?${name} ?\\)?(?: ?\\*)? RENAME TO\\b`,
+        ).test(f)
+      )
+        hits.push('renames it away');
+      if (
+        new RegExp(
+          `\\bALTER ${RELATION_KIND}(?: IF EXISTS)?(?: ONLY)? ?\\(? ?${name} ?\\)?(?: ?\\*)? SET SCHEMA\\b`,
+        ).test(f)
+      )
+        hits.push('moves it to another schema');
+      if (new RegExp(`\\bRENAME TO ${name}`).test(f)) hits.push('renames another relation TO its name');
+      if (
+        !(m.dir === 'up' && m.num === t.createdBy) &&
+        new RegExp(
+          `\\bCREATE (?:OR REPLACE )?(?:(?:GLOBAL |LOCAL )?(?:TEMP|TEMPORARY) |UNLOGGED |RECURSIVE )?${RELATION_KIND}(?: IF NOT EXISTS)? ${name}`,
+        ).test(f)
+      )
+        hits.push(`creates a relation of its name (only ${t.createdBy} creates it)`);
+      for (const h of hits) {
+        problem(
+          'R-PROTECTED-TABLE',
+          m.rel,
+          `${h}: public.${t.name.toLowerCase()} is read by name by I-5's protected functions, and a table renamed or moved away keeps its protected triggers while a replacement under the old name has none (T-192 tech-lead RT2; OD-237 TL-2), so no marker permits it: ${snippet(f)}`,
+        );
+      }
+    }
+  }
+
+  // R-PROTECTED-EXTENSION (T-227, OD-235). No marker permits it.
+  for (const f of frags) {
+    const depends = /\bDEPENDS ON EXTENSION\b/.test(f) && !/\bNO DEPENDS ON EXTENSION\b/.test(f);
+    const adds = /\bALTER EXTENSION \S+ ADD\b/.test(f);
+    if (!depends && !adds) continue;
+    const named = PROTECTED.filter((p) => protectedNameRe(p).test(f)).map((p) => p.id);
+    if (adds) {
+      for (const t of PROTECTED_TABLES) {
+        if (new RegExp(`\\bADD ${RELATION_KIND} ${relName(t.name)}`).test(f)) {
+          named.push(`public.${t.name.toLowerCase()}`);
+        }
+      }
+    }
+    for (const n of named) {
+      problem(
+        'R-PROTECTED-EXTENSION',
+        m.rel,
+        `${depends ? 'DEPENDS ON EXTENSION' : 'ALTER EXTENSION … ADD'} names ${n}: a later DROP EXTENSION, which names nothing protected, would then remove it (T-192 QA N17/N18r, DEP1; OD-235), so no marker permits it: ${snippet(f)}`,
       );
     }
   }

@@ -22,6 +22,9 @@
 # T-168: EXIT/INT/TERM traps call restore(), so an INTERRUPTED run puts the two tracked files C3K
 # and C87 delete back too — see the block beside the traps.
 #
+# T-227 adds three sections: R-PROTECTED-TABLE (CX*), R-PROTECTED-EXTENSION (CE*) and U&"…" decoding
+# (CU*); CNA is re-classed from a CONTROL to R-PROTECTED-TABLE.
+#
 # T-167 adds one section (CV*): R-VENDOR-SQL, the reviewed `-- @vendor-sql` marker (OD-150).
 #
 # T-031 adds four sections: R-ROLE-SWITCH (CR*), R-RUN-AS (CM*), runner-read marker lines in a
@@ -492,7 +495,7 @@ check CN8 "a function renamed TO a protected name (a shadow), with a marker" R-P
 pair contract "ALTER TRIGGER t192_scratch_trigger ON public.approval RENAME TO t192_scratch_two;"
 check CN9 "CONTROL: renaming a trigger that is not protected" PASS
 pair contract "ALTER TABLE public.approval RENAME TO approval_t192;"
-check CNA "CONTROL: renaming the table that holds a protected trigger (the trigger stays on it and names nothing protected)" PASS
+check CNA "renaming the table that holds a protected trigger (a CONTROL until T-227; re-classed: R-PROTECTED-TABLE, OD-237 TL-2)" R-PROTECTED-TABLE
 pair contract "ALTER TRIGGER trg_approval_four_eyes_audit ON public.approval RENAME TO t192_audit;"
 check CNB "CONTROL: renaming a longer identifier that contains a protected name" PASS
 
@@ -518,6 +521,76 @@ pair expand "COMMENT ON ROLE app_admin_rw IS 'the back-office role';"
 check CA9 "CONTROL: COMMENT ON ROLE app_admin_rw" PASS
 pair expand "GRANT app_rw TO t192_login;"
 check CAA "CONTROL: membership in another role (app_rw) is not this rule's" PASS
+
+echo "== R-PROTECTED-TABLE (T-227, OD-237 TL-2): account, account_role and approval are never renamed, moved or replaced; no marker permits it"
+pair contract "ALTER TABLE public.account_role RENAME TO account_role_v1;"
+check CX1 "T-192 tech-lead RN-TABLE-1: account_role renamed away" R-PROTECTED-TABLE
+pair expand "CREATE TABLE public.account_role (account_id char(26), role text, revoked_at timestamptz);
+GRANT SELECT, INSERT, UPDATE ON public.account_role TO app_rw;"
+check CX2 "T-192 tech-lead RN-TABLE-2: a replacement account_role created (with its grant)" R-PROTECTED-TABLE
+pair contract 'alter table if exists only
+  "account" rename to account_v1;'
+check CX3 "account renamed away: lower case, IF EXISTS ONLY, a quoted name, across two lines" R-PROTECTED-TABLE
+pair expand "ALTER TABLE public.approval SET SCHEMA archive;"
+check CX4 "approval moved to another schema (SET SCHEMA), which leaves the name free" R-PROTECTED-TABLE
+pair contract "ALTER TABLE public.account_role_v2 RENAME TO account_role;"
+check CX5 "another table renamed TO account_role" R-PROTECTED-TABLE
+pair expand "CREATE VIEW public.approval AS SELECT * FROM public.approval_v1;"
+check CX6 "a VIEW created under the name approval" R-PROTECTED-TABLE
+pair expand "DO \$do\$ BEGIN EXECUTE 'create table \"account_role\" (account_id char(26), role text)'; END \$do\$;"
+check CX7 "a replacement created by an EXECUTE string in a DO block, quoted" R-PROTECTED-TABLE
+pair contract "ALTER TABLE public.account RENAME COLUMN locale TO locale_code;"
+check CX8 "CONTROL: a column of account renamed (not the table)" PASS
+pair contract "ALTER TRIGGER t227_scratch ON public.account_role RENAME TO t227_scratch_two;"
+check CX9 "CONTROL: an unprotected trigger ON account_role renamed" PASS
+pair expand "CREATE TABLE public.account_role_history (account_id char(26), role text);
+GRANT SELECT ON public.account_role_history TO app_rw;"
+check CXA "CONTROL: a table whose name starts with account_role" PASS
+pair contract "ALTER TABLE public.t227_scratch RENAME TO t227_scratch_two;"
+check CXB "CONTROL: an unrelated table renamed" PASS
+pair expand "CREATE TABLE reporting.account (id char(26));
+GRANT SELECT ON reporting.account TO app_rw;"
+check CXC "CONTROL: a table named account in ANOTHER schema" PASS
+
+echo "== R-PROTECTED-EXTENSION (T-227, OD-235): no protected object is made removable by DROP EXTENSION; no marker permits it"
+pair expand "-- @compliance-review: trg_approval_four_eyes — T-227, OD-235
+ALTER TRIGGER trg_approval_four_eyes ON public.approval DEPENDS ON EXTENSION pg_trgm;"
+check CE1 "T-192 QA N17: ALTER TRIGGER trg_approval_four_eyes … DEPENDS ON EXTENSION, with a marker" R-PROTECTED-EXTENSION
+pair expand "-- @compliance-review: assert_second_actor_differs — T-227, OD-235
+ALTER FUNCTION public.assert_second_actor_differs() DEPENDS ON EXTENSION pg_trgm;"
+check CE2 "ALTER FUNCTION <protected> DEPENDS ON EXTENSION, with a marker" R-PROTECTED-EXTENSION
+pair expand "-- @compliance-review: assert_ts_senior_written_by_admin — T-227, OD-235
+ALTER EXTENSION pg_trgm ADD FUNCTION public.assert_ts_senior_written_by_admin();"
+check CE3 "ALTER EXTENSION … ADD FUNCTION <protected>, with a marker" R-PROTECTED-EXTENSION
+pair expand "ALTER EXTENSION pg_trgm ADD TABLE public.approval;"
+check CE4 "ALTER EXTENSION … ADD TABLE approval (names no protected object; the table's triggers go with it)" R-PROTECTED-EXTENSION
+pair expand "-- @compliance-review: trg_account_ts_senior_status_admin_only — T-227, OD-235
+DO \$do\$ BEGIN EXECUTE 'alter trigger trg_account_ts_senior_status_admin_only on public.account depends on extension pg_trgm'; END \$do\$;"
+check CE5 "lower case, as an EXECUTE string in a DO block, with a marker" R-PROTECTED-EXTENSION
+pair expand "ALTER FUNCTION public.t227_helper() DEPENDS ON EXTENSION pg_trgm;"
+check CE6 "CONTROL: an unprotected function DEPENDS ON EXTENSION" PASS
+pair expand "-- @compliance-review: trg_approval_four_eyes — T-227, OD-235
+ALTER TRIGGER trg_approval_four_eyes ON public.approval NO DEPENDS ON EXTENSION pg_trgm;"
+check CE7 "CONTROL: NO DEPENDS ON EXTENSION (removes the dependency), with a marker" PASS
+pair expand "DROP EXTENSION pg_trgm;"
+check CE8 "CONTROL, and the bound: DROP EXTENSION alone names nothing protected (T-192 QA N18r); step 1 is what is refused" PASS
+
+echo "== U&\"…\" identifiers are decoded before every rule reads them (T-227, OD-235)"
+pair contract 'ALTER TRIGGER U&"trg\005fapproval_four_eyes" ON public.approval RENAME TO t227_off;'
+check CU1 "T-192 QA N15: U&\"trg\\005fapproval_four_eyes\" renamed, no marker" "R-PROTECTED R-PROTECTED-RENAME"
+pair expand "DROP TRIGGER U&\"trg!005faccount!005frole_ts_senior_admin_only\" UESCAPE '!' ON public.account_role;"
+check CU2 "UESCAPE '!': a protected trigger dropped, no marker" R-PROTECTED
+pair expand '-- @compliance-review: trg_approval_four_eyes — T-227, OD-235
+ALTER TABLE public.approval DISABLE TRIGGER u&"trg\+00005fapproval_four_eyes";'
+check CU3 "the six-digit escape, lower-case u&, with a marker: DISABLE by name" R-TRIGGER-BYPASS
+pair expand "DO \$do\$ BEGIN EXECUTE 'DROP TRIGGER U&\"trg\\005fapproval_four_eyes\" ON public.approval'; END \$do\$;"
+check CU4 "inside an EXECUTE string in a DO block, no marker" R-PROTECTED
+pair contract 'ALTER TABLE U&"approval" RENAME TO approval_v1;'
+check CU5 "a protected table named with U& and no escape" R-PROTECTED-TABLE
+pair contract 'ALTER TRIGGER U&"t227\005fscratch" ON public.approval RENAME TO t227_other;'
+check CU6 "CONTROL: a U& name that decodes to an unprotected trigger" PASS
+pair contract 'ALTER TRIGGER U&"trg\\005fapproval_four_eyes" ON public.approval RENAME TO t227_other;'
+check CU7 "CONTROL: a doubled escape decodes to a literal backslash, so the name is not the protected one" PASS
 
 echo "== R-CASCADE"
 pair expand "DROP FUNCTION assert_sitter_bookable() CASCADE;"
