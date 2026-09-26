@@ -454,7 +454,10 @@ describe('0015 — fixed columns: only consumed_at changes after insert (KV068; 
     ['account_id moved to another account', `account_id = '${ACCOUNT_B}'`],
     ['token_hash replaced (re-keyed)', `token_hash = ${H('55')}`],
     ['expires_at extended (re-armed)', "expires_at = expires_at + interval '1 year'"],
-    ['requested_device_fingerprint replaced (re-bound)', "requested_device_fingerprint = 'fp-other'"],
+    [
+      'requested_device_fingerprint replaced (re-bound)',
+      "requested_device_fingerprint = 'fp-other'",
+    ],
   ] as const;
 
   for (const [label, set] of FIXED) {
