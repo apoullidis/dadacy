@@ -4,8 +4,8 @@
 -- 0012 state.
 --
 -- ORDER. The table first: DROP TABLE removes its trigger, its index, its constraints and its ACL
--- with it, and nothing outside this migration references otp_challenge. Then the trigger
--- function, which nothing uses once the trigger is gone.
+-- with it, and nothing outside this migration references otp_challenge. Then the two trigger
+-- functions, which nothing uses once the triggers are gone.
 --
 -- No CASCADE (gate:migration-lint R-CASCADE): if anything outside this migration came to depend
 -- on either object, the DROP is refused and the transaction rolls back.
@@ -14,3 +14,4 @@
 
 DROP TABLE public.otp_challenge;
 DROP FUNCTION public.assert_otp_challenge_single_use();
+DROP FUNCTION public.set_otp_challenge_created_at();

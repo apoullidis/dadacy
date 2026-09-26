@@ -36,6 +36,16 @@
 -- are cited only in these top-level -- lines, never in a COMMENT ON or a function body, so a
 -- renumbering changes no applied effect (PROTOCOL §3, R-MERGED).
 --
+-- OE-61 (decisions.md, 2026-09-26T12:37:07Z; T-194 QA-F1): THE DATABASE SETS created_at. app_rw's
+-- INSERT is column-level and excludes created_at (and attempts and consumed_at, which then take
+-- their defaults, 0 and NULL: a row cannot be inserted already attempted or consumed). A BEFORE
+-- INSERT row trigger, trg_otp_challenge_created_at, sets created_at := now() for every writer,
+-- whatever it supplied. now() is the inserting transaction's start, so the TTL CHECK bounds
+-- expires_at to at most 5 minutes after that start, which is at or before the commit that makes
+-- the row visible: a challenge is live for at most 5 minutes after it can first be read. A long
+-- transaction shortens the window; it cannot lengthen it (clock_timestamp() + 5 minutes after the
+-- transaction has run for any time is refused by the CHECK).
+--
 -- OE-60 (decisions.md, 2026-09-26T10:11:22Z): THE DATABASE ENFORCES "AT MOST 3 ATTEMPTS IN 5
 -- MINUTES". app_rw may UPDATE only attempts and consumed_at (a column-level grant, below);
 -- attempts never decreases; created_at, expires_at, code_hash and phone_e164 are fixed after
@@ -54,14 +64,18 @@
 --   KV064 OTP_CHALLENGE_CONSUMED_ATTEMPTS_FIXED attempts changed on a consumed row (OE-60).
 -- The first that applies is raised. "Changed" is NEW IS DISTINCT FROM OLD: an UPDATE writing
 -- identical values is not refused. id and created_ip_prefix are fixed for app_rw by the grant
--- only; the trigger does not read them.
+-- only; the trigger does not read them. Its messages carry no column value. PostgreSQL's own
+-- CHECK and NOT NULL refusals DO: their DETAIL "Failing row contains (...)" prints the row
+-- (phone_e164 and code_hash included) to the writer and, by default, to the server log. That is
+-- platform-wide and is OD-241 -> T-230; this migration does not change it.
 -- AFTER, not BEFORE (OD-237 TL-1): the trigger reads the row as stored, after every BEFORE
 -- trigger, and its RAISE still aborts the statement. CHECK and NOT NULL are evaluated first, so
--- attempts = 4 is 23514 and a NULL is 23502 before the trigger runs. The messages carry no column
--- value: phone_e164 is personal data (SD 3924) and code_hash is a secret's digest.
+-- attempts = 4 is 23514 and a NULL is 23502 before the trigger runs. Its own messages carry no
+-- column value: phone_e164 is personal data (SD 3924) and code_hash is a secret's digest.
 --
 -- GRANTS. No default privileges exist (T-020 § contract §4), so each is explicit: app_rw gets
--- SELECT and INSERT on the table and UPDATE on (attempts, consumed_at) only (OE-60); a column
+-- SELECT on the table, INSERT on (id, phone_e164, code_hash, expires_at, created_ip_prefix) only
+-- (OE-61), and UPDATE on (attempts, consumed_at) only (OE-60); a column
 -- UPDATE privilege also admits SELECT ... FOR UPDATE. No DELETE (U-O6). Nothing to app_admin_rw,
 -- app_safety_rw (a closed list) or answering_service (SA §INT-10).
 --
@@ -91,11 +105,12 @@ CREATE TABLE public.otp_challenge (
 
 CREATE INDEX ON public.otp_challenge (phone_e164, expires_at DESC);
 
-GRANT SELECT, INSERT ON public.otp_challenge TO app_rw;
+GRANT SELECT ON public.otp_challenge TO app_rw;
+GRANT INSERT (id, phone_e164, code_hash, expires_at, created_ip_prefix) ON public.otp_challenge TO app_rw;
 GRANT UPDATE (attempts, consumed_at) ON public.otp_challenge TO app_rw;
 
 COMMENT ON TABLE public.otp_challenge IS
-  'Phone OTP challenges (SD §DB-2 lines 1830-1835; SA §SEC-5). code_hash: HMAC-SHA-256 of the code under a server secret, 32 bytes. At most 3 attempts; a 5-minute TTL checked against created_at; single use, attempts never decreasing, and fixed columns enforced by trg_otp_challenge_single_use (decisions.md OE-30, OE-50, OE-60). app_rw may UPDATE only attempts and consumed_at, and holds no DELETE. Retention: hard_delete 90 d after expires_at, by the retention engine (OE-50 U-O6).';
+  'Phone OTP challenges (SD §DB-2 lines 1830-1835; SA §SEC-5). code_hash: HMAC-SHA-256 of the code under a server secret, 32 bytes. At most 3 attempts per row; created_at is set to now() by trg_otp_challenge_created_at for every insert; a 5-minute TTL checked against it; single use, attempts never decreasing, and fixed columns enforced by trg_otp_challenge_single_use (decisions.md OE-30, OE-50, OE-60). app_rw may INSERT only id, phone_e164, code_hash, expires_at and created_ip_prefix, may UPDATE only attempts and consumed_at, and holds no DELETE. Retention: hard_delete 90 d after expires_at, by the retention engine (OE-50 U-O6).';
 
 CREATE FUNCTION public.assert_otp_challenge_single_use() RETURNS trigger
   LANGUAGE plpgsql
@@ -157,3 +172,22 @@ CREATE TRIGGER trg_otp_challenge_single_use
   AFTER UPDATE ON public.otp_challenge
   FOR EACH ROW
   EXECUTE FUNCTION public.assert_otp_challenge_single_use();
+
+CREATE FUNCTION public.set_otp_challenge_created_at() RETURNS trigger
+  LANGUAGE plpgsql
+  SECURITY INVOKER
+  SET search_path = pg_catalog
+AS $fn$
+BEGIN
+  NEW.created_at := now();
+  RETURN NEW;
+END
+$fn$;
+
+COMMENT ON FUNCTION public.set_otp_challenge_created_at() IS
+  'BEFORE INSERT row trigger on otp_challenge (T-194; decisions.md OE-61). Sets created_at to now(), the inserting transaction''s start, whatever the writer supplied, so the 5-minute TTL CHECK is measured from a time the database chose.';
+
+CREATE TRIGGER trg_otp_challenge_created_at
+  BEFORE INSERT ON public.otp_challenge
+  FOR EACH ROW
+  EXECUTE FUNCTION public.set_otp_challenge_created_at();
