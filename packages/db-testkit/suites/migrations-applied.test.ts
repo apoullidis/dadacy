@@ -459,9 +459,10 @@ const CREATED_BY: Readonly<
     source: 'T-231',
     // 0014 creates no object: it replaces kinvara_guard.assert_answering_service_write_only() in
     // place (CREATE OR REPLACE; OID, owner, ACL and COMMENT kept), adding one branch to check (6)
-    // that reads column-level INSERT (OD-242). The probe reads that branch from the function's
-    // source; the down restores 0003's body, which has neither line, so it reads '0' there. It is a
-    // count, so it never raises. The behaviour is int10-write-only's OD-242 cases.
+    // that reads column-level INSERT (OD-242), and a check (18) refusing grant options and ADMIN
+    // OPTION (OE-62). Each probe reads its addition from the function's source; the down restores
+    // 0003's body, which has neither, so each reads '0' there. They are counts, so they never raise.
+    // The behaviour is int10-write-only's OD-242 and OE-62 cases.
     probes: [
       {
         title:
@@ -470,6 +471,15 @@ const CREATED_BY: Readonly<
                WHERE oid = to_regprocedure('kinvara_guard.assert_answering_service_write_only()')
                  AND prosrc LIKE '%answering_service holds column privilege INSERT on %'
                  AND prosrc LIKE '%AND NOT has_table_privilege(k_oid, c.oid, ''INSERT'')%'`,
+        holds: '1',
+      },
+      {
+        title:
+          'the INT-10 guard refuses a grant option and ADMIN OPTION on answering_service, check (18) (OE-62)',
+        sql: `SELECT count(*)::text FROM pg_proc
+               WHERE oid = to_regprocedure('kinvara_guard.assert_answering_service_write_only()')
+                 AND prosrc LIKE '%has_table_privilege(k_oid, c.oid, p.priv || '' WITH GRANT OPTION'')%'
+                 AND prosrc LIKE '%pg_has_role(r.oid, k_oid, ''MEMBER WITH ADMIN OPTION'')%'`,
         holds: '1',
       },
     ],

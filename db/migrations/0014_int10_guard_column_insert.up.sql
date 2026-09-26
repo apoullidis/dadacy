@@ -4,10 +4,11 @@
 -- @run-as: bootstrap-superuser — OD-242; T-231 (replaces kinvara_guard.assert_answering_service_
 --          write_only(), which the bootstrap superuser owns in a schema app_ddl holds no CREATE on;
 --          CREATE OR REPLACE is owner-only: T-143 § contract (rework 1) §2 G06, 42501)
--- @compliance-review: assert_answering_service_write_only — T-231, two-approval path (PROTOCOL §3); OD-242 (T-194 QA2-O1): check (6) also reads column-level INSERT
+-- @compliance-review: assert_answering_service_write_only — T-231, two-approval path (PROTOCOL §3); OD-242 (T-194 QA2-O1): check (6) also reads column-level INSERT; OE-62 (OD-243): new check (18), no grant option and no ADMIN OPTION
 --
 -- Ticket:  T-231 (tech-lead)
--- Spec:    SA §INT-10 ("INSERT on out_of_hours_report and nothing else"); decisions.md OD-242;
+-- Spec:    SA §INT-10 ("INSERT on out_of_hours_report and nothing else"); decisions.md OD-242,
+--          OE-62 (the stakeholder's ruling on OD-243);
 --          T-194 § QA verification (rework 2) QA2-3; T-020 § Published contract §5;
 --          T-143 § Published contract (rework 1) §1, §3; ADR 0001 §3, §5.
 --
@@ -21,19 +22,31 @@
 -- (R-ANSWERING-SERVICE, measured there); this closes the database layer, which is what a
 -- superuser or break-glass session meets, and what T-033's reconciler calls.
 --
--- WHAT CHANGES. One UNION ALL branch is added after check (6): column-level INSERT on every
--- relation check (6) reads, except public.out_of_hours_report, and only where no table-level
--- INSERT is held (that case is check (5)'s, unchanged). Every other line of the function body
--- is 0003's, byte for byte, as are its name, arguments, language, volatility, SECURITY INVOKER
--- and SET search_path. CREATE OR REPLACE keeps the function's OID, owner, ACL and COMMENT, so
+-- WHAT CHANGES. Two additions, and every other line of the function body is 0003's, byte for
+-- byte, as are its name, arguments, language, volatility, SECURITY INVOKER and SET search_path.
+--   (a) One UNION ALL branch after check (6): column-level INSERT on every relation check (6)
+--       reads, except public.out_of_hours_report, and only where no table-level INSERT is held
+--       (that case is check (5)'s, unchanged). OD-242.
+--   (b) A new check (18), after (17): answering_service may hold no privilege WITH GRANT OPTION
+--       (the permitted INSERT on out_of_hours_report included, table or column level, and the
+--       CONNECT and USAGE 0001 grants it), and no role other than a superuser may hold ADMIN
+--       OPTION on answering_service. OE-62: the vendor must not be able to delegate. Measured
+--       before this change (T-231 RW-RED-1): a grant option was accepted everywhere and the guard
+--       stayed clean; the vendor's own GRANT on a per-database object was refused only because the
+--       event trigger's body cannot reach kinvara_guard as the vendor, while its GRANT CONNECT ON
+--       DATABASE (a shared catalogue, which fires no trigger) and an ADMIN OPTION holder's
+--       GRANT answering_service TO <role> both succeeded. CREATE OR REPLACE keeps the function's OID, owner, ACL and COMMENT, so
 -- the event trigger and its function (neither touched here) keep calling it by name, and
 -- nothing that granted EXECUTE on it has to be re-granted. For any state in which
 -- answering_service holds no column-only INSERT outside the permitted table, the new branch
--- returns no row, so the verdict and the DETAIL are those of 0003's function (T-231 evidence).
+-- returns no row, and when it holds no grant option and no role holds ADMIN OPTION on it, check
+-- (18) returns no row either; in those states the verdict and the DETAIL are those of 0003's
+-- function (T-231 evidence).
 --
 -- WHY A COLUMN INSERT ON THE PERMITTED TABLE IS NOT REPORTED. SA §INT-10 permits INSERT on
 -- public.out_of_hours_report. INSERT on some of its columns is a subset of that privilege and
--- conveys no read. Column SELECT, UPDATE and REFERENCES on it are still reported by check (6).
+-- conveys no read. Column SELECT, UPDATE and REFERENCES on it are still reported by check (6),
+-- and any INSERT on it held WITH GRANT OPTION is reported by check (18).
 --
 -- WHO RUNS THIS FILE. The bootstrap superuser (the @run-as marker above); its down file runs
 -- the same way (T-136 § contract §6). Transactional; `psql --single-transaction`.
@@ -327,6 +340,123 @@ BEGIN
        AND d.deptype = 'e'
        AND e.extname = ANY (k_stat_extensions)
        AND has_function_privilege(k_oid, p.oid, 'EXECUTE')
+
+    UNION ALL
+    -- (18) Grant options and ADMIN OPTION (OE-62, T-231). SA INT-10 grants this principal INSERT on
+    --      the one permitted table and nothing else, and the stakeholder ruled that "nothing else"
+    --      includes the right to pass a privilege on: the vendor must not be able to delegate. So
+    --      the principal may hold NO privilege WITH GRANT OPTION, on the permitted table included,
+    --      at table or column level, nor on the CONNECT and USAGE that 0001 grants it. Every other
+    --      privilege it could hold is already refused by checks (1) to (17); this check reports the
+    --      grant option, which none of them reads. Written per object class, as (4) to (16) are, with
+    --      has_*_privilege(..., '<priv> WITH GRANT OPTION'). A column line is printed only where the
+    --      same privilege is not held with grant option on the whole table, so a table-level grant
+    --      option is one line. The last branch reports a role that can grant answering_service
+    --      itself to another role (ADMIN OPTION): GRANT ROLE fires no event trigger, so that one is
+    --      detected by a direct call only, like (2) and (3).
+    SELECT format('answering_service holds %s WITH GRANT OPTION on %I.%I — it could delegate it; '
+                  'INT-10 permits no grant option (OE-62)', p.priv, n.nspname, c.relname)
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+     CROSS JOIN unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER','MAINTAIN']) AS p(priv)
+     WHERE c.relkind IN ('r','p','v','m','f')
+       AND n.nspname NOT IN ('pg_catalog','information_schema')
+       AND n.nspname NOT LIKE 'pg\_toast%'
+       AND has_table_privilege(k_oid, c.oid, p.priv || ' WITH GRANT OPTION')
+
+    UNION ALL
+    SELECT format('answering_service holds column privilege %s WITH GRANT OPTION on %I.%I.%I — it '
+                  'could delegate it; INT-10 permits no grant option (OE-62)',
+                  p.priv, n.nspname, c.relname, a.attname)
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+     CROSS JOIN unnest(ARRAY['SELECT','INSERT','UPDATE','REFERENCES']) AS p(priv)
+     WHERE c.relkind IN ('r','p','v','m','f')
+       AND n.nspname NOT IN ('pg_catalog','information_schema')
+       AND n.nspname NOT LIKE 'pg\_toast%'
+       AND NOT has_table_privilege(k_oid, c.oid, p.priv || ' WITH GRANT OPTION')
+       AND has_column_privilege(k_oid, c.oid, a.attnum, p.priv || ' WITH GRANT OPTION')
+
+    UNION ALL
+    SELECT format('answering_service holds %s WITH GRANT OPTION on sequence %I.%I (OE-62)',
+                  p.priv, n.nspname, c.relname)
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+     CROSS JOIN unnest(ARRAY['SELECT','USAGE','UPDATE']) AS p(priv)
+     WHERE c.relkind = 'S'
+       AND n.nspname NOT IN ('pg_catalog','information_schema')
+       AND has_sequence_privilege(k_oid, c.oid, p.priv || ' WITH GRANT OPTION')
+
+    UNION ALL
+    SELECT format('answering_service holds EXECUTE WITH GRANT OPTION on function %s (OE-62)',
+                  p.oid::regprocedure::text)
+      FROM pg_proc p
+      JOIN pg_namespace n ON n.oid = p.pronamespace
+     WHERE n.nspname NOT IN ('pg_catalog','information_schema')
+       AND has_function_privilege(k_oid, p.oid, 'EXECUTE WITH GRANT OPTION')
+
+    UNION ALL
+    SELECT format('answering_service holds %s WITH GRANT OPTION on schema %I (OE-62)', p.priv, n.nspname)
+      FROM pg_namespace n
+     CROSS JOIN unnest(ARRAY['USAGE','CREATE']) AS p(priv)
+     WHERE has_schema_privilege(k_oid, n.oid, p.priv || ' WITH GRANT OPTION')
+
+    UNION ALL
+    SELECT format('answering_service holds %s WITH GRANT OPTION on database %I (OE-62)', p.priv, d.datname)
+      FROM pg_database d
+     CROSS JOIN unnest(ARRAY['CONNECT','CREATE','TEMPORARY']) AS p(priv)
+     WHERE d.datname = current_database()
+       AND has_database_privilege(k_oid, d.oid, p.priv || ' WITH GRANT OPTION')
+
+    UNION ALL
+    SELECT format('answering_service holds %s WITH GRANT OPTION on large object %s (OE-62)', p.priv, l.oid)
+      FROM pg_largeobject_metadata l
+     CROSS JOIN unnest(ARRAY['SELECT','UPDATE']) AS p(priv)
+     WHERE has_largeobject_privilege(k_oid, l.oid, p.priv || ' WITH GRANT OPTION')
+
+    UNION ALL
+    SELECT format('answering_service holds %s WITH GRANT OPTION on parameter %s (OE-62)', p.priv, a.parname)
+      FROM pg_parameter_acl a
+     CROSS JOIN unnest(ARRAY['SET','ALTER SYSTEM']) AS p(priv)
+     WHERE has_parameter_privilege(k_oid, a.parname, p.priv || ' WITH GRANT OPTION')
+
+    UNION ALL
+    SELECT format('answering_service holds USAGE WITH GRANT OPTION on language %I (OE-62)', l.lanname)
+      FROM pg_language l
+     WHERE l.lanispl
+       AND has_language_privilege(k_oid, l.oid, 'USAGE WITH GRANT OPTION')
+
+    UNION ALL
+    SELECT format('answering_service holds USAGE WITH GRANT OPTION on foreign server %I (OE-62)', srv.srvname)
+      FROM pg_foreign_server srv
+     WHERE has_server_privilege(k_oid, srv.oid, 'USAGE WITH GRANT OPTION')
+
+    UNION ALL
+    SELECT format('answering_service holds USAGE WITH GRANT OPTION on foreign data wrapper %I (OE-62)', w.fdwname)
+      FROM pg_foreign_data_wrapper w
+     WHERE has_foreign_data_wrapper_privilege(k_oid, w.oid, 'USAGE WITH GRANT OPTION')
+
+    UNION ALL
+    SELECT format('answering_service holds CREATE WITH GRANT OPTION on tablespace %I (OE-62)', t.spcname)
+      FROM pg_tablespace t
+     WHERE has_tablespace_privilege(k_oid, t.oid, 'CREATE WITH GRANT OPTION')
+
+    UNION ALL
+    SELECT format('answering_service holds USAGE WITH GRANT OPTION on type %s (OE-62)', t.oid::regtype::text)
+      FROM pg_type t
+      JOIN pg_namespace n ON n.oid = t.typnamespace
+     WHERE n.nspname NOT IN ('pg_catalog','information_schema')
+       AND n.nspname NOT LIKE 'pg\_toast%'
+       AND has_type_privilege(k_oid, t.oid, 'USAGE WITH GRANT OPTION')
+
+    UNION ALL
+    SELECT format('role %I holds ADMIN OPTION on answering_service — it can grant the vendor role to '
+                  'another role (OE-62)', r.rolname)
+      FROM pg_roles r
+     WHERE r.oid <> k_oid
+       AND NOT r.rolsuper
+       AND pg_has_role(r.oid, k_oid, 'MEMBER WITH ADMIN OPTION')
   LOOP
     v_msgs := v_msgs || v;
   END LOOP;
