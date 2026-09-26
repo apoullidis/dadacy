@@ -419,13 +419,15 @@ const CREATED_BY: Readonly<
       },
       {
         title:
-          "otp_challenge's ACL: app_rw SELECT, INSERT, and UPDATE on attempts and consumed_at only (U-O6, OE-60)",
+          "otp_challenge's ACL: app_rw SELECT, INSERT on five columns, UPDATE on attempts and consumed_at (U-O6, OE-60, OE-61)",
         sql: `SELECT coalesce((SELECT c.relacl::text || ' ' ||
                                       (SELECT string_agg(a.attname || '=' || a.attacl::text, ',' ORDER BY a.attnum)
                                          FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attacl IS NOT NULL)
                                  FROM pg_class c WHERE c.oid = to_regclass('public.otp_challenge')), '(absent)')`,
         holds:
-          '{app_ddl=arwdDxtm/app_ddl,app_rw=ar/app_ddl} attempts={app_rw=w/app_ddl},consumed_at={app_rw=w/app_ddl}',
+          '{app_ddl=arwdDxtm/app_ddl,app_rw=r/app_ddl} id={app_rw=a/app_ddl},phone_e164={app_rw=a/app_ddl},' +
+          'code_hash={app_rw=a/app_ddl},attempts={app_rw=w/app_ddl},expires_at={app_rw=a/app_ddl},' +
+          'consumed_at={app_rw=w/app_ddl},created_ip_prefix={app_rw=a/app_ddl}',
       },
       {
         title: 'function public.assert_otp_challenge_single_use() exists',
@@ -439,6 +441,16 @@ const CREATED_BY: Readonly<
                WHERE tgname = 'trg_otp_challenge_single_use'
                  AND tgrelid = to_regclass('public.otp_challenge')
                  AND tgtype = 17`,
+        holds: '1',
+      },
+      {
+        title:
+          'trigger trg_otp_challenge_created_at fires BEFORE INSERT FOR EACH ROW on otp_challenge (OE-61)',
+        sql: `SELECT count(*)::text FROM pg_trigger
+               WHERE tgname = 'trg_otp_challenge_created_at'
+                 AND tgrelid = to_regclass('public.otp_challenge')
+                 AND tgtype = 7
+                 AND tgfoid = coalesce(to_regprocedure('public.set_otp_challenge_created_at()'), 0)`,
         holds: '1',
       },
     ],

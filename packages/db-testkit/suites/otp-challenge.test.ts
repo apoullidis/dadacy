@@ -146,7 +146,7 @@ const CHECK_23514 = (c: string): string =>
   `ERROR:  23514: new row for relation "otp_challenge" violates check constraint "${c}"`;
 
 describe('0013 — the table, its owner, its columns and its ACL', () => {
-  test("SD's seven columns in SD's order, then created_at; owner app_ddl; ACL: app_rw SELECT, INSERT, and UPDATE on attempts and consumed_at only", async () => {
+  test("SD's seven columns in SD's order, then created_at; owner app_ddl; ACL: app_rw SELECT, INSERT on five columns, UPDATE on attempts and consumed_at", async () => {
     assert.equal(
       await db.value(
         `SELECT (SELECT string_agg(attname || ':' || format_type(atttypid, atttypmod) || ':' ||
@@ -162,8 +162,10 @@ describe('0013 — the table, its owner, its columns and its ACL', () => {
       'id:character(26):nn:-,phone_e164:text:nn:-,code_hash:bytea:nn:-,attempts:smallint:nn:0,' +
         'expires_at:timestamp with time zone:nn:-,consumed_at:timestamp with time zone:null:-,' +
         'created_ip_prefix:inet:null:-,created_at:timestamp with time zone:nn:now()' +
-        '|app_ddl|{app_ddl=arwdDxtm/app_ddl,app_rw=ar/app_ddl}' +
-        '|attempts={app_rw=w/app_ddl},consumed_at={app_rw=w/app_ddl}',
+        '|app_ddl|{app_ddl=arwdDxtm/app_ddl,app_rw=r/app_ddl}' +
+        '|id={app_rw=a/app_ddl},phone_e164={app_rw=a/app_ddl},code_hash={app_rw=a/app_ddl},' +
+        'attempts={app_rw=w/app_ddl},expires_at={app_rw=a/app_ddl},consumed_at={app_rw=w/app_ddl},' +
+        'created_ip_prefix={app_rw=a/app_ddl}',
     );
   });
 
@@ -221,15 +223,17 @@ describe('0013 — attempts: CHECK (attempts BETWEEN 0 AND 3) (U-O2)', () => {
   });
 });
 
-describe('0013 — the 5-minute TTL: CHECK against created_at (Q-D1)', () => {
-  const at = (ts: string): string => `timestamptz '2026-09-26 ${ts}+00'`;
-  const ttl = (expires: string): string =>
-    insert(SCRATCH, { expires: at(expires), extra: 'created_at', values: at('10:00:00') });
+describe('0013 — the 5-minute TTL: CHECK against created_at (Q-D1), created_at = now() (OE-61)', () => {
+  // created_at is set to now() by trg_otp_challenge_created_at, so every bound is relative to now().
+  const ttl = (expires: string): string => insert(SCRATCH, { expires });
 
   for (const [label, expires] of [
-    ['5 minutes and 1 microsecond after created_at', '10:05:00.000001'],
-    ['equal to created_at', '10:00:00'],
-    ['before created_at', '09:59:59'],
+    [
+      '5 minutes and 1 microsecond after created_at',
+      "now() + interval '5 minutes' + interval '1 microsecond'",
+    ],
+    ['equal to created_at', 'now()'],
+    ['before created_at', "now() - interval '1 second'"],
   ] as const) {
     test(`expires_at ${label} is REFUSED by otp_challenge_ttl_check (23514)`, async () => {
       assertRefusedBy(
@@ -255,10 +259,10 @@ describe('0013 — the 5-minute TTL: CHECK against created_at (Q-D1)', () => {
     );
   });
 
-  test("CONTROL — exactly 5 minutes, and T-027 O1's now() + interval '5 minutes' with the default created_at, are accepted", async () => {
+  test("CONTROL — T-027 O1's expires_at = now() + interval '5 minutes' (exactly the bound) is accepted", async () => {
     assertPermitted(
-      'expires_at at the bound, and O1',
-      await asSuperuser('BEGIN', ttl('10:05:00'), insert(SCRATCH_2), 'ROLLBACK'),
+      'expires_at at the bound (O1)',
+      await asSuperuser('BEGIN', insert(SCRATCH_2), 'ROLLBACK'),
     );
   });
 
@@ -299,14 +303,7 @@ describe('0013 — code_hash is 32 bytes: CHECK (octet_length(code_hash) = 32) (
 });
 
 describe('0013 — NOT NULL (23502, naming the column)', () => {
-  for (const column of [
-    'id',
-    'phone_e164',
-    'code_hash',
-    'attempts',
-    'expires_at',
-    'created_at',
-  ] as const) {
+  for (const column of ['id', 'phone_e164', 'code_hash', 'attempts', 'expires_at'] as const) {
     test(`${column} NULL is REFUSED (23502)`, async () => {
       const sql =
         column === 'id'
@@ -326,6 +323,20 @@ describe('0013 — NOT NULL (23502, naming the column)', () => {
       );
     });
   }
+
+  test('created_at NULL by UPDATE is REFUSED (23502); an INSERT cannot supply it, the BEFORE INSERT trigger sets it', async () => {
+    const r = await asSuperuser(
+      readRow(LIVE),
+      `UPDATE public.otp_challenge SET created_at = NULL WHERE id = '${LIVE}'`,
+    );
+    assertRead('created_at NULL', r, 'row 1 attempts=0 consumed=false');
+    assertRefusedBy(
+      'created_at NULL',
+      r,
+      'ERROR:  23502: null value in column "created_at" of relation "otp_challenge" violates not-null constraint',
+      'COLUMN NAME:  created_at',
+    );
+  });
 
   test('CONTROL — consumed_at and created_ip_prefix NULL are accepted', async () => {
     assertPermitted(
@@ -460,22 +471,28 @@ describe('0013 — OE-60: at most 3 attempts in 5 minutes', () => {
     );
   });
 
-  test('app_rw lowering attempts (2 -> 0) on a live challenge is REFUSED KV063', async () => {
-    const r = await asLogin(
-      LOGINS.app_rw,
-      readRow(LIVE),
-      `UPDATE public.otp_challenge SET attempts = 2 WHERE id = '${LIVE}'`,
-      readRow(LIVE),
-      `UPDATE public.otp_challenge SET attempts = 0 WHERE id = '${LIVE}'`,
-    );
-    assertRead('attempts 2 -> 0', r, 'row 1 attempts=2 consumed=false');
-    assertRefusedBy(
-      'attempts 2 -> 0',
-      r,
-      'ERROR:  KV063: OTP_CHALLENGE_ATTEMPTS_DECREASED: otp_challenge attempts never decrease',
-      'CONTEXT:  PL/pgSQL function public.assert_otp_challenge_single_use()',
-    );
-  });
+  for (const [from, to] of [
+    [2, 0],
+    [2, 1],
+    [1, 0],
+  ] as const) {
+    test(`app_rw lowering attempts (${String(from)} -> ${String(to)}) on a live challenge is REFUSED KV063`, async () => {
+      const what = `attempts ${String(from)} -> ${String(to)}`;
+      const r = await asLogin(
+        LOGINS.app_rw,
+        `UPDATE public.otp_challenge SET attempts = ${String(from)} WHERE id = '${LIVE}'`,
+        readRow(LIVE),
+        `UPDATE public.otp_challenge SET attempts = ${String(to)} WHERE id = '${LIVE}'`,
+      );
+      assertRead(what, r, `row 1 attempts=${String(from)} consumed=false`);
+      assertRefusedBy(
+        what,
+        r,
+        'ERROR:  KV063: OTP_CHALLENGE_ATTEMPTS_DECREASED: otp_challenge attempts never decrease',
+        'CONTEXT:  PL/pgSQL function public.assert_otp_challenge_single_use()',
+      );
+    });
+  }
 
   test('app_rw changing attempts on a consumed challenge (2 -> 3) is REFUSED KV064', async () => {
     const r = await asLogin(
@@ -565,6 +582,105 @@ describe('0013 — OE-60: at most 3 attempts in 5 minutes', () => {
     );
     assertPermitted('consumed attempts unchanged', r);
     assertRead('consumed attempts unchanged', r, `updated ${CONSUMED}`);
+  });
+});
+
+describe('0013 — OE-61: the database sets created_at', () => {
+  test('app_rw holds INSERT on id, phone_e164, code_hash, expires_at and created_ip_prefix only', async () => {
+    assert.equal(
+      await db.value(
+        `SELECT string_agg(attname || '=' || has_column_privilege('app_rw', 'public.otp_challenge', attname, 'INSERT'),
+                           ',' ORDER BY attnum)
+           FROM pg_attribute WHERE attrelid = 'public.otp_challenge'::regclass AND attnum > 0 AND NOT attisdropped`,
+      ),
+      'id=true,phone_e164=true,code_hash=true,attempts=false,expires_at=true,consumed_at=false,' +
+        'created_ip_prefix=true,created_at=false',
+    );
+  });
+
+  for (const [label, extra, values] of [
+    [
+      "QA's T10: created_at = now() + 1 year, expires_at 5 minutes after it",
+      'created_at',
+      "now() + interval '1 year'",
+    ],
+    ['created_at named at all (= now())', 'created_at', 'now()'],
+    ['attempts named at insert (= 3)', 'attempts', '3'],
+    ['consumed_at named at insert (= now())', 'consumed_at', 'now()'],
+  ] as const) {
+    test(`app_rw INSERT: ${label} is REFUSED by the column grant (42501)`, async () => {
+      const expires = extra === 'created_at' ? `${values} + interval '5 minutes'` : undefined;
+      assertRefused(
+        `app_rw insert: ${label}`,
+        await asLogin(
+          LOGINS.app_rw,
+          insert(SCRATCH, { extra, values, ...(expires === undefined ? {} : { expires }) }),
+        ),
+        { message: 'ERROR:  42501: permission denied for table otp_challenge' },
+      );
+    });
+  }
+
+  test('a writer the grant does not bind (the superuser): a supplied created_at is replaced by now()', async () => {
+    const r = await asSuperuser(
+      insert(SCRATCH, { extra: 'created_at', values: "now() - interval '1 hour'" }),
+      `SELECT 'stored created_at = now(): ' || (created_at = now()) FROM public.otp_challenge WHERE id = '${SCRATCH}'`,
+    );
+    assertPermitted('superuser supplied created_at', r);
+    assertRead('superuser supplied created_at', r, 'stored created_at = now(): true');
+  });
+
+  test("the superuser's T10 (created_at = now() + 1 year, expires_at 5 minutes after) is REFUSED by otp_challenge_ttl_check (23514)", async () => {
+    assertRefusedBy(
+      'superuser T10',
+      await asSuperuser(
+        insert(SCRATCH, {
+          extra: 'created_at',
+          values: "now() + interval '1 year'",
+          expires: "now() + interval '1 year 5 minutes'",
+        }),
+      ),
+      CHECK_23514('otp_challenge_ttl_check'),
+      'CONSTRAINT NAME:  otp_challenge_ttl_check',
+    );
+  });
+
+  test('a long transaction: expires_at = clock_timestamp() + 5 minutes after 1 s is REFUSED (23514); now() + 5 minutes is accepted', async () => {
+    const refused = await asLogin(
+      LOGINS.app_rw,
+      'SELECT pg_sleep(1)',
+      insert(SCRATCH, { expires: "clock_timestamp() + interval '5 minutes'" }),
+    );
+    assertRefusedBy(
+      'clock_timestamp() + 5 min',
+      refused,
+      CHECK_23514('otp_challenge_ttl_check'),
+      'CONSTRAINT NAME:  otp_challenge_ttl_check',
+    );
+    const accepted = await asLogin(
+      LOGINS.app_rw,
+      'SELECT pg_sleep(1)',
+      insert(SCRATCH),
+      `SELECT 'created_at is the transaction start: ' || (created_at = now()) || ', before the clock: ' ||
+              (created_at < clock_timestamp()) FROM public.otp_challenge WHERE id = '${SCRATCH}'`,
+    );
+    assertPermitted('now() + 5 min in a long transaction', accepted);
+    assertRead(
+      'now() + 5 min in a long transaction',
+      accepted,
+      'created_at is the transaction start: true, before the clock: true',
+    );
+  });
+
+  test('otp_challenge carries exactly two non-internal triggers: BEFORE INSERT created_at, AFTER UPDATE single use', async () => {
+    assert.equal(
+      await db.value(
+        `SELECT string_agg(tgname || ':' || tgtype || ':' || tgfoid::regprocedure::text, ',' ORDER BY tgname)
+           FROM pg_trigger WHERE tgrelid = 'public.otp_challenge'::regclass AND NOT tgisinternal`,
+      ),
+      'trg_otp_challenge_created_at:7:set_otp_challenge_created_at(),' +
+        'trg_otp_challenge_single_use:17:assert_otp_challenge_single_use()',
+    );
   });
 });
 
