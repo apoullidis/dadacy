@@ -23,7 +23,12 @@ import {
   installInt10Fixtures,
   type Cluster,
 } from '../src/index.ts';
-import { assertPermitted, assertRefused, SQLSTATE_INSUFFICIENT_PRIVILEGE } from '../src/expect.ts';
+import {
+  assertPermitted,
+  assertRefused,
+  INT10_RAISE,
+  SQLSTATE_INSUFFICIENT_PRIVILEGE,
+} from '../src/expect.ts';
 
 const SUITE = 'int10-write-only';
 let db: Cluster;
@@ -170,5 +175,177 @@ describe('SA §INT-10 — the answering-service principal is write-only', () => 
           AND has_table_privilege('answering_service', c.oid, 'SELECT')`,
     );
     assert.equal(reachable, '0');
+  });
+});
+
+/**
+ * OD-242 (T-231): check (6) reads column-level INSERT. Until 0014 a grant of INSERT on some
+ * columns of any table fired the event trigger and the guard returned clean, because check (5)
+ * reads has_table_privilege(INSERT), which a column grant does not satisfy, and check (6) read
+ * SELECT, UPDATE and REFERENCES only (qa-verification, T-194 QA2-3). Every case below is red on
+ * 0013's guard and green on 0014's (T-231 evidence, RED-SUITE and the gate run).
+ */
+describe('OD-242 — a column-level INSERT grant to answering_service', () => {
+  // Every relation check (6) reads, except the one permitted INSERT target.
+  const RELATIONS_SQL = `
+    SELECT format('%I.%I', n.nspname, c.relname) || '|' ||
+           (SELECT string_agg(quote_ident(a.attname), ', ' ORDER BY a.attnum) FROM pg_attribute a
+             WHERE a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped)
+      FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE c.relkind IN ('r','p','v','m','f')
+       AND n.nspname NOT IN ('pg_catalog','information_schema') AND n.nspname NOT LIKE 'pg\\_toast%'
+       AND format('%s.%s', n.nspname, c.relname) <> 'public.out_of_hours_report'
+     ORDER BY 1`;
+  const ANY_COLUMN_INSERT_SQL = `
+    SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE c.relkind IN ('r','p','v','m','f')
+       AND n.nspname NOT IN ('pg_catalog','information_schema') AND n.nspname NOT LIKE 'pg\\_toast%'
+       AND format('%s.%s', n.nspname, c.relname) <> 'public.out_of_hours_report'
+       AND has_any_column_privilege('answering_service', c.oid, 'INSERT')`;
+  const QA_COLUMNS = 'id, phone_e164, code_hash, expires_at, created_ip_prefix';
+
+  test('is REFUSED KV010 at the GRANT on every application relation, and none is left holding one', async () => {
+    const rows = (await db.value(RELATIONS_SQL))
+      .split('\n')
+      .filter((l) => l !== '')
+      .map((l) => {
+        const [rel = '', cols = ''] = l.split('|');
+        assert.ok(rel !== '' && cols !== '', `unreadable catalogue row: ${l}`);
+        return { rel, cols };
+      });
+    const names = rows.map((r) => r.rel);
+    // Not vacuous: the relations QA used, 0005's, and a pgboss partitioned table are all read.
+    for (const must of ['public.otp_challenge', 'public.account', 'pgboss.job']) {
+      assert.ok(
+        names.includes(must),
+        `${must} is not among the relations read: ${names.join(', ')}`,
+      );
+    }
+    for (const { rel, cols } of rows) {
+      const r = await db.psql({
+        commands: [`GRANT INSERT (${cols}) ON ${rel} TO answering_service`],
+        verbose: true,
+      });
+      assertRefused(`GRANT INSERT (<every column>) ON ${rel}`, r, {
+        message: INT10_RAISE,
+        sqlstate: 'KV010',
+      });
+      assert.ok(
+        r.output.includes(`holds column privilege INSERT on ${rel}.`),
+        `${rel}: the refusal does not name the column INSERT it found.\n${r.output}`,
+      );
+    }
+    assert.equal(await db.value(ANY_COLUMN_INSERT_SQL), '0');
+  });
+
+  test("QA's grant on otp_challenge is refused, and the vendor login's INSERT is refused 42501 with nothing landing", async () => {
+    assertRefused(
+      "QA2-3's GRANT",
+      await db.psql({
+        commands: [`GRANT INSERT (${QA_COLUMNS}) ON public.otp_challenge TO answering_service`],
+        verbose: true,
+      }),
+      { message: INT10_RAISE, sqlstate: 'KV010' },
+    );
+    assertRefused(
+      "QA2-3's INSERT, as the vendor login",
+      await db.psql({
+        ...asVendor(
+          `INSERT INTO public.otp_challenge (${QA_COLUMNS})
+             VALUES ('01J00000000000000000T231S1', '+35799000231', decode(repeat('ab',32),'hex'),
+                     now() + interval '5 minutes', '10.0.0.0/24')`,
+        ),
+        verbose: true,
+      }),
+      {
+        message: 'permission denied for table otp_challenge',
+        sqlstate: SQLSTATE_INSUFFICIENT_PRIVILEGE,
+      },
+    );
+    assert.equal(await db.value(`SELECT count(*) FROM public.otp_challenge`), '0');
+  });
+
+  test('committed with the event trigger silenced, it is DETECTED by a direct call (the reconciler path)', async () => {
+    // session_replication_role = replica stops an ENABLE'd (origin) event trigger from firing:
+    // the one way to get a column grant past the preventive layer and ask the detective one.
+    const r = await db.psql({
+      commands: [
+        'SET LOCAL session_replication_role = replica',
+        'GRANT INSERT (phone_e164) ON public.otp_challenge TO answering_service',
+        'SET LOCAL session_replication_role = origin',
+        'SELECT kinvara_guard.assert_answering_service_write_only()',
+      ],
+      singleTransaction: true,
+      verbose: true,
+    });
+    assertRefused('the direct call', r, { message: INT10_RAISE, sqlstate: 'KV010' });
+    assert.ok(
+      r.output.includes('holds column privilege INSERT on public.otp_challenge.phone_e164'),
+      `the DETAIL does not name the column INSERT.\n${r.output}`,
+    );
+    assert.equal(
+      await db.value(ANY_COLUMN_INSERT_SQL),
+      '0',
+      'the transaction must have rolled back',
+    );
+  });
+
+  test('CONTROL — on out_of_hours_report a column INSERT is permitted, the guard is clean, and the vendor writes through it', async () => {
+    const cols = 'id, provider_call_ref, severity, structured_report, caller_locale';
+    await db.sql({
+      commands: [
+        'REVOKE INSERT ON public.out_of_hours_report FROM answering_service',
+        `GRANT INSERT (${cols}) ON public.out_of_hours_report TO answering_service`,
+        'SELECT kinvara_guard.assert_answering_service_write_only()',
+      ],
+    });
+    assert.equal(
+      await db.value(
+        `SELECT has_table_privilege('answering_service','public.out_of_hours_report','INSERT')::text || '/' ||
+                has_any_column_privilege('answering_service','public.out_of_hours_report','INSERT')::text`,
+      ),
+      'false/true',
+      'the control must hold a COLUMN grant only, or it tests check (5) instead',
+    );
+    assertPermitted(
+      'the vendor INSERT through the column grant',
+      await db.psql(
+        asVendor(
+          `INSERT INTO public.out_of_hours_report (${cols})
+             VALUES ('01J00000000000000000T231C1','CALLREF-T231','low','{}','el')`,
+        ),
+      ),
+    );
+    await db.sql({
+      commands: [
+        `REVOKE INSERT (${cols}) ON public.out_of_hours_report FROM answering_service`,
+        'GRANT INSERT ON public.out_of_hours_report TO answering_service',
+        'SELECT kinvara_guard.assert_answering_service_write_only()',
+      ],
+    });
+    assert.equal(
+      await db.value(
+        `SELECT count(*) FROM public.out_of_hours_report WHERE id = '01J00000000000000000T231C1'`,
+      ),
+      '1',
+    );
+  });
+
+  test('CONTROL — a TABLE-level INSERT elsewhere is still check (5), reported once, with no column line added', async () => {
+    const r = await db.psql({
+      commands: ['GRANT INSERT ON public.account TO answering_service'],
+      verbose: true,
+    });
+    assertRefused('GRANT INSERT ON account', r, { message: INT10_RAISE, sqlstate: 'KV010' });
+    assert.ok(
+      r.output.includes(
+        'answering_service holds INSERT on public.account — the only permitted target is public.out_of_hours_report',
+      ),
+      `check (5)'s line is missing.\n${r.output}`,
+    );
+    assert.ok(
+      !r.output.includes('column privilege INSERT'),
+      `a column line was added to check (5)'s case.\n${r.output}`,
+    );
   });
 });
