@@ -110,7 +110,7 @@ const SUITES: readonly Suite[] = [
     file: 'scripts/negative-tests/migration-lint.sh',
     cases: 295,
     state: 'GREEN',
-    why: "gate:migration-lint: expand/contract, protected objects (the I-5 objects since T-186, 0011's since T-192), R-TRIGGER-BYPASS by name, R-PROTECTED-RENAME, R-ADMIN-MEMBERSHIP, R-PROTECTED-TABLE, R-PROTECTED-EXTENSION, U&\"…\" decoding, R-ROLE-SWITCH, R-RUN-AS, R-MERGED, R-TRAILER, R-VENDOR-SQL (T-021, T-031, T-167, T-186, T-192, T-227)",
+    why: 'gate:migration-lint: expand/contract, protected objects (the I-5 objects since T-186, 0011\'s since T-192), R-TRIGGER-BYPASS by name, R-PROTECTED-RENAME, R-ADMIN-MEMBERSHIP, R-PROTECTED-TABLE, R-PROTECTED-EXTENSION, U&"…" decoding, R-ROLE-SWITCH, R-RUN-AS, R-MERGED, R-TRAILER, R-VENDOR-SQL (T-021, T-031, T-167, T-186, T-192, T-227)',
   },
   {
     id: 'semgrep',

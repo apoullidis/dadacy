@@ -1356,7 +1356,10 @@ describe('I-5 clause (b), OE-59 — a ts_senior row becoming live locks its acco
   test('QA-B1 NG-RC — READ COMMITTED, ONE app_rw transaction activates a suspended account holding no ts_senior row, and an app_admin_rw grant of its FIRST ts_senior arrives while it is open: the grant WAITS, the countersignature as that account is REFUSED (KV052), nothing is stored', async () => {
     const acc = await freshAccount('NGRC', 'suspended');
     const a = nextApprovalId();
-    assertPermitted('pending approval', await asSuperuser(insertPending(a, 'safeguarding_referral#make', ACC.dsl)));
+    assertPermitted(
+      'pending approval',
+      await asSuperuser(insertPending(a, 'safeguarding_referral#make', ACC.dsl)),
+    );
     const flip = asApp(
       'BEGIN',
       ACTIVATE(acc),
@@ -1386,7 +1389,12 @@ describe('I-5 clause (b), OE-59 — a ts_senior row becoming live locks its acco
     const activating = asApp('BEGIN', ACTIVATE(acc), 'SELECT pg_sleep(4)', 'ROLLBACK');
     await sleep(1500);
     // Inside BEGIN … ROLLBACK, so that if the lock did NOT block it, the grant never commits.
-    const grant = await asAdmin('BEGIN', "SET LOCAL lock_timeout = '1s'", GRANT_TS(acc), 'ROLLBACK');
+    const grant = await asAdmin(
+      'BEGIN',
+      "SET LOCAL lock_timeout = '1s'",
+      GRANT_TS(acc),
+      'ROLLBACK',
+    );
     const act = await activating;
     assertPermitted('the activation transaction (no ts_senior row, so OE-48 permits it)', act);
     assertRefusedWith('the concurrent grant', grant, LOCK_TIMEOUT);
@@ -1400,11 +1408,20 @@ describe('I-5 clause (b), OE-59 — a ts_senior row becoming live locks its acco
   test('the same lock for every other way a ts_senior row becomes live on the account: an app_admin_rw RE-ROLE of its parent row to ts_senior, and a MOVE of another account’s live ts_senior row onto it, each WAIT on an open app_rw activation (55P03)', async () => {
     const acc = await freshAccount('NGREROLE', 'suspended');
     const donor = await freshAccount('NGDONOR', 'active');
-    assertPermitted('parent row', await asApp(`INSERT INTO public.account_role (account_id, role) VALUES ('${acc}', 'parent')`));
+    assertPermitted(
+      'parent row',
+      await asApp(`INSERT INTO public.account_role (account_id, role) VALUES ('${acc}', 'parent')`),
+    );
     await asFixtureAdmin(GRANT_TS(donor));
     for (const [what, sql] of [
-      ['re-role parent to ts_senior', `UPDATE public.account_role SET role = 'ts_senior' WHERE account_id = '${acc}' AND role = 'parent'`],
-      ['move a live ts_senior onto it', `UPDATE public.account_role SET account_id = '${acc}' WHERE account_id = '${donor}' AND role = 'ts_senior'`],
+      [
+        're-role parent to ts_senior',
+        `UPDATE public.account_role SET role = 'ts_senior' WHERE account_id = '${acc}' AND role = 'parent'`,
+      ],
+      [
+        'move a live ts_senior onto it',
+        `UPDATE public.account_role SET account_id = '${acc}' WHERE account_id = '${donor}' AND role = 'ts_senior'`,
+      ],
     ] as const) {
       const activating = asApp('BEGIN', ACTIVATE(acc), 'SELECT pg_sleep(4)', 'ROLLBACK');
       await sleep(1500);
@@ -1414,7 +1431,11 @@ describe('I-5 clause (b), OE-59 — a ts_senior row becoming live locks its acco
       assertRefusedWith(`${what}: the concurrent admin write`, write, LOCK_TIMEOUT);
     }
     assert.equal(
-      (await db.value(statusOf(acc))) + '|' + (await db.value(liveTsSenior(acc))) + '|' + (await db.value(liveTsSenior(donor))),
+      (await db.value(statusOf(acc))) +
+        '|' +
+        (await db.value(liveTsSenior(acc))) +
+        '|' +
+        (await db.value(liveTsSenior(donor))),
       'suspended,true|0|1',
       'nothing committed',
     );
@@ -1462,7 +1483,10 @@ describe('I-5 clause (b), OE-59 — a ts_senior row becoming live locks its acco
   test('CONTROL (QA NG-RRC) — a REPEATABLE READ app_rw transaction whose snapshot predates a committed grant activates the account and is REFUSED at its countersignature (KV052): the grant is outside its snapshot', async () => {
     const acc = await freshAccount('NGRRC', 'suspended');
     const a = nextApprovalId();
-    assertPermitted('pending approval', await asSuperuser(insertPending(a, 'safeguarding_referral#make', ACC.dsl)));
+    assertPermitted(
+      'pending approval',
+      await asSuperuser(insertPending(a, 'safeguarding_referral#make', ACC.dsl)),
+    );
     const flip = asApp(
       'BEGIN ISOLATION LEVEL REPEATABLE READ',
       `SELECT count(*) FROM public.account_role WHERE account_id = '${acc}'`,
@@ -1528,7 +1552,12 @@ describe('I-5 clause (b), OE-59 — a ts_senior row becoming live locks its acco
       'ROLLBACK',
     );
     await sleep(1500);
-    const revoke = await asAdmin('BEGIN', "SET LOCAL lock_timeout = '1s'", REVOKE_TS(acc), 'ROLLBACK');
+    const revoke = await asAdmin(
+      'BEGIN',
+      "SET LOCAL lock_timeout = '1s'",
+      REVOKE_TS(acc),
+      'ROLLBACK',
+    );
     const parent = await asApp(
       'BEGIN',
       "SET LOCAL lock_timeout = '1s'",
@@ -1695,7 +1724,10 @@ describe('I-5, OE-48/OE-57/OE-58 — the account guard admits exactly the nine s
     for (const col of ['status', 'dob_verified_18'] as const) {
       assertRefusedWith(
         `${col} NULL`,
-        await asApp('BEGIN', `UPDATE public.account SET ${col} = NULL WHERE id = '${ACC.suspended}'`),
+        await asApp(
+          'BEGIN',
+          `UPDATE public.account SET ${col} = NULL WHERE id = '${ACC.suspended}'`,
+        ),
         `ERROR:  23502: null value in column "${col}" of relation "account" violates not-null constraint`,
       );
     }

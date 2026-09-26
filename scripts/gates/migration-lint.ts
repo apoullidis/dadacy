@@ -1594,7 +1594,8 @@ for (const m of migrations) {
         ).test(f)
       )
         hits.push('moves it to another schema');
-      if (new RegExp(`\\bRENAME TO ${name}`).test(f)) hits.push('renames another relation TO its name');
+      if (new RegExp(`\\bRENAME TO ${name}`).test(f))
+        hits.push('renames another relation TO its name');
       if (
         !(m.dir === 'up' && m.num === t.createdBy) &&
         new RegExp(
