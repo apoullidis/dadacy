@@ -389,7 +389,7 @@ describe('0007 — what exists', () => {
     );
   });
 
-  test('T-186: account_role carries an enabled BEFORE ROW INSERT OR UPDATE OR DELETE trigger calling an INVOKER function owned by app_ddl (OE-47)', async () => {
+  test('T-186, T-227: account_role carries an enabled AFTER ROW INSERT OR UPDATE OR DELETE trigger (BEFORE until 0012, OD-237 TL-1) calling an INVOKER function owned by app_ddl (OE-47)', async () => {
     assert.equal(
       await db.value(
         `SELECT t.tgenabled::text || '|' || pg_get_triggerdef(t.oid) || '|' || p.prosecdef::text
@@ -398,7 +398,7 @@ describe('0007 — what exists', () => {
           WHERE t.tgname = 'trg_account_role_ts_senior_admin_only'
             AND t.tgrelid = 'public.account_role'::regclass`,
       ),
-      'O|CREATE TRIGGER trg_account_role_ts_senior_admin_only BEFORE INSERT OR DELETE OR UPDATE ON public.account_role FOR EACH ROW EXECUTE FUNCTION assert_ts_senior_written_by_admin()|false|app_ddl|search_path=pg_catalog',
+      'O|CREATE TRIGGER trg_account_role_ts_senior_admin_only AFTER INSERT OR DELETE OR UPDATE ON public.account_role FOR EACH ROW EXECUTE FUNCTION assert_ts_senior_written_by_admin()|false|app_ddl|search_path=pg_catalog',
     );
   });
 
@@ -1061,7 +1061,7 @@ describe('I-5 clause (b), OE-48 as narrowed by OE-57 and OE-58 — app_rw may on
     assert.equal(await db.value(statusOf(acc)), 'pending,true', 'restored');
   });
 
-  test('app_rw is refused every other way to the same columns: a changed id (of an active and of a suspended holder), an upsert (ON CONFLICT DO UPDATE), a MERGE, a data-modifying CTE in both orders, a TEMP view (each KV055)', async () => {
+  test('app_rw is refused every other way to the same columns: a changed id (of an active and of a suspended holder: 23503, account_role’s foreign key, since T-227), an upsert (ON CONFLICT DO UPDATE), a MERGE, a data-modifying CTE in both orders, a TEMP view (each KV055)', async () => {
     const before = await db.value(ACCOUNT_TABLE);
     const a = nextApprovalId();
     const cases: readonly [string, string, string][] = [
@@ -1111,7 +1111,15 @@ describe('I-5 clause (b), OE-48 as narrowed by OE-57 and OE-58 — app_rw may on
       ],
     ];
     for (const [what, sql, columns] of cases) {
-      assertRefusedWith(what, await asApp('BEGIN', sql), errAccountWrite(columns, LOGINS.app_rw));
+      // T-227: the guard fires AFTER UPDATE (OD-237 TL-1), after the foreign-key check on
+      // account_role, whose internal trigger sorts first; a ts_senior holder always has a referencing
+      // row, so an id change is refused 23503 before the guard runs. The guard's own id clause is
+      // pinned with the foreign key dropped, below (T-227 — the guard refuses … on its own).
+      const expected =
+        columns === 'id'
+          ? 'ERROR:  23503: update or delete on table "account" violates foreign key constraint "account_role_account_id_fkey" on table "account_role"'
+          : errAccountWrite(columns, LOGINS.app_rw);
+      assertRefusedWith(what, await asApp('BEGIN', sql), expected);
     }
     assert.equal(await db.value(storedRow(a)), '(none)', 'nothing stored');
     assert.equal(await db.value(ACCOUNT_TABLE), before, 'account unchanged');
@@ -1307,6 +1315,385 @@ describe('I-5 clause (b), OE-48 — the guard reads the account’s ts_senior ro
   });
 });
 
+/**
+ * T-227, decisions.md OE-59 (T-192 QA-B1): a ts_senior row that becomes LIVE on an account (a grant,
+ * an un-revoke, a re-role, a move) locks that account row FOR SHARE, inside the OE-47 guard (0012).
+ * Until 0012, a first-ever grant took only its foreign key's FOR KEY SHARE, which does not conflict
+ * with an app_rw activation's FOR NO KEY UPDATE, so under READ COMMITTED an open activating
+ * transaction saw the committed grant, countersigned as the account, suspended it again and
+ * committed (QA NG-RC: stored). Each case below uses a fresh account holding no ts_senior row.
+ * FOR SHARE is the weakest mode that conflicts with an UPDATE of the account; the session-insert
+ * control is what tells it from FOR UPDATE (which conflicts with the foreign key's FOR KEY SHARE).
+ */
+const GRANT_TS = (acc: string): string =>
+  `INSERT INTO public.account_role (account_id, role) VALUES ('${acc}', 'ts_senior')`;
+const ACTIVATE = (acc: string): string =>
+  `UPDATE public.account SET status = 'active' WHERE id = '${acc}'`;
+/** A fresh fixture account holding no role, written by the superuser (the account guard fires on UPDATE only). */
+async function freshAccount(tag: string, status: string): Promise<string> {
+  const acc = id(tag);
+  assertPermitted(
+    `fixture ${tag}`,
+    await asSuperuser(
+      `INSERT INTO public.account (id, pseudonym, tos_version, status, dob_verified_18)
+         VALUES ('${acc}', '${id(`PS${tag}`)}', 't227-tos', '${status}', true)`,
+    ),
+  );
+  return acc;
+}
+const LOCK_TIMEOUT = 'ERROR:  55P03: canceling statement due to lock timeout';
+const SERIALIZE = 'ERROR:  40001: could not serialize access due to concurrent update';
+
+describe('I-5 clause (b), OE-59 — a ts_senior row becoming live locks its account row FOR SHARE, so a first grant serialises with an open app_rw activation (T-227; T-192 QA-B1)', () => {
+  test('QA-B1 NG-RC — READ COMMITTED, ONE app_rw transaction activates a suspended account holding no ts_senior row, and an app_admin_rw grant of its FIRST ts_senior arrives while it is open: the grant WAITS, the countersignature as that account is REFUSED (KV052), nothing is stored', async () => {
+    const acc = await freshAccount('NGRC', 'suspended');
+    const a = nextApprovalId();
+    assertPermitted('pending approval', await asSuperuser(insertPending(a, 'safeguarding_referral#make', ACC.dsl)));
+    const flip = asApp(
+      'BEGIN',
+      ACTIVATE(acc),
+      'SELECT pg_sleep(3)',
+      countersign(a, acc),
+      `UPDATE public.account SET status = 'suspended' WHERE id = '${acc}'`,
+      'COMMIT',
+    );
+    await sleep(1500);
+    const t0 = Date.now();
+    const grant = await asAdmin(GRANT_TS(acc));
+    const waitedMs = Date.now() - t0;
+    const t1 = await flip;
+    assertRefusedWith('the flip (activate, countersign, suspend)', t1, ERR_NOT_TS_SENIOR);
+    assertPermitted('the grant, once the flip has ended', grant);
+    assert.ok(
+      waitedMs >= 1000,
+      `the grant returned after ${String(waitedMs)} ms; it must wait for the open activation (about 1.5 s)`,
+    );
+    assert.equal(await db.value(storedRow(a)), '-|-|-|-', 'nothing stored: no approver on the row');
+    assert.equal(await db.value(statusOf(acc)), 'suspended,true', 'the activation rolled back');
+    assert.equal(await db.value(liveTsSenior(acc)), '1', 'the grant committed after it');
+  });
+
+  test('an app_admin_rw grant of a first ts_senior WAITS on an open app_rw activation of the same account, and times out (55P03)', async () => {
+    const acc = await freshAccount('NGWAIT', 'suspended');
+    const activating = asApp('BEGIN', ACTIVATE(acc), 'SELECT pg_sleep(4)', 'ROLLBACK');
+    await sleep(1500);
+    // Inside BEGIN … ROLLBACK, so that if the lock did NOT block it, the grant never commits.
+    const grant = await asAdmin('BEGIN', "SET LOCAL lock_timeout = '1s'", GRANT_TS(acc), 'ROLLBACK');
+    const act = await activating;
+    assertPermitted('the activation transaction (no ts_senior row, so OE-48 permits it)', act);
+    assertRefusedWith('the concurrent grant', grant, LOCK_TIMEOUT);
+    assert.equal(
+      (await db.value(statusOf(acc))) + '|' + (await db.value(liveTsSenior(acc))),
+      'suspended,true|0',
+      'neither committed',
+    );
+  });
+
+  test('the same lock for every other way a ts_senior row becomes live on the account: an app_admin_rw RE-ROLE of its parent row to ts_senior, and a MOVE of another account’s live ts_senior row onto it, each WAIT on an open app_rw activation (55P03)', async () => {
+    const acc = await freshAccount('NGREROLE', 'suspended');
+    const donor = await freshAccount('NGDONOR', 'active');
+    assertPermitted('parent row', await asApp(`INSERT INTO public.account_role (account_id, role) VALUES ('${acc}', 'parent')`));
+    await asFixtureAdmin(GRANT_TS(donor));
+    for (const [what, sql] of [
+      ['re-role parent to ts_senior', `UPDATE public.account_role SET role = 'ts_senior' WHERE account_id = '${acc}' AND role = 'parent'`],
+      ['move a live ts_senior onto it', `UPDATE public.account_role SET account_id = '${acc}' WHERE account_id = '${donor}' AND role = 'ts_senior'`],
+    ] as const) {
+      const activating = asApp('BEGIN', ACTIVATE(acc), 'SELECT pg_sleep(4)', 'ROLLBACK');
+      await sleep(1500);
+      const write = await asAdmin('BEGIN', "SET LOCAL lock_timeout = '1s'", sql, 'ROLLBACK');
+      const act = await activating;
+      assertPermitted(`${what}: the activation transaction`, act);
+      assertRefusedWith(`${what}: the concurrent admin write`, write, LOCK_TIMEOUT);
+    }
+    assert.equal(
+      (await db.value(statusOf(acc))) + '|' + (await db.value(liveTsSenior(acc))) + '|' + (await db.value(liveTsSenior(donor))),
+      'suspended,true|0|1',
+      'nothing committed',
+    );
+  });
+
+  test('the other order — an app_rw activation WAITS on an open app_admin_rw grant, and is REFUSED (KV055) once the grant commits', async () => {
+    const acc = await freshAccount('NGREV', 'suspended');
+    const granting = asAdmin('BEGIN', GRANT_TS(acc), 'SELECT pg_sleep(3)', 'COMMIT');
+    await sleep(1500);
+    const act = await asApp(ACTIVATE(acc));
+    const grant = await granting;
+    assertPermitted('the grant', grant);
+    assertRefusedWith('the activation', act, errAccountWrite('status', LOGINS.app_rw));
+    assert.equal(
+      (await db.value(statusOf(acc))) + '|' + (await db.value(liveTsSenior(acc))),
+      'suspended,true|1',
+      'the account stayed suspended and the grant is live',
+    );
+  });
+
+  for (const level of ['REPEATABLE READ', 'SERIALIZABLE'] as const) {
+    test(`${level}: an app_admin_rw grant whose snapshot predates a COMMITTED app_rw activation of the account is REFUSED (40001), and nothing is granted`, async () => {
+      const acc = await freshAccount(level === 'SERIALIZABLE' ? 'ADMSER' : 'ADMRR', 'suspended');
+      const granting = asAdmin(
+        `BEGIN ISOLATION LEVEL ${level}`,
+        // Takes the snapshot, which sees the account suspended.
+        `SELECT count(*) FROM public.account_role WHERE account_id = '${acc}'`,
+        'SELECT pg_sleep(3)',
+        GRANT_TS(acc),
+        'COMMIT',
+      );
+      await sleep(1500);
+      const act = await asApp(ACTIVATE(acc));
+      const grant = await granting;
+      assertPermitted('the activation (no ts_senior row yet)', act);
+      assertRefusedWith(`${level} grant`, grant, SERIALIZE);
+      assert.equal(
+        (await db.value(statusOf(acc))) + '|' + (await db.value(liveTsSenior(acc))),
+        'active,true|0',
+        'the activation committed; the grant did not',
+      );
+    });
+  }
+
+  test('CONTROL (QA NG-RRC) — a REPEATABLE READ app_rw transaction whose snapshot predates a committed grant activates the account and is REFUSED at its countersignature (KV052): the grant is outside its snapshot', async () => {
+    const acc = await freshAccount('NGRRC', 'suspended');
+    const a = nextApprovalId();
+    assertPermitted('pending approval', await asSuperuser(insertPending(a, 'safeguarding_referral#make', ACC.dsl)));
+    const flip = asApp(
+      'BEGIN ISOLATION LEVEL REPEATABLE READ',
+      `SELECT count(*) FROM public.account_role WHERE account_id = '${acc}'`,
+      'SELECT pg_sleep(3)',
+      ACTIVATE(acc),
+      countersign(a, acc),
+      'COMMIT',
+    );
+    await sleep(1500);
+    const grant = await asAdmin(GRANT_TS(acc));
+    const t1 = await flip;
+    assertPermitted('the grant (committed after the snapshot)', grant);
+    assertRefusedWith('the countersignature', t1, ERR_NOT_TS_SENIOR);
+    assert.equal(await db.value(storedRow(a)), '-|-|-|-', 'nothing stored');
+  });
+
+  test('CONTROL — app_admin_rw grants ts_senior to a SUSPENDED account and activates it in ONE transaction (its own lock does not block its own write); a countersignature by it is accepted (rolled back)', async () => {
+    const acc = await freshAccount('GRANTACT', 'suspended');
+    assertPermitted(
+      'grant then activate, one admin transaction',
+      await asAdmin('BEGIN', GRANT_TS(acc), ACTIVATE(acc), 'COMMIT'),
+    );
+    assert.equal(
+      (await db.value(statusOf(acc))) + '|' + (await db.value(liveTsSenior(acc))),
+      'active,true|1',
+    );
+    const a = nextApprovalId();
+    const r = await asApp(
+      'BEGIN',
+      insertPending(a, 'safeguarding_referral#make', ACC.dsl),
+      countersign(a, acc),
+      `SELECT 'stored=' || approver_id FROM public.approval WHERE id = '${a}'`,
+      'ROLLBACK',
+    );
+    assertPermitted('the countersignature', r);
+    assert.ok(r.stdout.includes(`stored=${acc}`), `accepted inside the transaction.\n${r.output}`);
+  });
+
+  test('CONTROL — FOR SHARE, not FOR UPDATE: an app_rw session insert for an account with an OPEN app_admin_rw grant does not wait (its foreign key takes FOR KEY SHARE), lock_timeout 1 s', async () => {
+    const acc = await freshAccount('LOCKSIDE', 'active');
+    const granting = asAdmin('BEGIN', GRANT_TS(acc), 'SELECT pg_sleep(3)', 'ROLLBACK');
+    await sleep(1500);
+    const session = await asApp(
+      'BEGIN',
+      "SET LOCAL lock_timeout = '1s'",
+      `INSERT INTO public.app_session (id, token_hash, account_id, auth_method, absolute_expires_at)
+         VALUES ('${id('SESSLOCKSIDE')}', sha256('t227'::bytea), '${acc}', 'password', now() + interval '1 day')`,
+      "SELECT 'session insert did not wait'",
+      'ROLLBACK',
+    );
+    assertPermitted('the open grant', await granting);
+    assertPermitted('the session insert', session);
+    assert.ok(session.stdout.includes('session insert did not wait'), session.output);
+  });
+
+  test('CONTROL — only a ts_senior row becoming live locks the account: while app_rw holds an open write of an account, an app_admin_rw REVOKE of its live ts_senior and an app_rw insert of a parent role for it do not wait (lock_timeout 1 s)', async () => {
+    const acc = await freshAccount('NOLOCK', 'active');
+    await asFixtureAdmin(GRANT_TS(acc));
+    const writing = asApp(
+      'BEGIN',
+      `UPDATE public.account SET locale = 'el' WHERE id = '${acc}'`,
+      'SELECT pg_sleep(3)',
+      'ROLLBACK',
+    );
+    await sleep(1500);
+    const revoke = await asAdmin('BEGIN', "SET LOCAL lock_timeout = '1s'", REVOKE_TS(acc), 'ROLLBACK');
+    const parent = await asApp(
+      'BEGIN',
+      "SET LOCAL lock_timeout = '1s'",
+      `INSERT INTO public.account_role (account_id, role) VALUES ('${acc}', 'parent')`,
+      'ROLLBACK',
+    );
+    assertPermitted('the open locale write', await writing);
+    assertPermitted('the revoke', revoke);
+    assertPermitted('the parent role insert', parent);
+  });
+});
+
+/**
+ * T-227, OD-237 TL-1: both row guards are AFTER triggers since 0012, so a BEFORE trigger that sorts
+ * after one of them by name can no longer change the row once the guard has approved it. Until 0012
+ * a BEFORE UPDATE trigger on account that set status active on a locale write stored a
+ * countersignature (T-192 tech-lead ORD1), and a BEFORE INSERT trigger on account_role re-roling
+ * parent to ts_senior did the same for app_rw (T-227 ORD2). Each plant runs in ONE superuser
+ * transaction: the trigger is created under SET LOCAL ROLE app_ddl (the owner, as a migration runs),
+ * the write under SET LOCAL ROLE to the app_rw login (current_user is then the login, which is what
+ * the guards read); psql stops at the refusal, so nothing commits.
+ */
+describe('I-5, OD-237 TL-1 — both row guards fire AFTER the row is written, so a later-sorting BEFORE trigger cannot change a row the guard approved (T-227)', () => {
+  test('both guards are AFTER ROW triggers (BEFORE until 0012)', async () => {
+    assert.equal(
+      await db.value(
+        `SELECT string_agg(tgname || '=' || CASE WHEN tgtype & 2 = 2 THEN 'BEFORE' ELSE 'AFTER' END
+                           || '/' || CASE WHEN tgtype & 1 = 1 THEN 'ROW' ELSE 'STATEMENT' END, ',' ORDER BY tgname)
+           FROM pg_trigger
+          WHERE tgname IN ('trg_account_ts_senior_status_admin_only', 'trg_account_role_ts_senior_admin_only')`,
+      ),
+      'trg_account_role_ts_senior_admin_only=AFTER/ROW,trg_account_ts_senior_status_admin_only=AFTER/ROW',
+    );
+  });
+
+  test('ORD1 — a BEFORE UPDATE trigger on account sorting after the guard, setting status active on a locale write: app_rw’s locale write to a SUSPENDED live holder is REFUSED (KV055)', async () => {
+    const r = await asSuperuser(
+      'BEGIN',
+      'SET LOCAL ROLE app_ddl',
+      `CREATE FUNCTION public.t227_autoactivate() RETURNS trigger LANGUAGE plpgsql AS $f$
+         BEGIN IF NEW.locale IS DISTINCT FROM OLD.locale THEN NEW.status := 'active'; END IF; RETURN NEW; END $f$`,
+      `CREATE TRIGGER trg_account_zz_autoactivate BEFORE UPDATE ON public.account
+         FOR EACH ROW EXECUTE FUNCTION public.t227_autoactivate()`,
+      'RESET ROLE',
+      `SET LOCAL ROLE ${LOGINS.app_rw}`,
+      `UPDATE public.account SET locale = 'el' WHERE id = '${ACC.suspended}'`,
+      'COMMIT',
+    );
+    assertRefusedWith('ORD1', r, errAccountWrite('status', LOGINS.app_rw));
+    assert.equal(await db.value(statusOf(ACC.suspended)), 'suspended,true');
+  });
+
+  test('ORD2 — a BEFORE INSERT trigger on account_role sorting after the OE-47 guard, re-roling parent to ts_senior: app_rw’s parent insert is REFUSED (KV053)', async () => {
+    const r = await asSuperuser(
+      'BEGIN',
+      'SET LOCAL ROLE app_ddl',
+      `CREATE FUNCTION public.t227_promote() RETURNS trigger LANGUAGE plpgsql AS $f$
+         BEGIN IF NEW.role = 'parent' THEN NEW.role := 'ts_senior'; END IF; RETURN NEW; END $f$`,
+      `CREATE TRIGGER trg_account_role_zz_promote BEFORE INSERT ON public.account_role
+         FOR EACH ROW EXECUTE FUNCTION public.t227_promote()`,
+      'RESET ROLE',
+      `SET LOCAL ROLE ${LOGINS.app_rw}`,
+      `INSERT INTO public.account_role (account_id, role) VALUES ('${ACC.noRole}', 'parent')`,
+      'COMMIT',
+    );
+    assertRefusedWith('ORD2', r, errTsSeniorWrite('INSERT', LOGINS.app_rw));
+    assert.equal(
+      await db.value(
+        `SELECT count(*) || '|' || (SELECT count(*) FROM pg_proc WHERE proname LIKE 't227\\_%')
+           FROM public.account_role WHERE account_id = '${ACC.noRole}'`,
+      ),
+      '0|0',
+      'no role row and no plant left behind',
+    );
+  });
+});
+
+/**
+ * T-227, T-192 QA-B2 and QA-B3. The account guard names its admitted status moves as typed (OLD, NEW)
+ * pairs and refuses a NULL itself (0012); before that a NULL status made its comparison NULL and was
+ * admitted, and only the column's NOT NULL refused it (QA NULLGUARD). The matrix pins, over the real
+ * app_rw login, that no status move but the nine is admitted; the moves are typed here from the
+ * rulings (OE-57: app_rw MAY suspend, remove or erase; OE-58: nothing out of suspended, removed or
+ * erased but towards less eligibility; T-192 § Rework 1c: pending -> suspended), not read from 0012.
+ */
+const RULED_MOVES: ReadonlySet<string> = new Set([
+  'active>suspended',
+  'active>removed',
+  'active>erased',
+  'pending>suspended',
+  'pending>removed',
+  'pending>erased',
+  'suspended>removed',
+  'suspended>erased',
+  'removed>erased',
+]);
+const STATUSES = ['pending', 'active', 'suspended', 'removed', 'erased'] as const;
+
+describe('I-5, OE-48/OE-57/OE-58 — the account guard admits exactly the nine status moves, and refuses a NULL itself (T-227; T-192 QA-B2, QA-B3)', () => {
+  test('QA-B3 — the full 5×5 status matrix for a live ts_senior holder, written by app_rw: the nine ruled moves and the five no-ops are ACCEPTED, the other eleven REFUSED (KV055)', async () => {
+    const acc = await freshAccount('MATRIX', 'active');
+    await asFixtureAdmin(GRANT_TS(acc));
+    const mismatches: string[] = [];
+    let accepted = 0;
+    let refused = 0;
+    for (const from of STATUSES) {
+      await asFixtureAdmin(`UPDATE public.account SET status = '${from}' WHERE id = '${acc}'`);
+      assert.equal(await db.value(statusOf(acc)), `${from},true`, `fixture at ${from}`);
+      for (const to of STATUSES) {
+        const r = await asApp(
+          'BEGIN',
+          `UPDATE public.account SET status = '${to}' WHERE id = '${acc}'`,
+          'ROLLBACK',
+        );
+        const admitted = from === to || RULED_MOVES.has(`${from}>${to}`);
+        if (admitted) {
+          accepted += 1;
+          if (r.code !== 0) mismatches.push(`${from}>${to} refused:\n${r.output}`);
+        } else {
+          refused += 1;
+          if (r.code === 0 || !r.output.includes(errAccountWrite('status', LOGINS.app_rw))) {
+            mismatches.push(`${from}>${to} not refused KV055:\n${r.output}`);
+          }
+        }
+      }
+    }
+    assert.deepEqual(mismatches, [], mismatches.join('\n'));
+    assert.equal(`${String(accepted)}|${String(refused)}`, '14|11', 'every cell ran');
+  });
+
+  const nullCase = (what: string, ddl: string, write: string, columns: string): void => {
+    test(`QA-B2 — with ${what} dropped (rolled back), the guard itself REFUSES ${write.replace(/^UPDATE public\.account SET /, '').replace(/ WHERE.*$/s, '')} for app_rw on a live holder (KV055 ${columns})`, async () => {
+      const r = await asSuperuser(
+        'BEGIN',
+        ddl,
+        `SET LOCAL ROLE ${LOGINS.app_rw}`,
+        write,
+        'COMMIT',
+      );
+      assertRefusedWith(`${what}: ${write}`, r, errAccountWrite(columns, LOGINS.app_rw));
+    });
+  };
+  nullCase(
+    'status NOT NULL',
+    'ALTER TABLE public.account ALTER COLUMN status DROP NOT NULL',
+    `UPDATE public.account SET status = NULL WHERE id = '${ACC.suspended}'`,
+    'status',
+  );
+  nullCase(
+    'dob_verified_18 NOT NULL',
+    'ALTER TABLE public.account ALTER COLUMN dob_verified_18 DROP NOT NULL',
+    `UPDATE public.account SET dob_verified_18 = NULL WHERE id = '${ACC.suspended}'`,
+    'dob_verified_18',
+  );
+  nullCase(
+    "account_role's foreign key",
+    'ALTER TABLE public.account_role DROP CONSTRAINT account_role_account_id_fkey',
+    `UPDATE public.account SET id = '${id('MOVEDNOFK')}' WHERE id = '${ACC.suspended}'`,
+    'id',
+  );
+
+  test('CONTROL — with NOT NULL in place, a NULL status or dob_verified_18 from app_rw is REFUSED 23502 before the guard runs', async () => {
+    for (const col of ['status', 'dob_verified_18'] as const) {
+      assertRefusedWith(
+        `${col} NULL`,
+        await asApp('BEGIN', `UPDATE public.account SET ${col} = NULL WHERE id = '${ACC.suspended}'`),
+        `ERROR:  23502: null value in column "${col}" of relation "account" violates not-null constraint`,
+      );
+    }
+    assert.equal(await db.value(statusOf(ACC.suspended)), 'suspended,true');
+  });
+});
+
 /** Every account_role row, byte for byte, so an attack can be shown to leave no trace. */
 const ROLE_TABLE = `SELECT string_agg(account_id || ':' || role || ':' || coalesce(granted_by, '-') || ':'
                         || granted_at::text || ':' || coalesce(revoked_at::text, 'LIVE'), ' | '
@@ -1462,9 +1849,10 @@ describe('I-5 clause (b), OE-47 — app_rw cannot write a ts_senior row, so QA-F
         `UPDATE public.account_role SET role = 'parent' WHERE account_id = '${ACC.tsSenior}' AND role = 'ts_senior'`,
       ],
       [
-        // A BEFORE INSERT trigger fires on the proposed row before the conflict is found.
+        // T-227: the guard is an AFTER ROW trigger (OD-237 TL-1), so it fires on the operation that
+        // happened — the conflict's UPDATE. Until 0012 it was BEFORE and fired on the proposed INSERT.
         'INSERT … ON CONFLICT DO UPDATE un-revoking a ts_senior',
-        'INSERT',
+        'UPDATE',
         `INSERT INTO public.account_role (account_id, role) VALUES ('${ACC.revoked}', 'ts_senior')
            ON CONFLICT (account_id, role) DO UPDATE SET revoked_at = NULL`,
       ],

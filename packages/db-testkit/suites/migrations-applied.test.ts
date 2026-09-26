@@ -40,7 +40,7 @@ import {
 import { assertPermitted, assertRefused, INT10_RAISE } from '../src/expect.ts';
 
 const SUITE = 'migrations-applied';
-const HIGHEST_COMMITTED = '0011';
+const HIGHEST_COMMITTED = '0012';
 const COMMITTED_DIR = path.join(REPO_ROOT, MIGRATIONS_DIR);
 const RECORD_SQL = `SELECT coalesce(shobj_description(oid, 'pg_database'), '(no comment)')
                       FROM pg_database WHERE datname = current_database()`;
@@ -324,15 +324,75 @@ const CREATED_BY: Readonly<
         holds: '1',
       },
       {
+        // T-227 (T-192 QA-B3): this probe used to be titled "admits only the nine status moves", and
+        // it read three of the nine in 0011's source; adding a tenth left it green (QA QM4). 0012
+        // replaces the body, so what this probe can still assert of 0011 at HEAD is the FOR SHARE read.
+        // That no move but the nine is admitted is pinned by four-eyes.test.ts's 5×5 matrix (T-227),
+        // and the exact pair list in the source by 0012's probe below.
         title:
-          'assert_ts_senior_account_written_by_admin() admits only the nine status moves towards less eligibility and locks its ts_senior read FOR SHARE (OE-57, OE-58; T-192 QA-A2)',
+          'assert_ts_senior_account_written_by_admin() locks its ts_senior read FOR SHARE (T-192 QA-A2)',
         sql: `SELECT count(*)::text FROM pg_proc
                WHERE oid = to_regprocedure('public.assert_ts_senior_account_written_by_admin()')
-                 AND prosrc LIKE '%''suspended>removed'', ''suspended>erased''%'
-                 AND prosrc LIKE '%''pending>suspended'', ''pending>removed'', ''pending>erased''%'
-                 AND prosrc NOT LIKE '%''suspended>pending''%'
                  AND prosrc LIKE '%FOR SHARE%'`,
         holds: '1',
+      },
+    ],
+  },
+  '0012': {
+    source: 'T-227',
+    // 0012 creates no object: it replaces two trigger functions and changes two triggers' timing, in
+    // place. Each probe reads one of those changes, and each returns a value rather than raising after
+    // the down to 0011: the trigger reads are counts filtered on tgtype (0x02 = BEFORE, 0x04 INSERT,
+    // 0x08 DELETE, 0x10 UPDATE); the prosrc reads are a count and a string_agg over to_regprocedure
+    // (0011's bodies have no account lock and no typed pairs); the COMMENT read is a boolean.
+    probes: [
+      {
+        title:
+          'trg_account_ts_senior_status_admin_only fires AFTER UPDATE, not BEFORE (OD-237 TL-1)',
+        sql: `SELECT count(*)::text FROM pg_trigger
+               WHERE tgname = 'trg_account_ts_senior_status_admin_only'
+                 AND tgrelid = 'public.account'::regclass
+                 AND tgtype & 2 = 0 AND tgtype & 16 = 16`,
+        holds: '1',
+      },
+      {
+        title:
+          'trg_account_role_ts_senior_admin_only fires AFTER INSERT OR UPDATE OR DELETE, not BEFORE (OD-237 TL-1)',
+        sql: `SELECT count(*)::text FROM pg_trigger
+               WHERE tgname = 'trg_account_role_ts_senior_admin_only'
+                 AND tgrelid = 'public.account_role'::regclass
+                 AND tgtype & 2 = 0 AND tgtype & 28 = 28`,
+        holds: '1',
+      },
+      {
+        title:
+          'assert_ts_senior_written_by_admin() locks the account row FOR SHARE when a ts_senior row becomes live (OE-59)',
+        sql: `SELECT count(*)::text FROM pg_proc
+               WHERE oid = to_regprocedure('public.assert_ts_senior_written_by_admin()')
+                 AND prosrc LIKE '%FROM public.account a WHERE a.id = NEW.account_id FOR SHARE;%'`,
+        holds: '1',
+      },
+      {
+        // The SOURCE's pair list, exactly: a tenth pair, or a missing one, changes the string. It reads
+        // text, not behaviour; four-eyes.test.ts's 5×5 matrix pins what the guard admits.
+        title:
+          "the account guard's source lists exactly the nine typed (OLD, NEW) status pairs (T-192 QA-B3)",
+        sql: `SELECT coalesce((SELECT string_agg(m[1] || '>' || m[2], ',' ORDER BY m[1] || '>' || m[2])
+                                FROM pg_proc p,
+                                     regexp_matches(p.prosrc,
+                                       '\\(''([a-z]+)''(?:::public\\.account_status)?, ''([a-z]+)''(?:::public\\.account_status)?\\)',
+                                       'g') AS m
+                               WHERE p.oid = to_regprocedure('public.assert_ts_senior_account_written_by_admin()')),
+                              '(none)')`,
+        holds:
+          'active>erased,active>removed,active>suspended,pending>erased,pending>removed,pending>suspended,removed>erased,suspended>erased,suspended>removed',
+      },
+      {
+        title:
+          "the account guard's COMMENT is re-issued with the NULL clause (T-192 QA-B2, C3 (iii))",
+        sql: `SELECT coalesce((obj_description(to_regprocedure('public.assert_ts_senior_account_written_by_admin()'), 'pg_proc')
+                               LIKE '%(a NULL status included)%')::text, 'false')`,
+        holds: 'true',
       },
     ],
   },
