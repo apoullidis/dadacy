@@ -40,7 +40,7 @@ import {
 import { assertPermitted, assertRefused, INT10_RAISE } from '../src/expect.ts';
 
 const SUITE = 'migrations-applied';
-const HIGHEST_COMMITTED = '0013';
+const HIGHEST_COMMITTED = '0014';
 const COMMITTED_DIR = path.join(REPO_ROOT, MIGRATIONS_DIR);
 const RECORD_SQL = `SELECT coalesce(shobj_description(oid, 'pg_database'), '(no comment)')
                       FROM pg_database WHERE datname = current_database()`;
@@ -451,6 +451,25 @@ const CREATED_BY: Readonly<
                  AND tgrelid = to_regclass('public.otp_challenge')
                  AND tgtype = 7
                  AND tgfoid = coalesce(to_regprocedure('public.set_otp_challenge_created_at()'), 0)`,
+        holds: '1',
+      },
+    ],
+  },
+  '0014': {
+    source: 'T-231',
+    // 0014 creates no object: it replaces kinvara_guard.assert_answering_service_write_only() in
+    // place (CREATE OR REPLACE; OID, owner, ACL and COMMENT kept), adding one branch to check (6)
+    // that reads column-level INSERT (OD-242). The probe reads that branch from the function's
+    // source; the down restores 0003's body, which has neither line, so it reads '0' there. It is a
+    // count, so it never raises. The behaviour is int10-write-only's OD-242 cases.
+    probes: [
+      {
+        title:
+          'the INT-10 guard reads column-level INSERT outside out_of_hours_report, disjoint from check (5) (OD-242)',
+        sql: `SELECT count(*)::text FROM pg_proc
+               WHERE oid = to_regprocedure('kinvara_guard.assert_answering_service_write_only()')
+                 AND prosrc LIKE '%answering_service holds column privilege INSERT on %'
+                 AND prosrc LIKE '%AND NOT has_table_privilege(k_oid, c.oid, ''INSERT'')%'`,
         holds: '1',
       },
     ],
