@@ -27,6 +27,14 @@
  * privileges is refused WHEN IT WRITES AS ITSELF, the superuser included); and TRUNCATE
  * account_role refused while it holds a ts_senior row (OD-224 A4, KV053).
  *
+ * T-227 — migration 0012: decisions.md OE-59 (T-192 QA-B1). A ts_senior row that becomes live on an
+ * account (grant, un-revoke, re-role, move) locks the account row FOR SHARE, so a first-ever grant and an
+ * open app_rw activation of that account serialise (the READ COMMITTED activate-countersign-suspend race is
+ * REFUSED below, with RR/SERIALIZABLE and lock-mode controls). Both row guards fire AFTER the row is
+ * written (OD-237 TL-1), so a later-sorting BEFORE trigger cannot change a row the guard approved; the
+ * account guard names its nine moves as typed pairs and refuses a NULL itself (T-192 QA-B2); the full 5×5
+ * status matrix pins that no other move is admitted (QA-B3).
+ *
  * What is still open is pinned as LIMITATION cases, each asserting the stored row: RP1/RP2 pin
  * what a countersigned row does not bind (T-030 QA-F2): the consumer obligation is in T-186 §
  * Published contract.
@@ -1541,7 +1549,8 @@ describe('I-5 clause (b), OE-59 — a ts_senior row becoming live locks its acco
  * parent to ts_senior did the same for app_rw (T-227 ORD2). Each plant runs in ONE superuser
  * transaction: the trigger is created under SET LOCAL ROLE app_ddl (the owner, as a migration runs),
  * the write under SET LOCAL ROLE to the app_rw login (current_user is then the login, which is what
- * the guards read); psql stops at the refusal, so nothing commits.
+ * the guards read). Each ends in ROLLBACK, so a plant that is NOT refused (a mutation of 0012) exits 0,
+ * fails its own assertion and leaves nothing behind for the cases after it.
  */
 describe('I-5, OD-237 TL-1 — both row guards fire AFTER the row is written, so a later-sorting BEFORE trigger cannot change a row the guard approved (T-227)', () => {
   test('both guards are AFTER ROW triggers (BEFORE until 0012)', async () => {
@@ -1567,7 +1576,7 @@ describe('I-5, OD-237 TL-1 — both row guards fire AFTER the row is written, so
       'RESET ROLE',
       `SET LOCAL ROLE ${LOGINS.app_rw}`,
       `UPDATE public.account SET locale = 'el' WHERE id = '${ACC.suspended}'`,
-      'COMMIT',
+      'ROLLBACK',
     );
     assertRefusedWith('ORD1', r, errAccountWrite('status', LOGINS.app_rw));
     assert.equal(await db.value(statusOf(ACC.suspended)), 'suspended,true');
@@ -1584,7 +1593,7 @@ describe('I-5, OD-237 TL-1 — both row guards fire AFTER the row is written, so
       'RESET ROLE',
       `SET LOCAL ROLE ${LOGINS.app_rw}`,
       `INSERT INTO public.account_role (account_id, role) VALUES ('${ACC.noRole}', 'parent')`,
-      'COMMIT',
+      'ROLLBACK',
     );
     assertRefusedWith('ORD2', r, errTsSeniorWrite('INSERT', LOGINS.app_rw));
     assert.equal(
@@ -1658,7 +1667,7 @@ describe('I-5, OE-48/OE-57/OE-58 — the account guard admits exactly the nine s
         ddl,
         `SET LOCAL ROLE ${LOGINS.app_rw}`,
         write,
-        'COMMIT',
+        'ROLLBACK',
       );
       assertRefusedWith(`${what}: ${write}`, r, errAccountWrite(columns, LOGINS.app_rw));
     });
