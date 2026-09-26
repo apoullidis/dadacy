@@ -32,7 +32,9 @@
 --    (into active from anything; into pending from anything; out of suspended other than to
 --    removed or erased, which is lifting a suspension and is app_admin_rw's decision, OE-58; out of
 --    removed other than to erased; out of erased), dob_verified_18 false -> true, and any id
---    change (OE-45's read joins on it).
+--    change (OE-45's read joins on it). A NULL status or dob_verified_18 is not refused by this
+--    guard: the columns' NOT NULL refuses it, 23502 (T-192 QA-B2); since 0012 (T-227) the guard,
+--    now AFTER UPDATE, refuses it too, after NOT NULL has.
 --    So an automated suspension by app_rw takes effect and cannot be undone by app_rw, and the
 --    suspended holder's next countersignature is refused KV054 (0008). The guard is row-scoped, as
 --    OE-48 rules: every other account, and every other column of a ts_senior holder, stays
@@ -43,7 +45,9 @@
 --    raises 40001 instead of going unseen. FOR SHARE and not FOR KEY SHARE: an un-revoke changes
 --    revoked_at, which is in no unique key, so it takes FOR NO KEY UPDATE, which FOR KEY SHARE
 --    does not block (measured in T-192 rework 1). A new ts_senior row INSERTed concurrently is
---    not seen; the outcome is the permitted order (the move, then the grant).
+--    not seen: under READ COMMITTED a first-ever grant committing inside the open writing
+--    transaction let it countersign and re-suspend (T-192 QA-B1; OE-59), which 0012 (T-227)
+--    closes by locking the account row FOR SHARE when a ts_senior row becomes live.
 --
 -- 2. OD-224 A4: TRUNCATE account_role. Row triggers do not fire on TRUNCATE, so the owner could
 --    remove every ts_senior row without KV053. Decided: refused at the database. A BEFORE TRUNCATE
@@ -78,6 +82,13 @@
 -- app_ddl owns account, account_role and approval and can DISABLE a trigger at the database
 -- (break-glass); gate:migration-lint refuses a migration that does so by name or renames a
 -- protected trigger or function (R-TRIGGER-BYPASS, R-PROTECTED-RENAME). I-5 clause (c) is T-067's.
+-- QA-B1, the READ COMMITTED first-grant race (1. above): closed by 0012 (T-227). TL-1: this file's
+-- guard is a BEFORE ROW trigger, so a BEFORE UPDATE trigger on account whose name sorts after it
+-- could change status after it approved the row (T-192 tech-lead ORD1); 0012 (T-227) makes it
+-- AFTER UPDATE. TL-2: renaming account, account_role or approval and creating a replacement under
+-- the old name leaves the protected triggers on the old table (T-192 tech-lead RT2);
+-- gate:migration-lint refuses it since T-227 (R-PROTECTED-TABLE). [Corrected 2026-09-26 under
+-- R-MERGED, comment lines only, T-227: §1's last sentence said the outcome was the permitted order.]
 --
 -- PRINCIPAL. app_ddl (T-136 § contract §6): it owns both functions' tables and 0008's function.
 -- No -- @run-as marker. Transactional; no -- @no-transaction marker.

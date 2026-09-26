@@ -34,7 +34,9 @@
 --    ROWS on purpose: T-030 measured (RM1) that revoking app_rw's INSERT/UPDATE on account_role
 --    table-wide refuses every countersignature, because the SECURITY INVOKER clause-(b) read
 --    locks the role row FOR SHARE, which needs UPDATE. app_rw keeps SELECT, INSERT and UPDATE
---    on the table and keeps writing every other role.
+--    on the table and keeps writing every other role. [0012 (T-227) makes this trigger AFTER ROW
+--    (OD-237 TL-1) and has the function lock the account row FOR SHARE when a ts_senior row becomes
+--    live (OE-59). Corrected 2026-09-26 under R-MERGED, comment lines only.]
 --    Who passes the check: a role holding app_admin_rw's privileges, and a superuser (PostgreSQL
 --    answers pg_has_role true for one). [0011 (T-192) replaces this function: a writer that also
 --    holds app_rw's privileges is refused, the superuser acting as itself included. Corrected
@@ -59,7 +61,9 @@
 -- with this migration alone app_rw can set a non-active approver's account to 'active' and
 -- countersign, in one transaction or committed with no flip-back (T-186 OD-222; QA OD-a..OD-d),
 -- exactly as it could un-revoke a role before this migration. 0011 (T-192, decisions.md OE-48)
--- closes that for an account holding a live ts_senior role. The superuser bounds of 0007 stand
+-- closes that for an account holding a live ts_senior role, for a writer acting as itself, except
+-- the READ COMMITTED first-grant race (T-192 QA-B1), which 0012 (T-227, OE-59) closes. [Corrected
+-- 2026-09-26 under R-MERGED, comment lines only, T-227.] The superuser bounds of 0007 stand
 -- (session_replication_role = replica), and app_ddl, as owner of account_role and approval, can
 -- still DISABLE either trigger at the database. gate:migration-lint refuses a migration that
 -- disables either trigger BY NAME (R-TRIGGER-BYPASS; naming it at all needs R-PROTECTED's
