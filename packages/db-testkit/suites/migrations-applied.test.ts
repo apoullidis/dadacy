@@ -40,7 +40,7 @@ import {
 import { assertPermitted, assertRefused, INT10_RAISE } from '../src/expect.ts';
 
 const SUITE = 'migrations-applied';
-const HIGHEST_COMMITTED = '0014';
+const HIGHEST_COMMITTED = '0015';
 const COMMITTED_DIR = path.join(REPO_ROOT, MIGRATIONS_DIR);
 const RECORD_SQL = `SELECT coalesce(shobj_description(oid, 'pg_database'), '(no comment)')
                       FROM pg_database WHERE datname = current_database()`;
@@ -480,6 +480,58 @@ const CREATED_BY: Readonly<
                WHERE oid = to_regprocedure('kinvara_guard.assert_answering_service_write_only()')
                  AND prosrc LIKE '%has_table_privilege(k_oid, c.oid, p.priv || '' WITH GRANT OPTION'')%'
                  AND prosrc LIKE '%pg_has_role(r.oid, k_oid, ''MEMBER WITH ADMIN OPTION'')%'`,
+        holds: '1',
+      },
+    ],
+  },
+  '0015': {
+    source: 'T-195',
+    // Each probe names one object 0015 creates, and each returns a value rather than raising once it
+    // is gone: to_regclass and to_regprocedure return NULL for a missing name (coalesced), and the
+    // constraint and trigger reads are counts or coalesced definitions.
+    probes: [
+      {
+        title: 'table public.magic_link exists, owned by app_ddl',
+        sql: `SELECT coalesce((SELECT pg_get_userbyid(relowner) FROM pg_class
+                               WHERE oid = to_regclass('public.magic_link')), '(absent)')`,
+        holds: 'app_ddl',
+      },
+      {
+        title:
+          'index magic_link_account_id_live_idx is (account_id) WHERE consumed_at IS NULL (U-M4, rulings E.1)',
+        sql: `SELECT coalesce(pg_get_indexdef(to_regclass('public.magic_link_account_id_live_idx')), '(absent)')`,
+        holds:
+          'CREATE INDEX magic_link_account_id_live_idx ON public.magic_link USING btree (account_id) WHERE (consumed_at IS NULL)',
+      },
+      {
+        title:
+          'magic_link_account_id_fkey references account(id) ON DELETE CASCADE, ON UPDATE NO ACTION (U-M1)',
+        sql: `SELECT coalesce((SELECT pg_get_constraintdef(oid) || ' del=' || confdeltype::text || ' upd=' || confupdtype::text
+                                 FROM pg_constraint
+                                WHERE conrelid = to_regclass('public.magic_link')
+                                  AND conname = 'magic_link_account_id_fkey'), '(absent)')`,
+        holds: 'FOREIGN KEY (account_id) REFERENCES account(id) ON DELETE CASCADE del=c upd=a',
+      },
+      {
+        title:
+          "magic_link's ACL: app_rw SELECT, INSERT on five columns, UPDATE on consumed_at only (U-M6)",
+        sql: `SELECT coalesce((SELECT c.relacl::text || ' ' ||
+                                      (SELECT string_agg(a.attname || '=' || a.attacl::text, ',' ORDER BY a.attnum)
+                                         FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attacl IS NOT NULL)
+                                 FROM pg_class c WHERE c.oid = to_regclass('public.magic_link')), '(absent)')`,
+        holds:
+          '{app_ddl=arwdDxtm/app_ddl,app_rw=r/app_ddl} id={app_rw=a/app_ddl},account_id={app_rw=a/app_ddl},' +
+          'token_hash={app_rw=a/app_ddl},expires_at={app_rw=a/app_ddl},consumed_at={app_rw=w/app_ddl},' +
+          'requested_device_fingerprint={app_rw=a/app_ddl}',
+      },
+      {
+        title:
+          'trigger trg_magic_link_single_use fires AFTER UPDATE FOR EACH ROW on magic_link, calling assert_magic_link_single_use()',
+        sql: `SELECT count(*)::text FROM pg_trigger
+               WHERE tgname = 'trg_magic_link_single_use'
+                 AND tgrelid = to_regclass('public.magic_link')
+                 AND tgtype = 17
+                 AND tgfoid = coalesce(to_regprocedure('public.assert_magic_link_single_use()'), 0)`,
         holds: '1',
       },
     ],
