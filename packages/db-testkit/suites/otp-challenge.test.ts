@@ -123,7 +123,10 @@ function asLogin(login: string, ...commands: string[]): Promise<PsqlResult> {
 /** Refused with exactly this ERROR line, and psql named the object that refused it. */
 function assertRefusedBy(what: string, r: PsqlResult, errorLine: string, field: string): void {
   assertRefused(what, r, { message: errorLine });
-  assert.ok(r.output.includes(field), `${what}: expected ${JSON.stringify(field)} in the output.\n${r.output}`);
+  assert.ok(
+    r.output.includes(field),
+    `${what}: expected ${JSON.stringify(field)} in the output.\n${r.output}`,
+  );
   assert.equal(
     (r.output.match(/ERROR: {2}[0-9A-Z]{5}:/g) ?? []).length,
     1,
@@ -133,7 +136,10 @@ function assertRefusedBy(what: string, r: PsqlResult, errorLine: string, field: 
 
 /** The session read the row it then wrote, and found it in the stated state. */
 function assertRead(what: string, r: PsqlResult, state: string): void {
-  assert.ok(r.output.includes(state), `${what}: expected the precondition ${JSON.stringify(state)}.\n${r.output}`);
+  assert.ok(
+    r.output.includes(state),
+    `${what}: expected the precondition ${JSON.stringify(state)}.\n${r.output}`,
+  );
 }
 
 const CHECK_23514 = (c: string): string =>
@@ -182,9 +188,17 @@ describe('0013 — attempts: CHECK (attempts BETWEEN 0 AND 3) (U-O2)', () => {
   });
 
   test('attempts 0 -> 4 on UPDATE is REFUSED by otp_challenge_attempts_check (23514)', async () => {
-    const r = await asSuperuser(readRow(LIVE), `UPDATE public.otp_challenge SET attempts = 4 WHERE id = '${LIVE}'`);
+    const r = await asSuperuser(
+      readRow(LIVE),
+      `UPDATE public.otp_challenge SET attempts = 4 WHERE id = '${LIVE}'`,
+    );
     assertRead('attempts 4 by UPDATE', r, 'row 1 attempts=0 consumed=false');
-    assertRefusedBy('attempts 4 by UPDATE', r, CHECK_23514('otp_challenge_attempts_check'), 'CONSTRAINT NAME:  otp_challenge_attempts_check');
+    assertRefusedBy(
+      'attempts 4 by UPDATE',
+      r,
+      CHECK_23514('otp_challenge_attempts_check'),
+      'CONSTRAINT NAME:  otp_challenge_attempts_check',
+    );
   });
 
   test('attempts = -1 is REFUSED by otp_challenge_attempts_check (23514)', async () => {
@@ -230,7 +244,12 @@ describe('0013 — the 5-minute TTL: CHECK against created_at (Q-D1)', () => {
       `UPDATE public.otp_challenge SET expires_at = created_at + interval '6 minutes' WHERE id = '${LIVE}'`,
     );
     assertRead('expires_at extended', r, 'row 1 attempts=0 consumed=false');
-    assertRefusedBy('expires_at extended', r, CHECK_23514('otp_challenge_ttl_check'), 'CONSTRAINT NAME:  otp_challenge_ttl_check');
+    assertRefusedBy(
+      'expires_at extended',
+      r,
+      CHECK_23514('otp_challenge_ttl_check'),
+      'CONSTRAINT NAME:  otp_challenge_ttl_check',
+    );
   });
 
   test("CONTROL — exactly 5 minutes, and T-027 O1's now() + interval '5 minutes' with the default created_at, are accepted", async () => {
@@ -277,7 +296,14 @@ describe('0013 — code_hash is 32 bytes: CHECK (octet_length(code_hash) = 32) (
 });
 
 describe('0013 — NOT NULL (23502, naming the column)', () => {
-  for (const column of ['id', 'phone_e164', 'code_hash', 'attempts', 'expires_at', 'created_at'] as const) {
+  for (const column of [
+    'id',
+    'phone_e164',
+    'code_hash',
+    'attempts',
+    'expires_at',
+    'created_at',
+  ] as const) {
     test(`${column} NULL is REFUSED (23502)`, async () => {
       const sql =
         column === 'id'
@@ -330,7 +356,11 @@ describe('0013 — single use: trg_otp_challenge_single_use (U-O5, Q-D3), as the
   });
 
   test('a consumed challenge returning to unconsumed (consumed_at -> NULL) is REFUSED KV060', async () => {
-    const r = await asLogin(LOGINS.app_rw, readRow(CONSUMED), `UPDATE public.otp_challenge SET consumed_at = NULL WHERE id = '${CONSUMED}'`);
+    const r = await asLogin(
+      LOGINS.app_rw,
+      readRow(CONSUMED),
+      `UPDATE public.otp_challenge SET consumed_at = NULL WHERE id = '${CONSUMED}'`,
+    );
     assertRead('consumed_at -> NULL', r, 'row 1 attempts=2 consumed=true');
     assertRefusedBy(
       'consumed_at -> NULL',
@@ -341,7 +371,10 @@ describe('0013 — single use: trg_otp_challenge_single_use (U-O5, Q-D3), as the
   });
 
   test('the same, as the superuser, is REFUSED KV060 (the trigger is not a grant)', async () => {
-    const r = await asSuperuser(readRow(CONSUMED), `UPDATE public.otp_challenge SET consumed_at = NULL WHERE id = '${CONSUMED}'`);
+    const r = await asSuperuser(
+      readRow(CONSUMED),
+      `UPDATE public.otp_challenge SET consumed_at = NULL WHERE id = '${CONSUMED}'`,
+    );
     assertRead('consumed_at -> NULL as superuser', r, 'row 1 attempts=2 consumed=true');
     assertRefusedBy(
       'consumed_at -> NULL as superuser',
@@ -366,7 +399,7 @@ describe('0013 — single use: trg_otp_challenge_single_use (U-O5, Q-D3), as the
     );
   });
 
-  test('CONTROL — writing a consumed row\'s consumed_at to its own value is accepted (no change)', async () => {
+  test("CONTROL — writing a consumed row's consumed_at to its own value is accepted (no change)", async () => {
     const r = await asLogin(
       LOGINS.app_rw,
       'BEGIN',
@@ -385,7 +418,11 @@ describe('0013 — single use: trg_otp_challenge_single_use (U-O5, Q-D3), as the
     ['replacing code_hash', `code_hash = decode(repeat('cd', 32), 'hex')`],
   ] as const) {
     test(`an exhausted challenge (attempts = 3): ${label} is REFUSED KV062`, async () => {
-      const r = await asLogin(LOGINS.app_rw, readRow(EXHAUSTED), `UPDATE public.otp_challenge SET ${set} WHERE id = '${EXHAUSTED}'`);
+      const r = await asLogin(
+        LOGINS.app_rw,
+        readRow(EXHAUSTED),
+        `UPDATE public.otp_challenge SET ${set} WHERE id = '${EXHAUSTED}'`,
+      );
       assertRead(`exhausted: ${label}`, r, 'row 1 attempts=3 consumed=false');
       assertRefusedBy(
         `exhausted: ${label}`,
@@ -436,9 +473,13 @@ describe('0013 — grants (U-O6; T-020 § contract §3), over real single-member
 
   for (const role of ['app_admin_rw', 'app_safety_rw', 'answering_service'] as const) {
     test(`${role} SELECT is REFUSED (42501)`, async () => {
-      assertRefused(`${role} SELECT`, await asLogin(LOGINS[role], 'SELECT count(*) FROM public.otp_challenge'), {
-        message: 'ERROR:  42501: permission denied for table otp_challenge',
-      });
+      assertRefused(
+        `${role} SELECT`,
+        await asLogin(LOGINS[role], 'SELECT count(*) FROM public.otp_challenge'),
+        {
+          message: 'ERROR:  42501: permission denied for table otp_challenge',
+        },
+      );
     });
   }
 
@@ -462,7 +503,9 @@ describe('0013 — the SA §INT-10 guard', () => {
       `the guard's DETAIL does not name otp_challenge.\n${r.output}`,
     );
     assert.equal(
-      await db.value(`SELECT has_table_privilege('answering_service', 'public.otp_challenge', 'SELECT')::text`),
+      await db.value(
+        `SELECT has_table_privilege('answering_service', 'public.otp_challenge', 'SELECT')::text`,
+      ),
       'false',
     );
   });
@@ -483,7 +526,9 @@ describe('0013 — the SA §INT-10 guard', () => {
     assertRefused('guard on a known-bad state', r, { message: `ERROR:  KV010: ${INT10_RAISE}` });
     assert.ok(r.output.includes('answering_service holds TEMPORARY on database kinvara'), r.output);
     assert.equal(
-      await db.value(`SELECT has_database_privilege('answering_service', 'kinvara', 'TEMPORARY')::text`),
+      await db.value(
+        `SELECT has_database_privilege('answering_service', 'kinvara', 'TEMPORARY')::text`,
+      ),
       'false',
     );
   });

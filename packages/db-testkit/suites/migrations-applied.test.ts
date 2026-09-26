@@ -410,14 +410,16 @@ const CREATED_BY: Readonly<
         holds: 'app_ddl',
       },
       {
-        title: 'index otp_challenge_phone_e164_expires_at_idx is (phone_e164, expires_at DESC) (SD 1835)',
+        title:
+          'index otp_challenge_phone_e164_expires_at_idx is (phone_e164, expires_at DESC) (SD 1835)',
         sql: `SELECT coalesce(pg_get_indexdef(to_regclass('public.otp_challenge_phone_e164_expires_at_idx')),
                               '(absent)')`,
         holds:
           'CREATE INDEX otp_challenge_phone_e164_expires_at_idx ON public.otp_challenge USING btree (phone_e164, expires_at DESC)',
       },
       {
-        title: "otp_challenge's ACL is app_ddl's and app_rw's SELECT, INSERT, UPDATE, nothing else (U-O6)",
+        title:
+          "otp_challenge's ACL is app_ddl's and app_rw's SELECT, INSERT, UPDATE, nothing else (U-O6)",
         sql: `SELECT coalesce((SELECT relacl::text FROM pg_class
                                WHERE oid = to_regclass('public.otp_challenge')), '(absent)')`,
         holds: '{app_ddl=arwdDxtm/app_ddl,app_rw=arw/app_ddl}',
@@ -428,7 +430,8 @@ const CREATED_BY: Readonly<
         holds: 'true',
       },
       {
-        title: 'trigger trg_otp_challenge_single_use fires AFTER UPDATE FOR EACH ROW on otp_challenge (U-O5)',
+        title:
+          'trigger trg_otp_challenge_single_use fires AFTER UPDATE FOR EACH ROW on otp_challenge (U-O5)',
         sql: `SELECT count(*)::text FROM pg_trigger
                WHERE tgname = 'trg_otp_challenge_single_use'
                  AND tgrelid = to_regclass('public.otp_challenge')
