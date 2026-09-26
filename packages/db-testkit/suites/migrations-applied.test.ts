@@ -40,7 +40,7 @@ import {
 import { assertPermitted, assertRefused, INT10_RAISE } from '../src/expect.ts';
 
 const SUITE = 'migrations-applied';
-const HIGHEST_COMMITTED = '0012';
+const HIGHEST_COMMITTED = '0013';
 const COMMITTED_DIR = path.join(REPO_ROOT, MIGRATIONS_DIR);
 const RECORD_SQL = `SELECT coalesce(shobj_description(oid, 'pg_database'), '(no comment)')
                       FROM pg_database WHERE datname = current_database()`;
@@ -393,6 +393,47 @@ const CREATED_BY: Readonly<
         sql: `SELECT coalesce((obj_description(to_regprocedure('public.assert_ts_senior_account_written_by_admin()'), 'pg_proc')
                                LIKE '%(a NULL status included)%')::text, 'false')`,
         holds: 'true',
+      },
+    ],
+  },
+  '0013': {
+    source: 'T-194',
+    // Each probe names one object 0013 creates, and each returns a value rather than raising once it
+    // is gone: to_regclass and to_regprocedure return NULL for a missing name (coalesced), and the
+    // trigger read is a count. The index probe reads its definition, so it asserts SD 1835's columns
+    // and order as well as the name PostgreSQL chose for the unnamed index.
+    probes: [
+      {
+        title: 'table public.otp_challenge exists, owned by app_ddl',
+        sql: `SELECT coalesce((SELECT pg_get_userbyid(relowner) FROM pg_class
+                               WHERE oid = to_regclass('public.otp_challenge')), '(absent)')`,
+        holds: 'app_ddl',
+      },
+      {
+        title: 'index otp_challenge_phone_e164_expires_at_idx is (phone_e164, expires_at DESC) (SD 1835)',
+        sql: `SELECT coalesce(pg_get_indexdef(to_regclass('public.otp_challenge_phone_e164_expires_at_idx')),
+                              '(absent)')`,
+        holds:
+          'CREATE INDEX otp_challenge_phone_e164_expires_at_idx ON public.otp_challenge USING btree (phone_e164, expires_at DESC)',
+      },
+      {
+        title: "otp_challenge's ACL is app_ddl's and app_rw's SELECT, INSERT, UPDATE, nothing else (U-O6)",
+        sql: `SELECT coalesce((SELECT relacl::text FROM pg_class
+                               WHERE oid = to_regclass('public.otp_challenge')), '(absent)')`,
+        holds: '{app_ddl=arwdDxtm/app_ddl,app_rw=arw/app_ddl}',
+      },
+      {
+        title: 'function public.assert_otp_challenge_single_use() exists',
+        sql: `SELECT (to_regprocedure('public.assert_otp_challenge_single_use()') IS NOT NULL)::text`,
+        holds: 'true',
+      },
+      {
+        title: 'trigger trg_otp_challenge_single_use fires AFTER UPDATE FOR EACH ROW on otp_challenge (U-O5)',
+        sql: `SELECT count(*)::text FROM pg_trigger
+               WHERE tgname = 'trg_otp_challenge_single_use'
+                 AND tgrelid = to_regclass('public.otp_challenge')
+                 AND tgtype = 17`,
+        holds: '1',
       },
     ],
   },
