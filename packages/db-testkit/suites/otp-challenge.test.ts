@@ -146,7 +146,7 @@ const CHECK_23514 = (c: string): string =>
   `ERROR:  23514: new row for relation "otp_challenge" violates check constraint "${c}"`;
 
 describe('0013 — the table, its owner, its columns and its ACL', () => {
-  test("SD's seven columns in SD's order, then created_at; owner app_ddl; ACL exactly app_ddl's and app_rw's arw", async () => {
+  test("SD's seven columns in SD's order, then created_at; owner app_ddl; ACL: app_rw SELECT, INSERT, and UPDATE on attempts and consumed_at only", async () => {
     assert.equal(
       await db.value(
         `SELECT (SELECT string_agg(attname || ':' || format_type(atttypid, atttypmod) || ':' ||
@@ -154,13 +154,16 @@ describe('0013 — the table, its owner, its columns and its ACL', () => {
                                    coalesce(pg_get_expr(d.adbin, d.adrelid), '-'), ',' ORDER BY attnum)
                    FROM pg_attribute a LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
                   WHERE a.attrelid = 'public.otp_challenge'::regclass AND attnum > 0 AND NOT attisdropped)
-                || '|' || pg_get_userbyid(c.relowner) || '|' || c.relacl::text
+                || '|' || pg_get_userbyid(c.relowner) || '|' || c.relacl::text || '|' ||
+                (SELECT string_agg(attname || '=' || attacl::text, ',' ORDER BY attnum) FROM pg_attribute
+                  WHERE attrelid = c.oid AND attacl IS NOT NULL)
            FROM pg_class c WHERE c.oid = 'public.otp_challenge'::regclass`,
       ),
       'id:character(26):nn:-,phone_e164:text:nn:-,code_hash:bytea:nn:-,attempts:smallint:nn:0,' +
         'expires_at:timestamp with time zone:nn:-,consumed_at:timestamp with time zone:null:-,' +
         'created_ip_prefix:inet:null:-,created_at:timestamp with time zone:nn:now()' +
-        '|app_ddl|{app_ddl=arwdDxtm/app_ddl,app_rw=arw/app_ddl}',
+        '|app_ddl|{app_ddl=arwdDxtm/app_ddl,app_rw=ar/app_ddl}' +
+        '|attempts={app_rw=w/app_ddl},consumed_at={app_rw=w/app_ddl}',
     );
   });
 
@@ -414,8 +417,6 @@ describe('0013 — single use: trg_otp_challenge_single_use (U-O5, Q-D3), as the
   for (const [label, set] of [
     ['consuming it', 'consumed_at = now()'],
     ['resetting attempts to 0', 'attempts = 0'],
-    ['moving expires_at', "expires_at = expires_at - interval '1 minute'"],
-    ['replacing code_hash', `code_hash = decode(repeat('cd', 32), 'hex')`],
   ] as const) {
     test(`an exhausted challenge (attempts = 3): ${label} is REFUSED KV062`, async () => {
       const r = await asLogin(
@@ -446,8 +447,129 @@ describe('0013 — single use: trg_otp_challenge_single_use (U-O5, Q-D3), as the
   });
 });
 
+describe('0013 — OE-60: at most 3 attempts in 5 minutes', () => {
+  test('app_rw holds UPDATE on attempts and consumed_at and on no other column', async () => {
+    assert.equal(
+      await db.value(
+        `SELECT string_agg(attname || '=' || has_column_privilege('app_rw', 'public.otp_challenge', attname, 'UPDATE'),
+                           ',' ORDER BY attnum)
+           FROM pg_attribute WHERE attrelid = 'public.otp_challenge'::regclass AND attnum > 0 AND NOT attisdropped`,
+      ),
+      'id=false,phone_e164=false,code_hash=false,attempts=true,expires_at=false,consumed_at=true,' +
+        'created_ip_prefix=false,created_at=false',
+    );
+  });
+
+  test('app_rw lowering attempts (2 -> 0) on a live challenge is REFUSED KV063', async () => {
+    const r = await asLogin(
+      LOGINS.app_rw,
+      readRow(LIVE),
+      `UPDATE public.otp_challenge SET attempts = 2 WHERE id = '${LIVE}'`,
+      readRow(LIVE),
+      `UPDATE public.otp_challenge SET attempts = 0 WHERE id = '${LIVE}'`,
+    );
+    assertRead('attempts 2 -> 0', r, 'row 1 attempts=2 consumed=false');
+    assertRefusedBy(
+      'attempts 2 -> 0',
+      r,
+      'ERROR:  KV063: OTP_CHALLENGE_ATTEMPTS_DECREASED: otp_challenge attempts never decrease',
+      'CONTEXT:  PL/pgSQL function public.assert_otp_challenge_single_use()',
+    );
+  });
+
+  test('app_rw changing attempts on a consumed challenge (2 -> 3) is REFUSED KV064', async () => {
+    const r = await asLogin(
+      LOGINS.app_rw,
+      readRow(CONSUMED),
+      `UPDATE public.otp_challenge SET attempts = 3 WHERE id = '${CONSUMED}'`,
+    );
+    assertRead('consumed attempts 2 -> 3', r, 'row 1 attempts=2 consumed=true');
+    assertRefusedBy(
+      'consumed attempts 2 -> 3',
+      r,
+      'ERROR:  KV064: OTP_CHALLENGE_CONSUMED_ATTEMPTS_FIXED: a consumed otp_challenge row keeps its attempts',
+      'CONTEXT:  PL/pgSQL function public.assert_otp_challenge_single_use()',
+    );
+  });
+
+  for (const [label, set] of [
+    [
+      'created_at and expires_at pushed forward together',
+      "created_at = created_at + interval '1 hour', expires_at = expires_at + interval '1 hour'",
+    ],
+    ['expires_at moved', "expires_at = expires_at - interval '1 minute'"],
+    ['code_hash replaced', `code_hash = decode(repeat('cd', 32), 'hex')`],
+    ['phone_e164 replaced', "phone_e164 = '+35799000999'"],
+    ['id changed', "id = '01K4T194OTPOTHERID00000001'"],
+    ['created_ip_prefix changed', "created_ip_prefix = '198.51.100.0/24'"],
+  ] as const) {
+    test(`app_rw: ${label} is REFUSED by the column grant (42501)`, async () => {
+      const r = await asLogin(
+        LOGINS.app_rw,
+        readRow(LIVE),
+        `UPDATE public.otp_challenge SET ${set} WHERE id = '${LIVE}'`,
+      );
+      assertRead(`app_rw ${label}`, r, 'row 1 attempts=0 consumed=false');
+      assertRefused(`app_rw ${label}`, r, {
+        message: 'ERROR:  42501: permission denied for table otp_challenge',
+      });
+    });
+  }
+
+  for (const [label, set] of [
+    [
+      'created_at and expires_at pushed forward together',
+      "created_at = created_at + interval '1 hour', expires_at = expires_at + interval '1 hour'",
+    ],
+    [
+      'created_at moved alone (+1 s, inside the TTL CHECK)',
+      "created_at = created_at + interval '1 second'",
+    ],
+    ['expires_at moved alone', "expires_at = expires_at - interval '1 minute'"],
+    ['code_hash replaced', `code_hash = decode(repeat('cd', 32), 'hex')`],
+    ['phone_e164 replaced', "phone_e164 = '+35799000999'"],
+  ] as const) {
+    test(`a writer the grant does not bind (the superuser): ${label} is REFUSED KV065`, async () => {
+      const r = await asSuperuser(
+        readRow(LIVE),
+        `UPDATE public.otp_challenge SET ${set} WHERE id = '${LIVE}'`,
+      );
+      assertRead(`superuser ${label}`, r, 'row 1 attempts=0 consumed=false');
+      assertRefusedBy(
+        `superuser ${label}`,
+        r,
+        'ERROR:  KV065: OTP_CHALLENGE_FIXED_COLUMN: created_at, expires_at, code_hash and phone_e164 are fixed after insert',
+        'CONTEXT:  PL/pgSQL function public.assert_otp_challenge_single_use()',
+      );
+    });
+  }
+
+  test('CONTROL — app_rw: an ordinary wrong-code increment (O3) and a consume (O4) still pass', async () => {
+    const r = await asLogin(
+      LOGINS.app_rw,
+      readRow(LIVE),
+      `UPDATE public.otp_challenge SET attempts = attempts + 1 WHERE id = '${LIVE}' RETURNING 'incremented to ' || attempts`,
+      `UPDATE public.otp_challenge SET consumed_at = now() WHERE id = '${LIVE}' AND consumed_at IS NULL RETURNING 'consumed ' || id`,
+      readRow(LIVE),
+    );
+    assertPermitted('O3 then O4', r);
+    assertRead('O3 then O4', r, 'incremented to 1');
+    assertRead('O3 then O4', r, `consumed ${LIVE}`);
+    assertRead('O3 then O4', r, 'row 1 attempts=1 consumed=true');
+  });
+
+  test("CONTROL — app_rw writing a consumed row's attempts to its own value is accepted (no change)", async () => {
+    const r = await asLogin(
+      LOGINS.app_rw,
+      `UPDATE public.otp_challenge SET attempts = attempts WHERE id = '${CONSUMED}' RETURNING 'updated ' || id`,
+    );
+    assertPermitted('consumed attempts unchanged', r);
+    assertRead('consumed attempts unchanged', r, `updated ${CONSUMED}`);
+  });
+});
+
 describe('0013 — grants (U-O6; T-020 § contract §3), over real single-membership logins', () => {
-  test('CONTROL — app_rw SELECTs, INSERTs and UPDATEs otp_challenge', async () => {
+  test('CONTROL — app_rw SELECTs, INSERTs and UPDATEs attempts on otp_challenge', async () => {
     const r = await asLogin(
       LOGINS.app_rw,
       'BEGIN',

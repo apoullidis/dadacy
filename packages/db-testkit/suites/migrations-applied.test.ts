@@ -419,10 +419,13 @@ const CREATED_BY: Readonly<
       },
       {
         title:
-          "otp_challenge's ACL is app_ddl's and app_rw's SELECT, INSERT, UPDATE, nothing else (U-O6)",
-        sql: `SELECT coalesce((SELECT relacl::text FROM pg_class
-                               WHERE oid = to_regclass('public.otp_challenge')), '(absent)')`,
-        holds: '{app_ddl=arwdDxtm/app_ddl,app_rw=arw/app_ddl}',
+          "otp_challenge's ACL: app_rw SELECT, INSERT, and UPDATE on attempts and consumed_at only (U-O6, OE-60)",
+        sql: `SELECT coalesce((SELECT c.relacl::text || ' ' ||
+                                      (SELECT string_agg(a.attname || '=' || a.attacl::text, ',' ORDER BY a.attnum)
+                                         FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attacl IS NOT NULL)
+                                 FROM pg_class c WHERE c.oid = to_regclass('public.otp_challenge')), '(absent)')`,
+        holds:
+          '{app_ddl=arwdDxtm/app_ddl,app_rw=ar/app_ddl} attempts={app_rw=w/app_ddl},consumed_at={app_rw=w/app_ddl}',
       },
       {
         title: 'function public.assert_otp_challenge_single_use() exists',
