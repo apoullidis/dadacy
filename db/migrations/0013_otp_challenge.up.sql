@@ -17,40 +17,53 @@
 -- what the rulings add:
 --   U-O1  code_hash is an HMAC-SHA-256 output under a server secret (code only; the column stays
 --         bytea NOT NULL as SD writes it).
---   Q-D2  CHECK (octet_length(code_hash) = 32): an HMAC-SHA-256 output is 32 bytes. EV-9 (proposed;
---         a CHECK SD 1831 does not write).
+--   Q-D2  CHECK (octet_length(code_hash) = 32): an HMAC-SHA-256 output is 32 bytes. EV-9 (a CHECK
+--         SD 1831 does not write).
 --   U-O2  CHECK (attempts BETWEEN 0 AND 3).
 --   U-O3  no limit column: send limits live in Valkey (SD §SEC-I4), not here.
 --   U-O4  expires_at is set by code (now() + interval '5 minutes'); no column DEFAULT.
---   Q-D1  created_at timestamptz NOT NULL DEFAULT now() and the TTL CHECK. EV-8 (proposed; SD 1830-
---         1833 has no created_at). The CHECK is written with timestamptz - timestamptz, which is
+--   Q-D1  created_at timestamptz NOT NULL DEFAULT now() and the TTL CHECK. EV-8 (SD 1830-1833 has
+--         no created_at). The CHECK is written with timestamptz - timestamptz, which is
 --         IMMUTABLE, rather than the ruling's created_at + interval '5 minutes' (timestamptz +
 --         interval is STABLE). For an interval of whole minutes the two are the same predicate.
 --         created_at is appended after SD's seven columns so SD's column order is kept.
 --   U-O5 + Q-D3  a single-use trigger (below).
---   U-O6  no DELETE for app_rw. Retention is a spec addition, EV-10 (proposed): a new SD §DB-14
+--   U-O6  no DELETE for app_rw. Retention is a spec addition, EV-10: a new SD §DB-14
 --         row, otp_challenge, hard_delete 90 d after expires_at, run by the retention engine
 --         (T-069). This migration records it in the table's COMMENT only; the retention_rule row
 --         and the role that deletes belong to T-069.
--- The EV numbers are proposed by T-194 and allocated by the orchestrator in decisions.md. They
+-- The EV numbers are as filed in decisions.md (EV-8, EV-9, EV-10, accepted 2026-09-26). They
 -- are cited only in these top-level -- lines, never in a COMMENT ON or a function body, so a
 -- renumbering changes no applied effect (PROTOCOL §3, R-MERGED).
 --
--- THE SINGLE-USE TRIGGER (U-O5 option (B), widened by Q-D3 (a)). An AFTER UPDATE row trigger
--- refuses, on a row that changed:
---   KV060 OTP_CHALLENGE_CONSUMED_AT_CLEARED   a set consumed_at returned to NULL;
---   KV061 OTP_CHALLENGE_CONSUMED_AT_REWRITTEN a set consumed_at changed to another timestamp;
---   KV062 OTP_CHALLENGE_EXHAUSTED             any change to a row whose stored attempts is 3.
--- The consumed_at checks run first, so a consumed row that is also at 3 attempts reports KV060 or
--- KV061. "Changed" is NEW IS DISTINCT FROM OLD: an UPDATE writing identical values is not refused.
+-- OE-60 (decisions.md, 2026-09-26T10:11:22Z): THE DATABASE ENFORCES "AT MOST 3 ATTEMPTS IN 5
+-- MINUTES". app_rw may UPDATE only attempts and consumed_at (a column-level grant, below);
+-- attempts never decreases; created_at, expires_at, code_hash and phone_e164 are fixed after
+-- insert (otp_challenge has no account-binding column); once consumed, attempts is fixed too.
+--
+-- THE SINGLE-USE TRIGGER (U-O5 option (B), widened by Q-D3 (a) and OE-60). An AFTER UPDATE row
+-- trigger refuses, on a row that changed, in this order:
+--   KV060 OTP_CHALLENGE_CONSUMED_AT_CLEARED     a set consumed_at returned to NULL;
+--   KV061 OTP_CHALLENGE_CONSUMED_AT_REWRITTEN   a set consumed_at changed to another timestamp;
+--   KV065 OTP_CHALLENGE_FIXED_COLUMN            created_at, expires_at, code_hash or phone_e164
+--                                               changed (OE-60). For app_rw the column grant
+--                                               refuses these first (42501); KV065 holds the rule
+--                                               for every writer the grant does not bind;
+--   KV062 OTP_CHALLENGE_EXHAUSTED               any change to a row whose stored attempts is 3;
+--   KV063 OTP_CHALLENGE_ATTEMPTS_DECREASED      attempts lowered (OE-60);
+--   KV064 OTP_CHALLENGE_CONSUMED_ATTEMPTS_FIXED attempts changed on a consumed row (OE-60).
+-- The first that applies is raised. "Changed" is NEW IS DISTINCT FROM OLD: an UPDATE writing
+-- identical values is not refused. id and created_ip_prefix are fixed for app_rw by the grant
+-- only; the trigger does not read them.
 -- AFTER, not BEFORE (OD-237 TL-1): the trigger reads the row as stored, after every BEFORE
 -- trigger, and its RAISE still aborts the statement. CHECK and NOT NULL are evaluated first, so
 -- attempts = 4 is 23514 and a NULL is 23502 before the trigger runs. The messages carry no column
 -- value: phone_e164 is personal data (SD 3924) and code_hash is a secret's digest.
 --
 -- GRANTS. No default privileges exist (T-020 § contract §4), so each is explicit: app_rw gets
--- SELECT, INSERT, UPDATE (UPDATE also covers SELECT ... FOR UPDATE). No DELETE (U-O6). Nothing to
--- app_admin_rw, app_safety_rw (a closed list) or answering_service (SA §INT-10).
+-- SELECT and INSERT on the table and UPDATE on (attempts, consumed_at) only (OE-60); a column
+-- UPDATE privilege also admits SELECT ... FOR UPDATE. No DELETE (U-O6). Nothing to app_admin_rw,
+-- app_safety_rw (a closed list) or answering_service (SA §INT-10).
 --
 -- WHO RUNS THIS FILE. app_ddl (T-136 § contract §6), which then owns the table, the index and the
 -- function. No -- @run-as marker: every object is new, and no CREATE EXTENSION is needed (bytea,
@@ -78,10 +91,11 @@ CREATE TABLE public.otp_challenge (
 
 CREATE INDEX ON public.otp_challenge (phone_e164, expires_at DESC);
 
-GRANT SELECT, INSERT, UPDATE ON public.otp_challenge TO app_rw;
+GRANT SELECT, INSERT ON public.otp_challenge TO app_rw;
+GRANT UPDATE (attempts, consumed_at) ON public.otp_challenge TO app_rw;
 
 COMMENT ON TABLE public.otp_challenge IS
-  'Phone OTP challenges (SD §DB-2 lines 1830-1835; SA §SEC-5). code_hash: HMAC-SHA-256 of the code under a server secret, 32 bytes. At most 3 attempts; a 5-minute TTL checked against created_at; single use enforced by trg_otp_challenge_single_use (decisions.md OE-30, OE-50). app_rw holds no DELETE. Retention: hard_delete 90 d after expires_at, by the retention engine (OE-50 U-O6).';
+  'Phone OTP challenges (SD §DB-2 lines 1830-1835; SA §SEC-5). code_hash: HMAC-SHA-256 of the code under a server secret, 32 bytes. At most 3 attempts; a 5-minute TTL checked against created_at; single use, attempts never decreasing, and fixed columns enforced by trg_otp_challenge_single_use (decisions.md OE-30, OE-50, OE-60). app_rw may UPDATE only attempts and consumed_at, and holds no DELETE. Retention: hard_delete 90 d after expires_at, by the retention engine (OE-50 U-O6).';
 
 CREATE FUNCTION public.assert_otp_challenge_single_use() RETURNS trigger
   LANGUAGE plpgsql
@@ -105,10 +119,31 @@ BEGIN
             HINT = 'decisions.md OE-50 Q-D3: once set, consumed_at never changes.';
   END IF;
 
+  IF NEW.created_at IS DISTINCT FROM OLD.created_at
+     OR NEW.expires_at IS DISTINCT FROM OLD.expires_at
+     OR NEW.code_hash IS DISTINCT FROM OLD.code_hash
+     OR NEW.phone_e164 IS DISTINCT FROM OLD.phone_e164 THEN
+    RAISE EXCEPTION 'OTP_CHALLENGE_FIXED_COLUMN: created_at, expires_at, code_hash and phone_e164 are fixed after insert'
+      USING ERRCODE = 'KV065',
+            HINT = 'decisions.md OE-60: at most 3 attempts in 5 minutes; a challenge is never re-armed or re-keyed.';
+  END IF;
+
   IF OLD.attempts = 3 THEN
     RAISE EXCEPTION 'OTP_CHALLENGE_EXHAUSTED: an otp_challenge row at 3 attempts cannot change'
       USING ERRCODE = 'KV062',
             HINT = 'SA §SEC-5 and decisions.md OE-30 U-O5: after the third attempt the challenge is spent.';
+  END IF;
+
+  IF NEW.attempts < OLD.attempts THEN
+    RAISE EXCEPTION 'OTP_CHALLENGE_ATTEMPTS_DECREASED: otp_challenge attempts never decrease'
+      USING ERRCODE = 'KV063',
+            HINT = 'decisions.md OE-60: at most 3 attempts in 5 minutes; attempts only counts up.';
+  END IF;
+
+  IF OLD.consumed_at IS NOT NULL AND NEW.attempts <> OLD.attempts THEN
+    RAISE EXCEPTION 'OTP_CHALLENGE_CONSUMED_ATTEMPTS_FIXED: a consumed otp_challenge row keeps its attempts'
+      USING ERRCODE = 'KV064',
+            HINT = 'decisions.md OE-60: once consumed, attempts is fixed.';
   END IF;
 
   RETURN NULL;
@@ -116,7 +151,7 @@ END
 $fn$;
 
 COMMENT ON FUNCTION public.assert_otp_challenge_single_use() IS
-  'AFTER UPDATE row trigger on otp_challenge (T-194; decisions.md OE-30 U-O5, OE-50 Q-D3). On a changed row: a set consumed_at returned to NULL is KV060; a set consumed_at changed to another value is KV061; any change to a row whose stored attempts is 3 is KV062. An UPDATE writing identical values is not refused.';
+  'AFTER UPDATE row trigger on otp_challenge (T-194; decisions.md OE-30 U-O5, OE-50 Q-D3, OE-60). On a changed row, first match raised: a set consumed_at returned to NULL is KV060; a set consumed_at changed to another value is KV061; a change to created_at, expires_at, code_hash or phone_e164 is KV065 (OE-60); any change to a row whose stored attempts is 3 is KV062; attempts lowered is KV063 (OE-60); attempts changed on a consumed row is KV064 (OE-60). An UPDATE writing identical values is not refused.';
 
 CREATE TRIGGER trg_otp_challenge_single_use
   AFTER UPDATE ON public.otp_challenge
