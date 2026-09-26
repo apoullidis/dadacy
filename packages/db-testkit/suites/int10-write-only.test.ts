@@ -349,3 +349,127 @@ describe('OD-242 — a column-level INSERT grant to answering_service', () => {
     );
   });
 });
+
+/**
+ * OE-62 (T-231 rework 1, the ruling on OD-243): the vendor must not be able to delegate. Check (18)
+ * refuses any privilege held WITH GRANT OPTION, the permitted INSERT on out_of_hours_report
+ * included, and any non-superuser role holding ADMIN OPTION on answering_service. The grant-option
+ * cases on per-database objects are refused at the GRANT; the two on shared catalogues (a database
+ * grant, a role grant) fire no event trigger and are caught by a direct call. Each refusal case is
+ * red with check (18) removed from 0014 (T-231 § Rework 1, RW-MUT).
+ */
+describe('OE-62 — no grant option and no ADMIN OPTION for the vendor', () => {
+  const GO_SQL = `SELECT has_table_privilege('answering_service','public.out_of_hours_report','INSERT WITH GRANT OPTION')::text || '/' ||
+                         has_column_privilege('answering_service','public.out_of_hours_report','id','INSERT WITH GRANT OPTION')::text`;
+
+  test('CONTROL — the permitted INSERT on out_of_hours_report, with no grant option, is accepted and the guard is clean', async () => {
+    await db.sql({
+      commands: [
+        'GRANT INSERT ON public.out_of_hours_report TO answering_service',
+        'SELECT kinvara_guard.assert_answering_service_write_only()',
+      ],
+    });
+    assert.equal(await db.value(GO_SQL), 'false/false');
+  });
+
+  test('INSERT ON out_of_hours_report WITH GRANT OPTION (table level) is REFUSED KV010 at the GRANT', async () => {
+    const r = await db.psql({
+      commands: [
+        'GRANT INSERT ON public.out_of_hours_report TO answering_service WITH GRANT OPTION',
+      ],
+      verbose: true,
+    });
+    assertRefused('table-level grant option', r, { message: INT10_RAISE, sqlstate: 'KV010' });
+    assert.ok(
+      r.output.includes(
+        'answering_service holds INSERT WITH GRANT OPTION on public.out_of_hours_report',
+      ),
+      `the DETAIL does not name the grant option.\n${r.output}`,
+    );
+    assert.equal(await db.value(GO_SQL), 'false/false', 'nothing may land');
+  });
+
+  test('INSERT (id) ON out_of_hours_report WITH GRANT OPTION (column level) is REFUSED KV010 at the GRANT', async () => {
+    const r = await db.psql({
+      commands: [
+        'GRANT INSERT (id) ON public.out_of_hours_report TO answering_service WITH GRANT OPTION',
+      ],
+      verbose: true,
+    });
+    assertRefused('column-level grant option', r, { message: INT10_RAISE, sqlstate: 'KV010' });
+    assert.ok(
+      r.output.includes(
+        'answering_service holds column privilege INSERT WITH GRANT OPTION on public.out_of_hours_report.id',
+      ),
+      `the DETAIL does not name the column grant option.\n${r.output}`,
+    );
+    assert.equal(await db.value(GO_SQL), 'false/false', 'nothing may land');
+  });
+
+  test('a grant option on a privilege 0001 gives it (USAGE on schema public) is REFUSED KV010 at the GRANT', async () => {
+    const r = await db.psql({
+      commands: ['GRANT USAGE ON SCHEMA public TO answering_service WITH GRANT OPTION'],
+      verbose: true,
+    });
+    assertRefused('schema USAGE grant option', r, { message: INT10_RAISE, sqlstate: 'KV010' });
+    assert.ok(
+      r.output.includes('answering_service holds USAGE WITH GRANT OPTION on schema public'),
+      `the DETAIL does not name the grant option.\n${r.output}`,
+    );
+    assert.equal(
+      await db.value(
+        `SELECT has_schema_privilege('answering_service','public','USAGE WITH GRANT OPTION')::text`,
+      ),
+      'false',
+    );
+  });
+
+  test('CONNECT ON DATABASE WITH GRANT OPTION fires no trigger (shared catalogue) and is DETECTED by a direct call', async () => {
+    const r = await db.psql({
+      commands: [
+        'GRANT CONNECT ON DATABASE kinvara TO answering_service WITH GRANT OPTION',
+        'SELECT kinvara_guard.assert_answering_service_write_only()',
+      ],
+      singleTransaction: true,
+      verbose: true,
+    });
+    assertRefused('the direct call', r, { message: INT10_RAISE, sqlstate: 'KV010' });
+    assert.ok(
+      r.output.includes('answering_service holds CONNECT WITH GRANT OPTION on database kinvara'),
+      `the DETAIL does not name the grant option.\n${r.output}`,
+    );
+    assert.equal(
+      await db.value(
+        `SELECT has_database_privilege('answering_service','kinvara','CONNECT WITH GRANT OPTION')::text`,
+      ),
+      'false',
+      'the transaction must have rolled back',
+    );
+  });
+
+  test('ADMIN OPTION on answering_service fires no trigger (GRANT ROLE) and is DETECTED by a direct call', async () => {
+    const r = await db.psql({
+      commands: [
+        'CREATE ROLE t231_admin_probe NOLOGIN',
+        'GRANT answering_service TO t231_admin_probe WITH ADMIN OPTION',
+        'SELECT kinvara_guard.assert_answering_service_write_only()',
+      ],
+      singleTransaction: true,
+      verbose: true,
+    });
+    assertRefused('the direct call', r, { message: INT10_RAISE, sqlstate: 'KV010' });
+    assert.ok(
+      r.output.includes('role t231_admin_probe holds ADMIN OPTION on answering_service'),
+      `the DETAIL does not name the ADMIN OPTION.\n${r.output}`,
+    );
+    assert.equal(
+      await db.value(`SELECT count(*) FROM pg_roles WHERE rolname = 't231_admin_probe'`),
+      '0',
+      'the transaction must have rolled back',
+    );
+  });
+
+  test('CONTROL — the guard is clean on the state this suite leaves', async () => {
+    await db.sql({ commands: ['SELECT kinvara_guard.assert_answering_service_write_only()'] });
+  });
+});
