@@ -208,7 +208,7 @@ describe('0015 — the table, its owner, its columns, its constraints and its AC
     // (T-195 § tech-lead verification TL-4 and S1).
     assert.equal(
       await db.value(
-        `SELECT string_agg(tgname || ':' || tgtype || ':' || tgenabled || ':' || tgfoid::regprocedure::text, ',' ORDER BY tgname)
+        `SELECT string_agg(tgname || ':' || tgtype || ':' || tgenabled::text || ':' || tgfoid::regprocedure::text, ',' ORDER BY tgname)
            FROM pg_trigger WHERE tgrelid = 'public.magic_link'::regclass AND NOT tgisinternal`,
       ),
       'trg_magic_link_created_at:7:O:set_magic_link_created_at(),' +
