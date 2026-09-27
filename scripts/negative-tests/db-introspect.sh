@@ -406,6 +406,7 @@ BASE_PARENTS=$(psql -X -A -t -q -c "SELECT count(*) FROM pg_class c JOIN pg_name
 BASE_PARENT_POLICIES=$(psql -X -A -t -q -c "SELECT count(*) FROM pg_policy pol JOIN pg_class c ON c.oid = pol.polrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind = 'p' AND NOT c.relispartition AND $ext_free")
 BASE_PARTITION_NAMES=$(psql -X -A -t -q -c "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relispartition AND c.relkind IN ('r','p','v','m','f') AND $ext_free ORDER BY c.relname")
 BASE_PARTITIONS=$(printf '%s' "$BASE_PARTITION_NAMES" | grep -c .)
+BASE_PARENT_NAMES=$(psql -X -A -t -q -c "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind = 'p' AND NOT c.relispartition AND $ext_free ORDER BY c.relname")
 # The names on each side of I-VACUOUS: drizzle-kit's pull (r/v/m, partitions included) and the
 # catalogue's owned set (r/p/v/m/f, partitions excluded). K162 compares both lists whole.
 BASE_PULLED_NAMES=$(psql -X -A -t -q -c "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind IN ('r','v','m') AND $ext_free")
@@ -455,6 +456,7 @@ for pair in "int8 columns the match holds:$BASE_INT8:$GEN_INT8" "int8 columns ma
 done
 [[ "$BASE_RESTORED" =~ ^[0-9]+$ && "$BASE_REWRITTEN" =~ ^[0-9]+$ ]] || abort "BASE: the generator's policies line has no restored/rewritten counts: [$L_POL]"
 { [ "$BASE_RESTORED" -le $((2 * BASE_POLICIES)) ] && [ "$BASE_REWRITTEN" -le "$BASE_POLICIES" ]; } || abort "BASE: $BASE_RESTORED expression(s) restored and $BASE_REWRITTEN entr(ies) rewritten, but psql counts $BASE_POLICIES polic(ies) (at most 2 expressions each)"
+[ "$(printf '%s' "$BASE_PARENT_NAMES" | grep -c .)" = "$BASE_PARENTS" ] || abort "BASE: the partitioned-table names and count disagree"
 echo "   T-232 BASE at $HIGHEST, before any plant (psql; each equal to the generator's reading of the committed tree): int8 matched $BASE_INT8, int8 pulled $BASE_INT8_PULLED, geometry points $BASE_POINTS, policies $BASE_POLICIES (restored $BASE_RESTORED, rewritten $BASE_REWRITTEN), partitioned tables $BASE_PARENTS (policies $BASE_PARENT_POLICIES), partitions $BASE_PARTITIONS [$(c_list $BASE_PARTITION_NAMES)], owned $BASE_OWNED"
 
 OWNED=$(owned_in_public)
@@ -611,10 +613,22 @@ check K05 "(iii) db/schema.ts deleted: a failure, not nothing to compare" I-MISS
 echo "== (iv) anti-vacuity, anchored on the catalogue"
 plant_table
 mutate "$SCRIPT" "schemaFilter: [INTROSPECTED_SCHEMA]," "schemaFilter: ['t138_no_such_schema'],"
-check K06 "(iv) introspection mutated to read no schema, while the catalogue holds a table" I-VACUOUS "MIGRATE OK  up: $HIGHEST -> $NEXT"
+# T-232 (measured on a scratch migration set with a committed partitioned table, T-232 § Evidence F): the
+# partition step (4b) runs before anti-vacuity (5), so while `public` holds a committed partitioned table
+# the empty pull is refused there first, as I-PART naming that committed parent, and I-VACUOUS is never
+# reached. Which tag refuses it is derived from BASE; that the empty pull is REFUSED is what both prove.
+# While a partitioned table is committed, I-VACUOUS's own reach is proven by K162/K163, not here.
+K06_PART_RE="^  - \[I-PART\] partitioned table \"($(printf '%s\n' $BASE_PARENT_NAMES | paste -sd'|' -))\": drizzle-kit did not render partition"
+if [ "$BASE_PARENTS" -eq 0 ]; then
+  check K06 "(iv) introspection mutated to read no schema, while the catalogue holds a table" I-VACUOUS "MIGRATE OK  up: $HIGHEST -> $NEXT"
+else
+  check_facts K06 "(iv) introspection mutated to read no schema, while the catalogue holds a table: refused by the partition step first (BASE holds $BASE_PARENTS partitioned table(s))" I-PART "MIGRATE OK  up: $HIGHEST -> $NEXT" "$K06_PART_RE"
+fi
 mutate "$SCRIPT" "schemaFilter: [INTROSPECTED_SCHEMA]," "schemaFilter: ['t138_no_such_schema'],"
 if [ "$OWNED" -eq 0 ]; then
   check K07 "BOUND (iv): the same mutation, no table planted, catalogue holds 0 un-owned relations -> NOT detected" PASS 'VACUOUS: 0 relations introspected'
+elif [ "$BASE_PARENTS" -gt 0 ]; then
+  check_facts K07 "(iv) the same mutation against the committed relations: refused by the partition step first (BASE holds $BASE_PARENTS partitioned table(s))" I-PART "$K06_PART_RE"
 else
   check K07 "(iv) the same mutation against the committed relations" I-VACUOUS
 fi
@@ -1062,15 +1076,22 @@ DROP SCHEMA $ident;"
   node scripts/db-introspect.ts --check >"$OUT" 2>&1
   code=$?
   : >"$OUT.f"
-  facts_into "$@"
+  if [ "$BASE_PARTITIONS" -eq 0 ]; then facts_into "$@"; else facts_into "$@" "$KM_VACUOUS_RE"; fi
   landed_fact "$want"
   [ "$miss" -eq 0 ] && echo "ALL RESTORED-READ FACTS HOLD" >>"$OUT.f"
   cat "$OUT.f" >>"$OUT"
-  judge "${id}m" "(T-145 r1) RED BEFORE: main's trim/split read restored (asserted above), the same plant gets past I-SCOPE" PASS "$code" '^ALL RESTORED-READ FACTS HOLD$'
+  judge "${id}m" "(T-145 r1) RED BEFORE: main's trim/split read restored (asserted above), the same plant gets past I-SCOPE" "$KM_EXPECT" "$code" '^ALL RESTORED-READ FACTS HOLD$'
   grep -E '^fact |^  out of scope: ' "$OUT" | cut -c1-240 | sed 's/^/       /'
   restore
 }
 
+# T-232 (measured, § Evidence F): the text read restored above predates T-165 and has no partition flag,
+# so while `public` holds committed partitions it counts them as owned and the run is I-VACUOUS at step 5
+# on those alone (exactly the lists below, from BASE). Step 5 is reached only after step 3's I-SCOPE
+# passed, so "the plant gets past I-SCOPE" is proven either way; the facts are the same.
+KM_EXPECT=PASS
+KM_VACUOUS_RE="^  - \\[I-VACUOUS\\] drizzle-kit wrote $BASE_OWNED relation\\(s\\) \\[$(ere "$(c_list $BASE_OWNED_NAMES)")\\] but the catalogue lists $((BASE_OWNED + BASE_PARTITIONS)) owned by no extension in public \\[$(ere "$(c_list $BASE_OWNED_NAMES $BASE_PARTITION_NAMES)")\\]\$"
+[ "$BASE_PARTITIONS" -eq 0 ] || KM_EXPECT=I-VACUOUS
 ADMITTED_T="^  out of scope: $((ADMITTED_BASE + 1)) relation\(s\) in schema\(s\) \"pgboss\" admitted, not introspected and not counted \[.*\"pgboss\"\.\"t145_t\".*\]$"
 shape_case K42 '" pgboss"' ' pgboss' '" pgboss"' "$ADMITTED_T"
 shape_case K43 'U&"\00A0pgboss"' '\xc2\xa0pgboss' '"\\u00a0pgboss"' "$ADMITTED_T"
@@ -1273,6 +1294,8 @@ CREATE SCHEMA pg_toastq;
 ' 'DROP SCHEMA pg_toastq;'
 
 echo "== T-165 rework 1 (OD-155, OD-156): EVERY partition's own objects are read, not only the template's"
+# T-232: every plant-landed read of pg_policy below is limited to the plant's own t165_part* relations, so
+# a committed policy elsewhere in public is not taken for a plant that did not land (measured, § Evidence F).
 # Before this rework the step consulted the names map for the TEMPLATE only and deleted every other
 # partition's declaration whole, so anything a non-template partition alone carried was read by
 # nothing: qa-verification's A17 (a policy) and DRIFT 2 (an index) both gave GATE PASS. Each case
@@ -1354,7 +1377,7 @@ partlocal_case K172 "(T-165 r1, OD-155) a row-level security POLICY on the non-t
   "ALTER TABLE public.t165_part_q2 ENABLE ROW LEVEL SECURITY;
 CREATE POLICY t165_part_q2_only ON public.t165_part_q2 FOR SELECT TO app_rw USING (note <> 'x');" \
   "" \
-  "SELECT c.relname || '/' || pol.polname FROM pg_policy pol JOIN pg_class c ON c.oid = pol.polrelid" \
+  "SELECT c.relname || '/' || pol.polname FROM pg_policy pol JOIN pg_class c ON c.oid = pol.polrelid WHERE c.relname LIKE 't165\_part%'" \
   "t165_part_q2/t165_part_q2_only" \
   'partition "t165_part_q2" has its own policy "t165_part_q2_only", which the parent has no counterpart for' \
   0 none t165_part_q2_only
@@ -1363,7 +1386,7 @@ partlocal_case K173 "(T-165 r1, OD-155) the SAME policy on the TEMPLATE partitio
   "ALTER TABLE public.t165_part_q1 ENABLE ROW LEVEL SECURITY;
 CREATE POLICY t165_part_q1_only ON public.t165_part_q1 FOR SELECT TO app_rw USING (note <> 'x');" \
   "" \
-  "SELECT c.relname || '/' || pol.polname FROM pg_policy pol JOIN pg_class c ON c.oid = pol.polrelid" \
+  "SELECT c.relname || '/' || pol.polname FROM pg_policy pol JOIN pg_class c ON c.oid = pol.polrelid WHERE c.relname LIKE 't165\_part%'" \
   "t165_part_q1/t165_part_q1_only" \
   'partition "t165_part_q1" has its own policy "t165_part_q1_only", which the parent has no counterpart for' \
   1 I-POLICY t165_part_q1_only no-policy-read
@@ -1436,7 +1459,7 @@ node scripts/db-migrate.ts up >"$OUT.p" 2>&1 || { cat "$OUT.p"; abort "K180: the
 psql -X -q -v ON_ERROR_STOP=1 -c "CREATE TABLE public.t165_part_a0 PARTITION OF public.t165_part FOR VALUES FROM (TIMESTAMPTZ '2025-01-01Z') TO (TIMESTAMPTZ '2026-01-01Z')" >/dev/null || abort "K180: the attach failed"
 got=$(psql -X -A -t -q -c "SELECT string_agg(c.relname, ',' ORDER BY c.relname) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relispartition AND c.relkind = 'r' AND c.relname LIKE 't165\_part\_%'")
 [ "$got" = "t165_part_a0,t165_part_q1,t165_part_q2" ] || abort "K180: the attach did not land: [$got]"
-got=$(psql -X -A -t -q -c "SELECT c.relname || '/' || pol.polname FROM pg_policy pol JOIN pg_class c ON c.oid = pol.polrelid")
+got=$(psql -X -A -t -q -c "SELECT c.relname || '/' || pol.polname FROM pg_policy pol JOIN pg_class c ON c.oid = pol.polrelid WHERE c.relname LIKE 't165\_part%'")
 [ "$got" = "t165_part_q2/t165_part_q2_only" ] || abort "K180: the policy is no longer there: [$got]"
 echo "   attach landed: partitions [$(psql -X -A -t -q -c "SELECT string_agg(c.relname, ',' ORDER BY c.relname) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relispartition AND c.relkind = 'r' AND c.relname LIKE 't165\_part\_%'")], the template is now t165_part_a0; pg_policy STILL [$got]"
 check K180 "(T-165 r1, OD-155) QA's A17 stage 2: a partition that sorts FIRST attached, so the template changes — the policy on t165_part_q2 is refused just the same" I-PART 'partition "t165_part_q2" has its own policy "t165_part_q2_only"'
