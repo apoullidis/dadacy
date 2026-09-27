@@ -85,7 +85,9 @@
 # (int8 and geometry columns, policies, partitioned tables and partitions, relations) is BASE + the
 # plant's own share, BASE read once from the catalogue at HIGHEST and held against the generator's
 # reading of the committed tree; K162 compares both I-VACUOUS lists whole instead of pinning the last
-# name. A migration that only ADDS objects needs no edit here. See the BASE block below.
+# name. T-232 rework 1 (QA-F1): a fact about the plant's rendering is counted inside the plant's own
+# declaration in db/schema.ts (block_count), never over the whole file. What was measured is in
+# tasks/state/EP-2/T-232.md (§ Rework 1, Published contract); see the BASE block below.
 #
 #   cd /home/alex/projects/nanny/app && ./scripts/svc run <ticket> -- bash scripts/negative-tests/db-introspect.sh
 #
@@ -246,6 +248,23 @@ plant() {
   printf '%s\n' "$2" >"$1"
   [ "$(cat "$1")" = "$2" ] || abort "the plant did not land in $1"
 }
+
+# T-232 rework 1 (QA-F1): block_count [-x] <export> <text>: lines of db/schema.ts INSIDE the plant's own
+# declaration (from `export const <export> = ` to the next `export const`) containing (-x: equal to)
+# <text>. A fact about the plant's rendering is counted there, never over the whole file, because a
+# committed relation renders the same lines (a bigint identity `id`, an `amount_minor bigint`, a
+# `bigint[]`), and a whole-file count then encodes "the committed set renders no such line".
+# block_count prints -1 when the declaration is absent, so no expectation (0 included) passes on a
+# block that is not there.
+block_count() {
+  local x=
+  if [ "$1" = -x ]; then x=x; shift; fi
+  grep -q "^export const $1 = " "$SCHEMA" || { echo -1; return; }
+  awk -v n="export const $1 = " 'index($0, "export const ") == 1 { p = (index($0, n) == 1) } p' "$SCHEMA" | grep -c${x}F -- "$2"
+}
+# head_count <text>: the same text's lines in the COMMITTED db/schema.ts (HEAD), for a fact about a token
+# that has no plant declaration to be scoped to: the plant's share is the count now minus this.
+head_count() { git show HEAD:"$SCHEMA" | grep -cF -- "$1"; }
 
 # a migration NEXT that creates one table in public, with a grant and a down file.
 plant_table() {
@@ -498,9 +517,12 @@ echo "== T-165 (OD-84): a partitioned table is rendered under its own name; its 
 part_expectations() {
   local line
   PART_N=0
+  # T-232 rework 1: a line that names a plant object (t165_part*, t165Part*) is searched in the whole file,
+  # since no committed relation can render it; any other line (e.g. `amount: bigint(…).notNull(),`) is
+  # searched only inside the parent's own declaration, t165Part, where the fixture put it.
   while IFS= read -r line; do
     PART_N=$((PART_N + 1))
-    if grep -qF -- "$line" "$SCHEMA"; then
+    if case "$line" in *t165_part* | *t165Part*) grep -qF -- "$line" "$SCHEMA" ;; *) [ "$(block_count t165Part "$line")" -ge 1 ] ;; esac; then
       echo "fact ok (db/schema.ts has it): $line" >>"$OUT.f"
     else
       echo "fact MISMATCH (db/schema.ts lacks it): $line" >>"$OUT.f"
@@ -509,7 +531,7 @@ part_expectations() {
   done < <(sed -nE 's/^-- expect: //p' "$PART_FIXTURE")
   while IFS= read -r line; do
     PART_N=$((PART_N + 1))
-    if grep -qF -- "$line" "$SCHEMA"; then
+    if case "$line" in *t165_part* | *t165Part*) grep -qF -- "$line" "$SCHEMA" ;; *) [ "$(block_count t165Part "$line")" -ne 0 ] ;; esac; then
       echo "fact MISMATCH (db/schema.ts names it): $line" >>"$OUT.f"
       miss=$((miss + 1))
     else
@@ -589,8 +611,11 @@ restore
 
 # T-232: QA's table adds 2 policies, 1 dropped expression restored and 1 entry rewritten; BASE adds the committed set's.
 K26_COUNTS="$((BASE_POLICIES + 2)) checked against pg_policy; $((BASE_RESTORED + 1)) expression\(s\) drizzle-kit dropped restored; $((BASE_REWRITTEN + 1)) entr\(ies\) rewritten from the catalogue\$"
-# K27's fixture has 4 policies and 6 expressions; before T-232 it pinned "at least 1 restored". Now: BASE + 1 .. BASE + 6.
-K27_RESTORED=$(seq -s '|' $((BASE_RESTORED + 1)) $((BASE_RESTORED + 6)))
+# K27's fixture: t152_single's one policy is its table's first row (never dropped); t152_ledger has 3 policies
+# and 4 expressions, and drizzle-kit drops the expressions of all but the first row it reads, so the plant
+# restores 2 or 3 (3 if update, 2 expressions, is not first). Before T-232 it pinned "at least 1";
+# T-232 had BASE+1..BASE+6; rework 1 (QA N2): BASE+2..BASE+3, measured 2 and 3.
+K27_RESTORED=$(seq -s '|' $((BASE_RESTORED + 2)) $((BASE_RESTORED + 3)))
 echo "== T-152 rework 1: row-level security policies (OD-109). First among the policy cases and still before any ANALYZE in this suite: T-165 rework 1 moved K150-K154 ahead of it (QR-A3) and neither block analyses anything"
 policy_fixture "$QA_POLICIES"
 echo "   pg_class last analyze / vacuum before the first write: '$(stats_mark)'"
@@ -793,7 +818,8 @@ node scripts/db-introspect.ts --check >"$OUT" 2>&1
 code=$?
 missing=0
 for line in 'primaryKey({ columns: [table.k2, table.k1], name: "t152_parent_pkey"})' 'unique("t152_child_u_key").on(table.uB, table.uA)' 'columns: [table.c2, table.c1],' 'foreignColumns: [t152Parent.k2, t152Parent.k1],'; do
-  if grep -qF -- "$line" "$SCHEMA"; then echo "key order as the catalogue: $line" >>"$OUT"; else echo "key order NOT as the catalogue, missing: $line" >>"$OUT"; missing=$((missing + 1)); fi
+  # T-232 rework 1: counted inside the child's own declaration (the FK's `columns:` names no plant object).
+  if [ "$(block_count t152Child "$line")" -ge 1 ] || { [ "$line" != 'columns: [table.c2, table.c1],' ] && grep -qF -- "$line" "$SCHEMA"; }; then echo "key order as the catalogue: $line" >>"$OUT"; else echo "key order NOT as the catalogue, missing: $line" >>"$OUT"; missing=$((missing + 1)); fi
 done
 [ "$missing" -eq 0 ] && echo "ALL FOUR KEY LISTS IN CATALOGUE ORDER" >>"$OUT"
 judge K22 "(T-152) composite PK (k2, k1), UNIQUE (u_b, u_a), FK (c2, c1) -> (k2, k1): rendered in the catalogue's column order, and parity holds" PASS "$code" '^ALL FOUR KEY LISTS IN CATALOGUE ORDER$'
@@ -935,7 +961,12 @@ fact "the generator's out-of-scope list, as the catalogue" "$gen_admitted" "$cat
 fact "I-VACUOUS's catalogue side (owned by no extension in public), as psql counts public now" "$gen_owned" "$(owned_in_public)"
 fact "I-VACUOUS's catalogue side, as K00 counted before any pgboss plant" "$gen_owned" "$OWNED"
 fact "I-VACUOUS's rendering side (relations drizzle-kit introspected), as K00 counted" "$gen_intro" "$OWNED"
-fact "db/schema.ts lines naming pgboss or any planted object" "$(grep -cE 'pgboss|job_state|t145|"version"|"job"' "$SCHEMA")" 0
+fact "db/schema.ts lines naming pgboss or a planted name (job_state, t145*)" "$(grep -cE 'pgboss|job_state|t145' "$SCHEMA")" 0
+# T-232 rework 1: until rework 1 this fact also grepped the whole file for `"version"` and `"job"` (two of
+# 0006's pgboss relations), which a committed public relation of either name would match. Now: every
+# relation name that exists in schema pgboss and NOT in public (psql) must not be a rendered relation.
+pgboss_only=$(psql -X -A -t -q -c "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'pgboss' AND c.relkind IN ('r','p','v','m','f') AND c.relname NOT IN (SELECT c2.relname FROM pg_class c2 JOIN pg_namespace n2 ON n2.oid = c2.relnamespace WHERE n2.nspname = 'public')")
+fact "rendered relations (pgTable/pgView/pgMaterializedView) named as a relation only schema pgboss has [$(c_list $pgboss_only)]" "$(grep -oE '= pg(Table|View|MaterializedView)\("[^"]+"' "$SCHEMA" | sed -E 's/.*\("(.*)"$/\1/' | grep -cxF -f <(printf '%s\n' $pgboss_only))" 0
 node scripts/db-introspect.ts --write >"$OUT.w" 2>&1
 fact "write mode, pgboss set planted: exit" "$?" 0
 fact "write mode: git diff --quiet db/schema.ts against the committed file, exit" "$(git diff --quiet -- "$SCHEMA" && echo 0 || echo 1)" 0
@@ -1325,7 +1356,9 @@ write_judge() {
   total=$((total + 1))
   banners=$(grep -cE '^GATE (PASS|FAIL|CRASH)  db:introspect($| — |: )' "$OUT")
   tags=$(grep -oE '^  - \[I-[A-Z]+\]' "$OUT" | sed -E 's/^  - \[(.*)\]$/\1/' | sort -u | tr '\n' ' ' | sed 's/ $//')
-  n=$(grep -c -- "$absent" "$SCHEMA")
+  # T-232 rework 1: the plant's share of <name> — its lines now minus those in the committed file, since
+  # two of the names ('REPLICA IDENTITY', 'DISABLE') name no plant object and a committed file could hold them.
+  n=$(($(grep -c -- "$absent" "$SCHEMA") - $(git show HEAD:"$SCHEMA" | grep -c -- "$absent")))
   if [ "$code" -eq "$want_code" ] && [ "$banners" -eq 1 ] && [ "${tags:-none}" = "$want_tags" ] && [ "$n" -eq "$want_n" ]; then
     v=ok
   else
@@ -1686,19 +1719,23 @@ bigint_facts() {
   local line
   node --input-type=module -e "$T153_ROUNDTRIP" >"$OUT.rt" 2>&1
   if [ "$1" = lossless ]; then
-    for line in 'id: bigint({ mode: "bigint" }).primaryKey().generatedAlwaysAsIdentity(' \
-      'id: bigint({ mode: "bigint" }).primaryKey().generatedByDefaultAsIdentity(' \
-      'parentId: bigint("parent_id", { mode: "bigint" }).notNull(),' \
-      'amountMinor: bigint("amount_minor", { mode: "bigint" }).notNull(),' \
-      'maybeMinor: bigint("maybe_minor", { mode: "bigint" }),' \
-      'zeroMinor: bigint("zero_minor", { mode: "bigint" }).default(0n).notNull(),' \
-      'minorList: bigint("minor_list", { mode: "bigint" }).array().default([1n, 9007199254740993n]).notNull(),' \
-      'int8Spelled: bigint("int8_spelled", { mode: "bigint" }),' \
-      'id: bigint({ mode: "bigint" }),' \
-      'amountMinor: bigint("amount_minor", { mode: "bigint" }),'; do
-      fact "db/schema.ts lines containing [$line]" "$(grep -cF -- "$line" "$SCHEMA")" 1
+    # T-232 rework 1 (QA-F1): each line counted inside the declaration the plant's SQL puts it in, not over
+    # the whole file (a committed `id bigint … IDENTITY` or `amount_minor bigint` renders the same line).
+    for spec in 't153Parent|id: bigint({ mode: "bigint" }).primaryKey().generatedAlwaysAsIdentity(' \
+      't153Money|id: bigint({ mode: "bigint" }).primaryKey().generatedByDefaultAsIdentity(' \
+      't153Money|parentId: bigint("parent_id", { mode: "bigint" }).notNull(),' \
+      't153Money|amountMinor: bigint("amount_minor", { mode: "bigint" }).notNull(),' \
+      't153Money|maybeMinor: bigint("maybe_minor", { mode: "bigint" }),' \
+      't153Money|zeroMinor: bigint("zero_minor", { mode: "bigint" }).default(0n).notNull(),' \
+      't153Money|minorList: bigint("minor_list", { mode: "bigint" }).array().default([1n, 9007199254740993n]).notNull(),' \
+      't153Money|int8Spelled: bigint("int8_spelled", { mode: "bigint" }),' \
+      't153MoneyV|id: bigint({ mode: "bigint" }),' \
+      't153MoneyV|amountMinor: bigint("amount_minor", { mode: "bigint" }),'; do
+      fact "db/schema.ts, inside ${spec%%|*}: lines containing [${spec#*|}]" "$(block_count "${spec%%|*}" "${spec#*|}")" 1
     done
-    fact "db/schema.ts lines in number mode or with drizzle-kit's bigint hint" "$(grep -cE 'mode: "number"|You can use \{ mode: "bigint" \}' "$SCHEMA")" 0
+    for b in t153Parent t153Money t153MoneyV; do
+      fact "db/schema.ts, inside $b: lines in number mode or with drizzle-kit's bigint hint" "$(block_count "$b" 'mode: "number"')/$(block_count "$b" 'You can use { mode: "bigint" }')" 0/0
+    done
     fact "the generator's bigint line (the plant's 10 int8 columns, from its SQL, + BASE $BASE_INT8 matched / $BASE_INT8_PULLED pulled, each matched per column)" "$(grep -cE "^  bigint: $((BASE_INT8_PULLED + 10)) column\\(s\\) rewritten to drizzle's bigint mode; $((BASE_INT8 + 10)) of the catalogue's $((BASE_INT8 + 10)) int8 column\\(s\\) matched per column against [0-9]+ parsed relation\\(s\\)" "$OUT")" 1
     for line in 'READ id bigint 1' 'READ amountMinor bigint 9007199254740993' 'READ int8Spelled bigint -9223372036854775808' \
       'READ minorList bigint 1,bigint 9007199254740993' 'READ maybeMinor null' 'READ view amountMinor bigint 9007199254740993' \
@@ -1707,7 +1744,7 @@ bigint_facts() {
     done
     fact "importer: exactly TS2322 on the three number lines (7-9), the bigints and null accepted" "$(tsc_errors)" "$T153_BITE:7 TS2322 $T153_BITE:8 TS2322 $T153_BITE:9 TS2322"
   else
-    fact "db/schema.ts lines containing drizzle-kit's number-mode amount_minor" "$(grep -cF 'amountMinor: bigint("amount_minor", { mode: "number" }).notNull(),' "$SCHEMA")" 1
+    fact "db/schema.ts, inside t153Money: drizzle-kit's number-mode amount_minor" "$(block_count t153Money 'amountMinor: bigint("amount_minor", { mode: "number" }).notNull(),')" 1
     fact "driver round trip prints [READ amountMinor number 9007199254740992]" "$(grep -cxF 'READ amountMinor number 9007199254740992' "$OUT.rt")" 1
     fact "importer: TS2322 on the three bigint lines (4-6) and the three number lines (7-9) SILENT" "$(tsc_errors)" "$T153_BITE:4 TS2322 $T153_BITE:5 TS2322 $T153_BITE:6 TS2322"
   fi
@@ -1802,8 +1839,8 @@ code=$?
 : >"$OUT.f"
 nf=0
 nok=0
-fact "db/schema.ts lines containing the Point,4326 column" "$(grep -cF 'gPoint: geometry("g_point", { type: "point", srid: 4326 }),' "$SCHEMA")" 1
-fact "db/schema.ts lines containing the Point column" "$(grep -cF 'gPointNosrid: geometry("g_point_nosrid", { type: "point" }),' "$SCHEMA")" 1
+fact "db/schema.ts, inside t153Geo: the Point,4326 column" "$(block_count t153Geo 'gPoint: geometry("g_point", { type: "point", srid: 4326 }),')" 1
+fact "db/schema.ts, inside t153Geo: the Point column" "$(block_count t153Geo 'gPointNosrid: geometry("g_point_nosrid", { type: "point" }),')" 1
 fact "the generator admits the plant's 2 point columns + BASE $BASE_POINTS" "$(grep -cE "^  bigint: .*; geometry: $((BASE_POINTS + 2)) point column\(s\) admitted\$" "$OUT")" 1
 node --input-type=module -e "$T153_GEO_ROUNDTRIP" >"$OUT.rt" 2>&1
 for line in 'READ gPoint [33.25,35.5]' 'READ gPointNosrid [1,2]' 'WRITE gPoint SRID=4326;POINT(33.125 34.875)' 'WRITE gPointNosrid POINT(5 -6.5)'; do
@@ -1873,7 +1910,7 @@ code=$?
 nf=0
 nok=0
 fact "write with the geometry rule deleted: exit" "$wcode" 0
-fact "db/schema.ts lines containing the polygon column as drizzle-kit renders it" "$(grep -cF 'gPoly: geometry("g_poly", { type: "polygon", srid: 4326 }),' "$SCHEMA")" 1
+fact "db/schema.ts, inside t153Geo: the polygon column as drizzle-kit renders it" "$(block_count t153Geo 'gPoly: geometry("g_poly", { type: "polygon", srid: 4326 }),')" 1
 node --input-type=module -e "$T153_GEO_DEFECT" >"$OUT.rt" 2>&1
 fact "driver prints [READ gPoly THREW Unsupported geometry type]" "$(grep -cxF 'READ gPoly THREW Unsupported geometry type' "$OUT.rt")" 1
 fact "driver prints [READ gPointz [33,35]] (the stored Z, 7, is lost)" "$(grep -cxF 'READ gPointz [33,35]' "$OUT.rt")" 1
@@ -1999,8 +2036,8 @@ code=$?
 nf=0
 nok=0
 fact "write with the per-relation COUNT restored: exit" "$wcode" 0
-fact "db/schema.ts: the TABLE's bigint[] keeps .array()" "$(grep -cF 'amounts: bigint({ mode: "bigint" }).array()' "$SCHEMA")" 1
-fact "db/schema.ts: lines rendering a bigint[] of a view or matview WITHOUT .array()" "$(grep -cxF '	amounts: bigint({ mode: "bigint" }),' "$SCHEMA")" 2
+fact "db/schema.ts, inside t153Arr: the TABLE's bigint[] keeps .array()" "$(block_count t153Arr 'amounts: bigint({ mode: "bigint" }).array()')" 1
+fact "db/schema.ts, inside t153ArrV and t153ArrMv: the bigint[] rendered WITHOUT .array()" "$(block_count -x t153ArrV '	amounts: bigint({ mode: "bigint" }),')/$(block_count -x t153ArrMv '	amounts: bigint({ mode: "bigint" }),')" 1/1
 fact "the count balances at the plant's 6 + BASE $BASE_INT8, so nothing is reported" "$(grep -cE "^  bigint: [0-9]+ column\(s\) rewritten to drizzle's bigint mode; $((BASE_INT8 + 6)) of the catalogue's $((BASE_INT8 + 6)) int8 column\(s\)" "$OUT")" 1
 node --input-type=module -e "$T153_ARR_ROUNDTRIP" >"$OUT.rt" 2>&1
 fact "driver: the TABLE's bigint[] reads exactly" "$(grep -cxF 'READ table amounts [bigint 9007199254740993, bigint -9223372036854775808]' "$OUT.rt")" 1
@@ -2009,8 +2046,8 @@ fact "driver: the MATERIALIZED VIEW's bigint[] read THREW" "$(grep -c '^READ mat
 # OE-35 (A): the lost .array() is not bigint's. Read from the RENDERING, because a driver read cannot
 # tell: node-postgres parses a text[] result field into a JS array by its type OID, and drizzle's scalar
 # text() reader is the identity, so a view rendered WITHOUT .array() still reads [alpha, beta] (OD-149).
-fact "db/schema.ts: the TABLE's text[] keeps .array()" "$(grep -cF 'labels: text().array()' "$SCHEMA")" 1
-fact "db/schema.ts: the VIEW's and MATVIEW's text[] are rendered WITHOUT .array() too, so the loss is not bigint's (OD-149, T-187)" "$(grep -cxF '	labels: text(),' "$SCHEMA")" 2
+fact "db/schema.ts, inside t153Arr: the TABLE's text[] keeps .array()" "$(block_count t153Arr 'labels: text().array()')" 1
+fact "db/schema.ts, inside t153ArrV and t153ArrMv: the text[] rendered WITHOUT .array() too, so the loss is not bigint's (OD-149, T-187)" "$(block_count -x t153ArrV '	labels: text(),')/$(block_count -x t153ArrMv '	labels: text(),')" 1/1
 fact "driver: the TABLE's text[] reads as an array" "$(grep -cxF 'READ table labels [string alpha, string beta]' "$OUT.rt")" 1
 fact "driver: the VIEW's text[] reads as the same array although rendered scalar (node-postgres parses by OID; this read cannot tell .array() from none)" "$(grep -cxF 'READ view labels [string alpha, string beta]' "$OUT.rt")" 1
 sed 's/^/driver: /' "$OUT.rt" >>"$OUT.f"
