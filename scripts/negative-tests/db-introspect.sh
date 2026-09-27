@@ -81,6 +81,11 @@
 # K187 is the control (the same three on the PARENT), K188 a stated bound (a partition disabling its
 # cloned trigger is NOT read). K189: the merge with T-153 — step 5a's partition exclusion removed.
 # (T-165's cases were K50–K80 until rework 2 renumbered them by +100 past T-153's K50–K62r.)
+# T-232 (OD-246): no case assumes what the committed migration set contains. Every count a case pins
+# (int8 and geometry columns, policies, partitioned tables and partitions, relations) is BASE + the
+# plant's own share, BASE read once from the catalogue at HIGHEST and held against the generator's
+# reading of the committed tree; K162 compares both I-VACUOUS lists whole instead of pinning the last
+# name. A migration that only ADDS objects needs no edit here. See the BASE block below.
 #
 #   cd /home/alex/projects/nanny/app && ./scripts/svc run <ticket> -- bash scripts/negative-tests/db-introspect.sh
 #
@@ -131,8 +136,10 @@ record() {
   psql -X -A -t -q -c "SELECT coalesce(shobj_description(oid, 'pg_database'), '') FROM pg_database WHERE datname = current_database()"
 }
 
+# T-232: NOT relispartition — the generator's owned set (step 3) leaves partitions out, so a committed
+# partitioned table's partitions must not be counted here either (identical while public has none).
 owned_in_public() {
-  psql -X -A -t -q -c "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind IN ('r','p','v','m','f') AND n.nspname = 'public' AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e')"
+  psql -X -A -t -q -c "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind IN ('r','p','v','m','f') AND n.nspname = 'public' AND NOT c.relispartition AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e')"
 }
 
 # T-165 rework 1 (QR-A4): an abort must leave no debris. A plant left in db/migrations, a written
@@ -372,8 +379,87 @@ fi
 # sees a catalogue nobody has ANALYZEd — K26b runs an ANALYZE, and until this rework K150 ran after
 # it. Neither this block nor the policy block that follows analyses anything, so both still meet an
 # un-analysed catalogue on a fresh project. OWNED is read here because this block needs it.
+# T-232 (OD-246): THE COMMITTED MIGRATION SET'S OWN SHARE OF EVERY COUNT A CASE ASSERTS. Until this
+# ticket K50, K58-K62, K150-K154, K26, K27, K55 and K56 pinned counts that were true only while `public`
+# held no int8 column, no geometry column, no row-level security policy and no partitioned table of its
+# own, and K162 pinned `t165_part_q2` as the LAST name in drizzle-kit's list. 0016 (T-196) added the
+# first int8 column and a table sorting after t165_*, and seven cases went BAD with nothing wrong in
+# the mechanism (OD-246; K18 was the same class, OD-218/T-188). Each such count is now BASE + what the
+# case's own plant adds: the plant's share is written from the plant's SQL, as before; BASE is read
+# here, ONCE, at $HIGHEST before any plant, from the catalogue by psql, never from the generator's
+# output. Then the generator's own reading of the committed tree is taken and every BASE psql can
+# count must equal it, or the run ABORTs naming the one that differs: the psql reading and the
+# generator's are two readings of one catalogue, so neither is taken on the other's word. Only the two
+# policy tallies that depend on what drizzle-kit dropped (`restored`, `rewritten`) come from that run,
+# bounded by psql's policy count (0 policies => both 0). At BASE 0 (main a6e64b3) every expectation
+# below is the constant it replaced.
+ext_free="NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e')"
+int8_cols="SELECT count(*) FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace JOIN pg_type t ON t.oid = a.atttypid JOIN pg_type et ON et.oid = CASE WHEN t.typcategory = 'A' THEN t.typelem ELSE t.oid END WHERE n.nspname = 'public' AND a.attnum > 0 AND NOT a.attisdropped AND et.oid = 'pg_catalog.int8'::regtype AND $ext_free"
+# int8 columns the per-column match holds: relkind r/p/v/m/f, partitions held through their parent (step 5a).
+BASE_INT8=$(psql -X -A -t -q -c "$int8_cols AND c.relkind IN ('r','p','v','m','f') AND NOT c.relispartition")
+# int8 columns drizzle-kit pulls and step 4a rewrites: its own relation list is relkind r/v/m, so a
+# partition is pulled as a table and a partitioned parent is not.
+BASE_INT8_PULLED=$(psql -X -A -t -q -c "$int8_cols AND c.relkind IN ('r','v','m')")
+BASE_POINTS=$(psql -X -A -t -q -c "SELECT count(*) FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind IN ('r','p','v','m','f') AND NOT c.relispartition AND a.attnum > 0 AND NOT a.attisdropped AND format_type(a.atttypid, a.atttypmod) ~ '^geometry\(Point(,[0-9]+)?\)$' AND $ext_free")
+BASE_POLICIES=$(psql -X -A -t -q -c "SELECT count(*) FROM pg_policy pol JOIN pg_class c ON c.oid = pol.polrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND NOT c.relispartition AND $ext_free")
+BASE_PARENTS=$(psql -X -A -t -q -c "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind = 'p' AND NOT c.relispartition AND $ext_free")
+BASE_PARENT_POLICIES=$(psql -X -A -t -q -c "SELECT count(*) FROM pg_policy pol JOIN pg_class c ON c.oid = pol.polrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind = 'p' AND NOT c.relispartition AND $ext_free")
+BASE_PARTITION_NAMES=$(psql -X -A -t -q -c "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relispartition AND c.relkind IN ('r','p','v','m','f') AND $ext_free ORDER BY c.relname")
+BASE_PARTITIONS=$(printf '%s' "$BASE_PARTITION_NAMES" | grep -c .)
+# The names on each side of I-VACUOUS: drizzle-kit's pull (r/v/m, partitions included) and the
+# catalogue's owned set (r/p/v/m/f, partitions excluded). K162 compares both lists whole.
+BASE_PULLED_NAMES=$(psql -X -A -t -q -c "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind IN ('r','v','m') AND $ext_free")
+BASE_OWNED_NAMES=$(psql -X -A -t -q -c "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind IN ('r','p','v','m','f') AND NOT c.relispartition AND $ext_free")
+BASE_OWNED=$(printf '%s' "$BASE_OWNED_NAMES" | grep -c .)
+for v in BASE_INT8 BASE_INT8_PULLED BASE_POINTS BASE_POLICIES BASE_PARENTS BASE_PARENT_POLICIES BASE_OWNED; do
+  [[ "${!v}" =~ ^[0-9]+$ ]] || abort "the catalogue read for $v returned '${!v}', not a count"
+done
+
+# c_list <name>...: names -> C-sorted (the catalogue's `name` collation and JS's code-unit sort agree on
+# these), joined ", " exactly as the generator joins them.
+c_list() { printf '%s\n' "$@" | grep -v '^$' | LC_ALL=C sort | paste -sd, - | sed 's/,/, /g'; }
+# json_list <name>...: the same, each JSON-quoted, as the generator's catalogue line prints partitions.
+json_list() { printf '%s\n' "$@" | grep -v '^$' | LC_ALL=C sort | sed 's/.*/"&"/' | paste -sd, - | sed 's/,/, /g'; }
+# ere <text>: <text> as an ERE matching itself (names here are [a-z0-9_]; brackets, parens, dots and quotes escaped).
+ere() { printf '%s' "$1" | sed -E 's/[][().*+?^$|\\{}]/\\&/g'; }
+
+node scripts/db-introspect.ts --check >"$OUT.base" 2>&1 || { cat "$OUT.base"; abort "the committed tree does not pass db:introspect:check at $HIGHEST, so no count below can be derived"; }
+b_line() { grep -E "^  $1: " "$OUT.base" | head -1; }
+b_num() { printf '%s\n' "$1" | sed -nE "s/.*$2.*/\\1/p"; }
+L_BIG=$(b_line bigint)
+L_POL=$(b_line policies)
+L_PART=$(b_line partitions)
+L_CAT=$(b_line catalogue)
+GEN_REWRITTEN=$(b_num "$L_BIG" '  bigint: ([0-9]+) column\(s\) rewritten')
+GEN_MATCHED=$(b_num "$L_BIG" '; ([0-9]+) of the catalogue.s [0-9]+ int8')
+GEN_INT8=$(b_num "$L_BIG" "of the catalogue.s ([0-9]+) int8")
+GEN_POINTS=$(b_num "$L_BIG" 'geometry: ([0-9]+) point column')
+GEN_POLICIES=$(b_num "$L_POL" '  policies: ([0-9]+) checked')
+BASE_RESTORED=$(b_num "$L_POL" '; ([0-9]+) expression\(s\) drizzle-kit dropped restored')
+BASE_REWRITTEN=$(b_num "$L_POL" '; ([0-9]+) entr\(ies\) rewritten from the catalogue')
+GEN_PARENTS=$(b_num "$L_PART" '  partitions: ([0-9]+) partitioned table')
+BASE_REMOVED=$(b_num "$L_PART" '; ([0-9]+) partition declaration\(s\) removed')
+GEN_PARENT_POLICIES=$(b_num "$L_PART" '; ([0-9]+) policy entr\(ies\) added from pg_policy')
+GEN_PARTITIONS=$(b_num "$L_CAT" '; ([0-9]+) partition\(s\) in public excluded')
+GEN_PARTITION_LIST=$(b_num "$L_CAT" 'partition\(s\) in public excluded \[(.*)\]; [0-9]+ relation')
+GEN_OWNED=$(b_num "$L_CAT" '; ([0-9]+) relation\(s\) owned by no extension in public')
+# name psql's value : generator's value (both from the committed tree at $HIGHEST)
+for pair in "int8 columns the match holds:$BASE_INT8:$GEN_INT8" "int8 columns matched:$BASE_INT8:$GEN_MATCHED" \
+  "int8 columns drizzle-kit pulls, rewritten:$BASE_INT8_PULLED:$GEN_REWRITTEN" "geometry point columns:$BASE_POINTS:$GEN_POINTS" \
+  "policies checked:$BASE_POLICIES:$GEN_POLICIES" "partitioned tables rendered:$BASE_PARENTS:$GEN_PARENTS" \
+  "policy entries added to parents:$BASE_PARENT_POLICIES:$GEN_PARENT_POLICIES" "partitions excluded:$BASE_PARTITIONS:$GEN_PARTITIONS" \
+  "partition declarations removed (partitions - parents):$((BASE_PARTITIONS - BASE_PARENTS)):$BASE_REMOVED" \
+  "partition list:$(json_list $BASE_PARTITION_NAMES):$GEN_PARTITION_LIST" "relations owned in public:$BASE_OWNED:$GEN_OWNED"; do
+  IFS=: read -r what want got <<<"$pair"
+  [ "$want" = "$got" ] || abort "BASE: $what: psql reads [$want] from the catalogue but the generator reported [$got] on the committed tree ($L_BIG | $L_POL | $L_PART | $L_CAT)"
+done
+[[ "$BASE_RESTORED" =~ ^[0-9]+$ && "$BASE_REWRITTEN" =~ ^[0-9]+$ ]] || abort "BASE: the generator's policies line has no restored/rewritten counts: [$L_POL]"
+{ [ "$BASE_RESTORED" -le $((2 * BASE_POLICIES)) ] && [ "$BASE_REWRITTEN" -le "$BASE_POLICIES" ]; } || abort "BASE: $BASE_RESTORED expression(s) restored and $BASE_REWRITTEN entr(ies) rewritten, but psql counts $BASE_POLICIES polic(ies) (at most 2 expressions each)"
+echo "   T-232 BASE at $HIGHEST, before any plant (psql; each equal to the generator's reading of the committed tree): int8 matched $BASE_INT8, int8 pulled $BASE_INT8_PULLED, geometry points $BASE_POINTS, policies $BASE_POLICIES (restored $BASE_RESTORED, rewritten $BASE_REWRITTEN), partitioned tables $BASE_PARENTS (policies $BASE_PARENT_POLICIES), partitions $BASE_PARTITIONS [$(c_list $BASE_PARTITION_NAMES)], owned $BASE_OWNED"
+
 OWNED=$(owned_in_public)
 echo "   relations in public owned by no extension at $HIGHEST, before any plant: $OWNED"
+[ "$OWNED" = "$BASE_OWNED" ] || abort "owned_in_public reads $OWNED but the BASE read counts $BASE_OWNED names"
 echo "== T-165 (OD-84): a partitioned table is rendered under its own name; its partitions are not"
 
 # part_expectations: every `-- expect:` line of the fixture must be in db/schema.ts (grep -F) and no
@@ -419,8 +505,9 @@ part_check() {
   grep -E '^fact |^  partitions: |^  catalogue: ' "$OUT" | cut -c1-240 | sed 's/^/       /'
 }
 
-PART_RENDERED="^  partitions: 1 partitioned table\(s\) rendered from a partition; [0-9]+ partition declaration\(s\) removed; [0-9]+ name\(s\) mapped to the parent's; 2 policy entr\(ies\) added from pg_policy; [0-9]+ export name\(s\) checked"
-PART_COUNTS="^  catalogue: .*; 2 partition\(s\) in public excluded \[\"t165_part_q1\", \"t165_part_q2\"\]; $((OWNED + 1)) relation\(s\) owned by no extension in public\$"
+# T-232: the fixture adds 1 partitioned table with 2 policies and 2 partitions (named from its SQL); BASE adds the committed set's.
+PART_RENDERED="^  partitions: $((BASE_PARENTS + 1)) partitioned table\(s\) rendered from a partition; [0-9]+ partition declaration\(s\) removed; [0-9]+ name\(s\) mapped to the parent's; $((BASE_PARENT_POLICIES + 2)) policy entr\(ies\) added from pg_policy; [0-9]+ export name\(s\) checked"
+PART_COUNTS="^  catalogue: .*; $((BASE_PARTITIONS + 2)) partition\(s\) in public excluded \[$(ere "$(json_list $BASE_PARTITION_NAMES t165_part_q1 t165_part_q2)")\]; $((OWNED + 1)) relation\(s\) owned by no extension in public\$"
 PART_INTRO="^  drizzle-kit [^:]+: $((OWNED + 1)) relation\(s\) introspected from public\$"
 
 policy_fixture "$PART_FIXTURE"
@@ -440,7 +527,7 @@ if [ "${PART_MARK#never}" != "$PART_MARK" ]; then v=ok; else
 fi
 printf '%-4s %s  %s\n       pg_class last analyze / vacuum at the first write of this suite: %s (expected it to begin "never")\n' "$v" K150a "(T-165 r1, QR-A3) the partitioned-table block runs before any ANALYZE in this suite" "$PART_MARK"
 part_check K150 "(T-165) CONTROL: a PARTITION BY RANGE parent with two partitions, regenerated, never ANALYZEd: the parent is rendered under its own name with the parent's key, index, check and policies; neither partition is in the file" \
-  "$PART_RENDERED" "$PART_COUNTS" "$PART_INTRO" 'byte-identical to a fresh introspection' '^  policies: 2 checked against pg_policy'
+  "$PART_RENDERED" "$PART_COUNTS" "$PART_INTRO" 'byte-identical to a fresh introspection' "^  policies: $((BASE_POLICIES + 2)) checked against pg_policy"
 
 m0=$(stats_mark)
 psql -X -q -v ON_ERROR_STOP=1 -c ANALYZE >/dev/null || abort "ANALYZE failed"
@@ -466,30 +553,34 @@ attached=$(psql -X -A -t -q -c "SELECT count(*) FROM pg_class c JOIN pg_namespac
 [ "$attached" = 3 ] || abort "the third partition did not land (partitions in public: $attached)"
 echo "   attach attack landed: t165_part_a0 sorts BEFORE t165_part_q1, so it is now the template; partitions in public: $attached"
 part_check K154 "(T-165) a third partition attached after db/schema.ts was written, sorting first so the template changes: the file is unchanged and the check still passes" \
-  '^  partitions: 1 partitioned table\(s\) rendered from a partition; 2 partition declaration\(s\) removed' 'byte-identical to a fresh introspection' '"t165_part_a0"'
+  "^  partitions: $((BASE_PARENTS + 1)) partitioned table\(s\) rendered from a partition; $((BASE_REMOVED + 2)) partition declaration\(s\) removed" 'byte-identical to a fresh introspection' '"t165_part_a0"'
 restore
 
+# T-232: QA's table adds 2 policies, 1 dropped expression restored and 1 entry rewritten; BASE adds the committed set's.
+K26_COUNTS="$((BASE_POLICIES + 2)) checked against pg_policy; $((BASE_RESTORED + 1)) expression\(s\) drizzle-kit dropped restored; $((BASE_REWRITTEN + 1)) entr\(ies\) rewritten from the catalogue\$"
+# K27's fixture has 4 policies and 6 expressions; before T-232 it pinned "at least 1 restored". Now: BASE + 1 .. BASE + 6.
+K27_RESTORED=$(seq -s '|' $((BASE_RESTORED + 1)) $((BASE_RESTORED + 6)))
 echo "== T-152 rework 1: row-level security policies (OD-109). First among the policy cases and still before any ANALYZE in this suite: T-165 rework 1 moved K150-K154 ahead of it (QR-A3) and neither block analyses anything"
 policy_fixture "$QA_POLICIES"
 echo "   pg_class last analyze / vacuum before the first write: '$(stats_mark)'"
 write_schema
 grep -E '^  policies: ' "$OUT.w" | sed 's/^/   first write: /'
-policy_check K26a "(T-152 r1) QA's two-policy table, written and checked with no ANALYZE: both expressions present" "$QA_POLICIES" '2 checked against pg_policy; 1 expression\(s\) drizzle-kit dropped restored; 1 entr\(ies\) rewritten from the catalogue$'
+policy_check K26a "(T-152 r1) QA's two-policy table, written and checked with no ANALYZE: both expressions present" "$QA_POLICIES" "$K26_COUNTS"
 m0=$(stats_mark)
 psql -X -q -v ON_ERROR_STOP=1 -c ANALYZE >/dev/null || abort "ANALYZE failed"
 m1=$(stats_mark)
 { [ "$m1" != "$m0" ] && [ "${m1%% / *}" != never ]; } || abort "ANALYZE did not land on pg_class (last analyze / vacuum '$m0' -> '$m1')"
 echo "   statistics attack landed: pg_class last analyze / vacuum '$m0' -> '$m1'"
-policy_check K26b "(T-152 r1) the same file after ANALYZE (asserted above): parity holds, both expressions present" "$QA_POLICIES" '2 checked against pg_policy; 1 expression\(s\) drizzle-kit dropped restored; 1 entr\(ies\) rewritten from the catalogue$'
+policy_check K26b "(T-152 r1) the same file after ANALYZE (asserted above): parity holds, both expressions present" "$QA_POLICIES" "$K26_COUNTS"
 { node scripts/db-migrate.ts down --to "$HIGHEST" >"$OUT.p" 2>&1 && grep -q "^MIGRATE OK  down: $NEXT -> $HIGHEST" "$OUT.p"; } || { cat "$OUT.p"; abort "db:migrate down --to $HIGHEST failed"; }
 { node scripts/db-migrate.ts up >"$OUT.p" 2>&1 && grep -q "^MIGRATE OK  up: $HIGHEST -> $NEXT" "$OUT.p"; } || { cat "$OUT.p"; abort "db:migrate up to $NEXT failed"; }
 echo "   history attack landed: down --to $HIGHEST, up to $NEXT"
-policy_check K26c "(T-152 r1) the same file after the policy migration's down/up: parity holds, both expressions present" "$QA_POLICIES" '2 checked against pg_policy; 1 expression\(s\) drizzle-kit dropped restored; 1 entr\(ies\) rewritten from the catalogue$'
+policy_check K26c "(T-152 r1) the same file after the policy migration's down/up: parity holds, both expressions present" "$QA_POLICIES" "$K26_COUNTS"
 restore
 
 policy_fixture "$SHAPE_POLICIES"
 write_schema
-policy_check K27 "(T-152 r1) restrictive, FOR ALL TO PUBLIC, FOR DELETE, FOR UPDATE with both expressions and two roles: each as pg_policy has it" "$SHAPE_POLICIES" '4 checked against pg_policy; [1-9][0-9]* expression\(s\) drizzle-kit dropped restored; '
+policy_check K27 "(T-152 r1) restrictive, FOR ALL TO PUBLIC, FOR DELETE, FOR UPDATE with both expressions and two roles: each as pg_policy has it" "$SHAPE_POLICIES" "$((BASE_POLICIES + 4)) checked against pg_policy; ($K27_RESTORED) expression\(s\) drizzle-kit dropped restored; "
 restore
 
 echo "== control"
@@ -1076,7 +1167,14 @@ mutate "$PARTITION" "  const decls = declarations(sf);" "  const decls = declara
   if (source !== '')
     return { ok: true, body: source, parents: 0, removed: 0, mapped: 0, policies: 0, names: 0 };"
 git diff -U0 -- "$PARTITION" | grep -E '^[-+][^-+]' | sed 's/^/   mutation:   /'
-check K162 "(T-165) the rule deleted (the step made a pass-through): the regenerated file is refused and the parent is unrendered, as before this ticket" I-VACUOUS 'I-VACUOUS. drizzle-kit wrote .*t165_part_q1, t165_part_q2\] but the catalogue lists .*t165_part\]'
+# T-232 (OD-246): until T-232 this regex required t165_part_q2 and t165_part to END their lists, i.e. that no
+# committed relation sorts after t165_* (0016's webauthn_credential does). Both lists are now derived whole:
+# drizzle-kit's side is every relation it pulls from public at BASE plus the two partitions it now writes;
+# the catalogue's side is BASE's owned set plus the parent. Exact lists and counts, nothing positional.
+K162_WROTE=$(c_list $BASE_PULLED_NAMES t165_part_q1 t165_part_q2)
+K162_CAT=$(c_list $BASE_OWNED_NAMES t165_part)
+K162_RE="^  - \[I-VACUOUS\] drizzle-kit wrote $(printf '%s\n' $BASE_PULLED_NAMES t165_part_q1 t165_part_q2 | grep -c .) relation\(s\) \[$(ere "$K162_WROTE")\] but the catalogue lists $((BASE_OWNED + 1)) owned by no extension in public \[$(ere "$K162_CAT")\]\$"
+check K162 "(T-165) the rule deleted (the step made a pass-through): the regenerated file is refused and the parent is unrendered, as before this ticket" I-VACUOUS "$K162_RE"
 
 policy_fixture "$PART_FIXTURE"
 write_schema
@@ -1488,7 +1586,8 @@ echo "== T-153 (OD-107): bigint in drizzle's bigint mode, counted against the ca
 # The plant: an identity PK, an FK to an identity PK, NOT NULL, nullable, DEFAULT 0, a bigint[] with a
 # default above 2^53, the int8 spelling, and a view. Its int8 columns, named from this SQL: t153_parent 1
 # (id), t153_money 7 (id, parent_id, amount_minor, maybe_minor, zero_minor, minor_list, int8_spelled),
-# t153_money_v 2 (id, amount_minor): 10.
+# t153_money_v 2 (id, amount_minor): 10. T-232: every count below is that share + BASE (the committed
+# set's int8 columns, read before any plant); K58/K59 plant 4 (3 matched), K60 6, K61/K62 1.
 plant_bigint() {
   plant "$UP" "-- @phase: expand
 CREATE TABLE public.t153_parent (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, note text);
@@ -1576,7 +1675,7 @@ bigint_facts() {
       fact "db/schema.ts lines containing [$line]" "$(grep -cF -- "$line" "$SCHEMA")" 1
     done
     fact "db/schema.ts lines in number mode or with drizzle-kit's bigint hint" "$(grep -cE 'mode: "number"|You can use \{ mode: "bigint" \}' "$SCHEMA")" 0
-    fact "the generator's bigint line (10 int8 columns, from the plant's SQL, each matched per column)" "$(grep -cE "^  bigint: 10 column\\(s\\) rewritten to drizzle's bigint mode; 10 of the catalogue's 10 int8 column\\(s\\) matched per column against [0-9]+ parsed relation\\(s\\)" "$OUT")" 1
+    fact "the generator's bigint line (the plant's 10 int8 columns, from its SQL, + BASE $BASE_INT8 matched / $BASE_INT8_PULLED pulled, each matched per column)" "$(grep -cE "^  bigint: $((BASE_INT8_PULLED + 10)) column\\(s\\) rewritten to drizzle's bigint mode; $((BASE_INT8 + 10)) of the catalogue's $((BASE_INT8 + 10)) int8 column\\(s\\) matched per column against [0-9]+ parsed relation\\(s\\)" "$OUT")" 1
     for line in 'READ id bigint 1' 'READ amountMinor bigint 9007199254740993' 'READ int8Spelled bigint -9223372036854775808' \
       'READ minorList bigint 1,bigint 9007199254740993' 'READ maybeMinor null' 'READ view amountMinor bigint 9007199254740993' \
       'WRITE database text amount_minor 9007199254740995 minor_list {9007199254740995,-9223372036854775807}'; do
@@ -1681,7 +1780,7 @@ nf=0
 nok=0
 fact "db/schema.ts lines containing the Point,4326 column" "$(grep -cF 'gPoint: geometry("g_point", { type: "point", srid: 4326 }),' "$SCHEMA")" 1
 fact "db/schema.ts lines containing the Point column" "$(grep -cF 'gPointNosrid: geometry("g_point_nosrid", { type: "point" }),' "$SCHEMA")" 1
-fact "the generator admits 2 point columns" "$(grep -cE '^  bigint: .*; geometry: 2 point column\(s\) admitted$' "$OUT")" 1
+fact "the generator admits the plant's 2 point columns + BASE $BASE_POINTS" "$(grep -cE "^  bigint: .*; geometry: $((BASE_POINTS + 2)) point column\(s\) admitted\$" "$OUT")" 1
 node --input-type=module -e "$T153_GEO_ROUNDTRIP" >"$OUT.rt" 2>&1
 for line in 'READ gPoint [33.25,35.5]' 'READ gPointNosrid [1,2]' 'WRITE gPoint SRID=4326;POINT(33.125 34.875)' 'WRITE gPointNosrid POINT(5 -6.5)'; do
   fact "driver round trip prints [$line]" "$(grep -cxF -- "$line" "$OUT.rt")" 1
@@ -1707,7 +1806,7 @@ check_facts K56 "(T-153) Polygon, LineString, MultiPoint, PointZ, plain geometry
   '^  - \[I-MAP\] column "t153_geo"\."g_pointz" has database type .geometry\(PointZ,4326\).: ' \
   '^  - \[I-MAP\] column "t153_geo"\."g_any" has database type .geometry.: ' \
   '^  - \[I-MAP\] column "t153_geo"\."g_point_arr" has database type .geometry\(Point,4326\)\[\].: ' \
-  '^  bigint: .*; geometry: 0 point column\(s\) admitted$'
+  "^  bigint: .*; geometry: $BASE_POINTS point column\(s\) admitted\$"
 
 plant_geometry_refused
 node scripts/db-introspect.ts --write >"$OUT" 2>&1
@@ -1836,13 +1935,13 @@ plant_arrays view
 check_facts K58 "(T-153 r1) a VIEW over a bigint[] column: drizzle-kit renders it with no .array(), and the per-column match refuses it by name (OD-147)" I-MAP \
   '^  - \[I-MAP\] int8 column "t153_arr_v"\."amounts" is an array of 1 dimension\(s\) in the catalogue \(bigint\[\], attndims 0\) but the rendering on line [0-9]+ carries 0 \.array\(\) call\(s\)' \
   '!^  - \[I-MAP\] int8 column "t153_arr"\.' \
-  '^  bigint: [0-9]+ column\(s\) rewritten to drizzle.s bigint mode; 3 of the catalogue.s 4 int8 column\(s\) matched per column'
+  "^  bigint: [0-9]+ column\(s\) rewritten to drizzle.s bigint mode; $((BASE_INT8 + 3)) of the catalogue.s $((BASE_INT8 + 4)) int8 column\(s\) matched per column"
 
 plant_arrays matview
 check_facts K59 "(T-153 r1) a MATERIALIZED VIEW over a bigint[] column: the same, refused by name (OD-147)" I-MAP \
   '^  - \[I-MAP\] int8 column "t153_arr_mv"\."amounts" is an array of 1 dimension\(s\) in the catalogue \(bigint\[\], attndims 0\) but the rendering on line [0-9]+ carries 0 \.array\(\) call\(s\)' \
   '!^  - \[I-MAP\] int8 column "t153_arr"\.' \
-  '^  bigint: [0-9]+ column\(s\) rewritten to drizzle.s bigint mode; 3 of the catalogue.s 4 int8 column\(s\) matched per column'
+  "^  bigint: [0-9]+ column\(s\) rewritten to drizzle.s bigint mode; $((BASE_INT8 + 3)) of the catalogue.s $((BASE_INT8 + 4)) int8 column\(s\) matched per column"
 
 # The RED BEFORE probe: read each array column through drizzle and the db/schema.ts just written.
 T153_ARR_ROUNDTRIP=$(
@@ -1878,7 +1977,7 @@ nok=0
 fact "write with the per-relation COUNT restored: exit" "$wcode" 0
 fact "db/schema.ts: the TABLE's bigint[] keeps .array()" "$(grep -cF 'amounts: bigint({ mode: "bigint" }).array()' "$SCHEMA")" 1
 fact "db/schema.ts: lines rendering a bigint[] of a view or matview WITHOUT .array()" "$(grep -cxF '	amounts: bigint({ mode: "bigint" }),' "$SCHEMA")" 2
-fact "the count balances, so nothing is reported" "$(grep -cE "^  bigint: [0-9]+ column\(s\) rewritten to drizzle's bigint mode; 6 of the catalogue's 6 int8 column\(s\)" "$OUT")" 1
+fact "the count balances at the plant's 6 + BASE $BASE_INT8, so nothing is reported" "$(grep -cE "^  bigint: [0-9]+ column\(s\) rewritten to drizzle's bigint mode; $((BASE_INT8 + 6)) of the catalogue's $((BASE_INT8 + 6)) int8 column\(s\)" "$OUT")" 1
 node --input-type=module -e "$T153_ARR_ROUNDTRIP" >"$OUT.rt" 2>&1
 fact "driver: the TABLE's bigint[] reads exactly" "$(grep -cxF 'READ table amounts [bigint 9007199254740993, bigint -9223372036854775808]' "$OUT.rt")" 1
 fact "driver: the VIEW's bigint[] read THREW" "$(grep -c '^READ view amounts THREW SyntaxError' "$OUT.rt")" 1
@@ -1905,7 +2004,7 @@ CREATE TABLE public.t153_counttext (
 plant "$DOWN" "DROP TABLE public.t153_counttext;"
 write_schema
 check_facts K61 "(T-153 r1) a text column whose DEFAULT is the TEXT of a bigint-mode call, beside a real bigint: the default no longer affects the judgement (OD-148)" PASS \
-  '^  bigint: 1 column\(s\) rewritten to drizzle.s bigint mode; 1 of the catalogue.s 1 int8 column\(s\) matched per column'
+  "^  bigint: $((BASE_INT8_PULLED + 1)) column\(s\) rewritten to drizzle.s bigint mode; $((BASE_INT8 + 1)) of the catalogue.s $((BASE_INT8 + 1)) int8 column\(s\) matched per column"
 plant "$UP" "-- @phase: expand
 CREATE TABLE public.t153_counttext (
   amount bigint NOT NULL,
@@ -1923,7 +2022,7 @@ CREATE TABLE public.t153_hinttext (
 plant "$DOWN" "DROP TABLE public.t153_hinttext;"
 write_schema
 check_facts K62 "(T-153 r1) a text column whose DEFAULT is drizzle-kit's hint sentence: admitted, because the leftover-hint scan skips string literals (QR-A2)" PASS \
-  '^  bigint: 1 column\(s\) rewritten to drizzle.s bigint mode; 1 of the catalogue.s 1 int8 column\(s\) matched per column'
+  "^  bigint: $((BASE_INT8_PULLED + 1)) column\(s\) rewritten to drizzle.s bigint mode; $((BASE_INT8 + 1)) of the catalogue.s $((BASE_INT8 + 1)) int8 column\(s\) matched per column"
 plant "$UP" "-- @phase: expand
 CREATE TABLE public.t153_hinttext (
   amount bigint NOT NULL,
