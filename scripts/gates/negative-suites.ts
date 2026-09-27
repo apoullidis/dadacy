@@ -308,7 +308,17 @@ const SUITES: readonly Suite[] = [
     //   99c2400f0f07e5871396ec88e79efcb654476600187aee11f5b95195f8fd4f72
     // MEASURED against a real database at 4feb38f (§ Rework 2, S3): `ALL 141 CASES BEHAVED AS
     // EXPECTED`, exit 0, on a fresh never-analysed db project.
-    digest: '99c2400f0f07e5871396ec88e79efcb654476600187aee11f5b95195f8fd4f72',
+    // RE-PINNED 2026-09-27 by T-232 (OD-246): every count a case pinned for the committed migration set
+    // (int8/geometry columns, policies, partitioned tables and partitions, relations) is now BASE + the
+    // plant's share, BASE read from the catalogue before any plant; K162 compares both I-VACUOUS lists
+    // whole. No case added or removed, so `cases: 141` is unchanged. Taken with the instrument, never
+    // edited by hand (PROTOCOL §5.2):
+    //   $ git cat-file blob 0eb33d5:scripts/negative-tests/db-introspect.sh | sha256sum
+    //   092caf80869f34909ecfcf4ed706a351041c4241c8c36b8b81dd9a6a9af25a12
+    // MEASURED against a real database (tasks/state/EP-2/T-232.md § Evidence): `ALL 141 CASES BEHAVED AS
+    // EXPECTED`, exit 0, on fresh db projects with main's migrations, with T-196's 0016, and with a
+    // throwaway synthetic 0017; each rewritten case red under its own mutation.
+    digest: '092caf80869f34909ecfcf4ed706a351041c4241c8c36b8b81dd9a6a9af25a12',
   },
 ];
 
