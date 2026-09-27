@@ -332,6 +332,35 @@ check() {
   restore
 }
 
+# (T-232: moved up from the T-145 block, unchanged, so K06/K07 can use it.)
+# check_facts <id> <description> <expected tags> <regex>...: run the check; every regex must match a
+# line of the check's output, and a regex prefixed with ! must match none. Fact lines are collected
+# apart from the output, so no regex can match another fact's text. The case is ok only if the exit,
+# the banner, the exact tag set and every fact hold.
+check_facts() {
+  local id=$1 desc=$2 expect=$3 code n=0 miss=0 re
+  shift 3
+  node scripts/db-introspect.ts --check >"$OUT" 2>&1
+  code=$?
+  : >"$OUT.f"
+  for re in "$@"; do
+    n=$((n + 1))
+    if [ "${re#!}" != "$re" ]; then
+      if grep -qE -- "${re#!}" "$OUT"; then echo "fact MISMATCH (present, must be absent): ${re#!}" >>"$OUT.f"; miss=$((miss + 1)); else echo "fact ok (absent): ${re#!}" >>"$OUT.f"; fi
+    elif grep -qE -- "$re" "$OUT"; then
+      echo "fact ok (present): $re" >>"$OUT.f"
+    else
+      echo "fact MISMATCH (absent, must be present): $re" >>"$OUT.f"
+      miss=$((miss + 1))
+    fi
+  done
+  [ "$miss" -eq 0 ] && echo "ALL $n FACTS HOLD" >>"$OUT.f"
+  cat "$OUT.f" >>"$OUT"
+  judge "$id" "$desc" "$expect" "$code" '^ALL [0-9]+ FACTS HOLD$'
+  grep -E '^fact |^  out of scope: ' "$OUT" | cut -c1-240 | sed 's/^/       /'
+  restore
+}
+
 # policy_fixture <fixture>: plant a committed policy fixture as migration NEXT. The whole file is the
 # up file; its `-- down:` lines are the down file. plant() asserts both landed.
 policy_fixture() {
@@ -866,34 +895,6 @@ DROP TYPE $s.t145_job_state;${rm}"
 scope_refused() {
   local r
   for r in $PGBOSS_RELS; do printf '%s\n' "^  - \\[I-SCOPE\\] relation \"$1\"\\.\"$r\" is owned by no extension and is outside schema public"; done
-}
-
-# check_facts <id> <description> <expected tags> <regex>...: run the check; every regex must match a
-# line of the check's output, and a regex prefixed with ! must match none. Fact lines are collected
-# apart from the output, so no regex can match another fact's text. The case is ok only if the exit,
-# the banner, the exact tag set and every fact hold.
-check_facts() {
-  local id=$1 desc=$2 expect=$3 code n=0 miss=0 re
-  shift 3
-  node scripts/db-introspect.ts --check >"$OUT" 2>&1
-  code=$?
-  : >"$OUT.f"
-  for re in "$@"; do
-    n=$((n + 1))
-    if [ "${re#!}" != "$re" ]; then
-      if grep -qE -- "${re#!}" "$OUT"; then echo "fact MISMATCH (present, must be absent): ${re#!}" >>"$OUT.f"; miss=$((miss + 1)); else echo "fact ok (absent): ${re#!}" >>"$OUT.f"; fi
-    elif grep -qE -- "$re" "$OUT"; then
-      echo "fact ok (present): $re" >>"$OUT.f"
-    else
-      echo "fact MISMATCH (absent, must be present): $re" >>"$OUT.f"
-      miss=$((miss + 1))
-    fi
-  done
-  [ "$miss" -eq 0 ] && echo "ALL $n FACTS HOLD" >>"$OUT.f"
-  cat "$OUT.f" >>"$OUT"
-  judge "$id" "$desc" "$expect" "$code" '^ALL [0-9]+ FACTS HOLD$'
-  grep -E '^fact |^  out of scope: ' "$OUT" | cut -c1-240 | sed 's/^/       /'
-  restore
 }
 
 # sorted_words: newline- or comma-separated words -> one line, C-sorted, space-separated.
