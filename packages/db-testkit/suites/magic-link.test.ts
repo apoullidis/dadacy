@@ -2,8 +2,9 @@
  * T-195 — `public.magic_link` (migration 0015): SD §DB-2 lines 1837–1840 plus the accepted OE-30 /
  * OE-49 / OE-50 rulings (tasks/state/EP-2/OE-30-34-rulings.md Part A.1 U-M1/U-M2, Part E.1 U-M4,
  * Part B.2 Q-D2, Part B.3 U-M6, Part F), and T-194's otp_challenge pattern where no ruling speaks
- * (column-level grants, single use set once, fixed columns). These are the database-layer refusals
- * TK-2 lists, plus KV066–KV068.
+ * (column-level grants, single use set once, fixed columns), and OE-63 / OE-64 (decisions.md,
+ * 2026-09-27: the 10-minute TTL held by the database, EV-13; an expired link is never consumed).
+ * These are the database-layer refusals TK-2 lists, plus KV066–KV069.
  *
  * Every refusal asserts psql's exit status AND its `ERROR:  <SQLSTATE>: <message>` line AND, where
  * PostgreSQL gives one, the `CONSTRAINT NAME:` or `COLUMN NAME:` field (or the trigger's CONTEXT
@@ -46,9 +47,10 @@ const ACCOUNT_B = '01K4T195ACCOUNTB0000000001';
 const LIVE = '01K4T195LINKLIVE0000000001';
 const CONSUMED = '01K4T195LINKCONSUMED000001';
 const OF_B = '01K4T195LINKOFB00000000001';
+const EXPIRED = '01K4T195LINKEXPIRED0000001';
 const SCRATCH = '01K4T195LINKSCRATCH0000001';
 const NO_SUCH_ACCOUNT = '01K4T195NOSUCHACCOUNT00001';
-for (const id of [ACCOUNT_A, ACCOUNT_B, LIVE, CONSUMED, OF_B, SCRATCH, NO_SUCH_ACCOUNT]) {
+for (const id of [ACCOUNT_A, ACCOUNT_B, LIVE, CONSUMED, OF_B, EXPIRED, SCRATCH, NO_SUCH_ACCOUNT]) {
   assert.equal(id.length, 26, `fixture id ${id} is not char(26) wide`);
 }
 
@@ -67,9 +69,10 @@ const insert = (
     opts.expires ?? `now() + interval '10 minutes'`
   }, ${opts.fingerprint ?? `'fp-1'`})`;
 
-/** One row's consumed state, read in the session that then writes it. */
+/** One row's consumed and expired state, read in the session that then writes it. */
 const readRow = (id: string): string =>
-  `SELECT 'row ' || count(*) || ' consumed=' || coalesce(string_agg((consumed_at IS NOT NULL)::text, ','), '-')
+  `SELECT 'row ' || count(*) || ' consumed=' || coalesce(string_agg((consumed_at IS NOT NULL)::text, ','), '-') ||
+          ' expired=' || coalesce(string_agg((expires_at <= now())::text, ','), '-')
      FROM public.magic_link WHERE id = '${id}'`;
 
 let db: Cluster;
@@ -89,8 +92,19 @@ beforeAll(async () => {
       insert(CONSUMED, { hash: H('cd') }),
       `UPDATE public.magic_link SET consumed_at = now() WHERE id = '${CONSUMED}'`,
       insert(OF_B, { account: `'${ACCOUNT_B}'`, hash: H('01') }),
+      // An expired link: live for 1 second, committed, then outlived (OE-63's CHECK refuses
+      // inserting one already expired, so it is made by waiting, not by a bypass).
+      insert(EXPIRED, { hash: H('ef'), expires: `now() + interval '1 second'` }),
     ],
   });
+  await db.sql({ commands: ['SELECT pg_sleep(1.5)'] });
+  assert.equal(
+    await db.value(
+      `SELECT (expires_at <= now())::text FROM public.magic_link WHERE id = '${EXPIRED}'`,
+    ),
+    'true',
+    'the EXPIRED fixture did not expire',
+  );
 }, 300_000);
 
 afterAll(async () => {
@@ -146,7 +160,7 @@ const TRIGGER_CONTEXT = 'CONTEXT:  PL/pgSQL function public.assert_magic_link_si
 const DENIED = 'ERROR:  42501: permission denied for table magic_link';
 
 describe('0015 — the table, its owner, its columns, its constraints and its ACL', () => {
-  test("SD's six columns in SD's order, no defaults; owner app_ddl; ACL: app_rw SELECT, INSERT on five columns, UPDATE on consumed_at", async () => {
+  test("SD's six columns in SD's order, then created_at (EV-13); owner app_ddl; ACL: app_rw SELECT, INSERT on five columns, UPDATE on consumed_at", async () => {
     assert.equal(
       await db.value(
         `SELECT (SELECT string_agg(attname || ':' || format_type(atttypid, atttypmod) || ':' ||
@@ -161,7 +175,7 @@ describe('0015 — the table, its owner, its columns, its constraints and its AC
       ),
       'id:character(26):nn:-,account_id:character(26):nn:-,token_hash:bytea:nn:-,' +
         'expires_at:timestamp with time zone:nn:-,consumed_at:timestamp with time zone:null:-,' +
-        'requested_device_fingerprint:text:null:-' +
+        'requested_device_fingerprint:text:null:-,created_at:timestamp with time zone:nn:now()' +
         '|app_ddl|{app_ddl=arwdDxtm/app_ddl,app_rw=r/app_ddl}' +
         '|id={app_rw=a/app_ddl},account_id={app_rw=a/app_ddl},token_hash={app_rw=a/app_ddl},' +
         'expires_at={app_rw=a/app_ddl},consumed_at={app_rw=w/app_ddl},' +
@@ -169,7 +183,7 @@ describe('0015 — the table, its owner, its columns, its constraints and its AC
     );
   });
 
-  test('the key, UNIQUE, FOREIGN KEY and CHECK constraints are exactly these, by these definitions', async () => {
+  test('the key, UNIQUE, FOREIGN KEY and the two CHECK constraints are exactly these, by these definitions', async () => {
     assert.equal(
       await db.value(
         `SELECT string_agg(conname || '=' || pg_get_constraintdef(oid), ' ; ' ORDER BY conname)
@@ -178,17 +192,19 @@ describe('0015 — the table, its owner, its columns, its constraints and its AC
       'magic_link_account_id_fkey=FOREIGN KEY (account_id) REFERENCES account(id) ON DELETE CASCADE ; ' +
         'magic_link_pkey=PRIMARY KEY (id) ; ' +
         'magic_link_token_hash_key=UNIQUE (token_hash) ; ' +
-        'magic_link_token_hash_length_check=CHECK ((octet_length(token_hash) = 32))',
+        'magic_link_token_hash_length_check=CHECK ((octet_length(token_hash) = 32)) ; ' +
+        "magic_link_ttl_check=CHECK (((expires_at > created_at) AND ((expires_at - created_at) <= '00:10:00'::interval)))",
     );
   });
 
-  test('magic_link carries exactly one non-internal trigger: AFTER UPDATE single use', async () => {
+  test('magic_link carries exactly two non-internal triggers: BEFORE INSERT created_at, AFTER UPDATE single use', async () => {
     assert.equal(
       await db.value(
         `SELECT string_agg(tgname || ':' || tgtype || ':' || tgfoid::regprocedure::text, ',' ORDER BY tgname)
            FROM pg_trigger WHERE tgrelid = 'public.magic_link'::regclass AND NOT tgisinternal`,
       ),
-      'trg_magic_link_single_use:17:assert_magic_link_single_use()',
+      'trg_magic_link_created_at:7:set_magic_link_created_at(),' +
+        'trg_magic_link_single_use:17:assert_magic_link_single_use()',
     );
   });
 });
@@ -255,8 +271,8 @@ describe('0015 — account_id REFERENCES account(id) ON DELETE CASCADE (U-M1)', 
               ', account B ' || (SELECT count(*) FROM public.account WHERE id = '${ACCOUNT_B}')`,
     );
     assertPermitted('account delete cascades', r);
-    assertRead('account delete cascades', r, 'before: B 1, A 2');
-    assertRead('account delete cascades', r, 'after: B 0, A 2, account B 0');
+    assertRead('account delete cascades', r, 'before: B 1, A 3');
+    assertRead('account delete cascades', r, 'after: B 0, A 3, account B 0');
   });
 
   test('renaming a referenced account.id is REFUSED by magic_link_account_id_fkey (23503): no ON UPDATE CASCADE', async () => {
@@ -273,7 +289,7 @@ describe('0015 — account_id REFERENCES account(id) ON DELETE CASCADE (U-M1)', 
   test('CONTROL — app_rw inserts a link for an existing account (the FK check needs no grant on account)', async () => {
     const r = await asLogin(LOGINS.app_rw, 'BEGIN', insert(SCRATCH), readRow(SCRATCH), 'ROLLBACK');
     assertPermitted('app_rw insert', r);
-    assertRead('app_rw insert', r, 'row 1 consumed=false');
+    assertRead('app_rw insert', r, 'row 1 consumed=false expired=false');
   });
 });
 
@@ -336,7 +352,7 @@ describe('0015 — single use, set once: trg_magic_link_single_use (KV066, KV067
     assertRead('M1-M3, U-M4', r, `consumed for ${ACCOUNT_A} fp=fp-1`);
     assertRead('M1-M3, U-M4', r, 'lookup used=true');
     assertRead('M1-M3, U-M4', r, `invalidated ${LIVE}`);
-    assertRead('M1-M3, U-M4', r, 'row 1 consumed=true');
+    assertRead('M1-M3, U-M4', r, 'row 1 consumed=true expired=false');
   });
 
   test('a consumed link returning to unconsumed (consumed_at -> NULL) is REFUSED KV066', async () => {
@@ -345,7 +361,7 @@ describe('0015 — single use, set once: trg_magic_link_single_use (KV066, KV067
       readRow(CONSUMED),
       `UPDATE public.magic_link SET consumed_at = NULL WHERE id = '${CONSUMED}'`,
     );
-    assertRead('consumed_at -> NULL', r, 'row 1 consumed=true');
+    assertRead('consumed_at -> NULL', r, 'row 1 consumed=true expired=false');
     assertRefusedBy(
       'consumed_at -> NULL',
       r,
@@ -359,7 +375,7 @@ describe('0015 — single use, set once: trg_magic_link_single_use (KV066, KV067
       readRow(CONSUMED),
       `UPDATE public.magic_link SET consumed_at = NULL WHERE id = '${CONSUMED}'`,
     );
-    assertRead('consumed_at -> NULL as superuser', r, 'row 1 consumed=true');
+    assertRead('consumed_at -> NULL as superuser', r, 'row 1 consumed=true expired=false');
     assertRefusedBy(
       'consumed_at -> NULL as superuser',
       r,
@@ -374,7 +390,7 @@ describe('0015 — single use, set once: trg_magic_link_single_use (KV066, KV067
       readRow(CONSUMED),
       `UPDATE public.magic_link SET consumed_at = consumed_at + interval '1 second' WHERE id = '${CONSUMED}'`,
     );
-    assertRead('consumed_at rewritten', r, 'row 1 consumed=true');
+    assertRead('consumed_at rewritten', r, 'row 1 consumed=true expired=false');
     assertRefusedBy(
       'consumed_at rewritten',
       r,
@@ -387,9 +403,10 @@ describe('0015 — single use, set once: trg_magic_link_single_use (KV066, KV067
     const r = await asLogin(
       LOGINS.app_rw,
       readRow(CONSUMED),
-      `UPDATE public.magic_link SET consumed_at = now() WHERE account_id = '${ACCOUNT_A}'`,
+      // expires_at > now() keeps the EXPIRED fixture out, so KV069 cannot fire first.
+      `UPDATE public.magic_link SET consumed_at = now() WHERE account_id = '${ACCOUNT_A}' AND expires_at > now()`,
     );
-    assertRead('unfiltered invalidation', r, 'row 1 consumed=true');
+    assertRead('unfiltered invalidation', r, 'row 1 consumed=true expired=false');
     assertRefusedBy(
       'unfiltered invalidation',
       r,
@@ -421,11 +438,11 @@ describe('0015 — fixed columns: only consumed_at changes after insert (KV068; 
            FROM pg_attribute WHERE attrelid = 'public.magic_link'::regclass AND attnum > 0 AND NOT attisdropped`,
       ),
       'id=false,account_id=false,token_hash=false,expires_at=false,consumed_at=true,' +
-        'requested_device_fingerprint=false',
+        'requested_device_fingerprint=false,created_at=false',
     );
   });
 
-  test('app_rw holds INSERT on every column but consumed_at', async () => {
+  test('app_rw holds INSERT on every column but consumed_at and created_at', async () => {
     assert.equal(
       await db.value(
         `SELECT string_agg(attname || '=' || has_column_privilege('app_rw', 'public.magic_link', attname, 'INSERT'),
@@ -433,7 +450,7 @@ describe('0015 — fixed columns: only consumed_at changes after insert (KV068; 
            FROM pg_attribute WHERE attrelid = 'public.magic_link'::regclass AND attnum > 0 AND NOT attisdropped`,
       ),
       'id=true,account_id=true,token_hash=true,expires_at=true,consumed_at=false,' +
-        'requested_device_fingerprint=true',
+        'requested_device_fingerprint=true,created_at=false',
     );
   });
 
@@ -453,10 +470,17 @@ describe('0015 — fixed columns: only consumed_at changes after insert (KV068; 
     ['id changed', "id = '01K4T195LINKOTHERID0000001'"],
     ['account_id moved to another account', `account_id = '${ACCOUNT_B}'`],
     ['token_hash replaced (re-keyed)', `token_hash = ${H('55')}`],
-    ['expires_at extended (re-armed)', "expires_at = expires_at + interval '1 year'"],
+    [
+      'expires_at moved (shortened 1 minute, inside the TTL CHECK)',
+      "expires_at = expires_at - interval '1 minute'",
+    ],
     [
       'requested_device_fingerprint replaced (re-bound)',
       "requested_device_fingerprint = 'fp-other'",
+    ],
+    [
+      'created_at moved (+1 s, inside the TTL CHECK)',
+      "created_at = created_at + interval '1 second'",
     ],
   ] as const;
 
@@ -467,7 +491,7 @@ describe('0015 — fixed columns: only consumed_at changes after insert (KV068; 
         readRow(LIVE),
         `UPDATE public.magic_link SET ${set} WHERE id = '${LIVE}'`,
       );
-      assertRead(`app_rw ${label}`, r, 'row 1 consumed=false');
+      assertRead(`app_rw ${label}`, r, 'row 1 consumed=false expired=false');
       assertRefused(`app_rw ${label}`, r, { message: DENIED });
     });
   }
@@ -478,7 +502,7 @@ describe('0015 — fixed columns: only consumed_at changes after insert (KV068; 
         readRow(LIVE),
         `UPDATE public.magic_link SET ${set} WHERE id = '${LIVE}'`,
       );
-      assertRead(`superuser ${label}`, r, 'row 1 consumed=false');
+      assertRead(`superuser ${label}`, r, 'row 1 consumed=false expired=false');
       assertRefusedBy(
         `superuser ${label}`,
         r,
@@ -495,6 +519,148 @@ describe('0015 — fixed columns: only consumed_at changes after insert (KV068; 
     );
     assertPermitted('superuser consume', r);
     assertRead('superuser consume', r, `consumed ${LIVE}`);
+  });
+});
+
+describe('0015 — OE-63: the database holds the 10-minute TTL (EV-13)', () => {
+  const TTL_23514 =
+    'ERROR:  23514: new row for relation "magic_link" violates check constraint "magic_link_ttl_check"';
+  const TTL_FIELD = 'CONSTRAINT NAME:  magic_link_ttl_check';
+
+  for (const [label, expires] of [
+    ["a year after created_at (the first cycle's B1)", "now() + interval '1 year'"],
+    [
+      '10 minutes and 1 microsecond after created_at',
+      "now() + interval '10 minutes' + interval '1 microsecond'",
+    ],
+    ['equal to created_at', 'now()'],
+    ['before created_at', "now() - interval '1 second'"],
+  ] as const) {
+    test(`app_rw: expires_at ${label} is REFUSED by magic_link_ttl_check (23514)`, async () => {
+      assertRefusedBy(
+        `expires_at ${label}`,
+        await asLogin(LOGINS.app_rw, insert(SCRATCH, { expires })),
+        TTL_23514,
+        TTL_FIELD,
+      );
+    });
+  }
+
+  for (const [label, expires] of [
+    ['10 minutes minus 1 microsecond', "now() + interval '10 minutes' - interval '1 microsecond'"],
+    ["exactly 10 minutes (T-027 M1's expiry)", "now() + interval '10 minutes'"],
+  ] as const) {
+    test(`CONTROL — app_rw: expires_at ${label} after created_at is accepted`, async () => {
+      assertPermitted(
+        `expires_at ${label}`,
+        await asLogin(LOGINS.app_rw, 'BEGIN', insert(SCRATCH, { expires }), 'ROLLBACK'),
+      );
+    });
+  }
+
+  test('app_rw INSERT naming created_at is REFUSED by the column grant (42501)', async () => {
+    assertRefused(
+      'app_rw insert created_at',
+      await asLogin(
+        LOGINS.app_rw,
+        `INSERT INTO public.magic_link (id, account_id, token_hash, expires_at, created_at)
+           VALUES ('${SCRATCH}', '${ACCOUNT_A}', ${H('77')}, now() + interval '1 year 10 minutes', now() + interval '1 year')`,
+      ),
+      { message: DENIED },
+    );
+  });
+
+  test('a writer the grant does not bind (the superuser): a supplied created_at is replaced by now()', async () => {
+    const r = await asSuperuser(
+      `INSERT INTO public.magic_link (id, account_id, token_hash, expires_at, created_at)
+         VALUES ('${SCRATCH}', '${ACCOUNT_A}', ${H('77')}, now() + interval '10 minutes', now() - interval '1 hour')`,
+      `SELECT 'stored created_at = now(): ' || (created_at = now()) FROM public.magic_link WHERE id = '${SCRATCH}'`,
+    );
+    assertPermitted('superuser supplied created_at', r);
+    assertRead('superuser supplied created_at', r, 'stored created_at = now(): true');
+  });
+
+  test('the superuser supplying created_at = now() + 1 year, expires_at 10 minutes after, is REFUSED by magic_link_ttl_check (23514)', async () => {
+    assertRefusedBy(
+      'superuser future created_at',
+      await asSuperuser(
+        `INSERT INTO public.magic_link (id, account_id, token_hash, expires_at, created_at)
+           VALUES ('${SCRATCH}', '${ACCOUNT_A}', ${H('77')}, now() + interval '1 year 10 minutes', now() + interval '1 year')`,
+      ),
+      TTL_23514,
+      TTL_FIELD,
+    );
+  });
+
+  test('a long transaction: expires_at = clock_timestamp() + 10 minutes after 1 s is REFUSED (23514); now() + 10 minutes is accepted', async () => {
+    assertRefusedBy(
+      'clock_timestamp() + 10 min',
+      await asLogin(
+        LOGINS.app_rw,
+        'SELECT pg_sleep(1)',
+        insert(SCRATCH, { expires: "clock_timestamp() + interval '10 minutes'" }),
+      ),
+      TTL_23514,
+      TTL_FIELD,
+    );
+    const accepted = await asLogin(
+      LOGINS.app_rw,
+      'SELECT pg_sleep(1)',
+      insert(SCRATCH),
+      `SELECT 'created_at is the transaction start: ' || (created_at = now()) || ', before the clock: ' ||
+              (created_at < clock_timestamp()) FROM public.magic_link WHERE id = '${SCRATCH}'`,
+    );
+    assertPermitted('now() + 10 min in a long transaction', accepted);
+    assertRead(
+      'now() + 10 min in a long transaction',
+      accepted,
+      'created_at is the transaction start: true, before the clock: true',
+    );
+  });
+});
+
+describe('0015 — OE-64: an expired link is never consumed (KV069)', () => {
+  const KV069 = 'ERROR:  KV069: MAGIC_LINK_EXPIRED: an expired magic_link row cannot be consumed';
+
+  test("app_rw consuming an expired link (the first cycle's B2) is REFUSED KV069", async () => {
+    const r = await asLogin(
+      LOGINS.app_rw,
+      readRow(EXPIRED),
+      `UPDATE public.magic_link SET consumed_at = now() WHERE id = '${EXPIRED}' AND consumed_at IS NULL`,
+    );
+    assertRead('consume expired', r, 'row 1 consumed=false expired=true');
+    assertRefusedBy('consume expired', r, KV069, TRIGGER_CONTEXT);
+  });
+
+  test('the same, as the superuser, is REFUSED KV069 (the trigger is not a grant)', async () => {
+    const r = await asSuperuser(
+      readRow(EXPIRED),
+      `UPDATE public.magic_link SET consumed_at = now() WHERE id = '${EXPIRED}'`,
+    );
+    assertRead('consume expired as superuser', r, 'row 1 consumed=false expired=true');
+    assertRefusedBy('consume expired as superuser', r, KV069, TRIGGER_CONTEXT);
+  });
+
+  test('an invalidation without "AND expires_at > now()" over an account holding an expired, unconsumed link is REFUSED KV069', async () => {
+    const r = await asLogin(
+      LOGINS.app_rw,
+      readRow(EXPIRED),
+      `UPDATE public.magic_link SET consumed_at = now() WHERE account_id = '${ACCOUNT_A}' AND consumed_at IS NULL`,
+    );
+    assertRead('invalidation without expiry filter', r, 'row 1 consumed=false expired=true');
+    assertRefusedBy('invalidation without expiry filter', r, KV069, TRIGGER_CONTEXT);
+  });
+
+  test('CONTROL — app_rw consumes a live link with T-027 M2 inside the TTL', async () => {
+    const r = await asLogin(
+      LOGINS.app_rw,
+      readRow(LIVE),
+      `UPDATE public.magic_link SET consumed_at = now()
+          WHERE token_hash = ${LIVE_HASH} AND consumed_at IS NULL AND expires_at > now()
+        RETURNING 'consumed ' || id`,
+    );
+    assertPermitted('consume live', r);
+    assertRead('consume live', r, `consumed ${LIVE}`);
   });
 });
 
@@ -521,16 +687,16 @@ describe('0015 — grants (U-M6, EV-10; T-020 § contract §3), over real single
   test('CONTROL — app_rw SELECTs magic_link', async () => {
     const r = await asLogin(LOGINS.app_rw, readRow(LIVE));
     assertPermitted('app_rw SELECT', r);
-    assertRead('app_rw SELECT', r, 'row 1 consumed=false');
+    assertRead('app_rw SELECT', r, 'row 1 consumed=false expired=false');
   });
 
-  test('the rows survive every refusal above: three fixture links, LIVE still unconsumed', async () => {
+  test('the rows survive every refusal above: four fixture links, LIVE still unconsumed', async () => {
     assert.equal(
       await db.value(
         `SELECT count(*) || '|' || (SELECT (consumed_at IS NULL)::text FROM public.magic_link WHERE id = '${LIVE}')
            FROM public.magic_link`,
       ),
-      '3|true',
+      '4|true',
     );
   });
 });

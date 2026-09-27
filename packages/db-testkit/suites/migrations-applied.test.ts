@@ -534,6 +534,25 @@ const CREATED_BY: Readonly<
                  AND tgfoid = coalesce(to_regprocedure('public.assert_magic_link_single_use()'), 0)`,
         holds: '1',
       },
+      {
+        title:
+          'trigger trg_magic_link_created_at fires BEFORE INSERT FOR EACH ROW on magic_link, calling set_magic_link_created_at() (OE-63)',
+        sql: `SELECT count(*)::text FROM pg_trigger
+               WHERE tgname = 'trg_magic_link_created_at'
+                 AND tgrelid = to_regclass('public.magic_link')
+                 AND tgtype = 7
+                 AND tgfoid = coalesce(to_regprocedure('public.set_magic_link_created_at()'), 0)`,
+        holds: '1',
+      },
+      {
+        title:
+          'magic_link_ttl_check bounds expires_at to 10 minutes after created_at (OE-63, EV-13)',
+        sql: `SELECT coalesce((SELECT pg_get_constraintdef(oid) FROM pg_constraint
+                               WHERE conrelid = to_regclass('public.magic_link')
+                                 AND conname = 'magic_link_ttl_check'), '(absent)')`,
+        holds:
+          "CHECK (((expires_at > created_at) AND ((expires_at - created_at) <= '00:10:00'::interval)))",
+      },
     ],
   },
 };
