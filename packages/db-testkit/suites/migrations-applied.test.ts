@@ -40,7 +40,7 @@ import {
 import { assertPermitted, assertRefused, INT10_RAISE } from '../src/expect.ts';
 
 const SUITE = 'migrations-applied';
-const HIGHEST_COMMITTED = '0015';
+const HIGHEST_COMMITTED = '0016';
 const COMMITTED_DIR = path.join(REPO_ROOT, MIGRATIONS_DIR);
 const RECORD_SQL = `SELECT coalesce(shobj_description(oid, 'pg_database'), '(no comment)')
                       FROM pg_database WHERE datname = current_database()`;
@@ -552,6 +552,81 @@ const CREATED_BY: Readonly<
                                  AND conname = 'magic_link_ttl_check'), '(absent)')`,
         holds:
           "CHECK (((expires_at > created_at) AND ((expires_at - created_at) <= '00:10:00'::interval)))",
+      },
+    ],
+  },
+  '0016': {
+    source: 'T-196',
+    // Each probe names one object 0016 creates, and each returns a value rather than raising once it
+    // is gone: to_regclass returns NULL for a missing name (coalesced), and the constraint reads are
+    // coalesced definitions. 0016 creates no function and no trigger.
+    probes: [
+      {
+        title: 'table public.webauthn_credential exists, owned by app_ddl',
+        sql: `SELECT coalesce((SELECT pg_get_userbyid(relowner) FROM pg_class
+                               WHERE oid = to_regclass('public.webauthn_credential')), '(absent)')`,
+        holds: 'app_ddl',
+      },
+      {
+        title:
+          "webauthn_credential's columns are SD 1823-1828's nine, sign_count bigint NOT NULL DEFAULT 0 (U-W1)",
+        sql: `SELECT coalesce((SELECT string_agg(a.attname || ':' || format_type(a.atttypid, a.atttypmod) || ':' ||
+                                                 a.attnotnull::text || ':' || coalesce(pg_get_expr(d.adbin, d.adrelid), '-'),
+                                                 ',' ORDER BY a.attnum)
+                                 FROM pg_attribute a LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+                                WHERE a.attrelid = to_regclass('public.webauthn_credential') AND a.attnum > 0
+                                  AND NOT a.attisdropped), '(absent)')`,
+        holds:
+          'id:character(26):true:-,account_id:character(26):true:-,credential_id:bytea:true:-,' +
+          'public_key:bytea:true:-,sign_count:bigint:true:0,transports:text[]:false:-,aaguid:uuid:false:-,' +
+          'created_at:timestamp with time zone:true:now(),last_used_at:timestamp with time zone:false:-',
+      },
+      {
+        title: 'index webauthn_credential_account_id_idx is (account_id) (U-W3)',
+        sql: `SELECT coalesce(pg_get_indexdef(to_regclass('public.webauthn_credential_account_id_idx')), '(absent)')`,
+        holds:
+          'CREATE INDEX webauthn_credential_account_id_idx ON public.webauthn_credential USING btree (account_id)',
+      },
+      {
+        title:
+          'webauthn_credential_account_id_fkey references account(id) ON DELETE CASCADE, ON UPDATE NO ACTION (SD 1824)',
+        sql: `SELECT coalesce((SELECT pg_get_constraintdef(oid) || ' del=' || confdeltype::text || ' upd=' || confupdtype::text
+                                 FROM pg_constraint
+                                WHERE conrelid = to_regclass('public.webauthn_credential')
+                                  AND conname = 'webauthn_credential_account_id_fkey'), '(absent)')`,
+        holds: 'FOREIGN KEY (account_id) REFERENCES account(id) ON DELETE CASCADE del=c upd=a',
+      },
+      {
+        title: 'webauthn_credential_credential_id_key is UNIQUE (credential_id) (SD 1825)',
+        sql: `SELECT coalesce((SELECT pg_get_constraintdef(oid) FROM pg_constraint
+                               WHERE conrelid = to_regclass('public.webauthn_credential')
+                                 AND conname = 'webauthn_credential_credential_id_key'), '(absent)')`,
+        holds: 'UNIQUE (credential_id)',
+      },
+      {
+        title: 'webauthn_credential_sign_count_range holds sign_count to 0..4294967295 (U-W2)',
+        sql: `SELECT coalesce((SELECT pg_get_constraintdef(oid) FROM pg_constraint
+                               WHERE conrelid = to_regclass('public.webauthn_credential')
+                                 AND conname = 'webauthn_credential_sign_count_range'), '(absent)')`,
+        holds: "CHECK (((sign_count >= 0) AND (sign_count <= '4294967295'::bigint)))",
+      },
+      {
+        title:
+          "webauthn_credential's ACL: app_rw SELECT and DELETE (U-W4), INSERT on seven columns, UPDATE on sign_count and last_used_at; nothing to app_admin_rw (C2 (c))",
+        sql: `SELECT coalesce((SELECT c.relacl::text || ' ' ||
+                                      (SELECT string_agg(a.attname || '=' || a.attacl::text, ',' ORDER BY a.attnum)
+                                         FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attacl IS NOT NULL)
+                                 FROM pg_class c WHERE c.oid = to_regclass('public.webauthn_credential')), '(absent)')`,
+        holds:
+          '{app_ddl=arwdDxtm/app_ddl,app_rw=rd/app_ddl} id={app_rw=a/app_ddl},account_id={app_rw=a/app_ddl},' +
+          'credential_id={app_rw=a/app_ddl},public_key={app_rw=a/app_ddl},sign_count={app_rw=aw/app_ddl},' +
+          'transports={app_rw=a/app_ddl},aaguid={app_rw=a/app_ddl},last_used_at={app_rw=w/app_ddl}',
+      },
+      {
+        title: 'webauthn_credential has no row-level security, enabled or forced (C2 (c))',
+        sql: `SELECT coalesce((SELECT relrowsecurity::text || ',' || relforcerowsecurity::text FROM pg_class
+                               WHERE oid = to_regclass('public.webauthn_credential')), '(absent)')`,
+        holds: 'false,false',
       },
     ],
   },
