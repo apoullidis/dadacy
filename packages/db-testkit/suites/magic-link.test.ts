@@ -202,14 +202,17 @@ describe('0015 — the table, its owner, its columns, its constraints and its AC
     );
   });
 
-  test('magic_link carries exactly two non-internal triggers: BEFORE INSERT created_at, AFTER UPDATE single use', async () => {
+  test("magic_link carries exactly two non-internal triggers: BEFORE INSERT created_at, AFTER UPDATE single use, each enabled on the origin only (tgenabled 'O')", async () => {
+    // tgenabled 'O' fires on the origin and not under session_replication_role = replica; 'A'
+    // (ENABLE ALWAYS) would also fire on a logical subscriber's apply, 'R' only there, 'D' never
+    // (T-195 § tech-lead verification TL-4 and S1).
     assert.equal(
       await db.value(
-        `SELECT string_agg(tgname || ':' || tgtype || ':' || tgfoid::regprocedure::text, ',' ORDER BY tgname)
+        `SELECT string_agg(tgname || ':' || tgtype || ':' || tgenabled || ':' || tgfoid::regprocedure::text, ',' ORDER BY tgname)
            FROM pg_trigger WHERE tgrelid = 'public.magic_link'::regclass AND NOT tgisinternal`,
       ),
-      'trg_magic_link_created_at:7:set_magic_link_created_at(),' +
-        'trg_magic_link_single_use:17:assert_magic_link_single_use()',
+      'trg_magic_link_created_at:7:O:set_magic_link_created_at(),' +
+        'trg_magic_link_single_use:17:O:assert_magic_link_single_use()',
     );
   });
 });
@@ -624,7 +627,7 @@ describe('0015 — OE-63: the database holds the 10-minute TTL (EV-13)', () => {
   });
 });
 
-describe('0015 — OE-64: a consuming write at or after expires_at is refused (KV069)', () => {
+describe('0015 — OE-64: a consuming UPDATE at or after expires_at is refused (KV069)', () => {
   test("app_rw consuming an expired link (the first cycle's B2) is REFUSED KV069", async () => {
     const r = await asLogin(
       LOGINS.app_rw,
