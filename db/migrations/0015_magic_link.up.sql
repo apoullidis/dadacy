@@ -8,7 +8,8 @@
 --          SA §SEC-5 line 2206 (10-minute TTL, single use, invalidated on any later login).
 -- Rulings: OE-30 as accepted (rulings Part A.1: U-M1, U-M2), OE-49 (rulings Part E.1: U-M4),
 --          OE-50 (rulings Part F: Q-D2 and U-M6 accepted as recommended in Parts B.2/B.3), and
---          OE-63 and OE-64 (decisions.md, 2026-09-27T06:33:53Z; raised by T-195).
+--          OE-63 and OE-64 (decisions.md, 2026-09-27T06:33:53Z; raised by T-195), and OE-65
+--          (decisions.md, 2026-09-27T08:34:25Z; T-195 QA-F1): KV069's clock.
 -- Contracts: T-140 § Published contract (account, the FK target); T-194 § Rework 2 › Published
 --          contract (rework 2) (the otp_challenge pattern this file follows where no ruling
 --          speaks); T-020 § Published contract §3-§5 (roles, explicit grants, the SA §INT-10
@@ -25,8 +26,11 @@
 --   Q-D2  CHECK (octet_length(token_hash) = 32): a SHA-256 digest is 32 bytes. EV-9.
 --   U-M4  CREATE INDEX magic_link_account_id_live_idx ON magic_link (account_id) WHERE
 --         consumed_at IS NULL (rulings E.1), serving "invalidated on any subsequent login"
---         (SA 2206): UPDATE ... SET consumed_at = now() WHERE account_id = $1 AND consumed_at IS
---         NULL AND expires_at > now(). SD 1837-1841 gives no index; this mirrors SD 1821's
+--         (SA 2206): UPDATE ... SET consumed_at = clock_timestamp() WHERE account_id = $1 AND
+--         consumed_at IS NULL AND expires_at > clock_timestamp() (rulings E.1 wrote now(); OE-65
+--         requires KV069's clock, below). The index predicate names no clock (an index predicate
+--         must be IMMUTABLE), so the expiry test is a filter on the index scan. SD 1837-1841 gives
+--         no index; this mirrors SD 1821's
 --         app_session index. EV-12.
 --   U-M6  no DELETE for app_rw. Retention is a spec addition, EV-10: a new SD §DB-14 row,
 --         magic_link, hard_delete 90 d after expires_at, run by the retention engine (T-069).
@@ -41,8 +45,14 @@
 --         at most 10 minutes after that start, which is at or before the commit that makes it
 --         visible. A long transaction shortens the window; it cannot lengthen it
 --         (clock_timestamp() + 10 minutes after the transaction has run for any time is refused).
---   OE-64 THE DATABASE REFUSES CONSUMING AN EXPIRED LINK: the single-use trigger refuses setting
---         consumed_at when expires_at <= now() (KV069, below).
+--   OE-64 + OE-65 THE DATABASE REFUSES A CONSUMING WRITE MADE AT OR AFTER EXPIRY, BY THE WALL
+--         CLOCK: the single-use trigger refuses setting consumed_at when expires_at <=
+--         clock_timestamp() (KV069, below). clock_timestamp(), not now() (the transaction's start,
+--         which let a transaction opened before expiry consume after it: QA-F1) and not
+--         statement_timestamp() (the statement's start, which still let a consume that waited
+--         inside one statement, on a slow expression or on another transaction's row lock, land
+--         after expiry: measured by T-195 rework 2). The check is made when the row is written,
+--         not at COMMIT: a transaction that consumes a live link may commit after expires_at.
 -- EV numbers are cited only in these top-level -- lines, never in a COMMENT ON or a function
 -- body, so a renumbering changes no applied effect (PROTOCOL §3, R-MERGED).
 --
@@ -68,9 +78,9 @@
 --                                           (42501); KV068 holds the rule for every writer the
 --                                           grant does not bind;
 --   KV069 MAGIC_LINK_EXPIRED                consumed_at set (from NULL) on a link whose
---                                           expires_at <= now() (OE-64). now() is the updating
---                                           transaction's start, the same clock as T-027 M2's
---                                           expires_at > now() predicate.
+--                                           expires_at <= clock_timestamp(), the wall clock when
+--                                           the trigger runs for that row (OE-64, OE-65). T-027
+--                                           M2 must test expires_at > clock_timestamp() too.
 -- The first that applies is raised. "Changed" is NEW IS DISTINCT FROM OLD: an UPDATE writing
 -- identical values is not refused. The trigger's own messages carry no column value (token_hash
 -- is a bearer token's digest). PostgreSQL's own refusals DO: the DETAIL of a CHECK or NOT NULL
@@ -81,8 +91,8 @@
 -- trigger, and its RAISE still aborts the statement. CHECK, NOT NULL, UNIQUE and the FK's insert
 -- check are evaluated first.
 --
--- NOT HELD HERE (not ruled): the VALUE of the first consumed_at. It may be any timestamp; OE-64
--- constrains when a link may be consumed, not what consumed_at is set to.
+-- NOT HELD HERE (not ruled): the VALUE of the first consumed_at. It may be any timestamp; KV069
+-- constrains when the consuming write happens, not what consumed_at is set to.
 --
 -- GRANTS. No default privileges exist (T-020 § contract §4), so each is explicit. No DELETE or
 -- TRUNCATE (U-M6). Nothing to app_admin_rw, app_safety_rw (a closed list) or answering_service
@@ -119,7 +129,7 @@ GRANT INSERT (id, account_id, token_hash, expires_at, requested_device_fingerpri
 GRANT UPDATE (consumed_at) ON public.magic_link TO app_rw;
 
 COMMENT ON TABLE public.magic_link IS
-  'Email magic links (SD §DB-2 lines 1837-1840; SA §SEC-5). token_hash: SHA-256 of a 256-bit token, 32 bytes; the token is never stored. account_id references account, ON DELETE CASCADE. created_at is set to now() by trg_magic_link_created_at for every insert, and a 10-minute TTL is checked against it (OE-63). Single use: an expired link cannot be consumed (OE-64), once consumed_at is set it never changes, and no other column changes after insert (trg_magic_link_single_use). app_rw may INSERT only id, account_id, token_hash, expires_at and requested_device_fingerprint, may UPDATE only consumed_at, and holds no DELETE. Retention: hard_delete 90 d after expires_at, by the retention engine (OE-50 U-M6).';
+  'Email magic links (SD §DB-2 lines 1837-1840; SA §SEC-5). token_hash: SHA-256 of a 256-bit token, 32 bytes; the token is never stored. account_id references account, ON DELETE CASCADE. created_at is set to now() by trg_magic_link_created_at for every insert, and a 10-minute TTL is checked against it (OE-63). Single use: consumed_at cannot be set by a write made at or after expires_at by the wall clock, clock_timestamp() (OE-64, OE-65; judged at the write, not at commit), once consumed_at is set it never changes, and no other column changes after insert (trg_magic_link_single_use). app_rw may INSERT only id, account_id, token_hash, expires_at and requested_device_fingerprint, may UPDATE only consumed_at, and holds no DELETE. Retention: hard_delete 90 d after expires_at, by the retention engine (OE-50 U-M6).';
 
 CREATE FUNCTION public.assert_magic_link_single_use() RETURNS trigger
   LANGUAGE plpgsql
@@ -154,10 +164,10 @@ BEGIN
             HINT = 'A magic link is never re-armed, re-keyed or re-bound: id, account_id, token_hash, expires_at, requested_device_fingerprint and created_at are fixed after insert.';
   END IF;
 
-  IF OLD.consumed_at IS NULL AND NEW.consumed_at IS NOT NULL AND NEW.expires_at <= now() THEN
-    RAISE EXCEPTION 'MAGIC_LINK_EXPIRED: an expired magic_link row cannot be consumed'
+  IF OLD.consumed_at IS NULL AND NEW.consumed_at IS NOT NULL AND NEW.expires_at <= clock_timestamp() THEN
+    RAISE EXCEPTION 'MAGIC_LINK_EXPIRED: a magic_link row cannot be consumed at or after its expires_at'
       USING ERRCODE = 'KV069',
-            HINT = 'decisions.md OE-64: a magic link past its expires_at is never consumed.';
+            HINT = 'decisions.md OE-64, OE-65: expiry is judged by the wall clock (clock_timestamp()) when the consuming write is made.';
   END IF;
 
   RETURN NULL;
@@ -165,7 +175,7 @@ END
 $fn$;
 
 COMMENT ON FUNCTION public.assert_magic_link_single_use() IS
-  'AFTER UPDATE row trigger on magic_link (T-195; SA §SEC-5 single use; decisions.md OE-64). On a changed row, first match raised: a set consumed_at returned to NULL is KV066; a set consumed_at changed to another value is KV067; a change to id, account_id, token_hash, expires_at, requested_device_fingerprint or created_at is KV068; consumed_at set on a link whose expires_at <= now() is KV069 (OE-64). An UPDATE writing identical values is not refused.';
+  'AFTER UPDATE row trigger on magic_link (T-195; SA §SEC-5 single use; decisions.md OE-64, OE-65). On a changed row, first match raised: a set consumed_at returned to NULL is KV066; a set consumed_at changed to another value is KV067; a change to id, account_id, token_hash, expires_at, requested_device_fingerprint or created_at is KV068; consumed_at set on a link whose expires_at <= clock_timestamp() is KV069 (OE-64, OE-65). An UPDATE writing identical values is not refused.';
 
 CREATE TRIGGER trg_magic_link_single_use
   AFTER UPDATE ON public.magic_link
