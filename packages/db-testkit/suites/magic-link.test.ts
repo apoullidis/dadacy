@@ -2,8 +2,10 @@
  * T-195 — `public.magic_link` (migration 0015): SD §DB-2 lines 1837–1840 plus the accepted OE-30 /
  * OE-49 / OE-50 rulings (tasks/state/EP-2/OE-30-34-rulings.md Part A.1 U-M1/U-M2, Part E.1 U-M4,
  * Part B.2 Q-D2, Part B.3 U-M6, Part F), and T-194's otp_challenge pattern where no ruling speaks
- * (column-level grants, single use set once, fixed columns), and OE-63 / OE-64 (decisions.md,
- * 2026-09-27: the 10-minute TTL held by the database, EV-13; an expired link is never consumed).
+ * (column-level grants, single use set once, fixed columns), and OE-63 / OE-64 / OE-65
+ * (decisions.md, 2026-09-27: the 10-minute TTL held by the database, EV-13; consumed_at cannot be
+ * set by a write made at or after expires_at by the wall clock, clock_timestamp(), judged at the
+ * write, not at commit).
  * These are the database-layer refusals TK-2 lists, plus KV066–KV069.
  *
  * Every refusal asserts psql's exit status AND its `ERROR:  <SQLSTATE>: <message>` line AND, where
@@ -157,6 +159,8 @@ function assertRead(what: string, r: PsqlResult, state: string): void {
 }
 
 const TRIGGER_CONTEXT = 'CONTEXT:  PL/pgSQL function public.assert_magic_link_single_use()';
+const KV069 =
+  'ERROR:  KV069: MAGIC_LINK_EXPIRED: a magic_link row cannot be consumed at or after its expires_at';
 const DENIED = 'ERROR:  42501: permission denied for table magic_link';
 
 describe('0015 — the table, its owner, its columns, its constraints and its ACL', () => {
@@ -619,9 +623,7 @@ describe('0015 — OE-63: the database holds the 10-minute TTL (EV-13)', () => {
   });
 });
 
-describe('0015 — OE-64: an expired link is never consumed (KV069)', () => {
-  const KV069 = 'ERROR:  KV069: MAGIC_LINK_EXPIRED: an expired magic_link row cannot be consumed';
-
+describe('0015 — OE-64: a consuming write at or after expires_at is refused (KV069)', () => {
   test("app_rw consuming an expired link (the first cycle's B2) is REFUSED KV069", async () => {
     const r = await asLogin(
       LOGINS.app_rw,
@@ -641,7 +643,7 @@ describe('0015 — OE-64: an expired link is never consumed (KV069)', () => {
     assertRefusedBy('consume expired as superuser', r, KV069, TRIGGER_CONTEXT);
   });
 
-  test('an invalidation without "AND expires_at > now()" over an account holding an expired, unconsumed link is REFUSED KV069', async () => {
+  test('an invalidation without "AND expires_at > clock_timestamp()" over an account holding an expired, unconsumed link is REFUSED KV069', async () => {
     const r = await asLogin(
       LOGINS.app_rw,
       readRow(EXPIRED),
@@ -655,12 +657,95 @@ describe('0015 — OE-64: an expired link is never consumed (KV069)', () => {
     const r = await asLogin(
       LOGINS.app_rw,
       readRow(LIVE),
-      `UPDATE public.magic_link SET consumed_at = now()
-          WHERE token_hash = ${LIVE_HASH} AND consumed_at IS NULL AND expires_at > now()
+      `UPDATE public.magic_link SET consumed_at = clock_timestamp()
+          WHERE token_hash = ${LIVE_HASH} AND consumed_at IS NULL AND expires_at > clock_timestamp()
         RETURNING 'consumed ' || id`,
     );
     assertPermitted('consume live', r);
     assertRead('consume live', r, `consumed ${LIVE}`);
+  });
+});
+
+describe('0015 — OE-65: KV069 judges expiry by the wall clock at the write, clock_timestamp()', () => {
+  const HELD = '01K4T195LINKHELD0000000001';
+  const PICKED = '01K4T195LINKPICKED00000001';
+  /** Inside a held transaction, now() is its start: read expiry by both clocks. */
+  const readClocks = (id: string): string =>
+    `SELECT 'expired by the clock: ' || (expires_at <= clock_timestamp()) || ', by now(): ' || (expires_at <= now())
+       FROM public.magic_link WHERE id = '${id}'`;
+
+  test('K1 — a held transaction: BEGIN, insert a link live for 1 s, wait 1.5 s, consume: REFUSED KV069', async () => {
+    const r = await asLogin(
+      LOGINS.app_rw,
+      'BEGIN',
+      insert(HELD, { hash: H('a1'), expires: "now() + interval '1 second'" }),
+      'SELECT pg_sleep(1.5)',
+      readClocks(HELD),
+      `UPDATE public.magic_link SET consumed_at = clock_timestamp() WHERE id = '${HELD}' AND consumed_at IS NULL`,
+    );
+    assertRead('K1 held transaction', r, 'expired by the clock: true, by now(): false');
+    assertRefusedBy('K1 held transaction', r, KV069, TRIGGER_CONTEXT);
+  });
+
+  test('K2 — a held transaction picks up a committed live link FOR UPDATE, waits past expires_at, consumes: REFUSED KV069', async () => {
+    try {
+      const r = await asLogin(
+        LOGINS.app_rw,
+        'BEGIN',
+        insert(PICKED, { hash: H('a2'), expires: "now() + interval '2 seconds'" }),
+        'COMMIT',
+        'BEGIN',
+        `SELECT 'picked up live: ' || (expires_at > clock_timestamp()) FROM public.magic_link WHERE id = '${PICKED}' FOR UPDATE`,
+        'SELECT pg_sleep(2.5)',
+        readClocks(PICKED),
+        `UPDATE public.magic_link SET consumed_at = clock_timestamp() WHERE id = '${PICKED}' AND consumed_at IS NULL`,
+      );
+      assertRead('K2 pick up', r, 'picked up live: true');
+      assertRead('K2 pick up', r, 'expired by the clock: true, by now(): false');
+      assertRefusedBy('K2 pick up', r, KV069, TRIGGER_CONTEXT);
+    } finally {
+      await db.sql({ commands: [`DELETE FROM public.magic_link WHERE id = '${PICKED}'`] });
+    }
+  });
+
+  test('K3 — within ONE statement: a consume whose row is written 1.5 s after the statement began, past expires_at: REFUSED KV069 (not statement_timestamp())', async () => {
+    const r = await asLogin(
+      LOGINS.app_rw,
+      'BEGIN',
+      insert(HELD, { hash: H('a3'), expires: "now() + interval '1 second'" }),
+      `UPDATE public.magic_link SET consumed_at = clock_timestamp()
+          WHERE id = '${HELD}' AND consumed_at IS NULL AND (SELECT pg_sleep(1.5)) IS NOT NULL`,
+    );
+    assertRefusedBy('K3 one statement', r, KV069, TRIGGER_CONTEXT);
+  });
+
+  test('CONTROL — in a held transaction past expiry, T-027 M2 on the same clock matches no row (M3 then answers 410)', async () => {
+    const r = await asLogin(
+      LOGINS.app_rw,
+      'BEGIN',
+      insert(HELD, { hash: H('a4'), expires: "now() + interval '1 second'" }),
+      'SELECT pg_sleep(1.5)',
+      `WITH c AS (UPDATE public.magic_link SET consumed_at = clock_timestamp()
+                   WHERE token_hash = ${H('a4')} AND consumed_at IS NULL AND expires_at > clock_timestamp()
+                   RETURNING id)
+       SELECT 'M2 matched ' || count(*) || ' row(s)' FROM c`,
+    );
+    assertPermitted('M2 same clock', r);
+    assertRead('M2 same clock', r, 'M2 matched 0 row(s)');
+  });
+
+  test('CONTROL — a held transaction consuming a link inside its TTL is accepted', async () => {
+    const r = await asLogin(
+      LOGINS.app_rw,
+      'BEGIN',
+      insert(HELD, { hash: H('a5') }),
+      'SELECT pg_sleep(1)',
+      `UPDATE public.magic_link SET consumed_at = clock_timestamp()
+          WHERE token_hash = ${H('a5')} AND consumed_at IS NULL AND expires_at > clock_timestamp()
+        RETURNING 'consumed ' || id`,
+    );
+    assertPermitted('held, inside the TTL', r);
+    assertRead('held, inside the TTL', r, `consumed ${HELD}`);
   });
 });
 
