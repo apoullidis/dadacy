@@ -45,14 +45,19 @@
 --         at most 10 minutes after that start, which is at or before the commit that makes it
 --         visible. A long transaction shortens the window; it cannot lengthen it
 --         (clock_timestamp() + 10 minutes after the transaction has run for any time is refused).
---   OE-64 + OE-65 THE DATABASE REFUSES A CONSUMING WRITE MADE AT OR AFTER EXPIRY, BY THE WALL
---         CLOCK: the single-use trigger refuses setting consumed_at when expires_at <=
---         clock_timestamp() (KV069, below). clock_timestamp(), not now() (the transaction's start,
+--   OE-64 + OE-65 THE DATABASE REFUSES A CONSUMING UPDATE AT OR AFTER EXPIRY, BY THE WALL
+--         CLOCK: the single-use trigger refuses an UPDATE setting consumed_at (from NULL) when
+--         expires_at <= clock_timestamp() (KV069, below). clock_timestamp(), not now() (the transaction's start,
 --         which let a transaction opened before expiry consume after it: QA-F1) and not
 --         statement_timestamp() (the statement's start, which still let a consume that waited
 --         inside one statement, on a slow expression or on another transaction's row lock, land
---         after expiry: measured by T-195 rework 2). The check is made when the row is written,
---         not at COMMIT: a transaction that consumes a live link may commit after expires_at.
+--         after expiry: measured by T-195 rework 2). The clock is read when the AFTER ROW
+--         trigger fires for the row, which is at the END of the writing statement, not when the
+--         row is written and not at COMMIT. So a row written while live is still refused if its
+--         statement ends at or after expires_at (it refuses more, never less), and a transaction
+--         that consumed a live link may commit after expires_at. The value written to consumed_at
+--         is not what is judged. An INSERT is not checked: app_rw cannot supply consumed_at
+--         (42501); the owner app_ddl can (break-glass).
 -- EV numbers are cited only in these top-level -- lines, never in a COMMENT ON or a function
 -- body, so a renumbering changes no applied effect (PROTOCOL §3, R-MERGED).
 --
@@ -79,7 +84,8 @@
 --                                           grant does not bind;
 --   KV069 MAGIC_LINK_EXPIRED                consumed_at set (from NULL) on a link whose
 --                                           expires_at <= clock_timestamp(), the wall clock when
---                                           the trigger runs for that row (OE-64, OE-65). T-027
+--                                           the trigger runs for that row, at the end of the
+--                                           writing statement (OE-64, OE-65). T-027
 --                                           M2 must test expires_at > clock_timestamp() too.
 -- The first that applies is raised. "Changed" is NEW IS DISTINCT FROM OLD: an UPDATE writing
 -- identical values is not refused. The trigger's own messages carry no column value (token_hash
@@ -91,8 +97,9 @@
 -- trigger, and its RAISE still aborts the statement. CHECK, NOT NULL, UNIQUE and the FK's insert
 -- check are evaluated first.
 --
--- NOT HELD HERE (not ruled): the VALUE of the first consumed_at. It may be any timestamp; KV069
--- constrains when the consuming write happens, not what consumed_at is set to.
+-- NOT HELD HERE (not ruled): the VALUE of the first consumed_at. It may be any timestamp on a live
+-- link; KV069 compares expires_at with the clock, not with the value written, so a pre-expiry
+-- value written to an expired link is still refused.
 --
 -- GRANTS. No default privileges exist (T-020 § contract §4), so each is explicit. No DELETE or
 -- TRUNCATE (U-M6). Nothing to app_admin_rw, app_safety_rw (a closed list) or answering_service
@@ -129,7 +136,7 @@ GRANT INSERT (id, account_id, token_hash, expires_at, requested_device_fingerpri
 GRANT UPDATE (consumed_at) ON public.magic_link TO app_rw;
 
 COMMENT ON TABLE public.magic_link IS
-  'Email magic links (SD §DB-2 lines 1837-1840; SA §SEC-5). token_hash: SHA-256 of a 256-bit token, 32 bytes; the token is never stored. account_id references account, ON DELETE CASCADE. created_at is set to now() by trg_magic_link_created_at for every insert, and a 10-minute TTL is checked against it (OE-63). Single use: consumed_at cannot be set by a write made at or after expires_at by the wall clock, clock_timestamp() (OE-64, OE-65; judged at the write, not at commit), once consumed_at is set it never changes, and no other column changes after insert (trg_magic_link_single_use). app_rw may INSERT only id, account_id, token_hash, expires_at and requested_device_fingerprint, may UPDATE only consumed_at, and holds no DELETE. Retention: hard_delete 90 d after expires_at, by the retention engine (OE-50 U-M6).';
+  'Email magic links (SD §DB-2 lines 1837-1840; SA §SEC-5). token_hash: SHA-256 of a 256-bit token, 32 bytes; the token is never stored. account_id references account, ON DELETE CASCADE. created_at is set to now() by trg_magic_link_created_at for every insert, and a 10-minute TTL is checked against it (OE-63). Single use: an UPDATE cannot set consumed_at when expires_at <= clock_timestamp(), the wall clock read when the trigger fires at the end of that statement, not at commit (OE-64, OE-65; the value written is not what is judged, and an INSERT is not checked: app_rw cannot supply consumed_at), once consumed_at is set it never changes, and no other column changes after insert (trg_magic_link_single_use). app_rw may INSERT only id, account_id, token_hash, expires_at and requested_device_fingerprint, may UPDATE only consumed_at, and holds no DELETE. Retention: hard_delete 90 d after expires_at, by the retention engine (OE-50 U-M6).';
 
 CREATE FUNCTION public.assert_magic_link_single_use() RETURNS trigger
   LANGUAGE plpgsql
@@ -167,7 +174,7 @@ BEGIN
   IF OLD.consumed_at IS NULL AND NEW.consumed_at IS NOT NULL AND NEW.expires_at <= clock_timestamp() THEN
     RAISE EXCEPTION 'MAGIC_LINK_EXPIRED: a magic_link row cannot be consumed at or after its expires_at'
       USING ERRCODE = 'KV069',
-            HINT = 'decisions.md OE-64, OE-65: expiry is judged by the wall clock (clock_timestamp()) when the consuming write is made.';
+            HINT = 'decisions.md OE-64, OE-65: expiry is judged by the wall clock, clock_timestamp(), read when this trigger fires at the end of the consuming statement.';
   END IF;
 
   RETURN NULL;
