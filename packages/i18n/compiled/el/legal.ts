@@ -9,7 +9,7 @@ export const locale = 'el';
 export const namespace = 'legal';
 
 const a0 = [
-  { type: 0, value: 'Αποδέχομαι το έγγραφο ' },
+  { type: 0, value: 'Αποδέχομαι: ' },
   { type: 1, value: 'documentKind' },
   { type: 0, value: ', έκδοση ' },
   { type: 1, value: 'version' },

@@ -9,9 +9,9 @@ export const locale = 'ru';
 export const namespace = 'notify';
 
 const a0 = [
-  { type: 0, value: 'Отметьтесь на смене у семьи ' },
+  { type: 0, value: 'Не забудьте отметиться на смене у семьи ' },
   { type: 1, value: 'familyName' },
-  { type: 0, value: '. Отметка нужна в ' },
+  { type: 0, value: '. Время отметки — ' },
   { type: 1, value: 'dueAt' },
   { type: 0, value: '.' },
 ] as unknown as readonly MessageFormatElement[];

@@ -2,5 +2,5 @@
   "app.name": "Kinvara",
   "dossier.verified": "{grammaticalRef, select, feminine {Επαληθευμένη} masculine {Επαληθευμένος} other {Επαληθευμένο}} στις {date, date, long}",
   "locale.switch_prompt": "Να χρησιμοποιείται πάντα η γλώσσα {endonym};",
-  "fallback.not_translated": "Αυτή η σελίδα δεν είναι ακόμη διαθέσιμη στη γλώσσα σας."
+  "fallback.not_translated": "Αυτή η σελίδα δεν είναι ακόμη διαθέσιμη στα ελληνικά."
 }

@@ -9,28 +9,32 @@ export const locale = 'el';
 export const namespace = 'safety';
 
 const a0 = [
-  { type: 0, value: 'Διαβάστε αυτή τη διεύθυνση στον χειριστή: ' },
+  { type: 0, value: 'Διαβάστε στο 112 αυτή τη διεύθυνση: ' },
   { type: 1, value: 'address' },
 ] as unknown as readonly MessageFormatElement[];
 const a1 = [
-  { type: 0, value: 'Κλήση 112 — υπηρεσίες έκτακτης ανάγκης' },
+  { type: 0, value: 'Καλέστε το 112 — ασθενοφόρο, αστυνομία, πυροσβεστική' },
 ] as unknown as readonly MessageFormatElement[];
 const a2 = [
-  { type: 0, value: 'Πείτε: Χρειάζομαι ασθενοφόρο. Η διεύθυνσή μου είναι ' },
+  { type: 0, value: 'Πείτε: «Η διεύθυνση είναι ' },
   { type: 1, value: 'address' },
-  { type: 0, value: '. Υπάρχει παιδί μαζί μου.' },
+  { type: 0, value: '.» Μετά πείτε τι συμβαίνει και πού βρίσκεστε. Μην κλείσετε το τηλέφωνο.' },
 ] as unknown as readonly MessageFormatElement[];
 const a3 = [
-  { type: 0, value: '116 111 — γραμμή βοήθειας για παιδιά' },
+  { type: 0, value: '116 111 — Γραμμή στήριξης για παιδιά και εφήβους' },
 ] as unknown as readonly MessageFormatElement[];
 const a4 = [
-  { type: 0, value: '1466 — Υπηρεσίες Κοινωνικής Ευημερίας' },
+  { type: 0, value: '1466 — Γραμμή στήριξης «Hope For Children»' },
 ] as unknown as readonly MessageFormatElement[];
 const a5 = [
-  { type: 0, value: '199 — αστυνομία και ασθενοφόρο' },
+  { type: 0, value: '199 — Εναλλακτικός αριθμός έκτακτης ανάγκης' },
 ] as unknown as readonly MessageFormatElement[];
 const a6 = [
-  { type: 0, value: 'Κρατήστε πατημένο για αποστολή SOS. Ένας χειριστής θα σας καλέσει.' },
+  {
+    type: 0,
+    value:
+      'Να σταλεί SOS; Θα ανοίξει κλήση στο 112 και θα εμφανιστεί η διεύθυνση για να τη διαβάσετε. Η Kinvara θα ειδοποιηθεί.',
+  },
 ] as unknown as readonly MessageFormatElement[];
 
 export const messages = {

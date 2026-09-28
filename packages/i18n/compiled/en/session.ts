@@ -9,18 +9,20 @@ export const locale = 'en';
 export const namespace = 'session';
 
 const a0 = [
+  { type: 0, value: 'We have not received ' },
   {
     type: 6,
     value: 'count',
     options: {
-      one: { value: [{ type: 7 }, { type: 0, value: ' missed check-in' }] },
-      other: { value: [{ type: 7 }, { type: 0, value: ' missed check-ins' }] },
+      one: { value: [{ type: 7 }, { type: 0, value: ' check-in' }] },
+      other: { value: [{ type: 7 }, { type: 0, value: ' check-ins' }] },
     },
     offset: 0,
     pluralType: 'cardinal',
   },
   { type: 0, value: ' from ' },
   { type: 1, value: 'sitterName' },
+  { type: 0, value: '.' },
 ] as unknown as readonly MessageFormatElement[];
 const a1 = [
   {

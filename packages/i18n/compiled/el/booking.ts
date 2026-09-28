@@ -9,7 +9,7 @@ export const locale = 'el';
 export const namespace = 'booking';
 
 const a0 = [
-  { type: 0, value: 'Η ακύρωση τώρα κοστίζει ' },
+  { type: 0, value: 'Αν ακυρώσετε τώρα, η χρέωση είναι ' },
   {
     type: 2,
     value: 'fee',

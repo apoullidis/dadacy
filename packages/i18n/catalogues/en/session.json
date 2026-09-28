@@ -1,4 +1,4 @@
 {
-  "checkins_missed": "{count, plural, one {# missed check-in} other {# missed check-ins}} from {sitterName}",
+  "checkins_missed": "We have not received {count, plural, one {# check-in} other {# check-ins}} from {sitterName}.",
   "staffed_hours.commitment": "A trained safeguarding operator is on shift for every minute of every sit, and for an hour after it ends."
 }

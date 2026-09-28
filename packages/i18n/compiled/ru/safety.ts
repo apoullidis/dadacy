@@ -9,28 +9,32 @@ export const locale = 'ru';
 export const namespace = 'safety';
 
 const a0 = [
-  { type: 0, value: 'Прочитайте оператору этот адрес: ' },
+  { type: 0, value: 'Прочитайте этот адрес вслух оператору 112: ' },
   { type: 1, value: 'address' },
 ] as unknown as readonly MessageFormatElement[];
 const a1 = [
-  { type: 0, value: 'Звонок 112 — экстренные службы' },
+  { type: 0, value: 'Позвонить в 112 — скорая, полиция, пожарные' },
 ] as unknown as readonly MessageFormatElement[];
 const a2 = [
-  { type: 0, value: 'Скажите: мне нужна скорая помощь. Мой адрес: ' },
+  { type: 0, value: 'Скажите: «Адрес: ' },
   { type: 1, value: 'address' },
-  { type: 0, value: '. Со мной ребёнок.' },
+  { type: 0, value: '». Затем расскажите, что происходит и где вы находитесь. Не кладите трубку.' },
 ] as unknown as readonly MessageFormatElement[];
 const a3 = [
-  { type: 0, value: '116 111 — детская линия помощи' },
+  { type: 0, value: '116 111 — линия помощи для детей и подростков' },
 ] as unknown as readonly MessageFormatElement[];
 const a4 = [
-  { type: 0, value: '1466 — Служба социального обеспечения' },
+  { type: 0, value: '1466 — линия помощи Hope For Children' },
 ] as unknown as readonly MessageFormatElement[];
 const a5 = [
-  { type: 0, value: '199 — полиция и скорая помощь' },
+  { type: 0, value: '199 — альтернативный экстренный номер' },
 ] as unknown as readonly MessageFormatElement[];
 const a6 = [
-  { type: 0, value: 'Удерживайте, чтобы отправить SOS. Оператор вам перезвонит.' },
+  {
+    type: 0,
+    value:
+      'Отправить SOS? Откроется вызов 112, а на экране появится адрес, чтобы зачитать его вслух. Kinvara получит оповещение.',
+  },
 ] as unknown as readonly MessageFormatElement[];
 
 export const messages = {

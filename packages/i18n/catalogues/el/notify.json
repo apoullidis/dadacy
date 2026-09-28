@@ -1,3 +1,3 @@
 {
-  "checkin.reminder": "Κάντε καταγραφή για τη φύλαξη με την οικογένεια {familyName}. Οφείλεται στις {dueAt}."
+  "checkin.reminder": "Στείλτε «Όλα καλά» για τη φύλαξη ({familyName}) έως τις {dueAt}."
 }

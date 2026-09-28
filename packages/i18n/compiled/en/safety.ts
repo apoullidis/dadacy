@@ -9,28 +9,32 @@ export const locale = 'en';
 export const namespace = 'safety';
 
 const a0 = [
-  { type: 0, value: 'Read this address to the operator: ' },
+  { type: 0, value: 'Read this address to the 112 operator: ' },
   { type: 1, value: 'address' },
 ] as unknown as readonly MessageFormatElement[];
 const a1 = [
-  { type: 0, value: 'Call 112 — emergency services' },
+  { type: 0, value: 'Call 112 — ambulance, police, fire' },
 ] as unknown as readonly MessageFormatElement[];
 const a2 = [
-  { type: 0, value: 'Say: I need an ambulance. My address is ' },
+  { type: 0, value: 'Say: “The address is ' },
   { type: 1, value: 'address' },
-  { type: 0, value: '. There is a child with me.' },
+  { type: 0, value: '.” Then say what is happening and where you are. Do not hang up.' },
 ] as unknown as readonly MessageFormatElement[];
 const a3 = [
-  { type: 0, value: "116 111 — children's helpline" },
+  { type: 0, value: '116 111 — helpline for children and young people' },
 ] as unknown as readonly MessageFormatElement[];
 const a4 = [
-  { type: 0, value: '1466 — Social Welfare Services' },
+  { type: 0, value: '1466 — Hope For Children helpline' },
 ] as unknown as readonly MessageFormatElement[];
 const a5 = [
-  { type: 0, value: '199 — police and ambulance' },
+  { type: 0, value: '199 — alternative emergency number' },
 ] as unknown as readonly MessageFormatElement[];
 const a6 = [
-  { type: 0, value: 'Hold to send an SOS. An operator will call you.' },
+  {
+    type: 0,
+    value:
+      'Send SOS? This opens a call to 112 and shows the address to read out. Kinvara will be alerted.',
+  },
 ] as unknown as readonly MessageFormatElement[];
 
 export const messages = {

@@ -1,9 +1,9 @@
 {
-  "emergency.call_112.label": "Call 112 — emergency services",
-  "emergency.call_112.script": "Say: I need an ambulance. My address is {address}. There is a child with me.",
-  "emergency.address_prompt": "Read this address to the operator: {address}",
-  "helpline.116111.label": "116 111 — children's helpline",
-  "helpline.1466.label": "1466 — Social Welfare Services",
-  "helpline.199.label": "199 — police and ambulance",
-  "sos.confirm": "Hold to send an SOS. An operator will call you."
+  "emergency.call_112.label": "Call 112 — ambulance, police, fire",
+  "emergency.call_112.script": "Say: “The address is {address}.” Then say what is happening and where you are. Do not hang up.",
+  "emergency.address_prompt": "Read this address to the 112 operator: {address}",
+  "helpline.116111.label": "116 111 — helpline for children and young people",
+  "helpline.1466.label": "1466 — Hope For Children helpline",
+  "helpline.199.label": "199 — alternative emergency number",
+  "sos.confirm": "Send SOS? This opens a call to 112 and shows the address to read out. Kinvara will be alerted."
 }

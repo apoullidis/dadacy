@@ -9,7 +9,7 @@ export const locale = 'ru';
 export const namespace = 'booking';
 
 const a0 = [
-  { type: 0, value: 'Отмена сейчас стоит ' },
+  { type: 0, value: 'Отмена сейчас обойдётся вам в ' },
   {
     type: 2,
     value: 'fee',

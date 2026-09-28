@@ -9,24 +9,36 @@ export const locale = 'el';
 export const namespace = 'session';
 
 const a0 = [
+  { type: 1, value: 'sitterName' },
+  { type: 0, value: ': ' },
   {
     type: 6,
     value: 'count',
     options: {
-      one: { value: [{ type: 7 }, { type: 0, value: ' χαμένη καταγραφή' }] },
-      other: { value: [{ type: 7 }, { type: 0, value: ' χαμένες καταγραφές' }] },
+      one: {
+        value: [
+          { type: 0, value: 'δεν έχουμε λάβει ' },
+          { type: 7 },
+          { type: 0, value: ' επιβεβαίωση «Όλα καλά»' },
+        ],
+      },
+      other: {
+        value: [
+          { type: 0, value: 'δεν έχουμε λάβει ' },
+          { type: 7 },
+          { type: 0, value: ' επιβεβαιώσεις «Όλα καλά»' },
+        ],
+      },
     },
     offset: 0,
     pluralType: 'cardinal',
   },
-  { type: 0, value: ' από ' },
-  { type: 1, value: 'sitterName' },
 ] as unknown as readonly MessageFormatElement[];
 const a1 = [
   {
     type: 0,
     value:
-      'Ένας εκπαιδευμένος υπεύθυνος προστασίας παιδιού βρίσκεται σε βάρδια για κάθε λεπτό κάθε φύλαξης, και για μία ώρα μετά το τέλος της.',
+      'Εκπαιδευμένο στέλεχος προστασίας παιδιών είναι σε βάρδια για κάθε λεπτό κάθε φύλαξης και για μία ώρα μετά το τέλος της.',
   },
 ] as unknown as readonly MessageFormatElement[];
 

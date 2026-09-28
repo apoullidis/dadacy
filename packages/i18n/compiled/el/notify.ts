@@ -9,9 +9,9 @@ export const locale = 'el';
 export const namespace = 'notify';
 
 const a0 = [
-  { type: 0, value: 'Κάντε καταγραφή για τη φύλαξη με την οικογένεια ' },
+  { type: 0, value: 'Στείλτε «Όλα καλά» για τη φύλαξη (' },
   { type: 1, value: 'familyName' },
-  { type: 0, value: '. Οφείλεται στις ' },
+  { type: 0, value: ') έως τις ' },
   { type: 1, value: 'dueAt' },
   { type: 0, value: '.' },
 ] as unknown as readonly MessageFormatElement[];

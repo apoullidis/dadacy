@@ -1,3 +1,3 @@
 {
-  "terms.accept": "Αποδέχομαι το έγγραφο {documentKind}, έκδοση {version}."
+  "terms.accept": "Αποδέχομαι: {documentKind}, έκδοση {version}."
 }

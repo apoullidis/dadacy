@@ -23,7 +23,7 @@ const a1 = [
   { type: 3, value: 'date', style: 'long' },
 ] as unknown as readonly MessageFormatElement[];
 const a2 = [
-  { type: 0, value: 'Αυτή η σελίδα δεν είναι ακόμη διαθέσιμη στη γλώσσα σας.' },
+  { type: 0, value: 'Αυτή η σελίδα δεν είναι ακόμη διαθέσιμη στα ελληνικά.' },
 ] as unknown as readonly MessageFormatElement[];
 const a3 = [
   { type: 0, value: 'Να χρησιμοποιείται πάντα η γλώσσα ' },

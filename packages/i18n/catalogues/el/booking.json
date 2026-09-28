@@ -1,4 +1,4 @@
 {
   "count.upcoming": "{count, plural, one {# επερχόμενη κράτηση} other {# επερχόμενες κρατήσεις}}",
-  "cancel.fee_notice": "Η ακύρωση τώρα κοστίζει {fee, number, ::currency/EUR}."
+  "cancel.fee_notice": "Αν ακυρώσετε τώρα, η χρέωση είναι {fee, number, ::currency/EUR}."
 }

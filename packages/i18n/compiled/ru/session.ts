@@ -9,34 +9,27 @@ export const locale = 'ru';
 export const namespace = 'session';
 
 const a0 = [
+  { type: 0, value: 'Мы не получили ' },
   {
     type: 6,
     value: 'count',
     options: {
-      one: {
-        value: [{ type: 0, value: 'Пропущена ' }, { type: 7 }, { type: 0, value: ' отметка' }],
-      },
-      few: {
-        value: [{ type: 0, value: 'Пропущено ' }, { type: 7 }, { type: 0, value: ' отметки' }],
-      },
-      many: {
-        value: [{ type: 0, value: 'Пропущено ' }, { type: 7 }, { type: 0, value: ' отметок' }],
-      },
-      other: {
-        value: [{ type: 0, value: 'Пропущено ' }, { type: 7 }, { type: 0, value: ' отметки' }],
-      },
+      one: { value: [{ type: 7 }, { type: 0, value: ' отметку' }] },
+      few: { value: [{ type: 7 }, { type: 0, value: ' отметки' }] },
+      many: { value: [{ type: 7 }, { type: 0, value: ' отметок' }] },
+      other: { value: [{ type: 7 }, { type: 0, value: ' отметки' }] },
     },
     offset: 0,
     pluralType: 'cardinal',
   },
-  { type: 0, value: ' от ' },
+  { type: 0, value: ' от няни ' },
   { type: 1, value: 'sitterName' },
 ] as unknown as readonly MessageFormatElement[];
 const a1 = [
   {
     type: 0,
     value:
-      'Обученный специалист по безопасности детей находится на смене каждую минуту каждой смены няни и ещё один час после её окончания.',
+      'На протяжении каждой смены няни — от первой до последней минуты — и ещё час после её окончания дежурит обученный специалист по защите детей.',
   },
 ] as unknown as readonly MessageFormatElement[];
 

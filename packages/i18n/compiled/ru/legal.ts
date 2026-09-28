@@ -9,9 +9,9 @@ export const locale = 'ru';
 export const namespace = 'legal';
 
 const a0 = [
-  { type: 0, value: 'Я принимаю документ ' },
+  { type: 0, value: 'Я принимаю документ «' },
   { type: 1, value: 'documentKind' },
-  { type: 0, value: ', версия ' },
+  { type: 0, value: '», версия ' },
   { type: 1, value: 'version' },
   { type: 0, value: '.' },
 ] as unknown as readonly MessageFormatElement[];

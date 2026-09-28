@@ -23,10 +23,10 @@ const a1 = [
   { type: 3, value: 'date', style: 'long' },
 ] as unknown as readonly MessageFormatElement[];
 const a2 = [
-  { type: 0, value: 'Эта страница пока недоступна на вашем языке.' },
+  { type: 0, value: 'Эта страница пока не переведена на русский язык.' },
 ] as unknown as readonly MessageFormatElement[];
 const a3 = [
-  { type: 0, value: 'Всегда использовать ' },
+  { type: 0, value: 'Всегда использовать язык: ' },
   { type: 1, value: 'endonym' },
   { type: 0, value: '?' },
 ] as unknown as readonly MessageFormatElement[];

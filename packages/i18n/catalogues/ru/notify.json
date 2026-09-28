@@ -1,3 +1,3 @@
 {
-  "checkin.reminder": "Отметьтесь на смене у семьи {familyName}. Отметка нужна в {dueAt}."
+  "checkin.reminder": "Не забудьте отметиться на смене у семьи {familyName}. Время отметки — {dueAt}."
 }
