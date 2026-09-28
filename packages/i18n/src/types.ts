@@ -81,8 +81,16 @@ export interface TierPolicy {
   readonly requiresSafetyReview: boolean;
 }
 
-/** Provenance of one catalogue string in one locale (`review.json`). */
+/**
+ * Provenance of one catalogue string in one locale (`review.json`).
+ *
+ * `ai_authored` (T-233): the string was written by an AI model under a
+ * stakeholder ruling that makes the model the author (OE-66 / OE-67, EV-16).
+ * It names who WROTE the string and nothing else — it is never evidence of
+ * review, and a record carrying it is valid only while it cites that ruling
+ * (`pipelineIncoherences()` in `review.ts`).
+ */
 export type ReviewProvenance =
-  'authored' | 'translated_professional' | 'legal_review' | 'placeholder';
+  'authored' | 'translated_professional' | 'legal_review' | 'placeholder' | 'ai_authored';
 
 export type ReviewStatus = 'signed_off' | 'pending_review';

@@ -138,7 +138,7 @@ test('the pending-pipeline waiver is anchored to a fixed date, not to its own in
   const ANCHOR = Date.parse('2026-12-05T23:59:59Z');
   const register = loadReviewRegister();
   const waiver = register.pending_pipeline;
-  assert.ok(waiver !== null, 'placeholder safety copy must be covered by an explicit waiver');
+  assert.ok(waiver !== null, 'unreviewed safety copy must be covered by an explicit waiver');
   assert.equal(waiver.ticket, 'T-049');
 
   const expected = Date.parse(`${waiver.expected_by}T23:59:59Z`);
@@ -177,7 +177,7 @@ test('the waiver self-closes: once it expires, no placeholder may remain (QA-F3)
   );
 });
 
-test('a waived key must be honestly recorded as unreviewed placeholder', () => {
+test('a waived key must be honestly recorded as unreviewed', () => {
   // Scoped to the keys the waiver still covers, so it EMPTIES ITSELF as T-049
   // delivers instead of having to be deleted. The earlier version asserted the
   // whole safety set, which meant signing off one key of eight turned it red and
@@ -195,7 +195,14 @@ test('a waived key must be honestly recorded as unreviewed placeholder', () => {
       const record: ReviewRecord | undefined = register.entries[locale.code]?.[key];
       assert.ok(record !== undefined, `waived key ${locale.code}/${key} has no record at all`);
       assert.equal(record.status, 'pending_review', `${locale.code}/${key}`);
-      assert.equal(record.provenance, 'placeholder', `${locale.code}/${key}`);
+      // T-233 widened this from `placeholder` to `placeholder` OR `ai_authored`:
+      // since OE-66/OE-67 the copy in the waiver is AI-authored, and it is still
+      // unreviewed — which is what the three assertions around this one pin.
+      // Whether an `ai_authored` record may exist at all is src/pipeline.test.ts's.
+      assert.ok(
+        record.provenance === 'placeholder' || record.provenance === 'ai_authored',
+        `${locale.code}/${key}: provenance ${record.provenance} inside the waiver`,
+      );
       assert.equal(record.reviewed_by, null, `${locale.code}/${key}`);
       assert.equal(record.reviewed_at, null, `${locale.code}/${key}`);
     }

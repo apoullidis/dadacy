@@ -33,7 +33,7 @@ import {
   stageManifestProblems,
   stageApplies,
 } from './review.ts';
-import type { ReviewRegister, CopyPipeline } from './review.ts';
+import type { ReviewRegister, CopyPipeline, AiAuthorshipRuling } from './review.ts';
 import { keysAtTier } from './tiers.ts';
 import { enabledLocales } from './registry.ts';
 
@@ -72,6 +72,32 @@ const ORIGINAL_EXPECTED_BY = '2026-10-17';
  * once the pipeline is genuinely running, moving a date is scheduling, not drift.
  */
 const MAX_UNSTARTED_RE_ANCHORS = 1;
+
+/**
+ * T-233. The model identity OE-66 and OE-67 name as the author, spelled exactly
+ * as `authored_by` must carry it. Transcribed from the drafts' own provenance
+ * lines (`tasks/state/EP-0/OE-66/{en,el,ru}/NOTES.md`: "Claude Opus
+ * (claude-opus-5-5), AI agent").
+ */
+const MODEL = 'Claude Opus (claude-opus-5-5), AI agent';
+
+/**
+ * T-233. The ONLY stakeholder rulings that make an AI model an author, written
+ * HERE from `tasks/state/decisions.md` and never read from `review.json` — a
+ * register that listed the rulings it is checked against could widen its own
+ * authority in the same commit as the record that needs it (PROTOCOL §5.1).
+ *   - OE-66, 2026-09-27T18:54:51Z: the model authors ALL `el` and `ru` copy,
+ *     safety_critical included (EV-16).
+ *   - OE-67, 2026-09-27T19:27:39Z: the model authors the `en` safety_critical
+ *     copy. Every key in `entries` is safety_critical, so the locale is the
+ *     whole of its scope here.
+ * Adding a ruling, a locale or a model is a stakeholder decision recorded in
+ * decisions.md first, and must cost an edit to this literal.
+ */
+const AI_RULINGS: readonly AiAuthorshipRuling[] = [
+  { id: 'OE-66', decided_at: '2026-09-27T18:54:51Z', locales: ['el', 'ru'], authors: [MODEL] },
+  { id: 'OE-67', decided_at: '2026-09-27T19:27:39Z', locales: ['en'], authors: [MODEL] },
+];
 
 /**
  * The pipeline whose `external_start` a given waiver is being checked against.
@@ -476,13 +502,19 @@ test('the emergency panel is never translated at runtime, and the set is derived
 
 function withRecord(locale: string, key: string, patch: Record<string, unknown>): ReviewRegister {
   const base = loadReviewRegister();
+  // T-233: the committed records now cite a ruling (`ai_authored`). A patch that
+  // does not mention `ruling` describes a HUMAN-path record, as every fixture
+  // written before T-233 assumes, so the base record's citation is dropped
+  // rather than left dangling on a `translated_professional` record.
+  const prior: Record<string, unknown> = { ...base.entries[locale]?.[key] };
+  if (!('ruling' in patch)) delete prior['ruling'];
   return {
     ...base,
     entries: {
       ...base.entries,
       [locale]: {
         ...base.entries[locale],
-        [key]: { ...base.entries[locale]?.[key], ...patch } as never,
+        [key]: { ...prior, ...patch } as never,
       },
     },
   };
@@ -544,13 +576,21 @@ test('the coherence predicates are SATISFIABLE — a genuine delivery reports no
     LOCALES,
     SAFETY_KEYS,
     NOW,
+    AI_RULINGS,
   );
   assert.deepEqual(problems, [], JSON.stringify(problems, null, 2));
 });
 
 test('the coherence predicates are silent on the register as it actually stands', () => {
   assert.deepEqual(
-    pipelineIncoherences(loadReviewRegister(), loadCopyPipeline(), LOCALES, SAFETY_KEYS),
+    pipelineIncoherences(
+      loadReviewRegister(),
+      loadCopyPipeline(),
+      LOCALES,
+      SAFETY_KEYS,
+      Date.now(),
+      AI_RULINGS,
+    ),
     [],
     'nothing is signed off today, so nothing should be contradicted',
   );
@@ -566,6 +606,7 @@ test('NEGATIVE — a sign-off whose provenance is not the method the pipeline re
     LOCALES,
     SAFETY_KEYS,
     NOW,
+    AI_RULINGS,
   );
   assert.ok(
     problems.some((p) =>
@@ -584,6 +625,7 @@ test('NEGATIVE — the author signed off their own safety copy', () => {
     LOCALES,
     SAFETY_KEYS,
     NOW,
+    AI_RULINGS,
   );
   assert.ok(
     problems.some((p) => /both authored and signed off this safety string/.test(p)),
@@ -598,6 +640,7 @@ test('NEGATIVE — signed off by someone who is not the named DSL or deputy', ()
     LOCALES,
     SAFETY_KEYS,
     NOW,
+    AI_RULINGS,
   );
   assert.ok(
     problems.some((p) => /not the named DSL or deputy in pipeline\.roles/.test(p)),
@@ -620,6 +663,7 @@ test('NEGATIVE — a reviewer named in the roster but never confirmed by a stake
     LOCALES,
     SAFETY_KEYS,
     NOW,
+    AI_RULINGS,
   );
   assert.ok(
     problems.some((p) => /carries no stakeholder confirmation date/.test(p)),
@@ -645,6 +689,7 @@ test('NEGATIVE — signed off while a blocking stage never completed', () => {
     LOCALES,
     SAFETY_KEYS,
     NOW,
+    AI_RULINGS,
   );
   assert.ok(
     problems.some((p) => /blocking pipeline stage 'brief_ru_translator' is not complete/.test(p)),
@@ -666,6 +711,7 @@ test('NEGATIVE — signed off while nobody has decided whether the string is spo
     LOCALES,
     SAFETY_KEYS,
     NOW,
+    AI_RULINGS,
   );
   assert.ok(
     problems.some((p) => /signed off while its channel is undetermined/.test(p)),
@@ -676,7 +722,14 @@ test('NEGATIVE — signed off while nobody has decided whether the string is spo
 test('NEGATIVE — a safety_critical key with no pipeline assignment at all', () => {
   const pipeline = loadCopyPipeline();
   const stripped: CopyPipeline = { ...pipeline, assignments: {} };
-  const problems = pipelineIncoherences(loadReviewRegister(), stripped, LOCALES, SAFETY_KEYS, NOW);
+  const problems = pipelineIncoherences(
+    loadReviewRegister(),
+    stripped,
+    LOCALES,
+    SAFETY_KEYS,
+    NOW,
+    AI_RULINGS,
+  );
   assert.equal(problems.length, SAFETY_KEYS.length, JSON.stringify(problems, null, 2));
   assert.ok(problems.every((p) => /has nobody who must author it/.test(p)));
 });
@@ -697,6 +750,7 @@ function ruProblems(patch: Record<string, unknown>, pipeline = deliveredPipeline
     LOCALES,
     SAFETY_KEYS,
     NOW,
+    AI_RULINGS,
   );
 }
 
@@ -720,11 +774,57 @@ test('NEGATIVE — QA-F2: one human spelled two ways passes string inequality', 
   );
 });
 
-test('NEGATIVE — QA-F2: a machine in authored_by, on a register whose subject is that MT is banned', () => {
+test('NEGATIVE — QA-F2 / T-233: a machine author WITHOUT an OE-66/67 citation is still refused', () => {
+  // The DeepL case, converted rather than deleted. OE-66/OE-67 opened ONE route
+  // for a non-human author, and it is a citation, not a relaxation: the rulings
+  // are passed in (AI_RULINGS), so this is refused WITH the rulings in force —
+  // not by the fail-closed default.
   const problems = ruProblems({ authored_by: 'DeepL Pro v3 (machine)' });
   assert.ok(
-    problems.some((p) => /is not a named person in pipeline\.roles/.test(p)),
+    problems.some((p) =>
+      /is not a named person in pipeline\.roles, and the record cites no stakeholder ruling/.test(
+        p,
+      ),
+    ),
     JSON.stringify(problems, null, 2),
+  );
+  // …and at PENDING status too. An unreviewed record naming a machine is still a
+  // claim about who wrote safety copy, and it is refused before anyone signs it.
+  const pending = pipelineIncoherences(
+    withRecord('ru', 'safety.sos.confirm', {
+      provenance: 'translated_professional',
+      status: 'pending_review',
+      authored_by: 'DeepL Pro v3 (machine)',
+      reviewed_by: null,
+      reviewed_at: null,
+    }),
+    deliveredPipeline(),
+    LOCALES,
+    SAFETY_KEYS,
+    NOW,
+    AI_RULINGS,
+  );
+  assert.ok(
+    pending.some((p) =>
+      /ru\/safety\.sos\.confirm: authored_by 'DeepL Pro v3 \(machine\)' is not a named person in pipeline\.roles, and the record cites no stakeholder ruling/.test(
+        p,
+      ),
+    ),
+    JSON.stringify(pending, null, 2),
+  );
+  // …and dressed up as AI authorship: `ai_authored` and a real OE-66 citation,
+  // but not the model OE-66 names. The route is for the ruling's model, not for
+  // any engine that can be typed into the field.
+  const dressed = ruProblems({
+    provenance: 'ai_authored',
+    ruling: 'OE-66',
+    authored_by: 'DeepL Pro v3 (machine)',
+  });
+  assert.ok(
+    dressed.some((p) =>
+      /ai_authored under OE-66, but authored_by is "DeepL Pro v3 \(machine\)"/.test(p),
+    ),
+    JSON.stringify(dressed, null, 2),
   );
 });
 
@@ -798,7 +898,14 @@ test('NEGATIVE — R2-F2: one person named as both DSL and deputy defeats the pa
     ...p,
     roles: { ...p.roles, dsl_deputy: { ...p.roles['dsl_deputy']!, named: DSL } },
   };
-  const problems = pipelineIncoherences(loadReviewRegister(), oneHuman, LOCALES, SAFETY_KEYS, NOW);
+  const problems = pipelineIncoherences(
+    loadReviewRegister(),
+    oneHuman,
+    LOCALES,
+    SAFETY_KEYS,
+    NOW,
+    AI_RULINGS,
+  );
   assert.ok(
     problems.some((x) => /named as both the DSL and the deputy DSL/.test(x)),
     JSON.stringify(problems, null, 2),
@@ -819,7 +926,14 @@ test('NEGATIVE — R2-F2: one person on both sides of four eyes, caught at namin
       },
     },
   };
-  const problems = pipelineIncoherences(loadReviewRegister(), same, LOCALES, SAFETY_KEYS, NOW);
+  const problems = pipelineIncoherences(
+    loadReviewRegister(),
+    same,
+    LOCALES,
+    SAFETY_KEYS,
+    NOW,
+    AI_RULINGS,
+  );
   assert.ok(
     problems.some((x) => /holds both an authoring role .* and a reviewing role/.test(x)),
     JSON.stringify(problems, null, 2),
@@ -843,7 +957,14 @@ test('R2-F2: practitioner and translator as one person is NOT banned — only cl
       },
     },
   };
-  const claimed = pipelineIncoherences(loadReviewRegister(), dual, LOCALES, SAFETY_KEYS, NOW);
+  const claimed = pipelineIncoherences(
+    loadReviewRegister(),
+    dual,
+    LOCALES,
+    SAFETY_KEYS,
+    NOW,
+    AI_RULINGS,
+  );
   assert.ok(
     claimed.some((x) => /One person cannot be briefed by themselves/.test(x)),
     JSON.stringify(claimed, null, 2),
@@ -871,7 +992,7 @@ test('R2-F2: practitioner and translator as one person is NOT banned — only cl
     ),
   };
   assert.deepEqual(
-    pipelineIncoherences(loadReviewRegister(), authoredRu, LOCALES, SAFETY_KEYS, NOW),
+    pipelineIncoherences(loadReviewRegister(), authoredRu, LOCALES, SAFETY_KEYS, NOW, AI_RULINGS),
     [],
     'a practitioner authoring all three locales natively must be permitted',
   );
@@ -903,6 +1024,7 @@ test('NEGATIVE — R2-F2: a duplicated name no longer resolves by JSON key order
     LOCALES,
     SAFETY_KEYS,
     NOW,
+    AI_RULINGS,
   );
   const reversed = pipelineIncoherences(
     loadReviewRegister(),
@@ -915,6 +1037,7 @@ test('NEGATIVE — R2-F2: a duplicated name no longer resolves by JSON key order
     LOCALES,
     SAFETY_KEYS,
     NOW,
+    AI_RULINGS,
   );
   assert.ok(forward.some((x) => /named as both the DSL and the deputy DSL/.test(x)));
   assert.deepEqual(
@@ -946,6 +1069,7 @@ test('NEGATIVE — R2-F1: the AUTHOR must carry a stakeholder confirmation date 
     LOCALES,
     SAFETY_KEYS,
     NOW,
+    AI_RULINGS,
   );
   assert.ok(
     problems.some((x) =>
@@ -969,6 +1093,7 @@ test('NEGATIVE — R2-F1: "pending" is not a confirmation date', () => {
     LOCALES,
     SAFETY_KEYS,
     NOW,
+    AI_RULINGS,
   );
   assert.ok(
     problems.some((x) => /is 'pending', which is not a date/.test(x)),
@@ -1050,9 +1175,21 @@ test("T-040's published `entries` shape survives this ticket, field by field", (
       assert.ok(r !== undefined, `${locale}/${key} missing`);
       assert.match(r.content_hash, /^sha256:[0-9a-f]{64}$/);
       assert.ok(
-        ['authored', 'translated_professional', 'legal_review', 'placeholder'].includes(
-          r.provenance,
-        ),
+        [
+          'authored',
+          'translated_professional',
+          'legal_review',
+          'placeholder',
+          'ai_authored',
+        ].includes(r.provenance),
+      );
+      // T-233 widened this shape ADDITIVELY and only in these two ways: one new
+      // provenance value, and one optional field that is present exactly when
+      // that value is. A T-044-style reader that ignores `ruling` loses nothing.
+      assert.equal(
+        r.provenance === 'ai_authored',
+        typeof r.ruling === 'string',
+        `${locale}/${key}: \`ruling\` must be present exactly when provenance is ai_authored`,
       );
       assert.ok(['signed_off', 'pending_review'].includes(r.status));
       for (const f of ['authored_by', 'reviewed_by', 'reviewed_at'] as const) {
@@ -1114,6 +1251,7 @@ test('NEGATIVE — the stage list is a SEQUENCE, which the contract claimed and 
     LOCALES,
     SAFETY_KEYS,
     NOW,
+    AI_RULINGS,
   );
   assert.ok(
     problems.some((x) =>
@@ -1232,6 +1370,7 @@ test('R3: the dual-role path no longer demands a completion for an event that ca
     LOCALES,
     SAFETY_KEYS,
     NOW,
+    AI_RULINGS,
   );
   assert.deepEqual(problems, [], JSON.stringify(problems, null, 2));
 
@@ -1260,7 +1399,14 @@ test('NEGATIVE — R3: a stage that could not have happened may not be dated', (
     ),
     // …but the briefing is still dated.
   };
-  const problems = pipelineIncoherences(loadReviewRegister(), nativeRu, LOCALES, SAFETY_KEYS, NOW);
+  const problems = pipelineIncoherences(
+    loadReviewRegister(),
+    nativeRu,
+    LOCALES,
+    SAFETY_KEYS,
+    NOW,
+    AI_RULINGS,
+  );
   assert.ok(
     problems.some((x) => /'brief_ru_translator'.*may not be dated/.test(x)),
     JSON.stringify(problems, null, 2),
@@ -1276,4 +1422,292 @@ test('the register as it stands: every stage applies, and none is dated', () => 
     p.stages.filter((s) => s.completed_at !== null),
     [],
   );
+});
+
+// ─── T-233: the AI-authorship route (OE-66 / OE-67, EV-16) ───
+//
+// One route for a non-human author, and the tests below pin both of its edges:
+// what it ACCEPTS (a truthfully recorded model, under a ruling that covers the
+// locale, at `pending_review`), and what it still REFUSES — every forgery the
+// human path refuses, plus the ones this route itself could invite.
+
+/** A DSL sign-off of OE-66 copy: the model authored it, the named human DSL reviewed it. */
+const AI_SIGNED = {
+  provenance: 'ai_authored',
+  ruling: 'OE-66',
+  status: 'signed_off',
+  authored_by: MODEL,
+  reviewed_by: DSL,
+  reviewed_at: REVIEWED,
+};
+
+const AUTHORING_STAGES = ['author_en_el', 'brief_ru_translator', 'translate_ru'];
+const REVIEW_STAGES = ['dsl_signoff', 'in_context_screenshot_review', 'read_aloud_voice'];
+
+/** A delivered pipeline in which nobody authored anything: the three authoring stages honestly null. */
+function aiDeliveredPipeline(): CopyPipeline {
+  const p = deliveredPipeline();
+  return {
+    ...p,
+    stages: p.stages.map((s) =>
+      AUTHORING_STAGES.includes(s.id) ? { ...s, completed_at: null } : s,
+    ),
+  };
+}
+
+function aiProblems(
+  patch: Record<string, unknown>,
+  pipeline: CopyPipeline = aiDeliveredPipeline(),
+  locale = 'ru',
+  key = 'safety.sos.confirm',
+): string[] {
+  return pipelineIncoherences(
+    withRecord(locale, key, { ...AI_SIGNED, ...patch }),
+    pipeline,
+    LOCALES,
+    SAFETY_KEYS,
+    NOW,
+    AI_RULINGS,
+  );
+}
+
+test('T-233: every committed record is AI-authored under the ruling for its locale, and none is signed off', () => {
+  const register = loadReviewRegister();
+  let n = 0;
+  for (const locale of LOCALES) {
+    for (const key of SAFETY_KEYS) {
+      const r = register.entries[locale]?.[key];
+      assert.ok(r !== undefined, `${locale}/${key}`);
+      assert.equal(r.provenance, 'ai_authored', `${locale}/${key}`);
+      assert.equal(r.authored_by, MODEL, `${locale}/${key}: the model, truthfully`);
+      assert.equal(r.ruling, locale === 'en' ? 'OE-67' : 'OE-66', `${locale}/${key}`);
+      assert.equal(r.status, 'pending_review', `${locale}/${key}: nothing is signed off`);
+      assert.equal(r.reviewed_by, null, `${locale}/${key}: no reviewer exists`);
+      assert.equal(r.reviewed_at, null, `${locale}/${key}`);
+      n += 1;
+    }
+  }
+  assert.equal(n, 24);
+});
+
+test('NEGATIVE — T-233: a caller that supplies no rulings refuses every AI-authored record (fail closed)', () => {
+  const problems = pipelineIncoherences(
+    loadReviewRegister(),
+    loadCopyPipeline(),
+    LOCALES,
+    SAFETY_KEYS,
+    NOW,
+  );
+  assert.equal(problems.length, 24, JSON.stringify(problems, null, 2));
+  assert.ok(
+    problems.every((p) =>
+      /cites 'OE-6[67]', which is not a stakeholder ruling that makes a model an author \(known: none\)/.test(
+        p,
+      ),
+    ),
+  );
+});
+
+test('T-233: an OE-66 AI-authored record is accepted as AUTHORED — with the roster filled and every stage done', () => {
+  // The committed register (24 `ai_authored` records at `pending_review`) against
+  // a pipeline in which the four humans are named and confirmed: the authorship
+  // is coherent, and nothing claims a review, so nothing is reported.
+  assert.deepEqual(
+    pipelineIncoherences(
+      loadReviewRegister(),
+      deliveredPipeline(),
+      LOCALES,
+      SAFETY_KEYS,
+      NOW,
+      AI_RULINGS,
+    ),
+    [],
+  );
+});
+
+test('NEGATIVE — T-233: …but NOT as signed_off without a human DSL or deputy review', () => {
+  const noReviewer = aiProblems({ reviewed_by: null, reviewed_at: null });
+  assert.ok(
+    noReviewer.some((p) => /signed off without an author, a reviewer or a review date/.test(p)),
+    JSON.stringify(noReviewer, null, 2),
+  );
+  // The model reviewing its own copy: not the DSL pair, and self-review.
+  const selfReview = aiProblems({ reviewed_by: MODEL });
+  assert.ok(
+    selfReview.some((p) =>
+      /signed off by 'Claude Opus .*', who is not the named DSL or deputy/.test(p),
+    ),
+    JSON.stringify(selfReview, null, 2),
+  );
+  assert.ok(selfReview.some((p) => /both authored and signed off this safety string/.test(p)));
+  // Whoever happened to be editing.
+  const someone = aiProblems({ reviewed_by: 'Someone Else' });
+  assert.ok(
+    someone.some((p) => /'Someone Else', who is not the named DSL or deputy/.test(p)),
+    JSON.stringify(someone, null, 2),
+  );
+  // And TODAY'S roster, in which the DSL and deputy are unnamed: no sign-off of
+  // AI copy can be coherent until a stakeholder names them.
+  const today = aiProblems({}, loadCopyPipeline());
+  assert.ok(
+    today.some((p) => /who is not the named DSL or deputy in pipeline\.roles/.test(p)),
+    JSON.stringify(today, null, 2),
+  );
+});
+
+test('T-233: the AI route is SATISFIABLE — a named human DSL reviewing OE-66 copy reports nothing', () => {
+  // Without this the route could be vacuous in the other direction. Note what
+  // the pipeline holds: the authoring stages are null, because no practitioner
+  // authored the copy and no translator was briefed. They are not demanded of
+  // an AI-authored record — demanding them would manufacture pressure to date
+  // an event that never happened (R3). Every REVIEW stage is complete.
+  const problems = aiProblems({});
+  assert.deepEqual(problems, [], JSON.stringify(problems, null, 2));
+  // The same stages ARE still demanded of a human-path record on the same pipeline.
+  const human = pipelineIncoherences(
+    withRecord('ru', 'safety.sos.confirm', SIGNED),
+    aiDeliveredPipeline(),
+    LOCALES,
+    SAFETY_KEYS,
+    NOW,
+    AI_RULINGS,
+  );
+  for (const id of ['brief_ru_translator', 'translate_ru']) {
+    assert.ok(
+      human.some((p) => p.includes(`blocking pipeline stage '${id}' is not complete`)),
+      `${id} must still gate a human-path sign-off — got ${JSON.stringify(human)}`,
+    );
+  }
+});
+
+test('NEGATIVE — T-233: every REVIEW predicate still refuses its forgery on an AI-authored record', () => {
+  // Reviewer named but never confirmed by a stakeholder.
+  const p = aiDeliveredPipeline();
+  const unconfirmed: CopyPipeline = {
+    ...p,
+    roles: { ...p.roles, dsl: { ...p.roles['dsl']!, confirmed_by_stakeholder_on: null } },
+  };
+  assert.ok(
+    aiProblems({}, unconfirmed).some((x) =>
+      /signed off by 'B\. Lead, DSL', who is named in pipeline\.roles but carries no stakeholder confirmation date/.test(
+        x,
+      ),
+    ),
+  );
+  // Each REVIEW stage, left incomplete, blocks the sign-off.
+  for (const id of REVIEW_STAGES) {
+    const missing: CopyPipeline = {
+      ...p,
+      stages: p.stages.map((s) => (s.id === id ? { ...s, completed_at: null } : s)),
+    };
+    const problems = aiProblems({}, missing);
+    assert.ok(
+      problems.some((x) => x.includes(`blocking pipeline stage '${id}' is not complete`)),
+      `${id}: ${JSON.stringify(problems)}`,
+    );
+  }
+  // Dates: future, 2019, and — new for this route — before the ruling existed.
+  assert.ok(
+    aiProblems({ reviewed_at: '2027-06-01T09:00:00Z' }).some((x) => /is in the future/.test(x)),
+  );
+  assert.ok(
+    aiProblems({ reviewed_at: '2019-04-01T09:00:00Z' }).some((x) =>
+      /predates the day this pipeline was opened/.test(x),
+    ),
+  );
+  const noStart: CopyPipeline = {
+    ...p,
+    external_start: null,
+    stages: p.stages.map((s) => ({ ...s, completed_at: null })),
+  };
+  const early = aiProblems({ reviewed_at: '2026-09-27T12:00:00Z' }, noStart);
+  assert.ok(
+    early.some((x) =>
+      /predates OE-66 \(2026-09-27T18:54:51Z\), the ruling under which this copy was written/.test(
+        x,
+      ),
+    ),
+    JSON.stringify(early, null, 2),
+  );
+  // Channel undetermined.
+  const channel = aiProblems({}, p, 'ru', 'session.checkins_missed');
+  assert.ok(
+    channel.some((x) => /signed off while its channel is undetermined/.test(x)),
+    JSON.stringify(channel, null, 2),
+  );
+});
+
+test('NEGATIVE — T-233: the citation must be a real ruling, covering this locale, on a record that says a model wrote it', () => {
+  // Refused at PENDING status — before anyone signs anything.
+  const pending = (patch: Record<string, unknown>, locale = 'ru'): string[] =>
+    pipelineIncoherences(
+      withRecord(locale, 'safety.sos.confirm', {
+        ...AI_SIGNED,
+        status: 'pending_review',
+        reviewed_by: null,
+        reviewed_at: null,
+        ...patch,
+      }),
+      loadCopyPipeline(),
+      LOCALES,
+      SAFETY_KEYS,
+      NOW,
+      AI_RULINGS,
+    );
+  const cases: readonly (readonly [string, string[], RegExp])[] = [
+    [
+      'ai_authored, no ruling',
+      pending({ ruling: undefined }),
+      /provenance 'ai_authored' with no `ruling`/,
+    ],
+    [
+      'a ruling that makes nobody an author',
+      pending({ ruling: 'OE-5' }),
+      /cites 'OE-5', which is not a stakeholder ruling that makes a model an author/,
+    ],
+    [
+      'OE-67 (en) cited on el',
+      pending({ ruling: 'OE-67' }, 'el'),
+      /el\/safety\.sos\.confirm: cites OE-67, which makes a model the author of en copy, not el/,
+    ],
+    [
+      'a ruling on a human-provenance record',
+      pending({ provenance: 'authored' }),
+      /cites ruling 'OE-66' but its provenance is 'authored'/,
+    ],
+    [
+      'a human name recorded as the AI author',
+      pending({ authored_by: 'Maria Georgiou' }),
+      /ai_authored under OE-66, but authored_by is "Maria Georgiou", not the model OE-66 names/,
+    ],
+    [
+      'a roster human recorded as the AI author',
+      pending({ authored_by: PRACTITIONER }),
+      /ai_authored under OE-66, but authored_by is "P\. Practitioner.*", not the model OE-66 names/,
+    ],
+  ];
+  for (const [label, problems, expected] of cases) {
+    assert.ok(
+      problems.some((x) => expected.test(x)),
+      `${label}: ${JSON.stringify(problems)}`,
+    );
+  }
+});
+
+test('NEGATIVE — T-233: the model named into the roster is refused — a model is not a roster member', () => {
+  const p = deliveredPipeline();
+  const modelAsDeputy: CopyPipeline = {
+    ...p,
+    roles: { ...p.roles, dsl_deputy: { ...p.roles['dsl_deputy']!, named: MODEL } },
+  };
+  const problems = pipelineIncoherences(
+    loadReviewRegister(),
+    modelAsDeputy,
+    LOCALES,
+    SAFETY_KEYS,
+    NOW,
+    AI_RULINGS,
+  );
+  assert.equal(problems.length, 24, JSON.stringify(problems, null, 2));
+  assert.ok(problems.every((x) => /which is also a named person in pipeline\.roles/.test(x)));
 });

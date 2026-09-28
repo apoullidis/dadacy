@@ -15,8 +15,8 @@
  * any entry to `signed_off`: the plant takes ONE key out of the waiver's `keys`
  * list, which is exactly the shape of `T-049` delivering that key (the waiver
  * pin is a subset check precisely so that partial delivery is free — T-040
- * QA-F4), and then staleness or absence is planted over the real placeholder
- * record.
+ * QA-F4), and then staleness or absence is planted over the real (since T-233,
+ * AI-authored and unreviewed) record.
  *
  * Each case plants one edit in each of one or more TRACKED files, ASSERTS THE
  * EDITS LANDED, runs `node tools/safety-review-currency.ts` with no arguments
@@ -95,7 +95,7 @@ const CASES: readonly Case[] = [
       "T-044's acceptance criterion, half one: a `safety_critical` string with a STALE review " +
       'record fails the build. The key leaves the waiver (delivery) and the catalogue string is ' +
       'then edited under its record, which is what editing reviewed safety copy looks like. No ' +
-      'record is signed off to reach this: the placeholder refusals fire alongside.',
+      'record is signed off to reach this: the not-reviewed refusals fire alongside.',
     edits: [
       { file: REVIEW, plant: json((doc) => unwaive(doc, KEY)) },
       {
@@ -109,7 +109,7 @@ const CASES: readonly Case[] = [
     mustInclude: [
       `STALE-RECORD '${KEY}' in ru`,
       'the catalogue string now hashes to sha256:',
-      `PLACEHOLDER '${KEY}' in ru`,
+      `NOT-SIGNED-OFF '${KEY}' in ru`,
     ],
     mustExclude: ['GATE PASS', 'CRASH'],
   },
@@ -139,20 +139,20 @@ const CASES: readonly Case[] = [
     mustExclude: ['GATE PASS', 'CRASH'],
   },
   {
-    name: 'DELIVERED-STILL-PLACEHOLDER',
+    name: 'DELIVERED-STILL-UNREVIEWED',
     why:
       'The state this repository is actually in, with the waiver taken off one key: the record ' +
-      'exists and its hash is current, and it is still engineering copy nobody reviewed. Each ' +
-      'conjunct of the rule reports separately, so the failure says which one is missing.',
+      'exists and its hash is current, and it is AI-authored copy (OE-66/OE-67, T-233) nobody ' +
+      'reviewed. Each conjunct of the rule reports separately, so the failure says which one is ' +
+      'missing — and `ai_authored` is never reported as malformed.',
     edits: [{ file: REVIEW, plant: json((doc) => unwaive(doc, KEY)) }],
     expect: 'FAIL',
     mustInclude: [
       `NOT-SIGNED-OFF '${KEY}' in ru`,
-      `PLACEHOLDER '${KEY}' in ru`,
       `UNREVIEWED '${KEY}' in ru`,
       `UNDATED '${KEY}' in ru`,
     ],
-    mustExclude: ['GATE PASS', 'STALE-RECORD', 'CRASH'],
+    mustExclude: ['GATE PASS', 'STALE-RECORD', 'CRASH', 'MALFORMED-RECORD', 'PLACEHOLDER'],
   },
   {
     name: 'WAIVER-LAPSED',
@@ -172,8 +172,8 @@ const CASES: readonly Case[] = [
     mustInclude: [
       "WAIVER-EXPIRED the safety-copy waiver's DECISION REVIEW DATE 2026-09-19 has passed",
       'it is the decision that was due',
-      `PLACEHOLDER '${KEY}' in ru`,
-      "PLACEHOLDER 'safety.sos.confirm' in en",
+      `NOT-SIGNED-OFF '${KEY}' in ru`,
+      "NOT-SIGNED-OFF 'safety.sos.confirm' in en",
     ],
     mustExclude: ['GATE PASS', 'BECAUSE OF THE WAIVER', 'CRASH'],
   },

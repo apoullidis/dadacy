@@ -46,34 +46,34 @@ const DATE = new Date(Date.UTC(2026, 8, 5, 14, 30, 0));
  * 1002, 1005, 1013).
  */
 const RU_CHECKINS: readonly [count: number, category: string, expected: string][] = [
-  [0, 'many', 'Пропущено 0 отметок'],
-  [1, 'one', 'Пропущена 1 отметка'],
-  [2, 'few', 'Пропущено 2 отметки'],
-  [3, 'few', 'Пропущено 3 отметки'],
-  [4, 'few', 'Пропущено 4 отметки'],
-  [5, 'many', 'Пропущено 5 отметок'],
-  [11, 'many', 'Пропущено 11 отметок'],
-  [12, 'many', 'Пропущено 12 отметок'],
-  [13, 'many', 'Пропущено 13 отметок'],
-  [14, 'many', 'Пропущено 14 отметок'],
-  [21, 'one', 'Пропущена 21 отметка'],
-  [22, 'few', 'Пропущено 22 отметки'],
-  [23, 'few', 'Пропущено 23 отметки'],
-  [24, 'few', 'Пропущено 24 отметки'],
-  [25, 'many', 'Пропущено 25 отметок'],
-  [101, 'one', 'Пропущена 101 отметка'],
-  [102, 'few', 'Пропущено 102 отметки'],
-  [111, 'many', 'Пропущено 111 отметок'],
-  [112, 'many', 'Пропущено 112 отметок'],
-  [113, 'many', 'Пропущено 113 отметок'],
-  [114, 'many', 'Пропущено 114 отметок'],
-  [121, 'one', 'Пропущена 121 отметка'],
-  [122, 'few', 'Пропущено 122 отметки'],
-  [212, 'many', 'Пропущено 212 отметок'],
-  [1002, 'few', 'Пропущено 1\u00a0002 отметки'],
-  [1005, 'many', 'Пропущено 1\u00a0005 отметок'],
-  [1013, 'many', 'Пропущено 1\u00a0013 отметок'],
-  [1.5, 'other', 'Пропущено 1,5 отметки'],
+  [0, 'many', '0 отметок'],
+  [1, 'one', '1 отметку'],
+  [2, 'few', '2 отметки'],
+  [3, 'few', '3 отметки'],
+  [4, 'few', '4 отметки'],
+  [5, 'many', '5 отметок'],
+  [11, 'many', '11 отметок'],
+  [12, 'many', '12 отметок'],
+  [13, 'many', '13 отметок'],
+  [14, 'many', '14 отметок'],
+  [21, 'one', '21 отметку'],
+  [22, 'few', '22 отметки'],
+  [23, 'few', '23 отметки'],
+  [24, 'few', '24 отметки'],
+  [25, 'many', '25 отметок'],
+  [101, 'one', '101 отметку'],
+  [102, 'few', '102 отметки'],
+  [111, 'many', '111 отметок'],
+  [112, 'many', '112 отметок'],
+  [113, 'many', '113 отметок'],
+  [114, 'many', '114 отметок'],
+  [121, 'one', '121 отметку'],
+  [122, 'few', '122 отметки'],
+  [212, 'many', '212 отметок'],
+  [1002, 'few', '1\u00a0002 отметки'],
+  [1005, 'many', '1\u00a0005 отметок'],
+  [1013, 'many', '1\u00a0013 отметок'],
+  [1.5, 'other', '1,5 отметки'],
 ];
 // Note the four-digit rows: Russian groups thousands with U+00A0, a NO-BREAK
 // SPACE, and separates decimals with a comma. Both come from Intl, and both are
@@ -98,7 +98,7 @@ test('ru — session.checkins_missed selects all four CLDR categories at their b
   for (const [count, category, expected] of RU_CHECKINS) {
     assert.equal(
       ru['session.checkins_missed']({ count, sitterName: SITTER }),
-      `${expected} от ${SITTER}`,
+      `Мы не получили ${expected} от няни ${SITTER}`,
       `ru count=${String(count)} must render the '${category}' form`,
     );
   }
@@ -197,21 +197,21 @@ const EL_CHECKINS_CATEGORIES: readonly [number, string][] = [
 ];
 
 const EL_CHECKINS: readonly [number, string][] = [
-  [0, '0 χαμένες καταγραφές'],
-  [1, '1 χαμένη καταγραφή'],
-  [2, '2 χαμένες καταγραφές'],
-  [5, '5 χαμένες καταγραφές'],
-  [11, '11 χαμένες καταγραφές'],
-  [21, '21 χαμένες καταγραφές'],
-  [101, '101 χαμένες καταγραφές'],
-  [1.5, '1,5 χαμένες καταγραφές'],
+  [0, 'δεν έχουμε λάβει 0 επιβεβαιώσεις «Όλα καλά»'],
+  [1, 'δεν έχουμε λάβει 1 επιβεβαίωση «Όλα καλά»'],
+  [2, 'δεν έχουμε λάβει 2 επιβεβαιώσεις «Όλα καλά»'],
+  [5, 'δεν έχουμε λάβει 5 επιβεβαιώσεις «Όλα καλά»'],
+  [11, 'δεν έχουμε λάβει 11 επιβεβαιώσεις «Όλα καλά»'],
+  [21, 'δεν έχουμε λάβει 21 επιβεβαιώσεις «Όλα καλά»'],
+  [101, 'δεν έχουμε λάβει 101 επιβεβαιώσεις «Όλα καλά»'],
+  [1.5, 'δεν έχουμε λάβει 1,5 επιβεβαιώσεις «Όλα καλά»'],
 ];
 
 test('el — cardinals are two-category, and the singular is only 1', () => {
   for (const [count, expected] of EL_CHECKINS) {
     assert.equal(
       el['session.checkins_missed']({ count, sitterName: SITTER }),
-      `${expected} από ${SITTER}`,
+      `${SITTER}: ${expected}`,
       `el count=${String(count)}`,
     );
   }
@@ -220,18 +220,18 @@ test('el — cardinals are two-category, and the singular is only 1', () => {
 /* ------------------------------------------------------------- English: the control */
 
 const EN_CHECKINS: readonly [number, string][] = [
-  [0, '0 missed check-ins'],
-  [1, '1 missed check-in'],
-  [2, '2 missed check-ins'],
-  [5, '5 missed check-ins'],
-  [1.5, '1.5 missed check-ins'],
+  [0, '0 check-ins'],
+  [1, '1 check-in'],
+  [2, '2 check-ins'],
+  [5, '5 check-ins'],
+  [1.5, '1.5 check-ins'],
 ];
 
 test('en — the naive ternary happens to work here, which is why the bug is invisible', () => {
   for (const [count, expected] of EN_CHECKINS) {
     assert.equal(
       en['session.checkins_missed']({ count, sitterName: 'Ada' }),
-      `${expected} from Ada`,
+      `We have not received ${expected} from Ada.`,
       `en count=${String(count)}`,
     );
   }
@@ -244,17 +244,25 @@ test('currency renders through Intl and the symbol moves per locale', () => {
   // a non-breaking space, English before it. Hand-rolled formatting gets this
   // wrong in a way no English test can see.
   assert.equal(en['booking.cancel.fee_notice']({ fee: 12.5 }), 'Cancelling now costs €12.50.');
-  assert.equal(el['booking.cancel.fee_notice']({ fee: 12.5 }), 'Η ακύρωση τώρα κοστίζει 12,50 €.');
-  assert.equal(ru['booking.cancel.fee_notice']({ fee: 12.5 }), 'Отмена сейчас стоит 12,50 €.');
+  assert.equal(
+    el['booking.cancel.fee_notice']({ fee: 12.5 }),
+    'Αν ακυρώσετε τώρα, η χρέωση είναι 12,50 €.',
+  );
+  assert.equal(
+    ru['booking.cancel.fee_notice']({ fee: 12.5 }),
+    'Отмена сейчас обойдётся вам в 12,50 €.',
+  );
 });
 
 /* ------------------------------------------------ the emergency panel, per locale */
 
-test('the 112 script and the helpline labels render, per locale, from human-authored keys', () => {
+test('the 112 script and the helpline labels render, per locale, from each locale’s own key', () => {
   // PM §MVP-IS5 AC7: the emergency panel is never machine-translated and never
   // translated at runtime. The mechanism that keeps it so is review.json; what
   // is asserted here is only that each locale has its OWN string, so a silent
-  // English fallback on this surface would fail rather than pass.
+  // English fallback on this surface would fail rather than pass. (T-233: the
+  // copy under test is AI-authored under stakeholder rulings OE-66/OE-67 and is
+  // NOT reviewed — review.json records that; this test does not vouch for it.)
   const rendered = [
     en['safety.emergency.call_112.script']({ address: 'Λεωφ. Μακαρίου 1, 1065' }),
     el['safety.emergency.call_112.script']({ address: 'Λεωφ. Μακαρίου 1, 1065' }),

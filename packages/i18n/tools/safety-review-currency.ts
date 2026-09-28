@@ -17,9 +17,11 @@
  * not a side effect.
  *
  * WHY IT IS GREEN TODAY, SAID OUT LOUD RATHER THAN DISCOVERED. No safety copy
- * in this repository has been authored, translated or signed off: all 24
- * records are `provenance: "placeholder"` (T-040) and T-049 created none, since
- * there is no DSL to reach. A literal reading of the rule would therefore be
+ * in this repository has been REVIEWED or signed off. Until T-233 all 24
+ * records were `provenance: "placeholder"` (T-040); since T-233 all 24 are
+ * `provenance: "ai_authored"` — written by an AI model under stakeholder
+ * rulings OE-66/OE-67 (EV-16), `status: "pending_review"`, no reviewer — since
+ * there is still no DSL to reach. A literal reading of the rule would therefore be
  * RED ON THE TRUNK the day this gate is promoted. The waiver is what carries
  * it: T-040 published a dated, self-closing waiver over exactly those keys, and
  * T-049 re-anchored its date to 2026-12-05 (stakeholder decision OE-5). So the
@@ -393,7 +395,18 @@ function readWaiver(
 
 /* ------------------------------------------------- one (locale, key) pair */
 
-const PROVENANCE_VALUES = ['authored', 'translated_professional', 'legal_review', 'placeholder'];
+// T-233 added `ai_authored` (OE-66/OE-67, EV-16). It is a well-formed provenance
+// — never MALFORMED-RECORD — and it satisfies nothing else: the record must still
+// be `signed_off` with a named reviewer and a date. Whether an `ai_authored`
+// record cites a ruling that permits it is `pipelineIncoherences()`'s check,
+// asserted over the committed register in `src/pipeline.test.ts`, not this gate's.
+const PROVENANCE_VALUES = [
+  'authored',
+  'translated_professional',
+  'legal_review',
+  'placeholder',
+  'ai_authored',
+];
 
 /**
  * The rule, one pair at a time. EACH CONJUNCT GETS ITS OWN NAMED REFUSAL and

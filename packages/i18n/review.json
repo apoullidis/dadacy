@@ -1,5 +1,5 @@
 {
-  "//": "PROVENANCE AS A BUILD INPUT — SA §TS-12.3/§TS-12.4, SD §FE-10, SD Revision Log D8. One record per safety_critical key PER LOCALE. `content_hash` is `sha256:` + lowercase hex SHA-256 over the UTF-8 bytes of the catalogue source string after Unicode NFC normalisation; `contentHash()` in src/review.ts is the one implementation and gate:safety-review-currency (T-044) must use it rather than re-deriving it. The gate's rule: for every safety_critical key and every enabled locale, FAIL unless a record exists here whose content_hash equals the current source's hash, whose status is `signed_off`, whose provenance is not `placeholder`, and which names a reviewer and a review date — UNLESS the key is inside an unexpired `pending_pipeline` waiver. Editing a safety string changes its hash and therefore un-signs it; that is the mechanism, not a side effect. An MT engine cannot produce a record here, which is what makes DV-11's ban on machine-translating safety copy enforceable rather than intended.",
+  "//": "PROVENANCE AS A BUILD INPUT — SA §TS-12.3/§TS-12.4, SD §FE-10, SD Revision Log D8. One record per safety_critical key PER LOCALE. `content_hash` is `sha256:` + lowercase hex SHA-256 over the UTF-8 bytes of the catalogue source string after Unicode NFC normalisation; `contentHash()` in src/review.ts is the one implementation and gate:safety-review-currency (T-044) must use it rather than re-deriving it. The gate's rule: for every safety_critical key and every enabled locale, FAIL unless a record exists here whose content_hash equals the current source's hash, whose status is `signed_off`, whose provenance is not `placeholder`, and which names a reviewer and a review date — UNLESS the key is inside an unexpired `pending_pipeline` waiver. Editing a safety string changes its hash and therefore un-signs it; that is the mechanism, not a side effect. An MT engine cannot produce a record here, which is what makes DV-11's ban on machine-translating safety copy enforceable rather than intended. T-233 (OE-66/OE-67/OE-68, EV-16): a record may name an AI MODEL as `authored_by`, with `provenance: \"ai_authored\"`, ONLY when it cites a stakeholder ruling in `ruling` that makes that model the author of that locale's copy (OE-66: el, ru; OE-67: en safety_critical). The rulings and the model identity they name are written in src/pipeline.test.ts as a literal, not here — a register that could grant its own authorship authority would be measuring itself. An `ai_authored` record is AUTHORED, never REVIEWED: sign-off still requires the named, stakeholder-confirmed human DSL or deputy in `reviewed_by`, and no record here is signed off.",
   "version": 1,
   "pending_pipeline": {
     "opened_at": "2026-09-05",
@@ -9,7 +9,7 @@
     "external_start_note": "Recorded explicitly as null so the absence is DATA rather than a missing field: a null that means 'has not happened' is checkable, an absent key is ambiguous. The single source of truth is `pipeline.external_start`, which this mirrors and which `loadCopyPipeline()` refuses to load without. Set on the day the brief is actually delivered to a named practitioner, by the stakeholder, and by nobody else.",
     "owner": "frontend-developer (T-049) — Greek-authoring safeguarding practitioner + briefed Russian translator + DSL sign-off",
     "ticket": "T-049",
-    "reason": "SD §DH-5 external dependency 2: the trilingual safety-copy pipeline has a six-week external lead time and no engineering dependency beyond T-040. The catalogue strings these keys currently hold are ENGINEERING PLACEHOLDERS written to exercise the compile, gate and render mechanisms — they are not reviewed safety copy and must not ship. This waiver is dated and self-closing: after `expected_by` the gate fails on these keys exactly as it would on unwaived ones. That is BOARD RK-2's standing escalation with a date on it instead of a reminder.",
+    "reason": "SD §DH-5 external dependency 2: the trilingual safety-copy pipeline has a six-week external lead time and no engineering dependency beyond T-040. Until T-233 the catalogue strings these keys held were ENGINEERING PLACEHOLDERS written by T-040 to exercise the compile, gate and render mechanisms. Since T-233 they hold copy AUTHORED BY AN AI MODEL under stakeholder rulings OE-66/OE-67 (EV-16) — authored, NOT reviewed: no DSL or deputy is named and nothing is signed off, so it is still not reviewed safety copy and must not ship. This waiver is dated and self-closing: after `expected_by` the gate fails on these keys exactly as it would on unwaived ones. That is BOARD RK-2's standing escalation with a date on it instead of a reminder.",
     "keys": [
       "safety.emergency.address_prompt",
       "safety.emergency.call_112.label",
@@ -34,7 +34,7 @@
     "re_anchors_note": "Append-only. Each row's `from` must equal the previous row's `to`, the first row's `from` is the original 2026-10-17, and the last row's `to` must equal `expected_by` — so moving the date without recording why is a red test, not a quiet edit. RE-ANCHORS MADE WHILE `external_start` IS NULL ARE BOUNDED, and the bound is a literal in src/pipeline.test.ts rather than a field here: a register that could raise its own limit would be measuring itself. Exceeding it is an orchestrator decision against BOARD RK-2 and must cost an edit to that line."
   },
   "pipeline": {
-    "//": "THE PIPELINE ITSELF, as data rather than as a plan in someone's head — T-049, SD §DH-5 external dependency 2, SA §TS-12.4. `entries` above records what HAS been reviewed; this block records what MUST happen, by whom, in which language, and by when, so that the six-week lead time can be MEASURED against a date instead of remembered. Nothing here asserts that any copy has been authored, translated or reviewed. Every `named` and every `completed_at` is null, and that is the honest state on 2026-09-05.",
+    "//": "THE PIPELINE ITSELF, as data rather than as a plan in someone's head — T-049, SD §DH-5 external dependency 2, SA §TS-12.4. `entries` above records what HAS been reviewed; this block records what MUST happen, by whom, in which language, and by when, so that the six-week lead time can be MEASURED against a date instead of remembered. Nothing here asserts that any copy has been authored, translated or reviewed. Every `named` and every `completed_at` is null, and that is the honest state on 2026-09-05. T-233 amendment (2026-09-28): the stakeholder rulings OE-66 (el/ru, 2026-09-27T18:54:51Z) and OE-67 (en safety_critical, 2026-09-27T19:27:39Z) made an AI model (Claude Opus) the AUTHOR of the current copy in place of the practitioner and translator this plan names. `entries` now records that truthfully (`ai_authored`, the model as `authored_by`, the ruling cited). The authoring roles and stages below are left as they were — they describe the human path, which the rulings displaced for this copy but did not abolish — and are still null because none of those humans exists. The DSL and deputy review is UNCHANGED by either ruling: still human, still unnamed, still the only route to `signed_off`.",
     "opened_by": "T-049 (frontend-developer)",
     "engineering_kickoff": "2026-09-05",
     "external_start": null,
@@ -322,224 +322,248 @@
   "entries": {
     "en": {
       "safety.emergency.address_prompt": {
-        "content_hash": "sha256:60c7ac11f007ce6399bad42af236ffcea9255628568d5a9a828823b1c9b0ef6e",
-        "provenance": "placeholder",
+        "content_hash": "sha256:ba7d12bfb51d44dac1e4d295ba6e1958c44b6b80941c227a51ffed00a2d66b21",
+        "provenance": "ai_authored",
         "status": "pending_review",
-        "authored_by": null,
+        "authored_by": "Claude Opus (claude-opus-5-5), AI agent",
+        "ruling": "OE-67",
         "reviewed_by": null,
         "reviewed_at": null,
-        "note": "Engineering placeholder authored by T-040 to exercise the mechanism. Replaced by T-049 output."
+        "note": "AI-authored under stakeholder ruling OE-67, 2026-09-27T19:27:39Z, which makes the model the author of the en safety_critical copy; landed by T-233 from tasks/state/EP-0/OE-66/en/catalogues/ (meaning contract: tasks/state/EP-0/OE-66/en/MEANING.md). NOT reviewed by anyone: the DSL/deputy review (PM §MVP-L5 AC7), the 360 px in-context review and the read-aloud pass are human steps that have not happened, and no human authored this string."
       },
       "safety.emergency.call_112.label": {
-        "content_hash": "sha256:8cd3e9bffd3a44bd20f21bd50aa8272eb815b46a872f177a2de91dcd9dc3952b",
-        "provenance": "placeholder",
+        "content_hash": "sha256:fb2d7ba42c38acfd95b6d8170d081365d13604fa225c9f39a49fe5628af1b44f",
+        "provenance": "ai_authored",
         "status": "pending_review",
-        "authored_by": null,
+        "authored_by": "Claude Opus (claude-opus-5-5), AI agent",
+        "ruling": "OE-67",
         "reviewed_by": null,
         "reviewed_at": null,
-        "note": "Engineering placeholder authored by T-040 to exercise the mechanism. Replaced by T-049 output."
+        "note": "AI-authored under stakeholder ruling OE-67, 2026-09-27T19:27:39Z, which makes the model the author of the en safety_critical copy; landed by T-233 from tasks/state/EP-0/OE-66/en/catalogues/ (meaning contract: tasks/state/EP-0/OE-66/en/MEANING.md). NOT reviewed by anyone: the DSL/deputy review (PM §MVP-L5 AC7), the 360 px in-context review and the read-aloud pass are human steps that have not happened, and no human authored this string."
       },
       "safety.emergency.call_112.script": {
-        "content_hash": "sha256:584feceab956cf70c3e4cd4da8bdf773571c754d5d1331269c5320c4bec22cc2",
-        "provenance": "placeholder",
+        "content_hash": "sha256:b28ef2a488fa1ce5d1dc97f6442886547ea4069e4fa40164ab3309c522e2f33c",
+        "provenance": "ai_authored",
         "status": "pending_review",
-        "authored_by": null,
+        "authored_by": "Claude Opus (claude-opus-5-5), AI agent",
+        "ruling": "OE-67",
         "reviewed_by": null,
         "reviewed_at": null,
-        "note": "Engineering placeholder authored by T-040 to exercise the mechanism. Replaced by T-049 output."
+        "note": "AI-authored under stakeholder ruling OE-67, 2026-09-27T19:27:39Z, which makes the model the author of the en safety_critical copy; landed by T-233 from tasks/state/EP-0/OE-66/en/catalogues/ (meaning contract: tasks/state/EP-0/OE-66/en/MEANING.md). NOT reviewed by anyone: the DSL/deputy review (PM §MVP-L5 AC7), the 360 px in-context review and the read-aloud pass are human steps that have not happened, and no human authored this string."
       },
       "safety.helpline.116111.label": {
-        "content_hash": "sha256:03f53e5bb49b06a9ac887ce53cd4244a78ffcf715795ec80a4fe6319640a356f",
-        "provenance": "placeholder",
+        "content_hash": "sha256:683a613367d2bf112d61d5776a61618650f7a7d40c76d4756f71f5952141ba1e",
+        "provenance": "ai_authored",
         "status": "pending_review",
-        "authored_by": null,
+        "authored_by": "Claude Opus (claude-opus-5-5), AI agent",
+        "ruling": "OE-67",
         "reviewed_by": null,
         "reviewed_at": null,
-        "note": "Engineering placeholder authored by T-040 to exercise the mechanism. Replaced by T-049 output."
+        "note": "AI-authored under stakeholder ruling OE-67, 2026-09-27T19:27:39Z, which makes the model the author of the en safety_critical copy; landed by T-233 from tasks/state/EP-0/OE-66/en/catalogues/ (meaning contract: tasks/state/EP-0/OE-66/en/MEANING.md). NOT reviewed by anyone: the DSL/deputy review (PM §MVP-L5 AC7), the 360 px in-context review and the read-aloud pass are human steps that have not happened, and no human authored this string."
       },
       "safety.helpline.1466.label": {
-        "content_hash": "sha256:1bc7e0db90ab0b95cd5afff43fa351533adcdd3b6fee4b49ced44e1d072d5668",
-        "provenance": "placeholder",
+        "content_hash": "sha256:ae4b702322aa691073f7169cc9b7b06e5e65cfea71cc78c1c5ff96e262b50e0e",
+        "provenance": "ai_authored",
         "status": "pending_review",
-        "authored_by": null,
+        "authored_by": "Claude Opus (claude-opus-5-5), AI agent",
+        "ruling": "OE-67",
         "reviewed_by": null,
         "reviewed_at": null,
-        "note": "Engineering placeholder authored by T-040 to exercise the mechanism. Replaced by T-049 output."
+        "note": "AI-authored under stakeholder ruling OE-67, 2026-09-27T19:27:39Z, which makes the model the author of the en safety_critical copy; landed by T-233 from tasks/state/EP-0/OE-66/en/catalogues/ (meaning contract: tasks/state/EP-0/OE-66/en/MEANING.md). NOT reviewed by anyone: the DSL/deputy review (PM §MVP-L5 AC7), the 360 px in-context review and the read-aloud pass are human steps that have not happened, and no human authored this string."
       },
       "safety.helpline.199.label": {
-        "content_hash": "sha256:cb4cb97ac5d9bbb1c7a412999812806a8a3867560aec34aca5c2a7a07e1fae04",
-        "provenance": "placeholder",
+        "content_hash": "sha256:0d689c6aeea19ecfc72bac1bf244498fb6cbbb7a366504af232e9e1d065b996b",
+        "provenance": "ai_authored",
         "status": "pending_review",
-        "authored_by": null,
+        "authored_by": "Claude Opus (claude-opus-5-5), AI agent",
+        "ruling": "OE-67",
         "reviewed_by": null,
         "reviewed_at": null,
-        "note": "Engineering placeholder authored by T-040 to exercise the mechanism. Replaced by T-049 output."
+        "note": "AI-authored under stakeholder ruling OE-67, 2026-09-27T19:27:39Z, which makes the model the author of the en safety_critical copy; landed by T-233 from tasks/state/EP-0/OE-66/en/catalogues/ (meaning contract: tasks/state/EP-0/OE-66/en/MEANING.md). NOT reviewed by anyone: the DSL/deputy review (PM §MVP-L5 AC7), the 360 px in-context review and the read-aloud pass are human steps that have not happened, and no human authored this string."
       },
       "safety.sos.confirm": {
-        "content_hash": "sha256:2779e508d44880d7bb96b5a86d53d787df9a323a587b4a5f81635cdcf15363e4",
-        "provenance": "placeholder",
+        "content_hash": "sha256:342b18f4e610094106850734e3c7fd55b4566898111ecb9a3f1bdd7bc1af3edd",
+        "provenance": "ai_authored",
         "status": "pending_review",
-        "authored_by": null,
+        "authored_by": "Claude Opus (claude-opus-5-5), AI agent",
+        "ruling": "OE-67",
         "reviewed_by": null,
         "reviewed_at": null,
-        "note": "Engineering placeholder authored by T-040 to exercise the mechanism. Replaced by T-049 output."
+        "note": "AI-authored under stakeholder ruling OE-67, 2026-09-27T19:27:39Z, which makes the model the author of the en safety_critical copy; landed by T-233 from tasks/state/EP-0/OE-66/en/catalogues/ (meaning contract: tasks/state/EP-0/OE-66/en/MEANING.md). NOT reviewed by anyone: the DSL/deputy review (PM §MVP-L5 AC7), the 360 px in-context review and the read-aloud pass are human steps that have not happened, and no human authored this string."
       },
       "session.checkins_missed": {
-        "content_hash": "sha256:9ce73a622e79e1d040c6a2c026fbdfeb982617bd0ce021ae814cacf89f036ff6",
-        "provenance": "placeholder",
+        "content_hash": "sha256:cb64809d098db9a1b0b90d6c2c01f7da08d198d792c16d352140067cbe9cad18",
+        "provenance": "ai_authored",
         "status": "pending_review",
-        "authored_by": null,
+        "authored_by": "Claude Opus (claude-opus-5-5), AI agent",
+        "ruling": "OE-67",
         "reviewed_by": null,
         "reviewed_at": null,
-        "note": "Engineering placeholder authored by T-040 to exercise the mechanism. Replaced by T-049 output."
+        "note": "AI-authored under stakeholder ruling OE-67, 2026-09-27T19:27:39Z, which makes the model the author of the en safety_critical copy; landed by T-233 from tasks/state/EP-0/OE-66/en/catalogues/ (meaning contract: tasks/state/EP-0/OE-66/en/MEANING.md). NOT reviewed by anyone: the DSL/deputy review (PM §MVP-L5 AC7), the 360 px in-context review and the read-aloud pass are human steps that have not happened, and no human authored this string."
       }
     },
     "el": {
       "safety.emergency.address_prompt": {
-        "content_hash": "sha256:a03fb4a27bcd3df39e4e7474f3eaef2b3142e16a9b5fa8f023b5a2450eb14221",
-        "provenance": "placeholder",
+        "content_hash": "sha256:f942969a2405b2bfb8babdec3410a29878bd58abb384e31b6b71f87beedf5b81",
+        "provenance": "ai_authored",
         "status": "pending_review",
-        "authored_by": null,
+        "authored_by": "Claude Opus (claude-opus-5-5), AI agent",
+        "ruling": "OE-66",
         "reviewed_by": null,
         "reviewed_at": null,
-        "note": "Engineering placeholder authored by T-040 to exercise the mechanism. Replaced by T-049 output."
+        "note": "AI-authored under stakeholder ruling OE-66 (EV-16), 2026-09-27T18:54:51Z, which makes the model the author of all el/ru copy; landed by T-233 from tasks/state/EP-0/OE-66/el/catalogues/ (meaning contract: tasks/state/EP-0/OE-66/en/MEANING.md). NOT reviewed by anyone: the DSL/deputy review (PM §MVP-L5 AC7), the 360 px in-context review and the read-aloud pass are human steps that have not happened, and no human authored this string."
       },
       "safety.emergency.call_112.label": {
-        "content_hash": "sha256:6f75c665c3a77a3890ff1c98093195abe51400039c51850b84c5b9b590263241",
-        "provenance": "placeholder",
+        "content_hash": "sha256:f3282b692ee2e584ef76d44680ff46bba2ebe10609ba2114fca41993281c7274",
+        "provenance": "ai_authored",
         "status": "pending_review",
-        "authored_by": null,
+        "authored_by": "Claude Opus (claude-opus-5-5), AI agent",
+        "ruling": "OE-66",
         "reviewed_by": null,
         "reviewed_at": null,
-        "note": "Engineering placeholder authored by T-040 to exercise the mechanism. Replaced by T-049 output."
+        "note": "AI-authored under stakeholder ruling OE-66 (EV-16), 2026-09-27T18:54:51Z, which makes the model the author of all el/ru copy; landed by T-233 from tasks/state/EP-0/OE-66/el/catalogues/ (meaning contract: tasks/state/EP-0/OE-66/en/MEANING.md). NOT reviewed by anyone: the DSL/deputy review (PM §MVP-L5 AC7), the 360 px in-context review and the read-aloud pass are human steps that have not happened, and no human authored this string."
       },
       "safety.emergency.call_112.script": {
-        "content_hash": "sha256:1b18a5c0848cd527c2ded018efb45669d6f306402030be656f5945e589c33fb2",
-        "provenance": "placeholder",
+        "content_hash": "sha256:5f5e2816b748dd4fa2153bd83b1d002a955aaa4ec43aa3e26100df3d802978b6",
+        "provenance": "ai_authored",
         "status": "pending_review",
-        "authored_by": null,
+        "authored_by": "Claude Opus (claude-opus-5-5), AI agent",
+        "ruling": "OE-66",
         "reviewed_by": null,
         "reviewed_at": null,
-        "note": "Engineering placeholder authored by T-040 to exercise the mechanism. Replaced by T-049 output."
+        "note": "AI-authored under stakeholder ruling OE-66 (EV-16), 2026-09-27T18:54:51Z, which makes the model the author of all el/ru copy; landed by T-233 from tasks/state/EP-0/OE-66/el/catalogues/ (meaning contract: tasks/state/EP-0/OE-66/en/MEANING.md). NOT reviewed by anyone: the DSL/deputy review (PM §MVP-L5 AC7), the 360 px in-context review and the read-aloud pass are human steps that have not happened, and no human authored this string."
       },
       "safety.helpline.116111.label": {
-        "content_hash": "sha256:216453ced4f43e01aa7aad273e2febf559a4c3eb2d083314cb40dd154f83055d",
-        "provenance": "placeholder",
+        "content_hash": "sha256:53cc43738de3f2964cdc024cea407f64661bfcb667dff45508d6704e33f64c1a",
+        "provenance": "ai_authored",
         "status": "pending_review",
-        "authored_by": null,
+        "authored_by": "Claude Opus (claude-opus-5-5), AI agent",
+        "ruling": "OE-66",
         "reviewed_by": null,
         "reviewed_at": null,
-        "note": "Engineering placeholder authored by T-040 to exercise the mechanism. Replaced by T-049 output."
+        "note": "AI-authored under stakeholder ruling OE-66 (EV-16), 2026-09-27T18:54:51Z, which makes the model the author of all el/ru copy; landed by T-233 from tasks/state/EP-0/OE-66/el/catalogues/ (meaning contract: tasks/state/EP-0/OE-66/en/MEANING.md). NOT reviewed by anyone: the DSL/deputy review (PM §MVP-L5 AC7), the 360 px in-context review and the read-aloud pass are human steps that have not happened, and no human authored this string."
       },
       "safety.helpline.1466.label": {
-        "content_hash": "sha256:9c86334589d02b638d902fc1b6b9bb7a9863bf1b9427afc848cd47040adcf654",
-        "provenance": "placeholder",
+        "content_hash": "sha256:24b478fe5386eadd4bd645649015f139ce75ba73335d28e36f3a84f8a834caae",
+        "provenance": "ai_authored",
         "status": "pending_review",
-        "authored_by": null,
+        "authored_by": "Claude Opus (claude-opus-5-5), AI agent",
+        "ruling": "OE-66",
         "reviewed_by": null,
         "reviewed_at": null,
-        "note": "Engineering placeholder authored by T-040 to exercise the mechanism. Replaced by T-049 output."
+        "note": "AI-authored under stakeholder ruling OE-66 (EV-16), 2026-09-27T18:54:51Z, which makes the model the author of all el/ru copy; landed by T-233 from tasks/state/EP-0/OE-66/el/catalogues/ (meaning contract: tasks/state/EP-0/OE-66/en/MEANING.md). NOT reviewed by anyone: the DSL/deputy review (PM §MVP-L5 AC7), the 360 px in-context review and the read-aloud pass are human steps that have not happened, and no human authored this string."
       },
       "safety.helpline.199.label": {
-        "content_hash": "sha256:641b3ba341149f21ad5af93e4935fb61b05a0059ee16e1c13cb469996c0542d5",
-        "provenance": "placeholder",
+        "content_hash": "sha256:6ee8a81d63be2acfdf7af071193f4b775f2739ba5baf1f9b4e6f4e68f8f188c5",
+        "provenance": "ai_authored",
         "status": "pending_review",
-        "authored_by": null,
+        "authored_by": "Claude Opus (claude-opus-5-5), AI agent",
+        "ruling": "OE-66",
         "reviewed_by": null,
         "reviewed_at": null,
-        "note": "Engineering placeholder authored by T-040 to exercise the mechanism. Replaced by T-049 output."
+        "note": "AI-authored under stakeholder ruling OE-66 (EV-16), 2026-09-27T18:54:51Z, which makes the model the author of all el/ru copy; landed by T-233 from tasks/state/EP-0/OE-66/el/catalogues/ (meaning contract: tasks/state/EP-0/OE-66/en/MEANING.md). NOT reviewed by anyone: the DSL/deputy review (PM §MVP-L5 AC7), the 360 px in-context review and the read-aloud pass are human steps that have not happened, and no human authored this string."
       },
       "safety.sos.confirm": {
-        "content_hash": "sha256:a3e2b143507dc749c345bb65febd8f413b79ab42f16be90f28d40c3ee37f94ef",
-        "provenance": "placeholder",
+        "content_hash": "sha256:e22d5b3d1dc081a86e6f5baef3e1b045e4c01d8d63c960ed49b950a1420fc1a9",
+        "provenance": "ai_authored",
         "status": "pending_review",
-        "authored_by": null,
+        "authored_by": "Claude Opus (claude-opus-5-5), AI agent",
+        "ruling": "OE-66",
         "reviewed_by": null,
         "reviewed_at": null,
-        "note": "Engineering placeholder authored by T-040 to exercise the mechanism. Replaced by T-049 output."
+        "note": "AI-authored under stakeholder ruling OE-66 (EV-16), 2026-09-27T18:54:51Z, which makes the model the author of all el/ru copy; landed by T-233 from tasks/state/EP-0/OE-66/el/catalogues/ (meaning contract: tasks/state/EP-0/OE-66/en/MEANING.md). NOT reviewed by anyone: the DSL/deputy review (PM §MVP-L5 AC7), the 360 px in-context review and the read-aloud pass are human steps that have not happened, and no human authored this string."
       },
       "session.checkins_missed": {
-        "content_hash": "sha256:f65d87cd20eb0460f6d12add34b1efac3f9aea5a9b178c4e9b1bbf31c981d0b4",
-        "provenance": "placeholder",
+        "content_hash": "sha256:1d53ec4f326ee233f10ff28ffde8babf063d0943f2732f1140708342a8a9422b",
+        "provenance": "ai_authored",
         "status": "pending_review",
-        "authored_by": null,
+        "authored_by": "Claude Opus (claude-opus-5-5), AI agent",
+        "ruling": "OE-66",
         "reviewed_by": null,
         "reviewed_at": null,
-        "note": "Engineering placeholder authored by T-040 to exercise the mechanism. Replaced by T-049 output."
+        "note": "AI-authored under stakeholder ruling OE-66 (EV-16), 2026-09-27T18:54:51Z, which makes the model the author of all el/ru copy; landed by T-233 from tasks/state/EP-0/OE-66/el/catalogues/ (meaning contract: tasks/state/EP-0/OE-66/en/MEANING.md). NOT reviewed by anyone: the DSL/deputy review (PM §MVP-L5 AC7), the 360 px in-context review and the read-aloud pass are human steps that have not happened, and no human authored this string."
       }
     },
     "ru": {
       "safety.emergency.address_prompt": {
-        "content_hash": "sha256:ac5f70f5056879011506b4a9e069c226ea2111026dbb9f25d7a74ef0d42410bf",
-        "provenance": "placeholder",
+        "content_hash": "sha256:cb176fd5b0d6c0c91e44e78eda43fce0ac61ac5e3503697d41e3a4b0d97a4c92",
+        "provenance": "ai_authored",
         "status": "pending_review",
-        "authored_by": null,
+        "authored_by": "Claude Opus (claude-opus-5-5), AI agent",
+        "ruling": "OE-66",
         "reviewed_by": null,
         "reviewed_at": null,
-        "note": "Engineering placeholder authored by T-040 to exercise the mechanism. Replaced by T-049 output."
+        "note": "AI-authored under stakeholder ruling OE-66 (EV-16), 2026-09-27T18:54:51Z, which makes the model the author of all el/ru copy; landed by T-233 from tasks/state/EP-0/OE-66/ru/catalogues/ (meaning contract: tasks/state/EP-0/OE-66/en/MEANING.md). NOT reviewed by anyone: the DSL/deputy review (PM §MVP-L5 AC7), the 360 px in-context review and the read-aloud pass are human steps that have not happened, and no human authored this string."
       },
       "safety.emergency.call_112.label": {
-        "content_hash": "sha256:26d9d6f7e44e7b94c0f68713f4c7e7be7d08b3147560e4bcae19013e0ffa3c8f",
-        "provenance": "placeholder",
+        "content_hash": "sha256:0d062dc2df242b8f5ae30dd52098ff65629088ca629ba4beb49c679d4a0dddfb",
+        "provenance": "ai_authored",
         "status": "pending_review",
-        "authored_by": null,
+        "authored_by": "Claude Opus (claude-opus-5-5), AI agent",
+        "ruling": "OE-66",
         "reviewed_by": null,
         "reviewed_at": null,
-        "note": "Engineering placeholder authored by T-040 to exercise the mechanism. Replaced by T-049 output."
+        "note": "AI-authored under stakeholder ruling OE-66 (EV-16), 2026-09-27T18:54:51Z, which makes the model the author of all el/ru copy; landed by T-233 from tasks/state/EP-0/OE-66/ru/catalogues/ (meaning contract: tasks/state/EP-0/OE-66/en/MEANING.md). NOT reviewed by anyone: the DSL/deputy review (PM §MVP-L5 AC7), the 360 px in-context review and the read-aloud pass are human steps that have not happened, and no human authored this string."
       },
       "safety.emergency.call_112.script": {
-        "content_hash": "sha256:cba8798c407237894117f121bdd9299daaf3f8da34f8dca1be594ac805dfc3cb",
-        "provenance": "placeholder",
+        "content_hash": "sha256:a0ec55a8f3862d981e70f1a4eb73e972b33846401e4f6680ee7ffc06dbbb4ff4",
+        "provenance": "ai_authored",
         "status": "pending_review",
-        "authored_by": null,
+        "authored_by": "Claude Opus (claude-opus-5-5), AI agent",
+        "ruling": "OE-66",
         "reviewed_by": null,
         "reviewed_at": null,
-        "note": "Engineering placeholder authored by T-040 to exercise the mechanism. Replaced by T-049 output."
+        "note": "AI-authored under stakeholder ruling OE-66 (EV-16), 2026-09-27T18:54:51Z, which makes the model the author of all el/ru copy; landed by T-233 from tasks/state/EP-0/OE-66/ru/catalogues/ (meaning contract: tasks/state/EP-0/OE-66/en/MEANING.md). NOT reviewed by anyone: the DSL/deputy review (PM §MVP-L5 AC7), the 360 px in-context review and the read-aloud pass are human steps that have not happened, and no human authored this string."
       },
       "safety.helpline.116111.label": {
-        "content_hash": "sha256:d722718c740ce3461e8476968ab52ec01cc19542b63bd2ed4a9b0f80b7208658",
-        "provenance": "placeholder",
+        "content_hash": "sha256:6d87f33e6832b1c1f198ef5f5f9c2b41fdeade3aa885fe4e618d7e6b525b68ac",
+        "provenance": "ai_authored",
         "status": "pending_review",
-        "authored_by": null,
+        "authored_by": "Claude Opus (claude-opus-5-5), AI agent",
+        "ruling": "OE-66",
         "reviewed_by": null,
         "reviewed_at": null,
-        "note": "Engineering placeholder authored by T-040 to exercise the mechanism. Replaced by T-049 output."
+        "note": "AI-authored under stakeholder ruling OE-66 (EV-16), 2026-09-27T18:54:51Z, which makes the model the author of all el/ru copy; landed by T-233 from tasks/state/EP-0/OE-66/ru/catalogues/ (meaning contract: tasks/state/EP-0/OE-66/en/MEANING.md). NOT reviewed by anyone: the DSL/deputy review (PM §MVP-L5 AC7), the 360 px in-context review and the read-aloud pass are human steps that have not happened, and no human authored this string."
       },
       "safety.helpline.1466.label": {
-        "content_hash": "sha256:342b40b31e16d880a82f226a3e962445aee9beceede78cbef319e0bef3ffba6a",
-        "provenance": "placeholder",
+        "content_hash": "sha256:646f7e01eca1a5dc8cdba7e98c293057f24692586da4ae621068a70353f836af",
+        "provenance": "ai_authored",
         "status": "pending_review",
-        "authored_by": null,
+        "authored_by": "Claude Opus (claude-opus-5-5), AI agent",
+        "ruling": "OE-66",
         "reviewed_by": null,
         "reviewed_at": null,
-        "note": "Engineering placeholder authored by T-040 to exercise the mechanism. Replaced by T-049 output."
+        "note": "AI-authored under stakeholder ruling OE-66 (EV-16), 2026-09-27T18:54:51Z, which makes the model the author of all el/ru copy; landed by T-233 from tasks/state/EP-0/OE-66/ru/catalogues/ (meaning contract: tasks/state/EP-0/OE-66/en/MEANING.md). NOT reviewed by anyone: the DSL/deputy review (PM §MVP-L5 AC7), the 360 px in-context review and the read-aloud pass are human steps that have not happened, and no human authored this string."
       },
       "safety.helpline.199.label": {
-        "content_hash": "sha256:845523dfc2e825ca3219a4a655e77b7cb9b5ea030365171d91a84f0eb4ab76eb",
-        "provenance": "placeholder",
+        "content_hash": "sha256:04ecd049923efd888060927ea027a70ffc42c80156465b6b673959c05b33baee",
+        "provenance": "ai_authored",
         "status": "pending_review",
-        "authored_by": null,
+        "authored_by": "Claude Opus (claude-opus-5-5), AI agent",
+        "ruling": "OE-66",
         "reviewed_by": null,
         "reviewed_at": null,
-        "note": "Engineering placeholder authored by T-040 to exercise the mechanism. Replaced by T-049 output."
+        "note": "AI-authored under stakeholder ruling OE-66 (EV-16), 2026-09-27T18:54:51Z, which makes the model the author of all el/ru copy; landed by T-233 from tasks/state/EP-0/OE-66/ru/catalogues/ (meaning contract: tasks/state/EP-0/OE-66/en/MEANING.md). NOT reviewed by anyone: the DSL/deputy review (PM §MVP-L5 AC7), the 360 px in-context review and the read-aloud pass are human steps that have not happened, and no human authored this string."
       },
       "safety.sos.confirm": {
-        "content_hash": "sha256:051be0e0996885285382c4be96158a6fda8214b01a58a7368b4bc040561d5530",
-        "provenance": "placeholder",
+        "content_hash": "sha256:22039738873227fea69fa0f269799d9b17f1e51df1fed651b01940660ddead50",
+        "provenance": "ai_authored",
         "status": "pending_review",
-        "authored_by": null,
+        "authored_by": "Claude Opus (claude-opus-5-5), AI agent",
+        "ruling": "OE-66",
         "reviewed_by": null,
         "reviewed_at": null,
-        "note": "Engineering placeholder authored by T-040 to exercise the mechanism. Replaced by T-049 output."
+        "note": "AI-authored under stakeholder ruling OE-66 (EV-16), 2026-09-27T18:54:51Z, which makes the model the author of all el/ru copy; landed by T-233 from tasks/state/EP-0/OE-66/ru/catalogues/ (meaning contract: tasks/state/EP-0/OE-66/en/MEANING.md). NOT reviewed by anyone: the DSL/deputy review (PM §MVP-L5 AC7), the 360 px in-context review and the read-aloud pass are human steps that have not happened, and no human authored this string."
       },
       "session.checkins_missed": {
-        "content_hash": "sha256:cbe04bb571445e1d19ec7fabe2a840c02c39775a2051377a152488ba156afbb1",
-        "provenance": "placeholder",
+        "content_hash": "sha256:cdf9119a8ba54fd4c14688649f1e4182ec6b9c0365dd5f9ceab726fe23e31589",
+        "provenance": "ai_authored",
         "status": "pending_review",
-        "authored_by": null,
+        "authored_by": "Claude Opus (claude-opus-5-5), AI agent",
+        "ruling": "OE-66",
         "reviewed_by": null,
         "reviewed_at": null,
-        "note": "Engineering placeholder authored by T-040 to exercise the mechanism. Replaced by T-049 output."
+        "note": "AI-authored under stakeholder ruling OE-66 (EV-16), 2026-09-27T18:54:51Z, which makes the model the author of all el/ru copy; landed by T-233 from tasks/state/EP-0/OE-66/ru/catalogues/ (meaning contract: tasks/state/EP-0/OE-66/en/MEANING.md). NOT reviewed by anyone: the DSL/deputy review (PM §MVP-L5 AC7), the 360 px in-context review and the read-aloud pass are human steps that have not happened, and no human authored this string."
       }
     }
   }

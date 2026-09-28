@@ -416,7 +416,7 @@ test('a signed-off record for a key whose catalogue string has been deleted is r
 
 /* ----------------------------------------------------------- the waiver */
 
-test('WITH THE WAIVER IN FORCE the committed placeholder register passes, and that is the only reason it does', () => {
+test('WITH THE WAIVER IN FORCE the committed unreviewed register passes, and that is the only reason it does', () => {
   attack(
     () => {
       /* nothing: the copied root IS the committed register, waiver and all */
@@ -428,7 +428,7 @@ test('WITH THE WAIVER IN FORCE the committed placeholder register passes, and th
   );
 });
 
-test('WITHOUT THE WAIVER the same committed register is refused on every placeholder — the waiver is load-bearing, not decorative', () => {
+test('WITHOUT THE WAIVER the same committed register is refused on every unreviewed record — the waiver is load-bearing, not decorative', () => {
   attack(
     (root) => {
       const register = readJson(root, 'review.json');
@@ -439,13 +439,16 @@ test('WITHOUT THE WAIVER the same committed register is refused on every placeho
     'FAIL',
     [
       'waiver: none in force',
-      `PLACEHOLDER '${SAFETY_KEY}' in ru`,
+      // T-233: the committed records are `ai_authored` (OE-66/OE-67), no longer
+      // `placeholder` — so the refusal is that nobody has reviewed them.
+      `NOT-SIGNED-OFF '${SAFETY_KEY}' in ru`,
+      `UNREVIEWED '${SAFETY_KEY}' in ru`,
       `NOT-SIGNED-OFF '${SAFETY_KEY}' in en`,
     ],
   );
 });
 
-test('AN EXPIRED WAIVER waives nothing: the same placeholders are refused, and the reason names the decision review date', () => {
+test('AN EXPIRED WAIVER waives nothing: the same unreviewed records are refused, and the reason names the decision review date', () => {
   attack(
     (root) => {
       editWaiver(root, { expected_by: '2026-09-19' });
@@ -458,9 +461,39 @@ test('AN EXPIRED WAIVER waives nothing: the same placeholders are refused, and t
     [
       "WAIVER-EXPIRED the safety-copy waiver's DECISION REVIEW DATE 2026-09-19 has passed",
       'it is the decision that was due',
-      `PLACEHOLDER '${SAFETY_KEY}' in ru`,
+      `NOT-SIGNED-OFF '${SAFETY_KEY}' in ru`,
+      `UNDATED '${SAFETY_KEY}' in ru`,
     ],
   );
+});
+
+test('T-233: `ai_authored` is a well-formed provenance that satisfies NOTHING — unreviewed AI copy is refused on review, never as malformed', () => {
+  // Before T-233 this gate refused `ai_authored` as MALFORMED-RECORD, which is a
+  // wrong reason: the record is well-formed, it is UNREVIEWED. The refusal must
+  // name the missing review, and must still fire, so that a DSL sign-off is the
+  // only way through (OE-66: the DSL + deputy review is unchanged).
+  const root = makeRoot();
+  try {
+    const register = readJson(root, 'review.json');
+    register['pending_pipeline'] = null;
+    writeJson(root, 'review.json', register);
+    const entries = register['entries'] as Record<string, Record<string, Record<string, unknown>>>;
+    assert.equal(entries['ru']?.[SAFETY_KEY]?.['provenance'], 'ai_authored', 'precondition');
+    const run = runGate(['--root', root]);
+    assert.equal(run.banner, 'FAIL', run.out);
+    assert.notEqual(run.code, 0, run.out);
+    for (const reason of [
+      `NOT-SIGNED-OFF '${SAFETY_KEY}' in ru`,
+      `UNREVIEWED '${SAFETY_KEY}' in ru`,
+      `UNDATED '${SAFETY_KEY}' in ru`,
+    ]) {
+      assert.ok(run.out.includes(reason), `missing ${reason}\n${run.out}`);
+    }
+    assert.ok(!run.out.includes('MALFORMED-RECORD'), run.out);
+    assert.ok(!run.out.includes('PLACEHOLDER'), run.out);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('a waiver renewed past the anchor pinned in the gate is refused — it cannot be renewed by editing the field that expires it', () => {

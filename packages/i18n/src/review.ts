@@ -43,8 +43,20 @@ export interface ReviewRecord {
   readonly content_hash: string;
   readonly provenance: ReviewProvenance;
   readonly status: ReviewStatus;
-  /** Named human. `null` only while `status` is `pending_review`. */
+  /**
+   * Who wrote the string. A named human in `pipeline.roles`, OR — only when
+   * `provenance` is `ai_authored` and `ruling` cites a stakeholder ruling that
+   * makes a model the author of this locale's copy — that model, named exactly
+   * as the ruling names it. Never a human name standing in for a model, and
+   * never a model without a ruling. `null` while nothing has been authored.
+   */
   readonly authored_by: string | null;
+  /**
+   * T-233. The stakeholder ruling (`decisions.md`, e.g. `OE-66`) under which an
+   * AI model is this record's author. Present if and only if `provenance` is
+   * `ai_authored`.
+   */
+  readonly ruling?: string;
   /** The DSL or legal reviewer who signed off. `null` only while `status` is `pending_review`. */
   readonly reviewed_by: string | null;
   /** ISO-8601 UTC. `null` only while `status` is `pending_review`. */
@@ -174,6 +186,17 @@ export function catalogueSource(
 // `reviewed_at` must fall between the last completed blocking stage and now. Free
 // text in either name field, a machine in `authored_by`, a 2019 date, and a
 // sign-off predating the brief are each refused — those were the gaps.
+//
+// T-233 (stakeholder rulings OE-66 / OE-67, EV-16) adds ONE route for a
+// non-human author, and it is narrow: `provenance: "ai_authored"`, `authored_by`
+// equal to a model identity that a cited ruling names, `ruling` citing that
+// ruling, and the ruling covering this locale. The rulings are passed IN
+// (`AiAuthorshipRuling[]`), and their only real caller writes them as a literal
+// in `src/pipeline.test.ts` — a register that could grant its own authorship
+// authority would be measuring itself (PROTOCOL §5.1). A machine in
+// `authored_by` WITHOUT such a citation is still refused, at any status. An
+// AI-authored record is authored, not reviewed: signing it off still needs the
+// named, stakeholder-confirmed human DSL or deputy and every other check below.
 //
 // It remains true that a real, stakeholder-confirmed DSL can be recorded as
 // having reviewed something they did not. Nothing here catches that, and only a
@@ -316,6 +339,31 @@ const AUTHORING_ROLE_FOR_METHOD: Readonly<Record<CopyMethod, string>> = {
 const REVIEWER_ROLES: readonly string[] = ['dsl', 'dsl_deputy'];
 
 /**
+ * A stakeholder ruling that makes an AI model the AUTHOR of one or more
+ * locales' copy — T-233; `decisions.md` OE-66 (`el`, `ru`) and OE-67 (`en`
+ * safety_critical), EV-16.
+ *
+ * **Passed in, never read from `review.json`.** The only real caller writes the
+ * rulings as a literal in `src/pipeline.test.ts`, transcribed from
+ * `decisions.md`. A register that listed the rulings it is checked against could
+ * widen its own authority in the same commit as the record that needs it.
+ * The default is NO rulings, so any caller that does not supply them refuses
+ * every `ai_authored` record — fail closed.
+ */
+export interface AiAuthorshipRuling {
+  /** The ruling id exactly as `decisions.md` names it, e.g. `OE-66`. */
+  readonly id: string;
+  /** When the stakeholder made it (ISO-8601 UTC). Nothing it authorises can be reviewed before it. */
+  readonly decided_at: string;
+  /** The locales whose copy the ruling makes the model the author of. */
+  readonly locales: readonly string[];
+  /** The model identities the ruling names, exactly as `authored_by` must spell them. */
+  readonly authors: readonly string[];
+}
+
+const NO_AI_RULINGS: readonly AiAuthorshipRuling[] = [];
+
+/**
  * Whether a stage describes an event that can happen at all under the current
  * assignments — as opposed to whether it has happened.
  *
@@ -355,6 +403,7 @@ export function pipelineIncoherences(
   locales: readonly string[],
   safetyKeys: readonly string[],
   now: number = Date.now(),
+  aiRulings: readonly AiAuthorshipRuling[] = NO_AI_RULINGS,
 ): string[] {
   const problems: string[] = [];
 
@@ -528,10 +577,64 @@ export function pipelineIncoherences(
         continue;
       }
       const record = register.entries[locale]?.[key];
-      if (record === undefined || record.status !== 'signed_off') continue;
+      if (record === undefined) continue;
+
+      // T-233 (OE-66 / OE-67, EV-16). AUTHORSHIP is checked at every status, not
+      // only at sign-off, because an `ai_authored` record is exactly the record
+      // that sits at `pending_review` for months — and a model or a free-text
+      // name in `authored_by` is a claim about who wrote safety copy whether or
+      // not anyone has reviewed it yet. `aiRuling` is set ONLY when every
+      // condition of the one permitted non-human route holds.
+      let aiRuling: AiAuthorshipRuling | undefined;
+      if (record.provenance === 'ai_authored' || record.ruling !== undefined) {
+        const cited = aiRulings.find((r) => r.id === record.ruling);
+        if (record.provenance !== 'ai_authored') {
+          problems.push(
+            `${locale}/${key}: cites ruling '${String(record.ruling)}' but its provenance is '${record.provenance}'. A ruling that makes a model the author is cited only by a record that says a model wrote it.`,
+          );
+        } else if (record.ruling === undefined) {
+          problems.push(
+            `${locale}/${key}: provenance 'ai_authored' with no \`ruling\`. A model may be recorded as the author only under a stakeholder ruling that makes it one (OE-66 / OE-67) — without the citation it is a machine author with nothing behind it.`,
+          );
+        } else if (cited === undefined) {
+          problems.push(
+            `${locale}/${key}: cites '${record.ruling}', which is not a stakeholder ruling that makes a model an author (known: ${aiRulings.map((r) => r.id).join(', ') || 'none'}).`,
+          );
+        } else if (!cited.locales.includes(locale)) {
+          problems.push(
+            `${locale}/${key}: cites ${cited.id}, which makes a model the author of ${cited.locales.join('/')} copy, not ${locale}.`,
+          );
+        } else if (record.authored_by === null || !cited.authors.includes(record.authored_by)) {
+          problems.push(
+            `${locale}/${key}: ai_authored under ${cited.id}, but authored_by is ${JSON.stringify(record.authored_by)}, not the model ${cited.id} names (${cited.authors.join('; ')}). Record the model truthfully — never a human name, never a different engine.`,
+          );
+        } else if (rolesOfName.has(record.authored_by)) {
+          problems.push(
+            `${locale}/${key}: ai_authored by '${record.authored_by}', which is also a named person in pipeline.roles. A model is not a roster member, and a roster member is not a model.`,
+          );
+        } else {
+          aiRuling = cited;
+        }
+      } else if (
+        record.status !== 'signed_off' &&
+        record.authored_by !== null &&
+        !rolesOfName.has(record.authored_by)
+      ) {
+        // The signed-off path below refuses the same author with its own
+        // message; this is the same refusal for a record nobody has signed yet.
+        problems.push(
+          `${locale}/${key}: authored_by '${record.authored_by}' is not a named person in pipeline.roles, and the record cites no stakeholder ruling that makes a model its author. A machine or a free-text name is not an author of safety copy.`,
+        );
+      }
+
+      if (record.status !== 'signed_off') continue;
 
       // From here down: a record CLAIMS to be reviewed. Everything is checked.
-      if (record.provenance !== per.required_provenance) {
+      // An AI-authored record under a valid ruling is exempt from exactly one
+      // thing here — that its provenance equals the METHOD the plan assigned —
+      // because the ruling IS the stakeholder-accepted deviation from that
+      // method (EV-16). Everything about the REVIEW is checked unchanged.
+      if (aiRuling === undefined && record.provenance !== per.required_provenance) {
         problems.push(
           `${locale}/${key}: signed off with provenance '${record.provenance}', but the pipeline requires '${per.required_provenance}' (${per.method}). ${per.why}`,
         );
@@ -556,37 +659,43 @@ export function pipelineIncoherences(
       // what stops `authored_by: "DeepL Pro v3 (machine)"` and what makes the
       // distinctness check below mean something.
       const authorRole = roleOfName.get(record.authored_by);
-      // R2-F1. The author's stakeholder confirmation was never checked — only
-      // the reviewer's — while the prose claimed both. Implemented rather than
-      // narrowed, because an unconfirmed author is the same hole as an
-      // unconfirmed reviewer: a name added in the same commit as the sign-off,
-      // vouched for by nobody.
-      if (authorRole !== undefined && !isRealDate(confirmedOn(record.authored_by))) {
-        problems.push(
-          `${locale}/${key}: authored_by '${record.authored_by}' is named in pipeline.roles but carries no stakeholder confirmation date`,
-        );
-      }
-      if (authorRole === undefined) {
-        problems.push(
-          `${locale}/${key}: authored_by '${record.authored_by}' is not a named person in pipeline.roles. Safety copy is produced by an identified human in a named role — a free-text author cannot be checked against anything, and a machine can be typed into it.`,
-        );
-      } else {
-        const expectedRole = AUTHORING_ROLE_FOR_METHOD[per.method];
-        if (authorRole !== expectedRole) {
+      // T-233: for a valid AI-authored record the ruling stands in for the
+      // roster, so the role checks in (a) do not apply to the AUTHOR; the model
+      // was already refused above if it appears in the roster at all. The
+      // reviewer checks further down apply unchanged — the reviewer is human.
+      if (aiRuling === undefined) {
+        // R2-F1. The author's stakeholder confirmation was never checked — only
+        // the reviewer's — while the prose claimed both. Implemented rather than
+        // narrowed, because an unconfirmed author is the same hole as an
+        // unconfirmed reviewer: a name added in the same commit as the sign-off,
+        // vouched for by nobody.
+        if (authorRole !== undefined && !isRealDate(confirmedOn(record.authored_by))) {
           problems.push(
-            `${locale}/${key}: authored_by is the '${authorRole}', but the pipeline requires this locale to be produced by the '${expectedRole}' (method '${per.method}')`,
+            `${locale}/${key}: authored_by '${record.authored_by}' is named in pipeline.roles but carries no stakeholder confirmation date`,
           );
         }
-        if (reviewerRoles.has(authorRole)) {
+        if (authorRole === undefined) {
           problems.push(
-            `${locale}/${key}: authored_by holds a reviewer role ('${authorRole}'). One person cannot be both sides of a four-eyes check, however the two fields are spelled.`,
+            `${locale}/${key}: authored_by '${record.authored_by}' is not a named person in pipeline.roles, and the record cites no stakeholder ruling that makes a model its author. Safety copy is produced by an identified human in a named role, or by a model under a ruling that names it (OE-66 / OE-67) — a free-text author cannot be checked against anything, and a machine can be typed into it.`,
           );
-        }
-        const reviewerRole = roleOfName.get(record.reviewed_by);
-        if (reviewerRole !== undefined && reviewerRole === authorRole) {
-          problems.push(
-            `${locale}/${key}: authored_by and reviewed_by are the same person in role '${authorRole}'. Review by the author is not review.`,
-          );
+        } else {
+          const expectedRole = AUTHORING_ROLE_FOR_METHOD[per.method];
+          if (authorRole !== expectedRole) {
+            problems.push(
+              `${locale}/${key}: authored_by is the '${authorRole}', but the pipeline requires this locale to be produced by the '${expectedRole}' (method '${per.method}')`,
+            );
+          }
+          if (reviewerRoles.has(authorRole)) {
+            problems.push(
+              `${locale}/${key}: authored_by holds a reviewer role ('${authorRole}'). One person cannot be both sides of a four-eyes check, however the two fields are spelled.`,
+            );
+          }
+          const reviewerRole = roleOfName.get(record.reviewed_by);
+          if (reviewerRole !== undefined && reviewerRole === authorRole) {
+            problems.push(
+              `${locale}/${key}: authored_by and reviewed_by are the same person in role '${authorRole}'. Review by the author is not review.`,
+            );
+          }
         }
       }
       if (record.authored_by === record.reviewed_by) {
@@ -618,6 +727,11 @@ export function pipelineIncoherences(
             `${locale}/${key}: reviewed_at ${record.reviewed_at} predates the day this pipeline was opened (${pipeline.engineering_kickoff}). Nothing here can have been reviewed before the register that records it existed.`,
           );
         }
+        if (aiRuling !== undefined && reviewedAt < Date.parse(aiRuling.decided_at)) {
+          problems.push(
+            `${locale}/${key}: reviewed_at ${record.reviewed_at} predates ${aiRuling.id} (${aiRuling.decided_at}), the ruling under which this copy was written. Copy cannot be reviewed before it could exist.`,
+          );
+        }
         if (
           pipeline.external_start !== null &&
           reviewedAt < endOfDay(pipeline.external_start) - 86_400_000
@@ -644,6 +758,13 @@ export function pipelineIncoherences(
         // A stage describing an event that cannot happen under these assignments
         // is not required — and must not be recorded as completed either (below).
         if (!stageApplies(stage.id, pipeline)) continue;
+        // T-233. For a valid AI-authored record, the stages whose `who` is an
+        // AUTHORING role (derived from AUTHORING_ROLE_FOR_METHOD, not listed)
+        // describe events the ruling displaced: no practitioner authored it and
+        // no translator was briefed. Demanding a date for them would manufacture
+        // pressure to write a false one — R3's lesson. Every REVIEW stage
+        // (DSL sign-off, 360 px in-context review, read-aloud) still applies.
+        if (aiRuling !== undefined && authoringRoles.has(stage.who)) continue;
         if (stage.completed_at === null) {
           problems.push(
             `${locale}/${key}: signed off while the blocking pipeline stage '${stage.id}' is not complete — ${stage.what}`,
