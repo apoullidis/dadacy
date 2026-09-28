@@ -175,6 +175,12 @@ checked at **every** status, not only at sign-off:
    name, never another engine; and
 5. that model is not a named person in `pipeline.roles`.
 
+**`reviewed_by` is also checked at every status:** a model that a ruling names as
+an author is refused in it outright, and on a record that is not signed off only
+the named DSL or deputy may appear in it (a sign-off already requires that).
+Rule 4 is exact to the character: a trailing space, a different case, another
+model version, the bare family name or a look-alike letter is refused.
+
 An `ai_authored` record is **authored, never reviewed.** For it to become
 `signed_off`, everything in the table below that concerns the **review** still
 applies unchanged: a named, stakeholder-confirmed DSL or deputy in
