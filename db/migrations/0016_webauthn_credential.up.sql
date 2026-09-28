@@ -65,7 +65,8 @@
 -- -- @run-as marker: every object is new, account is owned by app_ddl (T-140 § contract §1), and
 -- no CREATE EXTENSION is needed (bytea, bigint, char, text[], uuid and timestamptz are core).
 --
--- THE SA §INT-10 GUARD. CREATE TABLE, CREATE INDEX and GRANT fire trg_int10_answering_service.
+-- THE SA §INT-10 GUARD. CREATE TABLE and GRANT fire trg_int10_answering_service; CREATE INDEX is
+-- not among its tags (0001, CREATE EVENT TRIGGER trg_int10_answering_service ... WHEN TAG IN).
 -- This file creates no function.
 
 CREATE TABLE public.webauthn_credential (
