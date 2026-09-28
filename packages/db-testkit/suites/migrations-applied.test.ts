@@ -40,7 +40,7 @@ import {
 import { assertPermitted, assertRefused, INT10_RAISE } from '../src/expect.ts';
 
 const SUITE = 'migrations-applied';
-const HIGHEST_COMMITTED = '0016';
+const HIGHEST_COMMITTED = '0017';
 const COMMITTED_DIR = path.join(REPO_ROOT, MIGRATIONS_DIR);
 const RECORD_SQL = `SELECT coalesce(shobj_description(oid, 'pg_database'), '(no comment)')
                       FROM pg_database WHERE datname = current_database()`;
@@ -627,6 +627,67 @@ const CREATED_BY: Readonly<
         sql: `SELECT coalesce((SELECT relrowsecurity::text || ',' || relforcerowsecurity::text FROM pg_class
                                WHERE oid = to_regclass('public.webauthn_credential')), '(absent)')`,
         holds: 'false,false',
+      },
+    ],
+  },
+  '0017': {
+    source: 'T-226',
+    // Each probe names one object 0017 creates, and each returns a value rather than raising once it
+    // is gone: to_regclass returns NULL for a missing name (coalesced), and the constraint reads are
+    // coalesced definitions. 0017 creates no function, no trigger and no rule.
+    probes: [
+      {
+        title: 'table public.account_sso_identity exists, owned by app_ddl',
+        sql: `SELECT coalesce((SELECT pg_get_userbyid(relowner) FROM pg_class
+                               WHERE oid = to_regclass('public.account_sso_identity')), '(absent)')`,
+        holds: 'app_ddl',
+      },
+      {
+        title:
+          "account_sso_identity's columns are account_id char(26), subject text, bound_at timestamptz DEFAULT now(), all NOT NULL",
+        sql: `SELECT coalesce((SELECT string_agg(a.attname || ':' || format_type(a.atttypid, a.atttypmod) || ':' ||
+                                                 a.attnotnull::text || ':' || coalesce(pg_get_expr(d.adbin, d.adrelid), '-'),
+                                                 ',' ORDER BY a.attnum)
+                                 FROM pg_attribute a LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+                                WHERE a.attrelid = to_regclass('public.account_sso_identity') AND a.attnum > 0
+                                  AND NOT a.attisdropped), '(absent)')`,
+        holds:
+          'account_id:character(26):true:-,subject:text:true:-,bound_at:timestamp with time zone:true:now()',
+      },
+      {
+        title:
+          'account_sso_identity_pkey is PRIMARY KEY (account_id): one subject per account (OE-55)',
+        sql: `SELECT coalesce((SELECT pg_get_constraintdef(oid) FROM pg_constraint
+                               WHERE conrelid = to_regclass('public.account_sso_identity')
+                                 AND conname = 'account_sso_identity_pkey'), '(absent)')`,
+        holds: 'PRIMARY KEY (account_id)',
+      },
+      {
+        title:
+          'account_sso_identity_subject_key is UNIQUE (subject): one account per subject (OE-55)',
+        sql: `SELECT coalesce((SELECT pg_get_constraintdef(oid) FROM pg_constraint
+                               WHERE conrelid = to_regclass('public.account_sso_identity')
+                                 AND conname = 'account_sso_identity_subject_key'), '(absent)')`,
+        holds: 'UNIQUE (subject)',
+      },
+      {
+        title:
+          'account_sso_identity_account_id_fkey references account(id) ON DELETE CASCADE, ON UPDATE NO ACTION',
+        sql: `SELECT coalesce((SELECT pg_get_constraintdef(oid) || ' del=' || confdeltype::text || ' upd=' || confupdtype::text
+                                 FROM pg_constraint
+                                WHERE conrelid = to_regclass('public.account_sso_identity')
+                                  AND conname = 'account_sso_identity_account_id_fkey'), '(absent)')`,
+        holds: 'FOREIGN KEY (account_id) REFERENCES account(id) ON DELETE CASCADE del=c upd=a',
+      },
+      {
+        title:
+          "account_sso_identity's ACL: app_rw SELECT and INSERT (account_id, subject) only; nothing to any other role",
+        sql: `SELECT coalesce((SELECT c.relacl::text || ' ' ||
+                                      (SELECT string_agg(a.attname || '=' || a.attacl::text, ',' ORDER BY a.attnum)
+                                         FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attacl IS NOT NULL)
+                                 FROM pg_class c WHERE c.oid = to_regclass('public.account_sso_identity')), '(absent)')`,
+        holds:
+          '{app_ddl=arwdDxtm/app_ddl,app_rw=r/app_ddl} account_id={app_rw=a/app_ddl},subject={app_rw=a/app_ddl}',
       },
     ],
   },
