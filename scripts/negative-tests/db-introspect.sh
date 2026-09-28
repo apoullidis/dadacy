@@ -85,9 +85,11 @@
 # (int8 and geometry columns, policies, partitioned tables and partitions, relations) is BASE + the
 # plant's own share, BASE read once from the catalogue at HIGHEST and held against the generator's
 # reading of the committed tree; K162 compares both I-VACUOUS lists whole instead of pinning the last
-# name. T-232 rework 1 (QA-F1): a fact about the plant's rendering is counted inside the plant's own
-# declaration in db/schema.ts (block_count), never over the whole file. What was measured is in
-# tasks/state/EP-2/T-232.md (§ Rework 1, Published contract); see the BASE block below.
+# name. T-232 rework 1/2 (QA-F1, QA-R-F1): a fact about the plant's rendering is counted inside the plant's
+# own declaration in db/schema.ts (block_count), or as the plant's share (lines now minus lines in the
+# committed file), or against a psql-derived name set; a whole-file search remains only for a literal that
+# names a plant object (t1NN_*). Every read is classified in tasks/state/EP-2/T-232.md § Rework 2; see the
+# BASE block below.
 #
 #   cd /home/alex/projects/nanny/app && ./scripts/svc run <ticket> -- bash scripts/negative-tests/db-introspect.sh
 #
@@ -614,7 +616,8 @@ K26_COUNTS="$((BASE_POLICIES + 2)) checked against pg_policy; $((BASE_RESTORED +
 # K27's fixture: t152_single's one policy is its table's first row (never dropped); t152_ledger has 3 policies
 # and 4 expressions, and drizzle-kit drops the expressions of all but the first row it reads, so the plant
 # restores 2 or 3 (3 if update, 2 expressions, is not first). Before T-232 it pinned "at least 1";
-# T-232 had BASE+1..BASE+6; rework 1 (QA N2): BASE+2..BASE+3, measured 2 and 3.
+# T-232 had BASE+1..BASE+6; rework 1 (QA N2): BASE+2..BASE+3. The range rests on that derivation: the
+# plant's share measured 2 in every run so far (T-232 rework 2, NR2); a share of 3 has not been observed.
 K27_RESTORED=$(seq -s '|' $((BASE_RESTORED + 2)) $((BASE_RESTORED + 3)))
 echo "== T-152 rework 1: row-level security policies (OD-109). First among the policy cases and still before any ANALYZE in this suite: T-165 rework 1 moved K150-K154 ahead of it (QR-A3) and neither block analyses anything"
 policy_fixture "$QA_POLICIES"
@@ -854,7 +857,9 @@ check K30 "(T-152 r1) roles: the catalogue's role list in another order, refused
 
 policy_fixture "$SHAPE_POLICIES"
 mutate "$POLICY" "  ['w', 'update']," "  ['w', 'insert'],"
-check K31 "(T-152 r1) command: the catalogue's UPDATE read as INSERT, refused" I-POLICY 'pgPolicy .*: for "update" but pg_policy has "insert"'
+# T-232 rework 2: the message is required for one of the FIXTURE's two UPDATE policies (t152_ledger_update,
+# t152_single_both), as K29/K30 name t152_ledger; unnamed, a committed UPDATE policy's refusal satisfied it.
+check K31 "(T-152 r1) command: the catalogue's UPDATE read as INSERT, refused" I-POLICY 'table "t152_(ledger|single)": pgPolicy .*: for "update" but pg_policy has "insert"'
 
 policy_fixture "$QA_POLICIES"
 mutate "$POLICY" "'name', pol.polname," "'name', pol.polname || '_t152',"
@@ -961,14 +966,18 @@ fact "the generator's out-of-scope list, as the catalogue" "$gen_admitted" "$cat
 fact "I-VACUOUS's catalogue side (owned by no extension in public), as psql counts public now" "$gen_owned" "$(owned_in_public)"
 fact "I-VACUOUS's catalogue side, as K00 counted before any pgboss plant" "$gen_owned" "$OWNED"
 fact "I-VACUOUS's rendering side (relations drizzle-kit introspected), as K00 counted" "$gen_intro" "$OWNED"
-fact "db/schema.ts lines naming pgboss or a planted name (job_state, t145*)" "$(grep -cE 'pgboss|job_state|t145' "$SCHEMA")" 0
-# T-232 rework 1: until rework 1 this fact also grepped the whole file for `"version"` and `"job"` (two of
-# 0006's pgboss relations), which a committed public relation of either name would match. Now: every
-# relation name that exists in schema pgboss and NOT in public (psql) must not be a rendered relation.
-pgboss_only=$(psql -X -A -t -q -c "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'pgboss' AND c.relkind IN ('r','p','v','m','f') AND c.relname NOT IN (SELECT c2.relname FROM pg_class c2 JOIN pg_namespace n2 ON n2.oid = c2.relnamespace WHERE n2.nspname = 'public')")
-fact "rendered relations (pgTable/pgView/pgMaterializedView) named as a relation only schema pgboss has [$(c_list $pgboss_only)]" "$(grep -oE '= pg(Table|View|MaterializedView)\("[^"]+"' "$SCHEMA" | sed -E 's/.*\("(.*)"$/\1/' | grep -cxF -f <(printf '%s\n' $pgboss_only))" 0
 node scripts/db-introspect.ts --write >"$OUT.w" 2>&1
 fact "write mode, pgboss set planted: exit" "$?" 0
+# T-232 rework 2 (QA-R-F1): both facts about db/schema.ts read the file this write produced, with the pgboss
+# set planted. The first counts the PLANT'S SHARE of lines naming pgboss or a planted name: lines now minus
+# lines in the committed file. Until rework 2 it was a whole-file count = 0, which an ordinary committed
+# column such as `pgboss_job_id uuid` (rendered `pgbossJobId: uuid("pgboss_job_id")`) turned BAD (QA-R4).
+# The second: no rendered relation carries a name that exists only in schema pgboss (psql, now). Until
+# rework 1 it grepped the whole file for `"version"` and `"job"`, two of 0006's pgboss relation names,
+# which a committed public relation of either name would match.
+fact "db/schema.ts after the write: the plant's share (now minus committed) of lines naming pgboss or a planted name (job_state, t145*)" "$(($(grep -cE 'pgboss|job_state|t145' "$SCHEMA") - $(git show HEAD:"$SCHEMA" | grep -cE 'pgboss|job_state|t145')))" 0
+pgboss_only=$(psql -X -A -t -q -c "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'pgboss' AND c.relkind IN ('r','p','v','m','f') AND c.relname NOT IN (SELECT c2.relname FROM pg_class c2 JOIN pg_namespace n2 ON n2.oid = c2.relnamespace WHERE n2.nspname = 'public')")
+fact "db/schema.ts after the write: rendered relations (pgTable/pgView/pgMaterializedView) named as a relation only schema pgboss has [$(c_list $pgboss_only)]" "$(grep -oE '= pg(Table|View|MaterializedView)\("[^"]+"' "$SCHEMA" | sed -E 's/.*\("(.*)"$/\1/' | grep -cxF -f <(printf '%s\n' $pgboss_only))" 0
 fact "write mode: git diff --quiet db/schema.ts against the committed file, exit" "$(git diff --quiet -- "$SCHEMA" && echo 0 || echo 1)" 0
 [ "$nok" -eq "$nf" ] && echo "ALL $nf CONTROL FACTS HOLD" >>"$OUT.f"
 cat "$OUT.f" >>"$OUT"
