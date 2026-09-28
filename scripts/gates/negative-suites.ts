@@ -317,8 +317,13 @@ const SUITES: readonly Suite[] = [
     //   092caf80869f34909ecfcf4ed706a351041c4241c8c36b8b81dd9a6a9af25a12
     // MEASURED against a real database (tasks/state/EP-2/T-232.md § Evidence): `ALL 141 CASES BEHAVED AS
     // EXPECTED`, exit 0, on fresh db projects with main's migrations, with T-196's 0016, and with a
-    // throwaway synthetic 0017; each rewritten case red under its own mutation.
-    digest: '092caf80869f34909ecfcf4ed706a351041c4241c8c36b8b81dd9a6a9af25a12',
+    // throwaway synthetic 0017; each rewritten case red under its own mutation (at 0eb33d5).
+    // RE-PINNED 2026-09-28 by T-232 rework 1 (QA-F1): facts about a plant's rendering are counted inside
+    // the plant's own declaration in db/schema.ts, not over the whole file. No case added or removed.
+    // Taken with the instrument, never edited by hand (PROTOCOL §5.2):
+    //   $ git cat-file blob fd43d26:scripts/negative-tests/db-introspect.sh | sha256sum
+    //   698fb769ebd39a37f5154cb7755f288c29c09f9a4f5020ebbcc58897e779e637
+    digest: '698fb769ebd39a37f5154cb7755f288c29c09f9a4f5020ebbcc58897e779e637',
   },
 ];
 
