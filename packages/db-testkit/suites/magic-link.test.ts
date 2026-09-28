@@ -202,8 +202,8 @@ describe('0015 — the table, its owner, its columns, its constraints and its AC
     );
   });
 
-  test("magic_link carries exactly two non-internal triggers: BEFORE INSERT created_at, AFTER UPDATE single use, each enabled on the origin only (tgenabled 'O')", async () => {
-    // tgenabled 'O' fires on the origin and not under session_replication_role = replica; 'A'
+  test("magic_link carries exactly two non-internal triggers: BEFORE INSERT created_at, AFTER UPDATE single use, each in origin mode (tgenabled 'O': fires unless session_replication_role = replica)", async () => {
+    // tgenabled 'O' fires under session_replication_role origin or local (T-196 QA-6), not replica; 'A'
     // (ENABLE ALWAYS) would also fire on a logical subscriber's apply, 'R' only there, 'D' never
     // (T-195 § tech-lead verification TL-4 and S1).
     assert.equal(
