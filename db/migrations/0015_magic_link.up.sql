@@ -109,8 +109,9 @@
 -- functions. No -- @run-as marker: every object is new, account is owned by app_ddl (T-140 §
 -- contract §1), and no CREATE EXTENSION is needed (bytea, char, text and timestamptz are core).
 --
--- THE SA §INT-10 GUARD. CREATE TABLE, CREATE INDEX, CREATE FUNCTION and GRANT fire
--- trg_int10_answering_service. Both functions are SECURITY INVOKER, so check 8 (SECURITY DEFINER
+-- THE SA §INT-10 GUARD. CREATE TABLE, CREATE FUNCTION and GRANT fire trg_int10_answering_service;
+-- CREATE INDEX is not among its tags (0001, CREATE EVENT TRIGGER trg_int10_answering_service ...
+-- WHEN TAG IN). Both functions are SECURITY INVOKER, so check 8 (SECURITY DEFINER
 -- functions) does not apply to it.
 
 CREATE TABLE public.magic_link (
