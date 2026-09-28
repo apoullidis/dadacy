@@ -627,6 +627,27 @@ export function pipelineIncoherences(
         );
       }
 
+      // T-233 rework (QA O2). `reviewed_by` is checked at EVERY status too. The
+      // sign-off path below refuses a non-DSL reviewer, but a `pending_review`
+      // record naming the model (or anyone outside the DSL pair) as its reviewer
+      // passed here and was caught only by a waiver-scoped test. Two rules:
+      // a model a ruling names as an AUTHOR is never a reviewer (OE-66: the DSL
+      // + deputy review is human), and only the named DSL or deputy may appear
+      // in the field at all, signed off or not.
+      if (record.reviewed_by !== null) {
+        const reviewer = record.reviewed_by;
+        if (aiRulings.some((r) => r.authors.includes(reviewer))) {
+          problems.push(
+            `${locale}/${key}: reviewed_by '${reviewer}' is an AI model that a ruling names as an author. A model is never a reviewer — OE-66 leaves the DSL + deputy review human.`,
+          );
+        }
+        if (record.status !== 'signed_off' && !reviewerNames.has(reviewer)) {
+          problems.push(
+            `${locale}/${key}: reviewed_by '${reviewer}' is not the named DSL or deputy in pipeline.roles, on a record at '${record.status}'. Only the DSL pair may appear in reviewed_by, at any status.`,
+          );
+        }
+      }
+
       if (record.status !== 'signed_off') continue;
 
       // From here down: a record CLAIMS to be reviewed. Everything is checked.

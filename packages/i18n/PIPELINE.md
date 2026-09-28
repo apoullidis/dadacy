@@ -96,14 +96,21 @@ Each role carries `named` and `confirmed_by_stakeholder_on`, both `null` today.
 Stated plainly, because the table above describes the pipeline as specified
 and the rulings changed who did the first half of it:
 
-| What                                                              | Author                                                                                   | Ruling                              | Reviewed by |
-| ----------------------------------------------------------------- | ---------------------------------------------------------------------------------------- | ----------------------------------- | ----------- |
-| Every `el` catalogue key, safety and non-safety                   | Claude Opus (`claude-opus-5-5`), AI agent                                                | OE-66 (EV-16), 2026-09-27T18:54:51Z | **nobody**  |
-| Every `ru` catalogue key, safety and non-safety                   | Claude Opus (`claude-opus-5-5`), AI agent                                                | OE-66 (EV-16), 2026-09-27T18:54:51Z | **nobody**  |
-| `prohibited/el.json`, `prohibited/ru.json`                        | Claude Opus (`claude-opus-5-5`), AI agent                                                | OE-66 (EV-16)                       | **nobody**  |
-| The eight `en` `safety_critical` keys, and their meaning contract | Claude Opus (`claude-opus-5-5`), AI agent                                                | OE-67, 2026-09-27T19:27:39Z         | **nobody**  |
-| Every other `en` key                                              | unchanged by `T-233` (byte-identical to `main` at `3d52098`); `T-040`'s engineering copy | —                                   | **nobody**  |
+| What                                                                              | Author                                                                                   | Ruling                              | Reviewed by |
+| --------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- | ----------------------------------- | ----------- |
+| Every `el` catalogue key, safety and non-safety — written or retained (see below) | Claude Opus (`claude-opus-5-5`), AI agent                                                | OE-66 (EV-16), 2026-09-27T18:54:51Z | **nobody**  |
+| Every `ru` catalogue key, safety and non-safety — written or retained (see below) | Claude Opus (`claude-opus-5-5`), AI agent                                                | OE-66 (EV-16), 2026-09-27T18:54:51Z | **nobody**  |
+| `prohibited/el.json`, `prohibited/ru.json`                                        | Claude Opus (`claude-opus-5-5`), AI agent                                                | OE-66 (EV-16)                       | **nobody**  |
+| The eight `en` `safety_critical` keys, and their meaning contract                 | Claude Opus (`claude-opus-5-5`), AI agent                                                | OE-67, 2026-09-27T19:27:39Z         | **nobody**  |
+| Every other `en` key                                                              | unchanged by `T-233` (byte-identical to `main` at `3d52098`); `T-040`'s engineering copy | —                                   | **nobody**  |
 
+- **"Written or retained."** The OE-66 drafts are the source of every `el`
+  and `ru` value, but seven of those values are byte-identical to `T-040`'s
+  text on `main` at `3d52098` — the model kept them rather than rewrote them:
+  `el` `booking.count.upcoming`, `common.app.name`, `common.dossier.verified`,
+  `common.locale.switch_prompt`; `ru` `booking.count.upcoming`,
+  `common.app.name`, `common.dossier.verified`. None is `safety_critical`.
+  OE-66 makes the model responsible for all of it either way.
 - **The practitioner and the translator are displaced for this copy, not
   abolished.** Their roles and stages stay in the register: if the stakeholder
   later engages humans to author or re-author, that is the path, and it is
@@ -551,8 +558,10 @@ OE-66 authors instead. Their own caveats, which `T-043` inherits
 > did not abolish, and it must be corrected before any use: items 5 and 7 below
 > repeat two placeholder assumptions the meaning contract
 > (`tasks/state/EP-0/OE-66/en/MEANING.md`) rejects — a 1466 scope list, and "holds
-> it … an operator calls them back" (OD-251). **The brief that applies now is
-> Appendix C.**
+> it … an operator calls them back" (OD-251); and the note introducing "The
+> eight strings" was written when the English was `T-040`'s engineering
+> placeholder — since `T-233` it is the OE-67 AI-authored copy (corrected in
+> place below). **The brief that applies now is Appendix C.**
 >
 > _Original instruction:_ Send as it stands. Fill the bracketed fields.
 
@@ -585,8 +594,9 @@ received.
   property, not a style preference.
 
 **The eight strings**, with what each is for. _(The English shown in the
-codebase today is an engineering placeholder written to test the build. It is
-not approved copy and you are not editing it — please write these fresh.)_
+codebase today is the AI-authored copy landed under stakeholder ruling OE-67
+(`T-233`). It is not reviewed and not approved copy, and you are not editing
+it — please write these fresh.)_
 
 1. `safety.emergency.call_112.label` — the label on the button that dials 112.
 2. `safety.emergency.call_112.script` — **what the caller says aloud** to the

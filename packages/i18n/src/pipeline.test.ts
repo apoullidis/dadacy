@@ -1692,6 +1692,113 @@ test('NEGATIVE — T-233: the citation must be a real ruling, covering this loca
       `${label}: ${JSON.stringify(problems)}`,
     );
   }
+
+  // T-233 rework (QA-F1). The model name must match EXACTLY. Near misses —
+  // what a careless transcription, a different model version or a look-alike
+  // letter would produce — are each refused. Written with explicit code points
+  // where the difference is invisible.
+  const nearMisses: readonly (readonly [string, string])[] = [
+    ['trailing space', `${MODEL} `],
+    ['leading space', ` ${MODEL}`],
+    ['lower case', MODEL.toLowerCase()],
+    ['another version', 'Claude Opus (claude-opus-4-1), AI agent'],
+    ['bare model family', 'Claude Opus'],
+    ['Cyrillic С (U+0421) for Latin C', `С${MODEL.slice(1)}`],
+  ];
+  for (const [label, name] of nearMisses) {
+    assert.notEqual(name, MODEL, `${label}: the fixture must differ from the model`);
+    const problems = pending({ authored_by: name });
+    assert.ok(
+      problems.some((x) =>
+        /ai_authored under OE-66, but authored_by is .*, not the model OE-66 names/.test(x),
+      ),
+      `near miss '${label}' must be refused: ${JSON.stringify(problems)}`,
+    );
+  }
+  // …and the exact name, on the same fixture, is accepted — so the refusals
+  // above are about the name and nothing else.
+  assert.deepEqual(pending({}), []);
+});
+
+test('NEGATIVE — T-233 rework (QA O2): reviewed_by is checked at EVERY status', () => {
+  const at = (patch: Record<string, unknown>, pipeline = loadCopyPipeline()): string[] =>
+    pipelineIncoherences(
+      withRecord('ru', 'safety.sos.confirm', {
+        ...AI_SIGNED,
+        status: 'pending_review',
+        reviewed_at: null,
+        ...patch,
+      }),
+      pipeline,
+      LOCALES,
+      SAFETY_KEYS,
+      NOW,
+      AI_RULINGS,
+    );
+  // The model as reviewer on an unsigned record.
+  const model = at({ reviewed_by: MODEL });
+  assert.ok(
+    model.some((x) =>
+      /reviewed_by 'Claude Opus .*' is an AI model that a ruling names as an author/.test(x),
+    ),
+    JSON.stringify(model, null, 2),
+  );
+  assert.ok(
+    model.some((x) =>
+      /is not the named DSL or deputy in pipeline\.roles, on a record at 'pending_review'/.test(x),
+    ),
+    JSON.stringify(model, null, 2),
+  );
+  // Anyone outside the DSL pair, on an unsigned record.
+  const other = at({ reviewed_by: 'Someone Else' }, deliveredPipeline());
+  assert.ok(
+    other.some((x) =>
+      /reviewed_by 'Someone Else' is not the named DSL or deputy .* 'pending_review'/.test(x),
+    ),
+    JSON.stringify(other, null, 2),
+  );
+  // The named DSL on an unsigned record (review in progress) is coherent.
+  assert.deepEqual(at({ reviewed_by: DSL }, deliveredPipeline()), []);
+  // And the model is refused as reviewer on a SIGNED record by the new rule too.
+  const signed = aiProblems({ reviewed_by: MODEL });
+  assert.ok(signed.some((x) => /is an AI model that a ruling names as an author/.test(x)));
+});
+
+test('T-233 rework (QA O3): a DSL sign-off of AI copy needs NO authoring role named — the two may stay null', () => {
+  // PIPELINE §5's amendment: step 1 reduces to naming the DSL and the deputy.
+  // Pinned here: the practitioner and translator unnamed (and unconfirmed),
+  // every authoring stage null, the DSL pair named and confirmed, the review
+  // stages done — and the AI sign-off is coherent.
+  const p = aiDeliveredPipeline();
+  const onlyDslPair: CopyPipeline = {
+    ...p,
+    roles: {
+      ...p.roles,
+      greek_authoring_safeguarding_practitioner: {
+        ...p.roles['greek_authoring_safeguarding_practitioner']!,
+        named: null,
+        confirmed_by_stakeholder_on: null,
+      },
+      russian_translator_briefed: {
+        ...p.roles['russian_translator_briefed']!,
+        named: null,
+        confirmed_by_stakeholder_on: null,
+      },
+    },
+  };
+  assert.equal(onlyDslPair.roles['greek_authoring_safeguarding_practitioner']?.named, null);
+  assert.equal(onlyDslPair.roles['russian_translator_briefed']?.named, null);
+  const problems = aiProblems({}, onlyDslPair);
+  assert.deepEqual(problems, [], JSON.stringify(problems, null, 2));
+  // …while the DSL pair may NOT stay null: unname the DSL and the same sign-off is refused.
+  const noDsl: CopyPipeline = {
+    ...onlyDslPair,
+    roles: {
+      ...onlyDslPair.roles,
+      dsl: { ...onlyDslPair.roles['dsl']!, named: null, confirmed_by_stakeholder_on: null },
+    },
+  };
+  assert.ok(aiProblems({}, noDsl).some((x) => /who is not the named DSL or deputy/.test(x)));
 });
 
 test('NEGATIVE — T-233: the model named into the roster is refused — a model is not a roster member', () => {
