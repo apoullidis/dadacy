@@ -323,7 +323,12 @@ const SUITES: readonly Suite[] = [
     // Taken with the instrument, never edited by hand (PROTOCOL §5.2):
     //   $ git cat-file blob fd43d26:scripts/negative-tests/db-introspect.sh | sha256sum
     //   698fb769ebd39a37f5154cb7755f288c29c09f9a4f5020ebbcc58897e779e637
-    digest: '698fb769ebd39a37f5154cb7755f288c29c09f9a4f5020ebbcc58897e779e637',
+    // RE-PINNED 2026-09-28 by T-232 rework 2 (QA-R-F1): K36's pgboss grep counts the plant's share
+    // (now minus committed) and K31 names its fixture tables. No case added or removed.
+    // Taken with the instrument, never edited by hand (PROTOCOL §5.2):
+    //   $ git cat-file blob e72e95a:scripts/negative-tests/db-introspect.sh | sha256sum
+    //   b964255ac8482d19528a3637113aaaff2e5f83fbaf5698db44235d027157adab
+    digest: 'b964255ac8482d19528a3637113aaaff2e5f83fbaf5698db44235d027157adab',
   },
 ];
 
