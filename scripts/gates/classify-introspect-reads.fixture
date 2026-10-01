@@ -1,0 +1,63 @@
+# Fixture for scripts/gates/classify-introspect-reads.py (T-234). NOT a suite: never executed, never sourced.
+# gate:negative-suites runs the classifier over this file before it trusts the classifier's verdict on
+# scripts/negative-tests/db-introspect.sh, and requires:
+#   * every line after an `# attack:` comment to be FLAGGED (listed on the classifier's `FLAGGED` line);
+#   * every line after a `# control:` comment to be taken (a row in its table) and NOT flagged.
+# So a classifier that stopped flagging, stopped reading, or crashed turns that gate red (PROTOCOL §5.1:
+# "if your check did nothing at all, would it say so?").
+# A1, A2, A3 and A6 are QA-S1's attack2.sh lines (tasks/state/EP-2/T-232.md § QA-S1), byte for byte; the
+# classifier committed verbatim from T-232 (3be54427…) exits 0 on all four. A4 and A5 were QA's controls.
+#
+# attack: A1 unquoted $SCHEMA, plant named only in the description (QA-S1 A1)
+fact "A1 db/schema.ts, t153Money: the amount_minor line" "$(grep -cF 'amountMinor: bigint("amount_minor", { mode: "bigint" }).notNull(),' $SCHEMA)" 1
+# attack: A2 cat "$SCHEMA" | grep (QA-S1 A2)
+fact "A2 db/schema.ts, t153Money: the amount_minor line" "$(cat "$SCHEMA" | grep -cF 'amountMinor: bigint("amount_minor", { mode: "bigint" }).notNull(),')" 1
+# attack: A3 the literal path (QA-S1 A3)
+fact "A3 db/schema.ts, t153Money: the amount_minor line" "$(grep -cF 'amountMinor: bigint("amount_minor", { mode: "bigint" }).notNull(),' db/schema.ts)" 1
+# attack: A4 quoted "$SCHEMA" after grep, unjustified (QA-S1's control A4)
+fact "A4 db/schema.ts, t153Money: the amount_minor line" "$(grep -cF 'amountMinor: bigint("amount_minor", { mode: "bigint" }).notNull(),' "$SCHEMA")" 1
+# attack: A5 cat pipe, no plant name anywhere (QA-S1's control A5)
+fact "A5 db/schema.ts: the amount_minor line" "$(cat "$SCHEMA" | grep -cF 'amountMinor: bigint("amount_minor", { mode: "bigint" }).notNull(),')" 1
+# attack: A6 a count over the COMMITTED file with nothing subtracted (QA-S1 A6)
+fact "A6 db/schema.ts, t153Money: no pgboss line is committed" "$(git show HEAD:"$SCHEMA" | grep -cE 'pgboss|job_state')" 0
+# attack: A7 ${SCHEMA}
+fact "A7 t153Money: the amount_minor line" "$(grep -cF 'amountMinor' ${SCHEMA})" 1
+# attack: A8 "${SCHEMA}"
+fact "A8 t153Money: the amount_minor line" "$(grep -cF 'amountMinor' "${SCHEMA}")" 1
+# attack: A9 input redirection
+fact "A9 t153Money: the amount_minor line" "$(grep -cF 'amountMinor' < "$SCHEMA")" 1
+# attack: A10 ./db/schema.ts
+fact "A10 t153Money: the amount_minor line" "$(grep -cF 'amountMinor' ./db/schema.ts)" 1
+# attack: A11 awk over an unquoted $SCHEMA, piped to wc
+fact "A11 t153Money: lines naming amount_minor" "$(awk '/amount_minor/' $SCHEMA | wc -l)" 1
+# attack: A12 head_count with nothing subtracted
+fact "A12 t153Money: committed amount_minor lines" "$(head_count 'amountMinor')" 0
+# attack: A13 a subtraction whose two sides count DIFFERENT things
+fact "A13 t153Money: the plant's share" "$(($(grep -c 'amountMinor' "$SCHEMA") - $(git show HEAD:"$SCHEMA" | grep -c 'pgboss')))" 1
+# attack: A14 git show HEAD: with the literal path
+fact "A14 t153Money: committed lines naming pgboss" "$(git show HEAD:db/schema.ts | grep -c pgboss)" 0
+# attack: A15 git cat-file of the committed file
+fact "A15 t153Money: committed lines naming pgboss" "$(git cat-file -p HEAD:db/schema.ts | grep -c pgboss)" 0
+# attack: A16 an alias of the file, read under another name later
+S="$SCHEMA"
+# attack: A17 the file handed to a function
+n=$(count_lines "$SCHEMA" 't153Money')
+# attack: A18 block_count over a COMMITTED declaration
+fact "A18 t153Money: inside accountRole, the role column" "$(block_count accountRole 'role:')" 1
+# attack: A19 a whole-file count over the generator's output, plant named only in the description (rule 2)
+fact "A19 t153Money: relations rendered" "$(grep -c 'pgTable(' "$OUT")" 12
+#
+# control: C1 the plant's share: the same grep over the working and the committed file, subtracted
+fact "C1 t153Money: the plant's share of amount_minor lines" "$(($(grep -cF 'amountMinor' "$SCHEMA") - $(git show HEAD:"$SCHEMA" | grep -cF 'amountMinor')))" 1
+# control: C2 the plant's share through head_count
+fact "C2 t153Money: the plant's share of amount_minor lines" "$(($(grep -cF -- 'amountMinor' "$SCHEMA") - $(head_count 'amountMinor')))" 1
+# control: C3 block_count inside the plant's own declaration
+fact "C3 db/schema.ts, inside t153Money: the amount_minor line" "$(block_count t153Money 'amountMinor: bigint("amount_minor", { mode: "bigint" }).notNull(),')" 1
+# control: C4 write mode left the file equal to the committed file
+fact "C4 write mode: git diff --quiet db/schema.ts against the committed file, exit" "$(git diff --quiet -- "$SCHEMA" && echo 0 || echo 1)" 0
+# control: C5 a driver probe importing only plant declarations
+import { t153Money, t153MoneyV } from "./db/schema.ts";
+# control: C6 a refusal message naming a plant object, required in $OUT
+check K99 "C6 db/schema.ts is not regenerated" I-DIFF 'relation "t153_money"'
+# control: C7 an abort message that names the file
+grep -q 'pgTable("t138_plant"' "$OUT" || abort "regeneration did not add t138_plant to $SCHEMA"
