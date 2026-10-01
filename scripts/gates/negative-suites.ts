@@ -346,7 +346,13 @@ const SUITES: readonly Suite[] = [
     // old pin (tasks/state/EP-2/T-234.md § Rework 1). Taken with the instrument, never edited by hand:
     //   $ git cat-file blob 06a8291:scripts/negative-tests/db-introspect.sh | sha256sum
     //   e311dcc015788a0ea73d31b96c8f6082a59976592afaaf94d439b1f67dbf011d
-    digest: 'e311dcc015788a0ea73d31b96c8f6082a59976592afaaf94d439b1f67dbf011d',
+    // RE-PINNED 2026-10-01 by T-234 tech-lead C1 (TL-F1, QA-R1-O1..O3): header lines only (a spelling is
+    // recognised only where it begins a shell word or sits in double quotes; bounds (i)-(iv) -> T-237); no
+    // case added or removed. Red first at ecb7fbf with the old pin (T-234.md § Rework 1 — tech-lead C1).
+    // Taken with the instrument, never edited by hand:
+    //   $ git cat-file blob ecb7fbf:scripts/negative-tests/db-introspect.sh | sha256sum
+    //   5d0631dc4eb7523af66e00cf42725fbfe389cb402822a6a78ec5f27eb12fa250
+    digest: '5d0631dc4eb7523af66e00cf42725fbfe389cb402822a6a78ec5f27eb12fa250',
     // T-234 (T-232 QA-S-F1, NS1): every read of db/schema.ts or a generated artefact in the suite is
     // classified by this committed instrument on EVERY run of this gate, not only when the digest
     // moves, and the instrument is itself held against a fixture of the read shapes it must flag.
