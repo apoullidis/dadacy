@@ -18,7 +18,7 @@
     "@kinvara/observability": "workspace:*",
     "@nestjs/common": "11.2.3",
     "@nestjs/core": "11.2.3",
-    "@nestjs/platform-fastify": "11.2.3",
+    "@nestjs/platform-fastify": "11.2.4",
     "@node-rs/argon2": "2.2.1",
     "drizzle-orm": "0.45.2",
     "pg": "8.23.0",

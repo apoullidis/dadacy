@@ -32,3 +32,18 @@ allowBuilds:
 # without saying so. The remedy for a too-new package is to PIN AN OLDER
 # RELEASE (T-115 pinned vite 8.2.2 over the day-old 8.3.0), never an exemption.
 minimumReleaseAgeStrict: true
+
+# T-236, decisions.md OD-260. A SECURITY override, scoped to one edge.
+# Every @nestjs/platform-fastify 11.2.x release up to and including 11.2.7
+# (measured against the registry 2026-10-01) pins `fastify` EXACTLY at 5.11.3,
+# which carries GHSA-p68q-wchp-6fh7, GHSA-hwr6-493r-vm6h, GHSA-9q9j-q6p8-xq58
+# and GHSA-667r-xxjv-c9mm (all fixed in fastify 5.12.2). No Nest release fixes
+# that pin, so the only upgrade route is this override; 5.12.5 is taken over
+# 5.12.2 because its dependency ranges are identical and it also fixes the
+# MODERATE GHSA-4mh8-r7rc-xpvc. It is scoped to the platform-fastify edge so it
+# cannot move any other consumer of fastify.
+# REMOVE IT when a @nestjs/platform-fastify release pins fastify >= 5.12.2:
+# bump to that release, delete these lines, and `gate:trivy`/`gate:audit` must
+# stay green.
+overrides:
+  '@nestjs/platform-fastify>fastify': 5.12.5
