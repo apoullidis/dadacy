@@ -97,10 +97,15 @@
 #     the same condition requires git diff to find the file equal to the committed one, and a committed
 #     file holding `unknown(` fails K00's parity first (the generator never writes it, T-150).
 # rehash() also reads and rewrites the whole file: that is the tamper itself, and nothing is judged from it.
-# gate:negative-suites runs that classifier over this file on every run, with no database, and goes red on
-# an unjustified whole-file read in any spelling, a read of the committed file not subtracted from the same
-# read of the working file, or an unclassifiable line; its fixture holds the shapes it must flag. Every read
-# is listed there and in tasks/state/EP-2/T-234.md. See the BASE block below.
+# gate:negative-suites runs that classifier over this file on every run, with no database. It goes red
+# on: an unjustified whole-file read in a spelling the classifier recognises ($SCHEMA, ${SCHEMA...}, the
+# literal path, a glob under db/, quoted or not, outside a message); a read of the committed file not
+# subtracted from the same read of the working file; a copied or out-of-scope exemption; or an
+# unclassifiable line. What it is measured to catch is exactly its fixture
+# (scripts/gates/classify-introspect-reads.fixture). It does NOT see a path assembled from pieces, an
+# alias through another name or a copy, eval, a command held in a variable, or a read split across a
+# backslash continuation: those are caught only when the line judging the result is unclassifiable
+# (bounds in the classifier's docstring and tasks/state/EP-2/T-234.md). See the BASE block below.
 #
 #   cd /home/alex/projects/nanny/app && ./scripts/svc run <ticket> -- bash scripts/negative-tests/db-introspect.sh
 #
