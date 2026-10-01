@@ -99,13 +99,19 @@
 # rehash() also reads and rewrites the whole file: that is the tamper itself, and nothing is judged from it.
 # gate:negative-suites runs that classifier over this file on every run, with no database. It goes red
 # on: an unjustified whole-file read in a spelling the classifier recognises ($SCHEMA, ${SCHEMA...}, the
-# literal path, a glob under db/, quoted or not, outside a message); a read of the committed file not
-# subtracted from the same read of the working file; a copied or out-of-scope exemption; or an
-# unclassifiable line. What it is measured to catch is exactly its fixture
-# (scripts/gates/classify-introspect-reads.fixture). It does NOT see a path assembled from pieces, an
-# alias through another name or a copy, eval, a command held in a variable, or a read split across a
-# backslash continuation: those are caught only when the line judging the result is unclassifiable
-# (bounds in the classifier's docstring and tasks/state/EP-2/T-234.md). See the BASE block below.
+# literal path, a glob under db/) where that spelling begins a shell word or sits inside double quotes,
+# outside a message; a read of the committed file not subtracted from the same read of the working file;
+# a copied or out-of-scope exemption; or an unclassifiable line. What it is measured to catch is exactly
+# its fixture (scripts/gates/classify-introspect-reads.fixture). It does NOT see a path assembled from
+# pieces, an alias through another name or a copy, eval, a command held in a variable, or a read split
+# across a backslash continuation: those are caught only when the line judging the result is
+# unclassifiable. Nor does it see (T-237 owns the fixes): (i) a spelling glued to preceding characters
+# in an unquoted word (`<"$SCHEMA"`, `<$SCHEMA`, `$(<"$SCHEMA")`, unquoted $PWD/db/schema.ts,
+# "$REPO_ROOT"/db/schema.ts, ../app/db/schema.ts, an absolute path); (ii) a path quoted as an argument of
+# echo/printf/abort or a judging helper, even when that output is piped into a command that reads it;
+# (iii) db//schema.ts, db/./schema.ts, db/schema.{ts,}; (iv) a helper body that rebinds its arguments
+# before an exempt line. Bounds: the classifier's docstring and tasks/state/EP-2/T-234.md. See the BASE
+# block below.
 #
 #   cd /home/alex/projects/nanny/app && ./scripts/svc run <ticket> -- bash scripts/negative-tests/db-introspect.sh
 #

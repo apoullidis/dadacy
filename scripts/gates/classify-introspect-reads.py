@@ -19,7 +19,9 @@ R01-R52 except R42, which is a control). Nothing wider is claimed; the bounds ar
 SELECTION (mechanical, not by reading). A non-comment line is taken if it
   (a) mentions db/schema.ts in a spelling this reader recognises ($SCHEMA, any ${SCHEMA...} expansion,
       the literal path, a glob under db/), `HEAD:`, `git show`/`git cat-file`, "$OUT" or $OUT.<suffix>
-      (the generator's output and derived files), or
+      (the generator's output and derived files) (a spelling counts as a READ, rule 1, only where it
+      begins a shell word or sits inside double quotes; glued to preceding characters in an unquoted
+      word it is not seen, BOUNDS (i)), or
   (b) calls a judging helper (check, check_facts, part_check, policy_check, write_judge, partlocal_case,
       system_case, shape_case, judge, fact, facts_into, block_count, head_count), or
   (c) continues such a call (the previous taken line ends with a backslash), or
@@ -35,9 +37,12 @@ THE RULES:
        - after `git show <rev>:` / `git cat-file`: a read of the COMMITTED file (rule 3);
        - on a line whose whole text is an EXACT_LINES entry, inside its scope function, within its
          count (rule 4);
-       - ANYWHERE ELSE, quoted or not ("./$SCHEMA", "$PWD/db/schema.ts", node -e '...db/schema.ts...',
-         an assignment's value, a function argument, cat |, <, a glob such as db/sch*.ts): a whole-file
-         read, which needs a counted WHOLE_FILE_OK entry or the run exits 1.
+       - ANYWHERE ELSE, where the spelling begins a shell word or sits inside a quoted word
+         ("./$SCHEMA", "$PWD/db/schema.ts" quoted, node -e '...db/schema.ts...', an assignment's value,
+         a function argument, cat |, `< "$SCHEMA"` with the space, a glob such as db/sch*.ts): a
+         whole-file read, which needs a counted WHOLE_FILE_OK entry or the run exits 1. Glued to
+         preceding characters in an unquoted word (`<"$SCHEMA"`, unquoted $PWD/db/schema.ts) it is NOT
+         seen: BOUNDS (i).
      T-232's rule needed `grep|awk ... "$SCHEMA"` in that order (QA-S1 A1-A3). T-234's first version
      treated every double-quoted word as prose (QA-F1 R47/R51).
   2. The content rules that let a line PASS (PLANT-LITERAL, COMMITTED-OBJECT, GENERIC-REFUSAL,
@@ -53,7 +58,15 @@ THE RULES:
        - an abort makes a line HARNESS only in the closed HARNESS_ABORT shapes (QA-F1 R41/R48);
        - block_count's block name must be plant-named or one of BLOCK_VARS (QA-F1 R36).
 
-BOUNDS (not claimed):
+BOUNDS (not claimed; the mechanism fixes for (i)-(iv) are T-237's):
+  - (i) TL-F1: a recognised spelling glued to preceding characters in an unquoted word: `<"$SCHEMA"`,
+    `<$SCHEMA`, `$(<"$SCHEMA")`, unquoted `$PWD/db/schema.ts`, `"$REPO_ROOT"/db/schema.ts`,
+    `../app/db/schema.ts`, an absolute path. Not seen as a read; with a plant in the pattern such a line
+    passes (T-234 § tech-lead verification TL-2). -> T-237.
+  - (iii) O2: a non-canonical spelling of the path (`db//schema.ts`, `db/./schema.ts`,
+    `db/schema.{ts,}`) is not recognised as the file. -> T-237.
+  - (iv) O3: a helper body (block_count, head_count, rehash) that rebinds its arguments (`set --`,
+    reassigning $1) before an exempt EXACT_LINES line: the exempt line keeps its exemption. -> T-237.
   - Spellings it does not recognise as the file: a path assembled from pieces ($'db/sch\x65ma.ts', a
     backslash continuation, `cd db && ... schema.ts`, `grep -r ... db --include=...`, `git grep ...
     'db/*.ts'`), an alias through another name (QF=..., declare -n, ${!v}, a copy such as $OUT.s1), and a
@@ -61,8 +74,10 @@ BOUNDS (not claimed):
     flagged. Each such shape in the fixture is caught only because the line that JUDGES its result
     matches no rule (UNCLASSIFIED). A future line that judges such a result in a shape some rule does
     classify would pass.
-  - A quoted argument of a PROSE_CMDS command is prose even if it spells the file: a helper or abort
-    handed the path in quotes is not treated as reading it (none of them reads its arguments as files).
+  - (ii) A quoted argument of a PROSE_CMDS command is prose even if it spells the file, and even when
+    that command's output is piped into a command that reads it (`echo "./$SCHEMA" | xargs grep ...`,
+    `| while read`, `| sh`; QA-R1-O1). A helper or abort handed the path in quotes is not treated as
+    reading it. -> T-237.
   - A BLOCK_VARS name (`"$b"`, `"${spec%%|*}"`) rebound to a committed declaration is filed BLOCK.
   - It reads one physical line at a time.
   - A regex over $OUT that contains a plant name is filed PLANT-LITERAL (T-232 § Rework 2's residual
@@ -80,7 +95,10 @@ lines = open(path, encoding='utf-8').read().split('\n')
 HELPERS = r'(check|check_facts|part_check|policy_check|write_judge|partlocal_case|system_case|shape_case|judge|fact|facts_into|block_count|head_count)'
 # Every spelling of the file this reader recognises: $SCHEMA, any ${SCHEMA...} expansion (${SCHEMA:-},
 # ${SCHEMA%.ts}...), the literal path with or without ./, and any GLOB under db/ (db/sch*.ts, db/*.ts,
-# db/schema.t[s]), which can name the file.
+# db/schema.t[s]), which can name the file. The scanner judges it as a read only where it begins a shell
+# word or sits inside double quotes: glued to preceding characters in an unquoted word (`<"$SCHEMA"`,
+# $PWD/db/schema.ts) it is skipped, and db//schema.ts, db/./schema.ts, db/schema.{ts,} are not matched
+# (docstring BOUNDS (i), (iii); T-237).
 SCHEMA_ANY = r'(?:\$\{SCHEMA(?:[^A-Za-z0-9_}][^}]*)?\}|\$SCHEMA(?![A-Za-z0-9_])|(?:\./)?db/schema\.ts\b|(?:\./)?db/[A-Za-z0-9_.-]*[*?\[][A-Za-z0-9_.*?\[\]-]*)'
 sel_a = re.compile(SCHEMA_ANY + r'|HEAD:|git (?:show|cat-file)|"\$OUT"|\$OUT\.|\$OUT\b')
 sel_b = re.compile(r'^\s*(?:if\s+)?' + HELPERS + r'\b|\$\((block_count|head_count)\b')
@@ -456,7 +474,7 @@ counts = {}
 for _, c, _ in out:
     counts[c] = counts.get(c, 0) + 1
 print(f'{len(out)} line(s) taken from {path}; ' + ', '.join(f'{k} {v}' for k, v in sorted(counts.items())))
-print('  SCHEMA-WHOLE-FILE: a whole-file read of db/schema.ts in a recognised spelling, quoted or not, outside prose and harness contexts (rule 1), justified line by line in WHOLE_FILE_OK (printed below the table)')
+print('  SCHEMA-WHOLE-FILE: a whole-file read of db/schema.ts in a recognised spelling that begins a shell word or sits inside double quotes (not glued in an unquoted word: BOUNDS (i)), outside prose and harness contexts (rule 1), justified line by line in WHOLE_FILE_OK (printed below the table)')
 print('  BLOCK-UNJUSTIFIED: block_count over a block name that is neither plant-named nor one of BLOCK_VARS')
 print('  EXEMPT-LINE-UNJUSTIFIED: an EXACT_LINES text outside its scope function, or matched by more lines than its count')
 print('  HEAD-UNSUBTRACTED: a read of the COMMITTED db/schema.ts that is not subtracted from the same read of the working file (rule 3)')
