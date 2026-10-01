@@ -215,6 +215,18 @@ describe('0015 — the table, its owner, its columns, its constraints and its AC
         'trg_magic_link_single_use:17:O:assert_magic_link_single_use()',
     );
   });
+
+  test('magic_link has no rewrite rule, no row-level security and no policy (T-234, after T-196 QA2-F1: a conditional INSTEAD rule can drop a write silently)', async () => {
+    assert.equal(
+      await db.value(
+        `SELECT (SELECT count(*) FROM pg_rewrite WHERE ev_class = c.oid) || ' rules, rls=' ||
+                c.relrowsecurity || ', force=' || c.relforcerowsecurity || ', ' ||
+                (SELECT count(*) FROM pg_policy WHERE polrelid = c.oid) || ' policies'
+           FROM pg_class c WHERE c.oid = 'public.magic_link'::regclass`,
+      ),
+      '0 rules, rls=false, force=false, 0 policies',
+    );
+  });
 });
 
 describe('0015 — token_hash: UNIQUE (SD 1838) and 32 bytes (Q-D2, EV-9)', () => {

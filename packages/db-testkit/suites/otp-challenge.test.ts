@@ -682,6 +682,18 @@ describe('0013 — OE-61: the database sets created_at', () => {
         'trg_otp_challenge_single_use:17:assert_otp_challenge_single_use()',
     );
   });
+
+  test('otp_challenge has no rewrite rule, no row-level security and no policy (T-234, after T-196 QA2-F1: a conditional INSTEAD rule can drop a write silently)', async () => {
+    assert.equal(
+      await db.value(
+        `SELECT (SELECT count(*) FROM pg_rewrite WHERE ev_class = c.oid) || ' rules, rls=' ||
+                c.relrowsecurity || ', force=' || c.relforcerowsecurity || ', ' ||
+                (SELECT count(*) FROM pg_policy WHERE polrelid = c.oid) || ' policies'
+           FROM pg_class c WHERE c.oid = 'public.otp_challenge'::regclass`,
+      ),
+      '0 rules, rls=false, force=false, 0 policies',
+    );
+  });
 });
 
 describe('0013 — grants (U-O6; T-020 § contract §3), over real single-membership logins', () => {

@@ -3,8 +3,14 @@
  * OE-30 / OE-49 / OE-50 rulings (tasks/state/EP-2/OE-30-34-rulings.md Part A.1 U-W1/U-W3, Part E.1
  * U-W2, Part B.3 U-W4 with Part F, and C2 standing resolved as (c)), and T-196's column-level grants
  * where no ruling speaks (INSERT on T-027 W2's seven columns; UPDATE on W4's two).
- * These are the database-layer refusals TK-3 lists, plus what the database does NOT refuse, pinned
- * so that an unruled mechanism added later turns a case red.
+ * These are the database-layer refusals TK-3 lists, plus what the database does NOT refuse. The table's
+ * catalogue is pinned: its columns, constraints, index, ACL, comments, and the COUNTS of its
+ * non-internal triggers, rewrite rules (pg_rewrite, T-234) and policies, and its row-level security
+ * flags. So a grant, constraint, index, trigger, rule or policy added to or removed from the table turns
+ * a case red; a conditional INSTEAD rule that silently drops a zero-byte credential_id INSERT was
+ * measured passing every case before the rule count (T-196 QA2-F1, QR1). What is not in those
+ * catalogues is not pinned (for example a function the triggers or rules would call, or an event
+ * trigger), and a change that keeps every count and definition read here cannot turn a case red.
  *
  * Every refusal asserts psql's exit status AND its `ERROR:  <SQLSTATE>: <message>` line AND, where
  * PostgreSQL gives one, the `CONSTRAINT NAME:` or `COLUMN NAME:` field, and exactly one ERROR line,
@@ -225,15 +231,16 @@ describe('0016 — the table, its owner, columns, constraints, index, ACL and co
     );
   });
 
-  test('no non-internal trigger (U-W2 (i): none refuses a decrease), no row-level security and no policy (C2 (c))', async () => {
+  test('no non-internal trigger (U-W2 (i): none refuses a decrease), no rewrite rule (T-196 QA2-F1), no row-level security and no policy (C2 (c))', async () => {
     assert.equal(
       await db.value(
-        `SELECT (SELECT count(*) FROM pg_trigger WHERE tgrelid = c.oid AND NOT tgisinternal) || ' triggers, rls=' ||
+        `SELECT (SELECT count(*) FROM pg_trigger WHERE tgrelid = c.oid AND NOT tgisinternal) || ' triggers, ' ||
+                (SELECT count(*) FROM pg_rewrite WHERE ev_class = c.oid) || ' rules, rls=' ||
                 c.relrowsecurity || ', force=' || c.relforcerowsecurity || ', ' ||
                 (SELECT count(*) FROM pg_policy WHERE polrelid = c.oid) || ' policies'
            FROM pg_class c WHERE c.oid = 'public.webauthn_credential'::regclass`,
       ),
-      '0 triggers, rls=false, force=false, 0 policies',
+      '0 triggers, 0 rules, rls=false, force=false, 0 policies',
     );
   });
 
