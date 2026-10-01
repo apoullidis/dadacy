@@ -143,8 +143,8 @@ const PAYLOAD_FIELD = 'COLUMN NAME:  payload';
 
 /** The text 0018 installs, verbatim: a change to the comment must change this suite too. */
 const TABLE_COMMENT =
-  'The transactional audit outbox (SD §DB-10 lines 2850-2854; SA §SEC-8): an audited action writes its row in ' +
-  'its own transaction, and the relay copies it into audit_log. id is an identity column, GENERATED ALWAYS. CHECK ' +
+  'The transactional audit outbox (SD §DB-10 lines 2850-2854; SA §SEC-8). id is an identity column, GENERATED ' +
+  'ALWAYS. CHECK ' +
   'audit_outbox_payload_object holds payload to a JSON object. app_rw may SELECT, may INSERT only payload, so ' +
   'created_at takes now() and relayed_at starts NULL for it, and may UPDATE only relayed_at. It holds no DELETE ' +
   "or TRUNCATE: pruning relayed rows is the retention engine's (OE-50 U-10 (3)). These are grants: they bind " +
@@ -536,7 +536,7 @@ describe('0018 — NOT HELD (disclosed)', () => {
     assertRead('relayed_at rewound', r, 'S relayed before created:true');
   });
 
-  test('NOT HELD — the owner app_ddl back-dates created_at and presets relayed_at at INSERT, rewrites payload and created_at, and deletes a row; the superuser rewrites payload too: the grants bind app_rw only', async () => {
+  test('NOT HELD — the owner app_ddl and the superuser each back-date created_at and preset relayed_at at INSERT, rewrite payload, and delete a row (the owner rewrites created_at too): the grants bind app_rw only', async () => {
     const owner = await asLogin(
       LOGINS.app_ddl,
       readRow('R'),
@@ -554,12 +554,22 @@ describe('0018 — NOT HELD (disclosed)', () => {
     assertRead('owner rewrites and deletes', owner, 'owner deleted S');
     const su = await asSuperuser(
       readRow('R'),
+      `INSERT INTO public.audit_outbox (payload, created_at, relayed_at)
+       VALUES ('{"superuser":"s"}', now() - interval '1 year', now())
+       RETURNING 'superuser wrote back-dated:' || (created_at < now()) || ' pre-relayed:' || (relayed_at IS NOT NULL)`,
       `UPDATE public.audit_outbox SET payload = '{"action":"su"}' WHERE ${rowOf('R')}
        RETURNING 'superuser rewrote ' || (payload->>'action')`,
+      `DELETE FROM public.audit_outbox WHERE ${rowOf('S')} RETURNING 'superuser deleted S'`,
     );
-    assertPermitted('superuser rewrites', su);
-    assertRead('superuser rewrites', su, R_UNRELAYED);
-    assertRead('superuser rewrites', su, 'superuser rewrote su');
+    assertPermitted('superuser writes, rewrites and deletes', su);
+    assertRead('superuser writes, rewrites and deletes', su, R_UNRELAYED);
+    assertRead(
+      'superuser writes, rewrites and deletes',
+      su,
+      'superuser wrote back-dated:true pre-relayed:true',
+    );
+    assertRead('superuser writes, rewrites and deletes', su, 'superuser rewrote su');
+    assertRead('superuser writes, rewrites and deletes', su, 'superuser deleted S');
   });
 
   test('the fixture rows survive every refusal and rolled-back write above: R unrelayed, S relayed, nothing else', async () => {

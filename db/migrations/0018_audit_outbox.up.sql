@@ -17,15 +17,17 @@
 --
 -- WHAT IT CREATES. public.audit_outbox with SD 2851-2852's four columns in SD's order, SD's
 -- nullability and defaults, and SD 2854's partial index; then what the rulings change:
---   U-1   id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, not SD's bigserial. No caller
---         supplies an id (428C9), and no role needs USAGE on the sequence to insert. db/schema.ts
---         renders the column in drizzle's bigint mode (T-153). EV proposed by T-212.
+--   U-1   id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, not SD's bigserial. An INSERT
+--         naming an id is refused (428C9) for every writer, app_rw included; only OVERRIDING
+--         SYSTEM VALUE supplies one, and that needs INSERT on id, which app_rw does not hold.
+--         app_rw inserts without USAGE on the sequence, and holds none. db/schema.ts renders the
+--         column in drizzle's bigint mode (T-153). EV proposed by T-212.
 --   U-10 (1)  CONSTRAINT audit_outbox_payload_object CHECK (jsonb_typeof(payload) = 'object'):
 --         a payload is a JSON object, never an array, a scalar or JSON null. Its fields are the
 --         Zod payload contract's (T-067), not this table's. SD 2851 writes no CHECK: EV proposed
 --         by T-212.
 --   SD 2854's index, named here: audit_outbox_created_at_unrelayed_idx ON (created_at) WHERE
---         relayed_at IS NULL. It serves the relay's claim of unrelayed rows (T-067 Q2).
+--         relayed_at IS NULL, on the predicate and order key of the relay's claim (T-067 Q2).
 -- EV numbers are cited only in these top-level -- lines, never in a COMMENT ON, so a numbering
 -- changes no applied effect (PROTOCOL §3, R-MERGED).
 --
@@ -42,24 +44,25 @@
 --   INSERT is column-level, (payload) only, as T-067 Q1 writes it. So for app_rw created_at always
 --   takes DEFAULT now() (the inserting transaction's start), and relayed_at always starts NULL.
 --   Naming either is refused (42501), even with the DEFAULT keyword. created_at becomes
---   audit_log.occurred_at (U-9 (a)), so app_rw cannot back-date an action. A row inserted with
---   relayed_at already set would never be claimed by the relay (T-067 Q2 reads relayed_at IS
---   NULL), so app_rw cannot insert an audit obligation that is never relayed.
+--   audit_log.occurred_at (U-9 (a)), so app_rw cannot back-date an action at INSERT. A row
+--   inserted with relayed_at already set would never be selected by the relay's claim (T-067 Q2
+--   reads relayed_at IS NULL), so app_rw cannot insert a row already marked relayed. It can still
+--   mark one afterwards (NOT HELD, below).
 --   NO TRIGGER FIXES created_at FOR OTHER WRITERS (unlike OE-61/OE-63's created_at, which a TTL
 --   CHECK reads): no CHECK reads created_at here, the column grant decides it for app_rw, and the
 --   owner app_ddl and the superuser are bound by no grant. This is 0016 and 0017's precedent.
 --
 -- NOT HELD HERE. These are grants, not triggers: they bind app_rw only. The owner app_ddl and the
--- superuser can supply any created_at or relayed_at, supply an id with OVERRIDING SYSTEM VALUE,
+-- superuser can INSERT any created_at or relayed_at, supply an id with OVERRIDING SYSTEM VALUE,
 -- and UPDATE or DELETE any row. app_rw itself can, through its UPDATE (relayed_at):
---   - set relayed_at on a row the relay never published, so the row is never relayed;
---   - set relayed_at back to NULL, so a relayed row is relayed again;
+--   - set relayed_at on a row the relay never published, so the relay's claim no longer selects it;
+--   - set relayed_at back to NULL, so the relay's claim selects a relayed row again;
 --   - set relayed_at to any value, earlier than created_at included.
 -- Exactly-once relay (U-10 (2a)) is the relay's transaction (T-067), not this table's.
 -- The payload's fields, size and content are not checked; '{}' is accepted. PostgreSQL's own
 -- refusals print values in their DETAIL (a CHECK's or NOT NULL's prints the whole row, payload
--- included) to the writer and, by default, to the server log. That is platform-wide, OD-241 ->
--- T-230; this file does not change it.
+-- included) to the writer and, by default, to the server log (OD-241). That is platform-wide,
+-- OD-241 -> T-230; this file does not change it.
 --
 -- NOT IN gate:migration-lint's R-APPEND-ONLY NAME SET (D-11, OD-143). That rule matches audit_log,
 -- case_note and decision_record (and their _<suffix> names), not audit_outbox, so a later GRANT
@@ -91,4 +94,4 @@ GRANT INSERT (payload) ON public.audit_outbox TO app_rw;
 GRANT UPDATE (relayed_at) ON public.audit_outbox TO app_rw;
 
 COMMENT ON TABLE public.audit_outbox IS
-  'The transactional audit outbox (SD §DB-10 lines 2850-2854; SA §SEC-8): an audited action writes its row in its own transaction, and the relay copies it into audit_log. id is an identity column, GENERATED ALWAYS. CHECK audit_outbox_payload_object holds payload to a JSON object. app_rw may SELECT, may INSERT only payload, so created_at takes now() and relayed_at starts NULL for it, and may UPDATE only relayed_at. It holds no DELETE or TRUNCATE: pruning relayed rows is the retention engine''s (OE-50 U-10 (3)). These are grants: they bind app_rw, not the table owner app_ddl or the superuser. No other role is granted any privilege, and there is no row-level security.';
+  'The transactional audit outbox (SD §DB-10 lines 2850-2854; SA §SEC-8). id is an identity column, GENERATED ALWAYS. CHECK audit_outbox_payload_object holds payload to a JSON object. app_rw may SELECT, may INSERT only payload, so created_at takes now() and relayed_at starts NULL for it, and may UPDATE only relayed_at. It holds no DELETE or TRUNCATE: pruning relayed rows is the retention engine''s (OE-50 U-10 (3)). These are grants: they bind app_rw, not the table owner app_ddl or the superuser. No other role is granted any privilege, and there is no row-level security.';
