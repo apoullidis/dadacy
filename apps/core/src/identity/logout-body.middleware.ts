@@ -6,10 +6,12 @@
  * stayed live, for `Content-Type: application/json` with an empty or malformed body, for a media
  * type with no parser (`application/xml`), and for a body over the 1 MiB `bodyLimit` (QA Q2f S3d).
  *
- * THE MECHANISM, read from the installed code (Fastify 5.11.3, @nestjs/platform-fastify 11.2.3):
- *   - Nest runs a module's middleware through its bundled middie on Fastify's `onRequest` hook
- *     (`adapters/middie/fastify-middie.js`: `options.hook || 'onRequest'`), which runs before body
- *     parsing;
+ * THE MECHANISM, read from the installed code (Fastify 5.11.3, @nestjs/platform-fastify 11.2.3;
+ * re-read at Fastify 5.12.5, @nestjs/platform-fastify 11.2.4, @fastify/middie 9.3.4 by T-236):
+ *   - Nest runs a module's middleware through middie on Fastify's `onRequest` hook, which runs
+ *     before body parsing. From platform-fastify 11.2.4 that is `@fastify/middie` (`index.js`:
+ *     `options.hook || 'onRequest'`); 11.2.3 bundled a copy (`adapters/middie/fastify-middie.js`)
+ *     with the same default, which 11.2.4 deletes;
  *   - Fastify's `request.headers` returns the raw `IncomingMessage` headers object
  *     (`lib/request.js`);
  *   - `handleRequest` (`lib/handle-request.js`) calls the handler without parsing when a POST has
