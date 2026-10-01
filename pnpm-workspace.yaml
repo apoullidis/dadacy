@@ -37,13 +37,20 @@ minimumReleaseAgeStrict: true
 # Every @nestjs/platform-fastify 11.2.x release up to and including 11.2.7
 # (measured against the registry 2026-10-01) pins `fastify` EXACTLY at 5.11.3,
 # which carries GHSA-p68q-wchp-6fh7, GHSA-hwr6-493r-vm6h, GHSA-9q9j-q6p8-xq58
-# and GHSA-667r-xxjv-c9mm (all fixed in fastify 5.12.2). No Nest release fixes
-# that pin, so the only upgrade route is this override; 5.12.5 is taken over
-# 5.12.2 because its dependency ranges are identical and it also fixes the
-# MODERATE GHSA-4mh8-r7rc-xpvc. It is scoped to the platform-fastify edge so it
-# cannot move any other consumer of fastify.
-# REMOVE IT when a @nestjs/platform-fastify release pins fastify >= 5.12.2:
-# bump to that release, delete these lines, and `gate:trivy`/`gate:audit` must
-# stay green.
+# and GHSA-667r-xxjv-c9mm (all fixed in fastify 5.12.2). No platform-fastify
+# release whose peerDependencies accept @nestjs/common/@nestjs/core 11 (11.2.x,
+# and 12.0.0, which pins 5.12.1) pins a fixed fastify. 12.0.2 onwards do
+# (12.0.2-12.0.3 pin 5.12.4, 12.0.4-12.1.2 pin 5.12.5), but from 12.0.1 they
+# peer on @nestjs/common/@nestjs/core ^12.0.0: a Nest major bump.
+# So inside Nest 11 the only upgrade route is this override. 5.12.5 is taken
+# over 5.12.2 because its dependency ranges are identical and it also fixes the
+# MODERATE GHSA-4mh8-r7rc-xpvc. It is scoped to the platform-fastify edge; no
+# other workspace package depends on fastify today.
+# REMOVE IT when either (a) a platform-fastify release compatible with
+# @nestjs/common/@nestjs/core 11 pins fastify >= 5.12.2, or (b) Kinvara moves
+# to Nest 12 (platform-fastify 12.0.2+ already pin fastify >= 5.12.4). Bump,
+# delete these lines, and `gate:trivy`/`gate:audit` must stay green. With the
+# override deleted at platform-fastify 11.2.4, `gate:trivy` reports four
+# fastify 5.11.3 HIGH (measured by T-236's QA, 2026-10-01).
 overrides:
   '@nestjs/platform-fastify>fastify': 5.12.5
