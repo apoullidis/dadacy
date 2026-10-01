@@ -40,7 +40,7 @@ import {
 import { assertPermitted, assertRefused, INT10_RAISE } from '../src/expect.ts';
 
 const SUITE = 'migrations-applied';
-const HIGHEST_COMMITTED = '0017';
+const HIGHEST_COMMITTED = '0018';
 const COMMITTED_DIR = path.join(REPO_ROOT, MIGRATIONS_DIR);
 const RECORD_SQL = `SELECT coalesce(shobj_description(oid, 'pg_database'), '(no comment)')
                       FROM pg_database WHERE datname = current_database()`;
@@ -688,6 +688,66 @@ const CREATED_BY: Readonly<
                                  FROM pg_class c WHERE c.oid = to_regclass('public.account_sso_identity')), '(absent)')`,
         holds:
           '{app_ddl=arwdDxtm/app_ddl,app_rw=r/app_ddl} account_id={app_rw=a/app_ddl},subject={app_rw=a/app_ddl}',
+      },
+    ],
+  },
+  '0018': {
+    source: 'T-212',
+    // Each probe names one object 0018 creates, and each returns a value rather than raising once it
+    // is gone: to_regclass returns NULL for a missing name (coalesced), and the constraint, index and
+    // sequence reads are coalesced definitions. 0018 creates no function, no trigger and no rule.
+    probes: [
+      {
+        title: 'table public.audit_outbox exists, owned by app_ddl',
+        sql: `SELECT coalesce((SELECT pg_get_userbyid(relowner) FROM pg_class
+                               WHERE oid = to_regclass('public.audit_outbox')), '(absent)')`,
+        holds: 'app_ddl',
+      },
+      {
+        title:
+          "audit_outbox's columns are id bigint GENERATED ALWAYS AS IDENTITY, payload jsonb, created_at timestamptz DEFAULT now(), relayed_at timestamptz",
+        sql: `SELECT coalesce((SELECT string_agg(a.attname || ':' || format_type(a.atttypid, a.atttypmod) || ':' ||
+                                                 a.attnotnull::text || ':' || a.attidentity::text || ':' ||
+                                                 coalesce(pg_get_expr(d.adbin, d.adrelid), '-'), ',' ORDER BY a.attnum)
+                                 FROM pg_attribute a LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+                                WHERE a.attrelid = to_regclass('public.audit_outbox') AND a.attnum > 0
+                                  AND NOT a.attisdropped), '(absent)')`,
+        holds:
+          'id:bigint:true:a:-,payload:jsonb:true::-,created_at:timestamp with time zone:true::now(),relayed_at:timestamp with time zone:false::-',
+      },
+      {
+        title:
+          'audit_outbox_pkey is PRIMARY KEY (id), and its identity sequence is audit_outbox_id_seq',
+        sql: `SELECT coalesce((SELECT pg_get_constraintdef(oid) || ' ' || pg_get_serial_sequence('public.audit_outbox', 'id')
+                                 FROM pg_constraint
+                                WHERE conrelid = to_regclass('public.audit_outbox')
+                                  AND conname = 'audit_outbox_pkey'), '(absent)')`,
+        holds: 'PRIMARY KEY (id) public.audit_outbox_id_seq',
+      },
+      {
+        title: "audit_outbox_payload_object is CHECK (jsonb_typeof(payload) = 'object') (U-10 (1))",
+        sql: `SELECT coalesce((SELECT pg_get_constraintdef(oid) FROM pg_constraint
+                               WHERE conrelid = to_regclass('public.audit_outbox')
+                                 AND conname = 'audit_outbox_payload_object'), '(absent)')`,
+        holds: "CHECK ((jsonb_typeof(payload) = 'object'::text))",
+      },
+      {
+        title:
+          'audit_outbox_created_at_unrelayed_idx is (created_at) WHERE relayed_at IS NULL (SD 2854)',
+        sql: `SELECT coalesce((SELECT pg_get_indexdef(i.indexrelid) FROM pg_index i
+                               WHERE i.indexrelid = to_regclass('public.audit_outbox_created_at_unrelayed_idx')), '(absent)')`,
+        holds:
+          'CREATE INDEX audit_outbox_created_at_unrelayed_idx ON public.audit_outbox USING btree (created_at) WHERE (relayed_at IS NULL)',
+      },
+      {
+        title:
+          "audit_outbox's ACL: app_rw SELECT, INSERT (payload) and UPDATE (relayed_at) only; nothing to any other role",
+        sql: `SELECT coalesce((SELECT c.relacl::text || ' ' ||
+                                      (SELECT string_agg(a.attname || '=' || a.attacl::text, ',' ORDER BY a.attnum)
+                                         FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attacl IS NOT NULL)
+                                 FROM pg_class c WHERE c.oid = to_regclass('public.audit_outbox')), '(absent)')`,
+        holds:
+          '{app_ddl=arwdDxtm/app_ddl,app_rw=r/app_ddl} payload={app_rw=a/app_ddl},relayed_at={app_rw=w/app_ddl}',
       },
     ],
   },
