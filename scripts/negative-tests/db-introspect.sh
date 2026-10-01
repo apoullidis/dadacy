@@ -87,9 +87,20 @@
 # reading of the committed tree; K162 compares both I-VACUOUS lists whole instead of pinning the last
 # name. T-232 rework 1/2 (QA-F1, QA-R-F1): a fact about the plant's rendering is counted inside the plant's
 # own declaration in db/schema.ts (block_count), or as the plant's share (lines now minus lines in the
-# committed file), or against a psql-derived name set; a whole-file search remains only for a literal that
-# names a plant object (t1NN_*). Every read is classified in tasks/state/EP-2/T-232.md § Rework 2; see the
-# BASE block below.
+# committed file), or against a psql-derived name set. T-234 (QA-S-F1): seven whole-file searches of
+# db/schema.ts remain, each justified in scripts/gates/classify-introspect-reads.py's WHOLE_FILE_OK:
+#   - for a literal that names a plant object: K04's landed-assert (`pgTable("t138_plant"`); policy_check's
+#     fixture `-- expect:` lines, each naming its own policy (K26a-c, K27); part_expectations' t165_part* /
+#     t165Part* lines, `-- expect:` and `-- absent:` (K150-K154, two lines); K22's t152_* key lists;
+#   - for a name set read from psql: K36's rendered relation names that only schema pgboss has;
+#   - for a literal that names NO plant object: K11w, `! grep -q 'unknown(' "$SCHEMA"`, sound only because
+#     the same condition requires git diff to find the file equal to the committed one, and a committed
+#     file holding `unknown(` fails K00's parity first (the generator never writes it, T-150).
+# rehash() also reads and rewrites the whole file: that is the tamper itself, and nothing is judged from it.
+# gate:negative-suites runs that classifier over this file on every run, with no database, and goes red on
+# an unjustified whole-file read in any spelling, a read of the committed file not subtracted from the same
+# read of the working file, or an unclassifiable line; its fixture holds the shapes it must flag. Every read
+# is listed there and in tasks/state/EP-2/T-234.md. See the BASE block below.
 #
 #   cd /home/alex/projects/nanny/app && ./scripts/svc run <ticket> -- bash scripts/negative-tests/db-introspect.sh
 #
