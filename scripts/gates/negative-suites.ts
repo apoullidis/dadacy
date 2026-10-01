@@ -341,7 +341,12 @@ const SUITES: readonly Suite[] = [
     // by hand (PROTOCOL §5.2):
     //   $ git cat-file blob 81d4164:scripts/negative-tests/db-introspect.sh | sha256sum
     //   aa61cfddaf935b084e6ed55b9745b370edd0d9b5bb9a5045d809441fa05cb365
-    digest: 'aa61cfddaf935b084e6ed55b9745b370edd0d9b5bb9a5045d809441fa05cb365',
+    // RE-PINNED 2026-10-01 by T-234 rework 1 (QA-F1): header lines only (the classifier's measured width
+    // and its bounds, replacing "in any spelling"); no case added or removed. Red first at 06a8291 with the
+    // old pin (tasks/state/EP-2/T-234.md § Rework 1). Taken with the instrument, never edited by hand:
+    //   $ git cat-file blob 06a8291:scripts/negative-tests/db-introspect.sh | sha256sum
+    //   e311dcc015788a0ea73d31b96c8f6082a59976592afaaf94d439b1f67dbf011d
+    digest: 'e311dcc015788a0ea73d31b96c8f6082a59976592afaaf94d439b1f67dbf011d',
     // T-234 (T-232 QA-S-F1, NS1): every read of db/schema.ts or a generated artefact in the suite is
     // classified by this committed instrument on EVERY run of this gate, not only when the digest
     // moves, and the instrument is itself held against a fixture of the read shapes it must flag.
