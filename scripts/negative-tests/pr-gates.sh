@@ -16,7 +16,7 @@
 #   `time`, the `total` column, on this host. The run is pasted in
 #   tasks/state/EP-1/T-005.md.
 #
-# So the 71 cases below would be most of a working day if each paid for a full
+# So the 74 cases below would be most of a working day if each paid for a full
 # run. Three of the gates therefore take a cheap entry point — `pr.ts --roster-only` / `--only=`, `unit-tests.ts --dry-run`, and
 # `KINVARA_NEG_SUITES_TABLE` — each of which PRINTS what it did IN ITS OWN
 # BANNER LINE, so a run through one can never be pasted as a full run. For
@@ -425,6 +425,32 @@ CASE="B14"; table "$(mkg "$G")" >/dev/null
 printf 'x\n' > packages/policy/src/qa-t005-untracked.test.ts
 run_case "B14 a dirty tree is refused BEFORE any suite plants anything" FAIL \
   'the working tree is not clean' -- runneg
+
+# T-234 — THE READ-CLASSIFIER db-introspect.sh's roster entry carries (T-232 QA-S-F1, NS1). That suite
+# is NEEDS-SERVICE, so in gate:pr its digest and this classifier are all it gets. Each entry pins the
+# digest of the very file it names, so a red here can only be the classifier's.
+RC='"readClassifier":{"script":"scripts/gates/classify-introspect-reads.py","fixture":"scripts/gates/classify-introspect-reads.fixture"}'
+dbi_entry() { # dbi_entry <suite file> <readClassifier json member>
+  printf '[{"id":"db-introspect","file":"%s","cases":141,"state":"NEEDS-SERVICE","why":"T-234","owner":"T-234","unblocks":"n/a","digest":"%s",%s}]' \
+    "$1" "$(sha256sum "$1" | cut -d' ' -f1)" "$2"
+}
+CASE="B15"; table "$(dbi_entry scripts/negative-tests/db-introspect.sh "$RC")" >/dev/null
+run_case "B15 CONTROL: the committed suite satisfies its read-classifier" PASS \
+  'reads: scripts/gates/classify-introspect-reads.py: fixture' 'line(s) taken, 0 flagged' -- runneg
+
+# QA-S1's A1, appended: a whole-file count over an UNQUOTED $SCHEMA, the plant named only in the
+# description. T-232's classifier filed it PLANT-LITERAL and exited 0.
+{ cat scripts/negative-tests/db-introspect.sh; printf '%s\n' "fact \"QA-S1 A1 t153Money\" \"\$(grep -cF 'amountMinor' \$SCHEMA)\" 1"; } > "$TMP/dbi-plus-a1.sh"
+B16_LINE="$(wc -l < "$TMP/dbi-plus-a1.sh" | tr -d ' ')"
+CASE="B16"; table "$(dbi_entry "$TMP/dbi-plus-a1.sh" "$RC")" >/dev/null
+run_case "B16 the suite gains an unjustified whole-file read (QA-S1 A1's spelling)" FAIL \
+  'read(s) the read-classifier flags' "line ${B16_LINE}: SCHEMA-WHOLE-FILE-UNJUSTIFIED" -- runneg
+
+# A classifier emptied to print a clean verdict over the real suite: its fixture is what catches it.
+printf '%s\n' "print('1 line(s) taken from x;')" "print('FLAGGED 0 line(s): none')" > "$TMP/noop-classifier.py"
+CASE="B17"; table "$(dbi_entry scripts/negative-tests/db-introspect.sh "\"readClassifier\":{\"script\":\"$TMP/noop-classifier.py\",\"fixture\":\"scripts/gates/classify-introspect-reads.fixture\"}")" >/dev/null
+run_case "B17 a read-classifier that stopped flagging is caught by its fixture" FAIL \
+  'the read-classifier no longer flags' -- runneg
 
 echo
 echo "=== C. gate:unit-tests — OD-57 and OD-3 ==="

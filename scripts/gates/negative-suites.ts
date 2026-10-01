@@ -102,6 +102,13 @@ interface Suite {
   };
   /** BLOCKED / NEEDS-SERVICE only: sha256 of the suite file when pinned. */
   readonly digest?: string;
+  /**
+   * T-234: a static read-classifier the suite FILE must satisfy, run here even when the suite itself
+   * cannot run (NEEDS-SERVICE). `script` is run with python3 on `fixture` first (every `# attack:` line
+   * must be flagged, every `# control:` line taken and not flagged), then on the suite (exit 0, at
+   * least one line taken, `FLAGGED 0`). See checkReads() below.
+   */
+  readonly readClassifier?: { readonly script: string; readonly fixture: string };
 }
 
 const SUITES: readonly Suite[] = [
@@ -329,12 +336,154 @@ const SUITES: readonly Suite[] = [
     //   $ git cat-file blob e72e95a:scripts/negative-tests/db-introspect.sh | sha256sum
     //   b964255ac8482d19528a3637113aaaff2e5f83fbaf5698db44235d027157adab
     digest: 'b964255ac8482d19528a3637113aaaff2e5f83fbaf5698db44235d027157adab',
+    // T-234 (T-232 QA-S-F1, NS1): every read of db/schema.ts or a generated artefact in the suite is
+    // classified by this committed instrument on EVERY run of this gate, not only when the digest
+    // moves, and the instrument is itself held against a fixture of the read shapes it must flag.
+    // A whole-file read with no written justification, a committed-file count with nothing
+    // subtracted, or an unclassifiable line turns this gate red without a database.
+    readClassifier: {
+      script: 'scripts/gates/classify-introspect-reads.py',
+      fixture: 'scripts/gates/classify-introspect-reads.fixture',
+    },
   },
 ];
 
 /**
+ * T-234 — THE READ-CLASSIFIER, RUN AS PART OF THIS GATE. Two runs, judged by what they print, never by
+ * exit status alone (PROTOCOL §5.1: a classifier that crashed, or that stopped flagging, must not read
+ * as a clean suite):
+ *   1. the FIXTURE. Every line after `# attack:` must be on the classifier's `FLAGGED` line; every line
+ *      after `# control:` must be a row of its table and must not be flagged; the run must exit 1 and
+ *      the fixture must hold at least one of each. This is the anchor outside the suite: it fails if
+ *      the classifier is weakened, emptied or broken, whatever the suite contains.
+ *   2. the SUITE. Exit 0, `FLAGGED 0 line(s): none`, and a `<n> line(s) taken` header with n > 0.
+ * The rows a failure names are printed, so the red says which line and why.
+ */
+function checkReads(s: Suite, abs: string): string[] {
+  const rc = s.readClassifier;
+  if (rc === undefined) return [];
+  const problems: string[] = [];
+  const script = path.resolve(REPO_ROOT, rc.script);
+  const fixture = path.resolve(REPO_ROOT, rc.fixture);
+  const run = (file: string): { code: number; out: string; error?: string } => {
+    const r = spawnSync('python3', [script, file], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    return {
+      code: r.status ?? -1,
+      out: `${r.stdout ?? ''}${r.stderr ?? ''}`,
+      ...(r.error !== undefined ? { error: r.error.message } : {}),
+    };
+  };
+  const flaggedOf = (out: string): Set<number> | null => {
+    const m = /^FLAGGED ([0-9]+) line\(s\): (.*)$/m.exec(out);
+    if (m === null) return null;
+    const list = m[2] === 'none' ? [] : (m[2] ?? '').split(', ').map(Number);
+    return list.length === Number(m[1]) ? new Set(list) : null;
+  };
+  const rowsOf = (out: string): Map<number, string> =>
+    new Map(
+      [...out.matchAll(/^\| ([0-9]+) \| ([^|]+) \|/gm)].map((m) => [
+        Number(m[1]),
+        (m[2] ?? '').trim(),
+      ]),
+    );
+  for (const f of [script, fixture]) {
+    if (!fs.existsSync(f))
+      problems.push(`${s.id}: read-classifier file ${path.relative(REPO_ROOT, f)} does not exist`);
+  }
+  if (problems.length > 0) return problems;
+
+  // 1. the fixture
+  const fx = run(fixture);
+  const fxFlagged = flaggedOf(fx.out);
+  if (fx.error !== undefined || fxFlagged === null) {
+    return [
+      `${s.id}: the read-classifier did not produce a verdict on its fixture (exit ${String(fx.code)}` +
+        `${fx.error !== undefined ? `, ${fx.error}` : ''}). A crash or a no-op is not a pass. Last lines:\n` +
+        fx.out.trimEnd().split('\n').slice(-6).join('\n'),
+    ];
+  }
+  const fxRows = rowsOf(fx.out);
+  const markers = fs
+    .readFileSync(fixture, 'utf8')
+    .split('\n')
+    .flatMap((l, i) => {
+      const m = /^# (attack|control): (\S+)/.exec(l);
+      return m === null ? [] : [{ kind: m[1] ?? '', name: m[2] ?? '', line: i + 2 }];
+    });
+  const attacks = markers.filter((m) => m.kind === 'attack');
+  const controls = markers.filter((m) => m.kind === 'control');
+  const missed = attacks.filter((m) => !fxFlagged.has(m.line));
+  const wrong = controls.filter((m) => !fxRows.has(m.line) || fxFlagged.has(m.line));
+  if (attacks.length === 0 || controls.length === 0) {
+    problems.push(
+      `${s.id}: the read-classifier fixture holds ${String(attacks.length)} attack(s) and ${String(controls.length)} control(s); it needs at least one of each`,
+    );
+  }
+  if (missed.length > 0) {
+    problems.push(
+      `${s.id}: the read-classifier no longer flags ${String(missed.length)} of the fixture's ${String(attacks.length)} attack line(s): ` +
+        missed
+          .map((m) => `${m.name} (line ${String(m.line)}: ${fxRows.get(m.line) ?? 'not taken'})`)
+          .join('; '),
+    );
+  }
+  if (wrong.length > 0) {
+    problems.push(
+      `${s.id}: the read-classifier misjudges ${String(wrong.length)} control line(s) of its fixture: ` +
+        wrong
+          .map((m) => `${m.name} (line ${String(m.line)}: ${fxRows.get(m.line) ?? 'not taken'})`)
+          .join('; '),
+    );
+  }
+  if (fx.code !== 1)
+    problems.push(
+      `${s.id}: the read-classifier exited ${String(fx.code)} on its fixture, which holds attacks; expected 1`,
+    );
+  if (problems.length > 0) return problems;
+
+  // 2. the suite
+  const su = run(abs);
+  const suFlagged = flaggedOf(su.out);
+  const taken = /^([0-9]+) line\(s\) taken from /m.exec(su.out);
+  if (su.error !== undefined || suFlagged === null || taken === null) {
+    return [
+      `${s.id}: the read-classifier did not produce a verdict on ${s.file} (exit ${String(su.code)}). Last lines:\n` +
+        su.out.trimEnd().split('\n').slice(-6).join('\n'),
+    ];
+  }
+  if (Number(taken[1]) === 0)
+    problems.push(
+      `${s.id}: the read-classifier took 0 lines of ${s.file}: a classifier that read nothing has classified nothing`,
+    );
+  if (suFlagged.size > 0 || su.code !== 0) {
+    const rows = rowsOf(su.out);
+    const shown = [...suFlagged]
+      .slice(0, 12)
+      .map((n) => `line ${String(n)}: ${rows.get(n) ?? '?'}`);
+    const stale = su.out.split('\n').filter((l) => l.startsWith('STALE JUSTIFICATION'));
+    problems.push(
+      `${s.id}: ${s.file} has ${String(suFlagged.size)} read(s) the read-classifier flags (exit ${String(su.code)}): ` +
+        `${[...shown, ...stale].join('; ') || '(see the classifier output)'}. Every whole-file read of db/schema.ts ` +
+        `needs a written justification in ${rc.script}'s WHOLE_FILE_OK, every read of the committed file must be ` +
+        `subtracted from the same read of the working file, and every line must be classifiable (T-232 § Rework 2, T-234).`,
+    );
+  }
+  if (problems.length === 0) {
+    console.log(
+      `    reads: ${rc.script}: fixture ${String(attacks.length)} attack(s) flagged, ${String(controls.length)} control(s) not; ` +
+        `suite ${taken[1] ?? '?'} line(s) taken, 0 flagged`,
+    );
+  }
+  return problems;
+}
+
+/**
  * THE DIFFERENTIAL HARNESS (the convention T-036 set for this repo, and the
- * reason this gate has FIFTEEN cases against it — B0..B14 in
+ * reason this gate has EIGHTEEN cases against it — B0..B17 in
  * scripts/negative-tests/pr-gates.sh — instead of one green run).
  *
  * A full pass of the real suites is 290.4s at 8c35307 — the six
@@ -447,6 +596,8 @@ for (const s of SUITE_TABLE) {
     failures.push(`${s.id}: ${s.file} does not exist — a rostered suite was deleted`);
     continue;
   }
+
+  failures.push(...checkReads(s, abs));
 
   if (s.digest !== undefined) {
     const actual = crypto.createHash('sha256').update(fs.readFileSync(abs)).digest('hex');
