@@ -68,9 +68,10 @@
 -- The consequence, stated rather than discovered: every later pg-boss schema change (a version
 -- bump) is likewise a migration carrying `-- @run-as: bootstrap-superuser`.
 --
--- THE SA §INT-10 GUARD. `CREATE SCHEMA`, `CREATE TABLE`, `CREATE FUNCTION` and `GRANT` are all
--- event-trigger tags of the guard 0003 relocated to `kinvara_guard`, so it fires throughout
--- this file. Nothing here grants `answering_service` anything, and schema `pgboss` is not
+-- THE SA §INT-10 GUARD. `CREATE TABLE`, `CREATE FUNCTION` and `GRANT` are event-trigger tags
+-- of the guard 0003 relocated to `kinvara_guard`, so it fires throughout this file; `CREATE
+-- SCHEMA` is not among its tags (0001, CREATE EVENT TRIGGER trg_int10_answering_service ...
+-- WHEN TAG IN). Nothing here grants `answering_service` anything, and schema `pgboss` is not
 -- granted to PUBLIC, so the vendor role cannot even name an object in it.
 --
 -- NOT DETERMINISTIC ACROSS DAYS, BY PG-BOSS'S DESIGN. pg-boss's plan ends its `queue_stats`
