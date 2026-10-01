@@ -7,6 +7,10 @@
 # "if your check did nothing at all, would it say so?").
 # A1, A2, A3 and A6 are QA-S1's attack2.sh lines (tasks/state/EP-2/T-232.md § QA-S1), byte for byte; the
 # classifier committed verbatim from T-232 (3be54427…) exits 0 on all four. A4 and A5 were QA's controls.
+# The R-numbered block at the end is T-234 QA-1's 53 shapes (52 attacks and R42, a control), which the
+# first T-234 classifier exited 0 on in ten cases: R26, R33, R34, R35, R36 (then a stated bound), R41,
+# R43, R47, R48 and R51. It also exited 0 on R42, and was right to.
+# This file is the whole of what the classifier is claimed to catch: see its docstring for the bounds.
 #
 # attack: A1 unquoted $SCHEMA, plant named only in the description (QA-S1 A1)
 fact "A1 db/schema.ts, t153Money: the amount_minor line" "$(grep -cF 'amountMinor: bigint("amount_minor", { mode: "bigint" }).notNull(),' $SCHEMA)" 1
@@ -61,3 +65,130 @@ import { t153Money, t153MoneyV } from "./db/schema.ts";
 check K99 "C6 db/schema.ts is not regenerated" I-DIFF 'relation "t153_money"'
 # control: C7 an abort message that names the file
 grep -q 'pgTable("t138_plant"' "$OUT" || abort "regeneration did not add t138_plant to $SCHEMA"
+
+# ---- T-234 rework 1: every shape of QA-1 (tasks/state/EP-2/T-234.md § QA-1, .cache/t234-qa/atk/attacks*.txt),
+# byte for byte. The marker sits on the line of each block that must be flagged (the read itself where the
+# classifier can see it, else the verdict that uses it); the other lines of a block are context.
+# attack: R01 here-string of cat
+fact "R01" "$(grep -c 'pgTable(' <<< "$(cat "$SCHEMA")")" 12
+# attack: R02 $(<file) here-string
+fact "R02" "$(grep -c 'pgTable(' <<< "$(<"$SCHEMA")")" 12
+# attack: R03 mapfile from $SCHEMA
+mapfile -t QL < "$SCHEMA"
+# attack: R04 read loop redirected from $SCHEMA
+while IFS= read -r l; do case $l in *pgTable\(*) qn=$((qn + 1)) ;; esac; done < "$SCHEMA"
+# attack: R05 xargs -a
+fact "R05" "$(xargs -a "$SCHEMA" -d '\n' printf '%s\n' | grep -c 'pgTable(')" 12
+# attack: R06 process substitution
+fact "R06" "$(grep -c 'pgTable(' <(cat "$SCHEMA"))" 12
+# attack: R07 sed -n | wc
+fact "R07" "$(sed -n '/pgTable(/p' "$SCHEMA" | wc -l)" 12
+# attack: R08 awk -v f="$SCHEMA" getline
+fact "R08" "$(awk -v f="$SCHEMA" 'BEGIN { while ((getline l < f) > 0) if (l ~ /pgTable\(/) n++; print n }')" 12
+# attack: R09 awk -v f=db/schema.ts literal
+fact "R09" "$(awk -v f=db/schema.ts 'BEGIN { while ((getline l < f) > 0) if (l ~ /pgTable\(/) n++; print n }')" 12
+# attack: R10 $'db/schema.ts' alias
+QF=$'db/schema.ts'
+QF=$'db/sch\x65ma.ts'
+# attack: R11 $'...' with an escape inside the path (alias, then a read)
+fact "R11" "$(grep -c 'pgTable(' "$QF")" 12
+qn=$(grep -c 'pgTable(' $SCH\
+EMA)
+# attack: R12 line continuation splitting $SCHEMA
+fact "R12" "$qn" 12
+qn=$(grep -c 'pgTable(' db/sche\
+ma.ts)
+# attack: R13 line continuation splitting the literal path
+fact "R13" "$qn" 12
+# attack: R14 eval (stated bound)
+eval "qn=\$(grep -c 'pgTable(' \$SCHEMA)"
+fact "R14" "$qn" 12
+# attack: R15 bash -c (stated bound)
+fact "R15" "$(bash -c 'grep -c "pgTable(" "$0"' "$SCHEMA")" 12
+# attack: R16 command in a variable (stated bound)
+QCMD="grep -c pgTable( db/schema.ts"
+fact "R16" "$($QCMD)" 12
+# attack: R17 copy under another name with cp (not the harness-listed .s1)
+cp "$SCHEMA" "$OUT.s2"
+fact "R17" "$(grep -c 'pgTable(' "$OUT.s2")" 12
+cp "$SCHEMA" "$OUT.s1"
+# attack: R18 the harness-listed copy, read later (stated bound)
+fact "R18" "$(grep -c 'pgTable(' "$OUT.s1")" 12
+# attack: R19 glob in a fact
+fact "R19" "$(grep -c 'pgTable(' db/schema.t[s])" 12
+# attack: R20 glob in an assignment, verdict by fact
+qn=$(grep -c 'pgTable(' db/sch*.ts)
+fact "R20" "$qn" 12
+# attack: R21 ${SCHEMA:-} in a fact
+fact "R21" "$(grep -c 'pgTable(' "${SCHEMA:-}")" 12
+# attack: R22 ${SCHEMA:-} in an assignment, verdict by fact
+qn=$(grep -c 'pgTable(' "${SCHEMA:-}")
+fact "R22" "$qn" 12
+# attack: R23 "./$SCHEMA" inside a fact
+fact "R23" "$(grep -c 'pgTable(' "./$SCHEMA")" 12
+# attack: R24 "$PWD/db/schema.ts" inside a fact
+fact "R24" "$(grep -c 'pgTable(' "$PWD/db/schema.ts")" 12
+# attack: R25 "./$SCHEMA" in a plain assignment
+qn=$(grep -c 'pgTable(' "./$SCHEMA")
+# attack: R26 "./$SCHEMA" in a local assignment
+local qn=$(grep -c 'pgTable(' "./$SCHEMA")
+# attack: R27 cd db, then schema.ts
+fact "R27" "$(cd db && grep -c 'pgTable(' schema.ts)" 12
+# attack: R28 recursive grep over db/ restricted to schema.ts
+fact "R28" "$(grep -rc 'pgTable(' db --include=schema.ts)" 12
+qn=$(grep -rh 'pgTable(' db --include='*.ts' | wc -l)
+# attack: R29 recursive grep, assignment, verdict by fact
+fact "R29" "$qn" 12
+declare -n QS=SCHEMA
+# attack: R30 nameref alias
+fact "R30" "$(grep -c 'pgTable(' "$QS")" 12
+qv=SCHEMA
+# attack: R31 indirect expansion
+fact "R31" "$(grep -c 'pgTable(' "${!qv}")" 12
+# attack: R32 node -e with the literal path in single quotes, in a fact
+fact "R32" "$(node -e 'console.log(require("fs").readFileSync("db/schema.ts", "utf8").split("pgTable(").length - 1)')" 12
+# attack: R33 node -e in a local assignment
+local qn=$(node -e 'console.log(require("fs").readFileSync("db/schema.ts", "utf8").split("pgTable(").length - 1)')
+# attack: R34 a copy of block_count's body line, outside block_count (borrowed exemption)
+grep -q "^export const $1 = " "$SCHEMA" || { echo -1; return; }
+# attack: R35 a copy of block_count's awk line, outside block_count
+awk -v n="export const $1 = " 'index($0, "export const ") == 1 { p = (index($0, n) == 1) } p' "$SCHEMA" | grep -c${x}F -- "$2"
+qd=accountRole
+# attack: R36 block_count over a variable naming a committed declaration
+fact "R36" "$(block_count "$qd" 'role:')" 1
+# (R37 context: the justified K11w line once, so the copy below makes its key match 2 lines, not 1)
+if git diff --quiet -- "$SCHEMA" && ! grep -q 'unknown(' "$SCHEMA"; then v=ok; fi
+# attack: R37 a WHOLE_FILE_OK key copied (K11w's), entry count 1 -> 2
+if git diff --quiet -- "$SCHEMA" && ! grep -q 'unknown(' "$SCHEMA"; then v=ok; fi
+# attack: R38 git --no-pager show HEAD: unsubtracted
+fact "R38" "$(git --no-pager show HEAD:"$SCHEMA" | grep -c pgboss)" 0
+# attack: R39 git show of the index (:path), unsubtracted
+fact "R39" "$(git show :db/schema.ts | grep -c pgboss)" 0
+# attack: R40 git grep over HEAD, no path spelled
+fact "R40" "$(git grep -c 'pgTable(' HEAD -- 'db/*.ts' | cut -d: -f3)" 12
+# attack: R41 abort-shaped verdict with a dq-hidden read
+[ "$(grep -c 'pgTable(' "./$SCHEMA")" -eq 12 ] || abort "committed relation count changed"
+# control: R42 the plant's share through head_count, as C2 (QA-1 R42: correctly MINUS-HEAD, not a finding)
+fact "R42" "$(($(grep -cF -- 'pgTable(' "$SCHEMA") - $(head_count 'pgTable(')))" 0
+# attack: R43 untaken read and untaken verdict
+qn=$(grep -c 'pgTable(' db/sch*.ts); [ "$qn" -eq 12 ] || bad=$((bad + 1))
+# attack: R44 printf-quoted path in a single-quoted string passed to sh
+fact "R44" "$(sh -c 'grep -c "pgTable(" db/schema.ts')" 12
+# attack: R45 ${SCHEMA} with a suffix strip
+fact "R45" "$(grep -c 'pgTable(' "${SCHEMA%.ts}.ts")" 12
+# attack: R46 cat of the directory glob piped
+fact "R46" "$(cat db/*.ts | grep -c 'pgTable(')" 12
+# attack: R47 QA-S1's shape with the plant named in the pattern, "./$SCHEMA"
+fact "R47 db/schema.ts: amount_minor lines" "$(grep -cE 't153Money|amountMinor' "./$SCHEMA")" 2
+# attack: R47b the same with a bare "$SCHEMA" (control: must be flagged)
+fact "R47b db/schema.ts: amount_minor lines" "$(grep -cE 't153Money|amountMinor' "$SCHEMA")" 2
+# attack: R48 "$REPO_ROOT/$SCHEMA", abort-shaped
+[ "$(grep -c 'pgTable(' "$REPO_ROOT/$SCHEMA")" -eq 12 ] || abort "the committed set no longer renders 12 tables"
+# attack: R49 "$REPO_ROOT/$SCHEMA" with a bad counter (the suite's own v=BAD idiom)
+if [ "$(grep -c 'pgTable(' "$REPO_ROOT/$SCHEMA")" -eq 12 ]; then v=ok; else v=BAD; bad=$((bad + 1)); fi
+# attack: R50 bare "$SCHEMA" abort-shaped (control: must be flagged)
+[ "$(grep -c 'pgTable(' "$SCHEMA")" -eq 12 ] || abort "the committed set no longer renders 12 tables"
+# attack: R51 "$PWD/db/schema.ts" with a plant alternative in a fact
+fact "R51" "$(grep -cE 't152Child|pgTable\(' "$PWD/db/schema.ts")" 13
+# attack: R52 local with bare $SCHEMA (control: must be flagged)
+local qn=$(grep -c 'pgTable(' "$SCHEMA")
