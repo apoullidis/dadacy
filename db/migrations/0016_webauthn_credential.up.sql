@@ -47,8 +47,9 @@
 --   No TRUNCATE.
 --   These are grants, not triggers: they bind app_rw only. The owner app_ddl and the superuser
 --   are not held on any column, and app_rw itself can DELETE a row and INSERT a new one under
---   the same id (with a different key, account or a sign_count of 0), which is revoke and
---   re-register. No ruling asks the database to hold more.
+--   the same id (with a different key or account, and any sign_count the range CHECK admits,
+--   0..4294967295, not only 0), which is revoke and re-register. No ruling asks the database
+--   to hold more.
 --
 -- NOT HELD HERE: a non-decreasing sign_count (U-W2 (i), the library's); the value of
 -- last_used_at; the length or shape of credential_id and public_key; the contents or array
