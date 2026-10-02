@@ -92,6 +92,32 @@
  * reached it, the helper was started — before judging timing. A run that did
  * not boot is CRASH; a run that did not exit is HUNG; neither is ever OK.
  *
+ * THE TEST ENVIRONMENT, AND TWO THINGS IT USED TO TIME BY ACCIDENT (T-238,
+ * OD-263). Measured in tasks/state/EP-1/T-238.md; both are set-up, so both are
+ * ASSERTED per case like any other set-up, never assumed:
+ *   1. NO CORE DUMP. SIGSEGV, SIGQUIT, SIGABRT and SIGBUS (L08, L09, L10, L17)
+ *      are core-dumping signals. With RLIMIT_CORE unlimited — what the toolbox
+ *      inherits — the kernel pipes the dying app's core to the HOST's
+ *      kernel.core_pattern handler before the app is reaped, and that time fell
+ *      inside these cases' window: at main 05b67dd, 3 of 5 standalone runs red
+ *      at 4.8-7.0 s against a 6000 ms bound, 0 of 5 with RLIMIT_CORE 0 (T-238
+ *      § E2). So the entrypoint is spawned under `ulimit -c 0`, and every case
+ *      asserts that the app it judges really has a soft RLIMIT_CORE of 0 (it
+ *      prints it from /proc/self/limits). The signal, the exit status and the
+ *      window are unchanged; what is no longer in the window is a dump. HOW
+ *      LONG A DUMPING DEATH TAKES WHERE CORES ARE ON is not judged here.
+ *   2. THE SIGNAL SCHEDULE STARTS WHEN THE SET-UP IS UP. A case's signals are
+ *      timed from the moment the app has printed its line AND, where the case
+ *      starts a helper, the helper has printed "helper: up" — which it does
+ *      only after installing its handlers. Before T-238 they were timed from
+ *      the app's line alone, so a helper that took more than 500 ms to boot
+ *      was killed by the first forwarded SIGTERM (default action) and the
+ *      group was empty: L04 then exits on time with "helper: up" missing and
+ *      no deadline line — the one red OD-263 recorded for L04, reproduced
+ *      exactly by a helper slowed by 800 ms (T-238 § E3). Elapsed times are
+ *      unchanged: "after 1st signal" is still from the first signal, and
+ *      "after boot" is still from the app's line.
+ *
  * THE DIFFERENTIAL (the T-036 convention): KINVARA_ENTRYPOINT_IMPL=<path>
  * judges another copy of the entrypoint, e.g. the one at main 36a41d1:
  *   git show 36a41d1:docker/app-runtime/entrypoint.mjs > /tmp/ep-old.mjs
@@ -166,7 +192,14 @@ if (e.LC_HELPER === 'draining') helper = spawn(process.execPath, [__dirname + '/
 // ppid (T-181 rework 1): whether the app is the entrypoint's DIRECT child —
 // i.e. whether a shell sits between them — is set-up for L13/L14/L16, and a
 // case must see its set-up land before its verdict means anything.
-console.error('app: pid=' + process.pid + ' helper=' + (helper ? helper.pid : 'none') + ' ppid=' + process.ppid);
+// core (T-238): the SOFT RLIMIT_CORE this process runs under, read from the
+// kernel's own view. Set-up for every case: a dump must not be what is timed.
+let core = 'unreadable';
+try {
+  const m = /^Max core file size[ \\t]+(\\S+)/m.exec(require('node:fs').readFileSync('/proc/self/limits', 'utf8'));
+  core = m ? m[1] : 'absent';
+} catch {}
+console.error('app: pid=' + process.pid + ' helper=' + (helper ? helper.pid : 'none') + ' ppid=' + process.ppid + ' core=' + core);
 // T-181: an app that SURVIVES a signal is the whole point of L15, so SIGINT is
 // ignored on request rather than taking node's default death.
 if (e.LC_IGNORE_INT === '1') process.on('SIGINT', () => console.error('app: SIGINT ignored'));
@@ -231,10 +264,19 @@ const reEscape = (s) => s.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
  * Run one case. `signals` are ms offsets after boot at which SIGTERM is sent to
  * the entrypoint. Returns what was observed; judging is the caller's.
  */
+/** How long a case's set-up may take to come up after the app's line before the
+ *  case is abandoned as "set-up did not land" (T-238). Not a timing bound on
+ *  anything judged: no signal has been sent when it expires. */
+const READY_LIMIT_MS = 15_000;
+
 function runCase(env, signals, kind = 'argv') {
   return new Promise((resolve) => {
     const t0 = Date.now();
-    const ep = spawn(process.execPath, [IMPL], {
+    // T-238: `ulimit -c 0`, then exec — so the entrypoint keeps this pid (ep.pid
+    // is still the entrypoint's, which L13/L14/L16's parent check needs) and it
+    // and everything it starts run without a core dump. Asserted per case below
+    // from the app's own /proc/self/limits, not assumed from this line.
+    const ep = spawn('/bin/sh', ['-c', 'ulimit -c 0 && exec "$@"', 'sh', process.execPath, IMPL], {
       env: {
         ...process.env,
         KINVARA_APP: 'lc',
@@ -243,14 +285,32 @@ function runCase(env, signals, kind = 'argv') {
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+    const wantsHelper = env.LC_HELPER === 'stubborn' || env.LC_HELPER === 'draining';
     let log = '';
     let bootAt = null;
+    let readyAt = null;
+    let notReady = false;
     let firstSignalAt = null;
     const timers = [];
     const onData = (b) => {
       log += String(b);
       if (bootAt === null && /app: pid=\d+/.test(log)) {
         bootAt = Date.now();
+        // A set-up that never comes up is reported as such, with no signal sent.
+        if (wantsHelper)
+          timers.push(
+            setTimeout(() => {
+              if (readyAt !== null) return;
+              notReady = true;
+              ep.kill('SIGKILL');
+            }, READY_LIMIT_MS),
+          );
+      }
+      // T-238: the schedule starts when the set-up is UP — the app's line, and
+      // the helper's "helper: up" (printed after its handlers are installed)
+      // where the case starts one. See the header, THE TEST ENVIRONMENT, 2.
+      if (bootAt !== null && readyAt === null && (!wantsHelper || /helper: up/.test(log))) {
+        readyAt = Date.now();
         for (const entry of signals) {
           // A bare number is a SIGTERM at that offset (T-180's five cases);
           // `{ at, sig }` names the signal, which T-181's L15 needs because the
@@ -290,9 +350,24 @@ function runCase(env, signals, kind = 'argv') {
             }
           }
         }
-        const pp = /app: pid=\d+ helper=(?:\d+|none) ppid=(\d+)/.exec(log);
+        const pp = /app: pid=\d+ helper=(?:\d+|none) ppid=(\d+) core=(\S+)/.exec(log);
         const appPpid = pp ? Number(pp[1]) : null;
-        resolve({ code, sig, log, t0, bootAt, firstSignalAt, exitAt, epPid: ep.pid, appPpid });
+        const appCore = pp ? (pp[2] ?? null) : null;
+        resolve({
+          code,
+          sig,
+          log,
+          t0,
+          bootAt,
+          readyAt,
+          notReady,
+          wantsHelper,
+          firstSignalAt,
+          exitAt,
+          epPid: ep.pid,
+          appPpid,
+          appCore,
+        });
       }, 300);
     });
   });
@@ -312,6 +387,10 @@ function runCase(env, signals, kind = 'argv') {
  * signals take node's slow path is not something this file can enumerate, so
  * every signal gets the window that still excludes the thing being guarded.
  * Readings are in tasks/state/EP-1/T-181.md § E8 and § Rework 1, per run.
+ * T-238: those slow readings were core dumps (SIGSEGV/SIGQUIT/SIGABRT/SIGBUS
+ * dump; SIGKILL/SIGTERM/SIGINT/SIGHUP do not). The window is NOT widened for
+ * them: the app now runs under RLIMIT_CORE 0, asserted per case, so no dump is
+ * inside it (header, THE TEST ENVIRONMENT, 1).
  */
 const selfSignalCase = ([id, sig, code, note = '']) => ({
   id,
@@ -564,12 +643,26 @@ cases.forEach((c, i) => {
   if (r.bootAt === null || !bootLine.test(r.log)) {
     verdict = 'CRASH';
     problems.push(`the app never booted in REAL mode on the ${kind} path`);
+  } else if (r.notReady) {
+    verdict = 'MISBEHAVED';
+    problems.push(
+      `set-up did not land: /helper: up/ not in the log ${String(READY_LIMIT_MS)} ms after the app's line; ` +
+        `no signal was sent and the harness killed the entrypoint`,
+    );
   } else if (r.sig === 'SIGKILL') {
     verdict = 'HUNG';
     problems.push(`no exit within ${String(2 * D + 20_000)} ms; the harness killed it`);
   } else {
     for (const re of c.landed)
       if (!re.test(r.log)) problems.push(`set-up did not land: ${String(re)} not in the log`);
+    // T-238: no core dump inside the window. The value is the app's own soft
+    // RLIMIT_CORE from /proc/self/limits; anything but 0 means a dumping signal
+    // would time the dump, not PID 1.
+    if (r.appCore !== '0')
+      problems.push(
+        `set-up did not land: the app's soft RLIMIT_CORE is ${String(r.appCore)}, expected 0 ` +
+          `(a core-dumping death would then time the dump, not PID 1 — T-238)`,
+      );
     // T-181 rework 1: the process topology is set-up too. L16 means nothing if
     // a shell was still in between, and L14 means nothing if there was not.
     if (c.directChild !== undefined && (r.appPpid === r.epPid) !== c.directChild)
@@ -605,8 +698,14 @@ cases.forEach((c, i) => {
   const mark = verdict === 'OK' ? '  ' : '!!';
   if (verdict !== 'OK') bad += 1;
   const origin = c.expect.from === 'signal' ? 'after 1st signal' : 'after boot';
+  // T-238: how long the helper took to come up after the app's line — printed,
+  // not judged, so the margin the old 500 ms schedule relied on is on record.
+  const up =
+    r.wantsHelper && r.readyAt !== null && r.bootAt !== null
+      ? `  helper up +${String(r.readyAt - r.bootAt)}ms`
+      : '';
   console.log(
-    `${mark} ${c.id} ${c.label.padEnd(68)} exit=${String(r.code)} ${String(r.elapsed ?? '-')}ms ${origin}  ${verdict}`,
+    `${mark} ${c.id} ${c.label.padEnd(68)} exit=${String(r.code)} ${String(r.elapsed ?? '-')}ms ${origin}${up}  ${verdict}`,
   );
   for (const p of problems) console.log(`       - ${p}`);
 });
