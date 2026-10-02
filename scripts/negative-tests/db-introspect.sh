@@ -1293,7 +1293,8 @@ write_judge K160m "(T-214) MUTATION, the identity rewrite removed (mutation asse
 restore
 
 t214_ident_plant
-mutate "$PARTITION" "        start: seqDecls[0].stmt.getStart(sf)," "        start: seqDecls[0].stmt.getEnd(),"
+mutate "$PARTITION" "        end: source.charAt(seqEnd) === '\\n' ? seqEnd + 1 : seqEnd," "        end: seqDecls[0].stmt.getStart(sf),"
+git diff -U0 -- "$PARTITION" | grep -E '^[-+][^-+]' | sed 's/^/   mutation:   /'
 write_schema
 node scripts/db-introspect.ts --check >"$OUT" 2>&1
 code=$?
