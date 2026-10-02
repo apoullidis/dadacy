@@ -40,7 +40,7 @@ import {
 import { assertPermitted, assertRefused, INT10_RAISE } from '../src/expect.ts';
 
 const SUITE = 'migrations-applied';
-const HIGHEST_COMMITTED = '0019';
+const HIGHEST_COMMITTED = '0020';
 const COMMITTED_DIR = path.join(REPO_ROOT, MIGRATIONS_DIR);
 const RECORD_SQL = `SELECT coalesce(shobj_description(oid, 'pg_database'), '(no comment)')
                       FROM pg_database WHERE datname = current_database()`;
@@ -807,6 +807,78 @@ const CREATED_BY: Readonly<
                                  FROM pg_class c WHERE c.oid = to_regclass('public.audit_anchor')), '(absent)')`,
         holds:
           '{app_ddl=arwdDxtm/app_ddl,app_rw=r/app_ddl} head_seq={app_rw=a/app_ddl},head_hash={app_rw=a/app_ddl},s3_key={app_rw=a/app_ddl}',
+      },
+    ],
+  },
+  '0020': {
+    source: 'T-214',
+    // Each probe names one object 0020 creates, and each returns a value rather than raising once it
+    // is gone: to_regclass returns NULL for a missing name (coalesced), and the constraint, sequence,
+    // partition and ACL reads are coalesced. 0020 creates no function, no trigger and no rule.
+    probes: [
+      {
+        title:
+          'partitioned table public.audit_log exists, owned by app_ddl, PARTITION BY RANGE (occurred_at)',
+        sql: `SELECT coalesce((SELECT pg_get_userbyid(relowner) || ' ' || relkind::text || ' ' || pg_get_partkeydef(oid) FROM pg_class
+                               WHERE oid = to_regclass('public.audit_log')), '(absent)')`,
+        holds: 'app_ddl p RANGE (occurred_at)',
+      },
+      {
+        title:
+          "audit_log's columns are SD 2836-2846's sixteen with seq an identity, then source_outbox_id bigint (OE-72 RQ-2)",
+        sql: `SELECT coalesce((SELECT string_agg(a.attname || ':' || format_type(a.atttypid, a.atttypmod) || ':' ||
+                                                 a.attnotnull::text || ':' || a.attidentity::text, ',' ORDER BY a.attnum)
+                                 FROM pg_attribute a
+                                WHERE a.attrelid = to_regclass('public.audit_log') AND a.attnum > 0
+                                  AND NOT a.attisdropped), '(absent)')`,
+        holds:
+          'seq:bigint:true:a,occurred_at:timestamp with time zone:true:,actor_type:text:true:,actor_id:character(26):false:,action:text:true:,subject_type:text:true:,subject_id:character(26):false:,data_class:text:false:,policy_basis:text:false:,reason_code:text:false:,rationale:text:false:,before_hash:bytea:false:,after_hash:bytea:false:,request_context:jsonb:true:,prev_entry_hash:bytea:true:,entry_hash:bytea:true:,source_outbox_id:bigint:false:',
+      },
+      {
+        title:
+          'audit_log_pkey is PRIMARY KEY (seq, occurred_at) (U-2), and the identity sequence is audit_log_seq_seq',
+        sql: `SELECT coalesce((SELECT pg_get_constraintdef(oid) || ' ' || pg_get_serial_sequence('public.audit_log', 'seq')
+                                 FROM pg_constraint
+                                WHERE conrelid = to_regclass('public.audit_log')
+                                  AND conname = 'audit_log_pkey'), '(absent)')`,
+        holds: 'PRIMARY KEY (seq, occurred_at) public.audit_log_seq_seq',
+      },
+      {
+        title:
+          'audit_log_source_outbox_id_occurred_at_key is UNIQUE (source_outbox_id, occurred_at) (OE-72 RQ-2)',
+        sql: `SELECT coalesce((SELECT pg_get_constraintdef(oid) FROM pg_constraint
+                               WHERE conrelid = to_regclass('public.audit_log')
+                                 AND conname = 'audit_log_source_outbox_id_occurred_at_key'), '(absent)')`,
+        holds: 'UNIQUE (source_outbox_id, occurred_at)',
+      },
+      {
+        title:
+          'audit_log_prev_entry_hash_len and audit_log_entry_hash_len are the 32-byte CHECKs (U-5 (5))',
+        sql: `SELECT coalesce((SELECT string_agg(conname || ' ' || pg_get_constraintdef(oid), ' ; ' ORDER BY conname)
+                                 FROM pg_constraint WHERE conrelid = to_regclass('public.audit_log')
+                                  AND conname IN ('audit_log_prev_entry_hash_len', 'audit_log_entry_hash_len')), '(absent)')`,
+        holds:
+          'audit_log_entry_hash_len CHECK ((octet_length(entry_hash) = 32)) ; audit_log_prev_entry_hash_len CHECK ((octet_length(prev_entry_hash) = 32))',
+      },
+      {
+        title:
+          'exactly 36 partitions, audit_log_p202610 first and audit_log_p202909 last, each with its own app_rw SELECT grant (U-3)',
+        sql: `SELECT coalesce((SELECT count(*) || ' ' || min(c.relname) || ' ' || max(c.relname) || ' with app_rw SELECT: ' ||
+                                      count(*) FILTER (WHERE c.relacl::text = '{app_ddl=arwdDxtm/app_ddl,app_rw=r/app_ddl}')
+                                 FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid
+                                WHERE i.inhparent = to_regclass('public.audit_log')
+                               HAVING count(*) > 0), '(absent)')`,
+        holds: '36 audit_log_p202610 audit_log_p202909 with app_rw SELECT: 36',
+      },
+      {
+        title:
+          "audit_log's ACL: app_rw SELECT, and INSERT on every column but seq, prev_entry_hash and entry_hash; nothing to any other role",
+        sql: `SELECT coalesce((SELECT c.relacl::text || ' ' ||
+                                      (SELECT string_agg(a.attname, ',' ORDER BY a.attnum)
+                                         FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attacl::text = '{app_rw=a/app_ddl}')
+                                 FROM pg_class c WHERE c.oid = to_regclass('public.audit_log')), '(absent)')`,
+        holds:
+          '{app_ddl=arwdDxtm/app_ddl,app_rw=r/app_ddl} occurred_at,actor_type,actor_id,action,subject_type,subject_id,data_class,policy_basis,reason_code,rationale,before_hash,after_hash,request_context,source_outbox_id',
       },
     ],
   },
