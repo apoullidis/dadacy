@@ -747,6 +747,15 @@ describe('0020 — the CHECKs (SD 2838, 2841; U-5 (5)) and the NOT NULLs (V-L3, 
     }
   }
 
+  test('the owner app_ddl writing a 31-byte prev_entry_hash is REFUSED (23514): the CHECKs bind the owner too', async () => {
+    assertRefusedBy(
+      'owner 31-byte prev_entry_hash',
+      await asLogin(LOGINS.app_ddl, fullRow({ prev: bytesOf(31) })),
+      check23514(FIRST, 'audit_log_prev_entry_hash_len'),
+      'CONSTRAINT NAME:  audit_log_prev_entry_hash_len',
+    );
+  });
+
   test("the superuser updating a row's entry_hash to 31 bytes is REFUSED (23514): the CHECK binds every writer", async () => {
     const r = await asSuperuser(
       readRow('fixture.a'),
@@ -769,14 +778,15 @@ describe('0020 — the CHECKs (SD 2838, 2841; U-5 (5)) and the NOT NULLs (V-L3, 
     'entry_hash',
   ] as const) {
     test(`${column} NULL is REFUSED (23502, naming the column), as the superuser`, async () => {
-      const spec: RowSpec = {
-        actorType: column === 'actor_type' ? 'NULL' : undefined,
-        action: column === 'action' ? 'NULL' : undefined,
-        subjectType: column === 'subject_type' ? 'NULL' : undefined,
-        requestContext: column === 'request_context' ? 'NULL' : undefined,
-        prev: column === 'prev_entry_hash' ? 'NULL' : undefined,
-        entry: column === 'entry_hash' ? 'NULL' : undefined,
-      };
+      const key = {
+        actor_type: 'actorType',
+        action: 'action',
+        subject_type: 'subjectType',
+        request_context: 'requestContext',
+        prev_entry_hash: 'prev',
+        entry_hash: 'entry',
+      } as const;
+      const spec: RowSpec = { [key[column]]: 'NULL' };
       assertRefusedBy(
         `${column} NULL`,
         await asSuperuser(fullRow(spec)),

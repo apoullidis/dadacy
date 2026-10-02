@@ -41,8 +41,9 @@
 --         for the same reason as the key. Because the relay copies audit_outbox.created_at into
 --         occurred_at (U-9), a second relay of one outbox row carries the same pair and is refused
 --         (23505, naming the PARTITION's constraint, audit_log_pYYYYMM_source_outbox_id_occurred_at_key).
---         It does NOT refuse one outbox id relayed with a different occurred_at, and NULLs never
---         collide. It adds one index per partition beside the primary key's (U-16 said only the
+--         It does NOT refuse one outbox id relayed with a different occurred_at, including a copy
+--         of created_at cut to the millisecond on its way through a driver (measured by T-214: pg's
+--         Date), and NULLs never collide. It adds one index per partition beside the primary key's (U-16 said only the
 --         primary key; OE-72 RQ-2 asked for this to be considered). EV proposed by T-214.
 --   seq and source_outbox_id render in drizzle's bigint mode (T-153); the four hashes as Buffers
 --   (T-150).
