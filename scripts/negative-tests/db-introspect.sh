@@ -479,6 +479,10 @@ BASE_PARENTS=$(psql -X -A -t -q -c "SELECT count(*) FROM pg_class c JOIN pg_name
 BASE_PARENT_POLICIES=$(psql -X -A -t -q -c "SELECT count(*) FROM pg_policy pol JOIN pg_class c ON c.oid = pol.polrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind = 'p' AND NOT c.relispartition AND $ext_free")
 BASE_PARTITION_NAMES=$(psql -X -A -t -q -c "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relispartition AND c.relkind IN ('r','p','v','m','f') AND $ext_free ORDER BY c.relname")
 BASE_PARTITIONS=$(printf '%s' "$BASE_PARTITION_NAMES" | grep -c .)
+# T-214: partitions in public whose PARENT has an identity column. With the partition step made a
+# pass-through (K162), drizzle-kit renders each such partition's identity with four nulls (startWith,
+# increment, minValue, maxValue), and the generator's typecheck refuses every one of them first.
+BASE_IDENT_PARTITIONS=$(psql -X -A -t -q -c "SELECT count(*) FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = i.inhparent AND a.attnum > 0 AND NOT a.attisdropped AND a.attidentity <> '') AND $ext_free")
 BASE_PARENT_NAMES=$(psql -X -A -t -q -c "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind = 'p' AND NOT c.relispartition AND $ext_free ORDER BY c.relname")
 # The names on each side of I-VACUOUS: drizzle-kit's pull (r/v/m, partitions included) and the
 # catalogue's owned set (r/p/v/m/f, partitions excluded). K162 compares both lists whole.
@@ -1285,14 +1289,6 @@ grep -E '^fact |^  partitions: ' "$OUT" | cut -c1-240 | sed 's/^/       /'
 restore
 
 t214_ident_plant
-mutate "$PARTITION" "      edits.push({ start: arg.getStart(sf), end: arg.getEnd(), text: identityParams(id) });" "      void identityParams;"
-git diff -U0 -- "$PARTITION" | grep -E '^[-+][^-+]' | sed 's/^/   mutation:   /'
-# With the rewrite removed, drizzle-kit's null shape reaches the generator's own typecheck, which refuses
-# it (TS2322 'null' is not assignable), so the write fails and db/schema.ts keeps no t165_part_id_seq.
-write_judge K160m "(T-214) MUTATION, the identity rewrite removed (mutation asserted landed): drizzle-kit's null identity reaches the generator's typecheck and the write is refused [I-TSC]" 1 I-TSC t165_part_id_seq 0
-restore
-
-t214_ident_plant
 mutate "$PARTITION" "        end: source.charAt(seqEnd) === '\\n' ? seqEnd + 1 : seqEnd," "        end: seqDecls[0].stmt.getStart(sf),"
 git diff -U0 -- "$PARTITION" | grep -E '^[-+][^-+]' | sed 's/^/   mutation:   /'
 write_schema
@@ -1338,7 +1334,16 @@ git diff -U0 -- "$PARTITION" | grep -E '^[-+][^-+]' | sed 's/^/   mutation:   /'
 K162_WROTE=$(c_list $BASE_PULLED_NAMES t165_part_q1 t165_part_q2)
 K162_CAT=$(c_list $BASE_OWNED_NAMES t165_part)
 K162_RE="^  - \[I-VACUOUS\] drizzle-kit wrote $(printf '%s\n' $BASE_PULLED_NAMES t165_part_q1 t165_part_q2 | grep -c .) relation\(s\) \[$(ere "$K162_WROTE")\] but the catalogue lists $((BASE_OWNED + 1)) owned by no extension in public \[$(ere "$K162_CAT")\]\$"
-check K162 "(T-165) the rule deleted (the step made a pass-through): the regenerated file is refused and the parent is unrendered, as before this ticket" I-VACUOUS "$K162_RE"
+# T-214: while a COMMITTED partitioned table has an identity column (audit_log, 0020), the pass-through's
+# raw partition renderings carry drizzle-kit's null identity and [I-TSC] refuses the file before
+# I-VACUOUS is reached: 4 problems per such partition, derived from BASE. The file is refused either way;
+# I-VACUOUS's own reach is then K163's.
+K162_TAG=I-VACUOUS
+if [ "$BASE_IDENT_PARTITIONS" -gt 0 ]; then
+  K162_TAG=I-TSC
+  K162_RE="^GATE FAIL  db:introspect:check — $((BASE_IDENT_PARTITIONS * 4)) problem\(s\):\$"
+fi
+check K162 "(T-165; T-214) the rule deleted (the step made a pass-through): the regenerated file is refused and the parent is unrendered, as before this ticket (I-TSC first while a committed partitioned table has an identity column)" "$K162_TAG" "$K162_RE"
 
 policy_fixture "$PART_FIXTURE"
 write_schema
@@ -1479,6 +1484,16 @@ write_judge() {
   printf '%-4s %s  %s\n       write exit %s (expected %s); banners %s; tags %s (expected %s); "%s" in db/schema.ts: %s (expected %s)\n' "$v" "$id" "$desc" "$code" "$want_code" "$banners" "${tags:-none}" "$want_tags" "$absent" "$n" "$want_n"
   grep -E '^  - \[|^GATE |^  partitions: ' "$OUT" | cut -c1-240 | sed 's/^/       /'
 }
+
+# T-214 K160m sits here, after write_judge is defined (it was first placed beside K160, where bash
+# met it before the function existed and printed "command not found", which no case counted).
+t214_ident_plant
+mutate "$PARTITION" "      edits.push({ start: arg.getStart(sf), end: arg.getEnd(), text: identityParams(id) });" "      void identityParams;"
+git diff -U0 -- "$PARTITION" | grep -E '^[-+][^-+]' | sed 's/^/   mutation:   /'
+# With the rewrite removed, drizzle-kit's null shape reaches the generator's own typecheck, which refuses
+# it (TS2322 'null' is not assignable), so the write fails and db/schema.ts keeps no t165_part_id_seq.
+write_judge K160m "(T-214) MUTATION, the identity rewrite removed (mutation asserted landed): drizzle-kit's null identity reaches the generator's typecheck and the write is refused [I-TSC]" 1 I-TSC t165_part_id_seq 0
+restore
 
 # plant_two_partitions <extra up SQL> <extra down SQL>: the parent with t165_part_q1 (the template,
 # byte-first) and t165_part_q2, plus whatever the case adds.
