@@ -155,12 +155,14 @@ const notNull = (column: string): string =>
 /** The text 0019 installs, verbatim: a change to the comment must change this suite too. */
 const TABLE_COMMENT =
   'The ledger of hourly audit-chain anchors (SD §DB-10 lines 2856-2859; SA §SEC-8). The anchor itself is the S3 ' +
-  'object under Object Lock; this table records it and is never the reference a verifier compares against. id is ' +
+  'object under Object Lock; this table records it, and under OE-50 U-12 (2) a verifier compares against the S3 ' +
+  'object, not this table. id is ' +
   'an identity column, GENERATED ALWAYS. UNIQUE audit_anchor_head_seq_key: one row per chain head. CHECK ' +
   'audit_anchor_head_hash_len: head_hash is 32 bytes. app_rw may SELECT and may INSERT only head_seq, head_hash ' +
   'and s3_key, so anchored_at takes now() for it. It holds no UPDATE, DELETE or TRUNCATE. These are grants: they ' +
   'bind app_rw, not the table owner app_ddl or the superuser. The database does not check that head_seq ' +
-  'increases, that head_hash matches the chain, or anything about s3_key. No other role is granted any ' +
+  'increases, that head_hash matches the chain, or anything about s3_key beyond NOT NULL. No other role is ' +
+  'granted any ' +
   'privilege, and there is no row-level security.';
 
 describe('0019 — the table, its owner, columns, identity, constraints, indexes, ACL and comment', () => {
@@ -354,6 +356,22 @@ describe('0019 — one row per chain head: audit_anchor_head_seq_key UNIQUE (hea
     );
     assertRead('superuser duplicate head_seq', r, PRESENT(FIXTURE_A));
     assertRefusedBy('superuser duplicate head_seq', r, UNIQUE_23505, UNIQUE_FIELD);
+  });
+
+  test('the owner app_ddl is bound too: a recorded head_seq (23505) and a 31-byte head_hash (23514) are REFUSED', async () => {
+    const dup = await asLogin(
+      LOGINS.app_ddl,
+      readRow(FIXTURE_A),
+      anchor(String(FIXTURE_A), digest('owner-again'), keyOf(FIXTURE_A)),
+    );
+    assertRead('owner duplicate head_seq', dup, PRESENT(FIXTURE_A));
+    assertRefusedBy('owner duplicate head_seq', dup, UNIQUE_23505, UNIQUE_FIELD);
+    assertRefusedBy(
+      'owner 31-byte head_hash',
+      await asLogin(LOGINS.app_ddl, anchor('604', bytesOf(31), keyOf(604))),
+      CHECK_23514,
+      CHECK_FIELD,
+    );
   });
 
   test('two new rows with one head_seq in a single INSERT are REFUSED (23505)', async () => {

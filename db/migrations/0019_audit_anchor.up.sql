@@ -30,7 +30,7 @@
 --   U-5 (5)  CONSTRAINT audit_anchor_head_hash_len CHECK (octet_length(head_hash) = 32): a
 --         head hash is a SHA-256 digest, 32 bytes, never 31, never 33, never empty. SD writes no
 --         CHECK: EV proposed by T-213.
---   head_seq and the two new ids render in drizzle's bigint mode (T-153); head_hash as a Buffer.
+--   id and head_seq render in drizzle's bigint mode (T-153); head_hash as a Buffer (T-150).
 -- EV numbers are cited only in these top-level -- lines, never in a COMMENT ON, so a numbering
 -- changes no applied effect (PROTOCOL §3, R-MERGED).
 --
@@ -53,15 +53,17 @@
 --   - that head_seq increases from one anchor to the next (U-11 (4): the verifier checks it); a
 --     lower head_seq than an existing one, 0 and a negative value are accepted;
 --   - that head_seq names a row of audit_log, or that head_hash equals that row's entry_hash (no
---     foreign key; audit_log is T-214's): any 32 bytes are accepted;
+--     foreign key; audit_log is T-214's): the CHECK reads only the length, and 32 zero bytes
+--     are accepted;
 --   - anything about s3_key: no UNIQUE is ruled (two rows may share a key), no format (U-11 (1)'s
 --     audit-anchor/<20-digit head_seq> is the job's), the empty string is accepted;
 --   - that the S3 object exists, or agrees with the row. The S3 object under Object Lock is the
---     anchor (SA 1376, 2259); this table is a ledger and an index to it, and the verifier compares
---     against S3, never against this table (U-12 (2)).
+--     anchor (SA 1376, 2259); this table is a ledger and an index to it. U-12 (2) has the verifier
+--     compare against S3, never against this table; nothing here can hold that.
 --   These are grants, not triggers: they bind app_rw only. The owner app_ddl and the superuser can
 --   INSERT any anchored_at, supply an id with OVERRIDING SYSTEM VALUE, and UPDATE or DELETE any
---   row; the UNIQUE, the CHECK and the NOT NULLs still bind them.
+--   row. The UNIQUE, the CHECK and the NOT NULLs still bind them (the suite shows the UNIQUE and
+--   the CHECK refusing the owner and the superuser, and the NOT NULLs refusing the superuser).
 --   PostgreSQL's own refusals print values in their DETAIL (a 23505 prints the duplicated
 --   head_seq; a CHECK's or NOT NULL's prints the whole row, head_hash and s3_key included) to the
 --   writer and, by default, to the server log (OD-241). That is platform-wide, OD-241 -> T-230;
@@ -94,4 +96,4 @@ GRANT SELECT ON public.audit_anchor TO app_rw;
 GRANT INSERT (head_seq, head_hash, s3_key) ON public.audit_anchor TO app_rw;
 
 COMMENT ON TABLE public.audit_anchor IS
-  'The ledger of hourly audit-chain anchors (SD §DB-10 lines 2856-2859; SA §SEC-8). The anchor itself is the S3 object under Object Lock; this table records it and is never the reference a verifier compares against. id is an identity column, GENERATED ALWAYS. UNIQUE audit_anchor_head_seq_key: one row per chain head. CHECK audit_anchor_head_hash_len: head_hash is 32 bytes. app_rw may SELECT and may INSERT only head_seq, head_hash and s3_key, so anchored_at takes now() for it. It holds no UPDATE, DELETE or TRUNCATE. These are grants: they bind app_rw, not the table owner app_ddl or the superuser. The database does not check that head_seq increases, that head_hash matches the chain, or anything about s3_key. No other role is granted any privilege, and there is no row-level security.';
+  'The ledger of hourly audit-chain anchors (SD §DB-10 lines 2856-2859; SA §SEC-8). The anchor itself is the S3 object under Object Lock; this table records it, and under OE-50 U-12 (2) a verifier compares against the S3 object, not this table. id is an identity column, GENERATED ALWAYS. UNIQUE audit_anchor_head_seq_key: one row per chain head. CHECK audit_anchor_head_hash_len: head_hash is 32 bytes. app_rw may SELECT and may INSERT only head_seq, head_hash and s3_key, so anchored_at takes now() for it. It holds no UPDATE, DELETE or TRUNCATE. These are grants: they bind app_rw, not the table owner app_ddl or the superuser. The database does not check that head_seq increases, that head_hash matches the chain, or anything about s3_key beyond NOT NULL. No other role is granted any privilege, and there is no row-level security.';
