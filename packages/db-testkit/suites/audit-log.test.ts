@@ -3,7 +3,8 @@
  * table half of T-067's MR-3, built against OE-34 Part C as OE-50 accepted it (U-1 identity seq,
  * U-2 / D-1 the (seq, occurred_at) key, U-3 36 premade monthly partitions and no default, U-5 (5)
  * 32-byte chain hashes, U-7/U-8 app_rw only, no RLS, U-16 no search index) and OE-72 RQ-2
- * (source_outbox_id, and UNIQUE (source_outbox_id, occurred_at)). T-067 MR-3's V-L1…V-L5 and V-L7's
+ * (source_outbox_id, and UNIQUE (source_outbox_id, occurred_at), kept as an exception to U-16 by
+ * OE-73). T-067 MR-3's V-L1…V-L5 and V-L7's
  * premise are the refusals below. The hash chain (V-L6) is T-215's and is not tested here.
  *
  * gate:migration-lint's R-APPEND-ONLY covers audit_log and audit_log_<suffix> (every partition here).
@@ -254,7 +255,8 @@ const TABLE_COMMENT =
   'audit_log_prev_entry_hash_len, audit_log_entry_hash_len). source_outbox_id is the audit_outbox.id a relayed ' +
   'row came from, NULL for a row written without one; it is not a foreign key. UNIQUE ' +
   'audit_log_source_outbox_id_occurred_at_key refuses a second row with the same source_outbox_id and ' +
-  'occurred_at, not one with the same source_outbox_id at another occurred_at. Partitions audit_log_p202610 to ' +
+  'occurred_at (OE-73), not one with the same source_outbox_id at another occurred_at; NULL source_outbox_id ' +
+  'values never collide. Partitions audit_log_p202610 to ' +
   'audit_log_p202909 are premade, with no default partition: a row whose occurred_at falls in none is refused. ' +
   'app_rw may SELECT and may INSERT every column except seq, prev_entry_hash and entry_hash, on the parent and ' +
   'on each partition. It holds no UPDATE, DELETE or TRUNCATE. These are grants: they bind app_rw, not the table ' +

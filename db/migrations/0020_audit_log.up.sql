@@ -10,8 +10,9 @@
 -- Spec:    SD §DB-10 lines 2835-2848 (the DDL); SA §SA-4 I-6 (490-491); SA §DA-9 1371-1380;
 --          SA §SEC-8 2257-2262.
 -- Rulings: OE-34 Part C of tasks/state/EP-2/OE-30-34-rulings.md, accepted by OE-50 (Part F):
---          U-1 (b), U-2 / D-1 (OD-141), U-3, U-5 (5), U-7, U-8, U-9, U-13, U-14, U-16; and OE-72 RQ-2
---          (decisions.md: audit_log records its source audit_outbox.id, a plain bigint, no FK).
+--          U-1 (b), U-2 / D-1 (OD-141), U-3, U-5 (5), U-7, U-8, U-9, U-13, U-14, U-16; OE-72 RQ-2
+--          (decisions.md: audit_log records its source audit_outbox.id, a plain bigint, no FK); and
+--          OE-73 (the UNIQUE on (source_outbox_id, occurred_at) kept, an exception to U-16).
 -- Contracts: T-020 § Published contract §3-§5 (roles, explicit grants, the SA §INT-10 guard);
 --          T-231 (the guard after 0014); T-153 (int8 renders as a JS bigint); T-150 (bytea renders
 --          as a Buffer); T-165 rework 2 and T-214 (a partitioned table renders as its parent, its
@@ -21,8 +22,10 @@
 -- WHAT IT CREATES. public.audit_log, PARTITION BY RANGE (occurred_at), with SD 2836-2846's sixteen
 -- columns in SD's order with SD's types, nullability, defaults and its two CHECKs (U-14: verbatim);
 -- then what the rulings change:
---   U-1 (b)  seq bigint GENERATED ALWAYS AS IDENTITY, not SD's bigserial. An INSERT naming a seq is
---         refused (428C9) for every writer. A row inserted into a partition by name takes the
+--   U-1 (b)  seq bigint GENERATED ALWAYS AS IDENTITY, not SD's bigserial. An INSERT supplying a seq
+--         value without OVERRIDING SYSTEM VALUE is refused (428C9) for every writer; with it, the
+--         owner app_ddl and the superuser land any seq (app_rw holds no INSERT on seq: 42501), and the
+--         superuser may also name seq with DEFAULT. A row inserted into a partition by name takes the
 --         parent's sequence too: a partition has no sequence of its own. EV proposed by T-214.
 --   U-2 / D-1  SD's PRIMARY KEY (seq) on a table partitioned by occurred_at is refused by PostgreSQL
 --         (0A000: a unique constraint on a partitioned table must include every partition-key
@@ -43,8 +46,8 @@
 --         (23505, naming the PARTITION's constraint, audit_log_pYYYYMM_source_outbox_id_occurred_at_key).
 --         It does NOT refuse one outbox id relayed with a different occurred_at, including a copy
 --         of created_at cut to the millisecond on its way through a driver (measured by T-214: pg's
---         Date), and NULLs never collide. It adds one index per partition beside the primary key's (U-16 said only the
---         primary key; OE-72 RQ-2 asked for this to be considered). EV proposed by T-214.
+--         Date), and NULLs never collide. It adds one index per partition beside the primary key's: kept
+--         as an exception to U-16 ("only the PK") by the stakeholder ruling OE-73. EV proposed by T-214.
 --   seq and source_outbox_id render in drizzle's bigint mode (T-153); the four hashes as Buffers
 --   (T-150).
 -- EV numbers are cited only in these top-level -- lines, never in a COMMENT ON, so a numbering
@@ -128,7 +131,7 @@ GRANT SELECT ON public.audit_log TO app_rw;
 GRANT INSERT (occurred_at, actor_type, actor_id, action, subject_type, subject_id, data_class, policy_basis, reason_code, rationale, before_hash, after_hash, request_context, source_outbox_id) ON public.audit_log TO app_rw;
 
 COMMENT ON TABLE public.audit_log IS
-  'The audit log (SD §DB-10 lines 2835-2848; SA §SA-4 I-6; SA §SEC-8), partitioned by month on occurred_at. seq is an identity column, GENERATED ALWAYS; the primary key is (seq, occurred_at) because a key on a partitioned table must include occurred_at. prev_entry_hash and entry_hash are 32 bytes each (CHECK audit_log_prev_entry_hash_len, audit_log_entry_hash_len). source_outbox_id is the audit_outbox.id a relayed row came from, NULL for a row written without one; it is not a foreign key. UNIQUE audit_log_source_outbox_id_occurred_at_key refuses a second row with the same source_outbox_id and occurred_at, not one with the same source_outbox_id at another occurred_at. Partitions audit_log_p202610 to audit_log_p202909 are premade, with no default partition: a row whose occurred_at falls in none is refused. app_rw may SELECT and may INSERT every column except seq, prev_entry_hash and entry_hash, on the parent and on each partition. It holds no UPDATE, DELETE or TRUNCATE. These are grants: they bind app_rw, not the table owner app_ddl or the superuser. No other role is granted any privilege, and there is no row-level security.';
+  'The audit log (SD §DB-10 lines 2835-2848; SA §SA-4 I-6; SA §SEC-8), partitioned by month on occurred_at. seq is an identity column, GENERATED ALWAYS; the primary key is (seq, occurred_at) because a key on a partitioned table must include occurred_at. prev_entry_hash and entry_hash are 32 bytes each (CHECK audit_log_prev_entry_hash_len, audit_log_entry_hash_len). source_outbox_id is the audit_outbox.id a relayed row came from, NULL for a row written without one; it is not a foreign key. UNIQUE audit_log_source_outbox_id_occurred_at_key refuses a second row with the same source_outbox_id and occurred_at (OE-73), not one with the same source_outbox_id at another occurred_at; NULL source_outbox_id values never collide. Partitions audit_log_p202610 to audit_log_p202909 are premade, with no default partition: a row whose occurred_at falls in none is refused. app_rw may SELECT and may INSERT every column except seq, prev_entry_hash and entry_hash, on the parent and on each partition. It holds no UPDATE, DELETE or TRUNCATE. These are grants: they bind app_rw, not the table owner app_ddl or the superuser. No other role is granted any privilege, and there is no row-level security.';
 
 -- The 36 premade monthly partitions (OE-50 U-3 (1), (2c), (3), (5)): each with the parent's grants,
 -- in its own statements, written out rather than generated so the file is literal SQL.
