@@ -270,7 +270,11 @@ const SUITES: readonly Suite[] = [
     // 81 -> 141, 2026-09-24, T-165 rework 2 (OE-37 (A)) merging main b71408e: T-165's own cases
     // (renumbered K150-K189, 44 from cycles 0/1 and 16 from rework 2) join T-153's. A GREEN count:
     // `ALL 141 CASES BEHAVED AS EXPECTED` on a fresh db project at 4feb38f (T-165.md § Rework 2, S3).
-    cases: 141,
+    // 141 -> 144, 2026-10-02, T-214: K160 (a partitioned parent's identity column, refused until T-214)
+    // becomes K160/K160b/K160m/K160n (rendered from the parent's sequence; drizzle-kit's own plain-table
+    // anchor; each half mutated away). A GREEN count: `ALL 144 CASES BEHAVED AS EXPECTED` on a fresh db
+    // project at c4eda1b (tasks/state/EP-3/T-214.md, DBI5).
+    cases: 144,
     state: 'NEEDS-SERVICE',
     why: 'db:introspect:check: the closed type map, canonical order, RLS policies, the pgboss exclusion (T-138, T-150, T-152, T-145)',
     owner:
@@ -352,7 +356,13 @@ const SUITES: readonly Suite[] = [
     // Taken with the instrument, never edited by hand:
     //   $ git cat-file blob ecb7fbf:scripts/negative-tests/db-introspect.sh | sha256sum
     //   5d0631dc4eb7523af66e00cf42725fbfe389cb402822a6a78ec5f27eb12fa250
-    digest: '5d0631dc4eb7523af66e00cf42725fbfe389cb402822a6a78ec5f27eb12fa250',
+    // RE-PINNED 2026-10-02 by T-214: K160-K160n (identity on a partitioned parent), K162's expectation
+    // derived from BASE_IDENT_PARTITIONS (the committed audit_log), the header's K-range. Red first at
+    // c4eda1b with the old pin (T-214.md, NS-OLDPIN). Taken with the instrument, never edited by hand:
+    //   $ git cat-file blob c4eda1b:scripts/negative-tests/db-introspect.sh | sha256sum
+    //   dd55da6dc6d80f780cc3027cc64c191d76052b6901f5229542a4f09a227fdbde
+    // MEASURED against a real database at c4eda1b: `ALL 144 CASES BEHAVED AS EXPECTED`, exit 0 (DBI5).
+    digest: 'dd55da6dc6d80f780cc3027cc64c191d76052b6901f5229542a4f09a227fdbde',
     // T-234 (T-232 QA-S-F1, NS1): every read of db/schema.ts or a generated artefact in the suite is
     // classified by this committed instrument on EVERY run of this gate, not only when the digest
     // moves, and the instrument is itself held against a fixture of the read shapes it must flag.
