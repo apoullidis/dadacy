@@ -12,12 +12,17 @@ import path from 'node:path';
 import fs from 'node:fs';
 
 /**
- * Every gate's stdout and stderr write SYNCHRONOUSLY (T-239, OD-262).
+ * Every script that IMPORTS THIS MODULE writes stdout and stderr synchronously
+ * when either is a pipe or a socket (T-239, OD-262). Gates that do not import it
+ * are NOT covered: `packages/i18n/tools/{locale-completeness,safety-review-currency,
+ * sms-segments}.ts` (all BLOCKING in gate:pr, each with its own finish ->
+ * process.exit; 1,153 / 1,027 / 6,729 bytes of output measured at 8341e3f, far
+ * under either buffer below — OD-266), and scripts/gates/not-yet-supplied.ts.
  *
  * Gates end in `process.exit` (`finish()` below, and the aggregates' own exits).
  * `process.exit` discards any write libuv has not yet handed to the kernel, and
- * on this host stdout is NOT synchronous when it is a pipe or a socket — both of
- * which every gate meets (measured, tasks/state/EP-1/T-239.md R0–R0d):
+ * on this host stdout is NOT synchronous when it is a pipe or a socket, which is
+ * what gate:heavy's two segments met (measured, tasks/state/EP-1/T-239.md R0–R0d):
  *   - under `capture()` (spawnSync) fd 1 is an AF_UNIX socketpair with SO_SNDBUF
  *     131072; one write of ~155 KB is accepted up to 146,176 bytes and the rest
  *     is queued — so gate:constraint-suite's GATE PASS banner was dropped and
@@ -29,6 +34,14 @@ import fs from 'node:fs';
  * left alone (Node documents both as synchronous on Linux; T-239 measured pipes
  * and sockets only). A pipe or socket whose
  * handle cannot be made blocking is REFUSED (exit 70) rather than run lossy.
+ *
+ * The trade, measured by T-239's QA (QA-3b): a reader that STOPS READING but
+ * keeps the pipe open (an unscrolled pager, `| less`) now holds the gate in
+ * write() until the reader drains or a signal ends it; before, the gate exited 0
+ * with its output cut. That fails safe (no verdict for bytes nobody read), and
+ * no reader in this build does it: spawnSync, docker, `> file`, `| cat` and
+ * `| tee` all drain. A reader that CLOSES early gives EPIPE, and the gate ends
+ * in exit 70 (GATE CRASH) or its own non-zero, never a hang (QA-3a).
  */
 function blockingStdio(): void {
   for (const [fd, s] of [
