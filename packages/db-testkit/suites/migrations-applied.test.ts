@@ -40,7 +40,7 @@ import {
 import { assertPermitted, assertRefused, INT10_RAISE } from '../src/expect.ts';
 
 const SUITE = 'migrations-applied';
-const HIGHEST_COMMITTED = '0018';
+const HIGHEST_COMMITTED = '0019';
 const COMMITTED_DIR = path.join(REPO_ROOT, MIGRATIONS_DIR);
 const RECORD_SQL = `SELECT coalesce(shobj_description(oid, 'pg_database'), '(no comment)')
                       FROM pg_database WHERE datname = current_database()`;
@@ -748,6 +748,65 @@ const CREATED_BY: Readonly<
                                  FROM pg_class c WHERE c.oid = to_regclass('public.audit_outbox')), '(absent)')`,
         holds:
           '{app_ddl=arwdDxtm/app_ddl,app_rw=r/app_ddl} payload={app_rw=a/app_ddl},relayed_at={app_rw=w/app_ddl}',
+      },
+    ],
+  },
+  '0019': {
+    source: 'T-213',
+    // Each probe names one object 0019 creates, and each returns a value rather than raising once it
+    // is gone: to_regclass returns NULL for a missing name (coalesced), and the constraint and
+    // sequence reads are coalesced definitions. 0019 creates no function, no trigger and no rule.
+    probes: [
+      {
+        title: 'table public.audit_anchor exists, owned by app_ddl',
+        sql: `SELECT coalesce((SELECT pg_get_userbyid(relowner) FROM pg_class
+                               WHERE oid = to_regclass('public.audit_anchor')), '(absent)')`,
+        holds: 'app_ddl',
+      },
+      {
+        title:
+          "audit_anchor's columns are id bigint GENERATED ALWAYS AS IDENTITY, head_seq bigint, head_hash bytea, s3_key text, anchored_at timestamptz DEFAULT now(), all NOT NULL",
+        sql: `SELECT coalesce((SELECT string_agg(a.attname || ':' || format_type(a.atttypid, a.atttypmod) || ':' ||
+                                                 a.attnotnull::text || ':' || a.attidentity::text || ':' ||
+                                                 coalesce(pg_get_expr(d.adbin, d.adrelid), '-'), ',' ORDER BY a.attnum)
+                                 FROM pg_attribute a LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+                                WHERE a.attrelid = to_regclass('public.audit_anchor') AND a.attnum > 0
+                                  AND NOT a.attisdropped), '(absent)')`,
+        holds:
+          'id:bigint:true:a:-,head_seq:bigint:true::-,head_hash:bytea:true::-,s3_key:text:true::-,anchored_at:timestamp with time zone:true::now()',
+      },
+      {
+        title:
+          'audit_anchor_pkey is PRIMARY KEY (id), and its identity sequence is audit_anchor_id_seq',
+        sql: `SELECT coalesce((SELECT pg_get_constraintdef(oid) || ' ' || pg_get_serial_sequence('public.audit_anchor', 'id')
+                                 FROM pg_constraint
+                                WHERE conrelid = to_regclass('public.audit_anchor')
+                                  AND conname = 'audit_anchor_pkey'), '(absent)')`,
+        holds: 'PRIMARY KEY (id) public.audit_anchor_id_seq',
+      },
+      {
+        title: 'audit_anchor_head_seq_key is UNIQUE (head_seq) (U-11 (2a))',
+        sql: `SELECT coalesce((SELECT pg_get_constraintdef(oid) FROM pg_constraint
+                               WHERE conrelid = to_regclass('public.audit_anchor')
+                                 AND conname = 'audit_anchor_head_seq_key'), '(absent)')`,
+        holds: 'UNIQUE (head_seq)',
+      },
+      {
+        title: 'audit_anchor_head_hash_len is CHECK (octet_length(head_hash) = 32) (U-5 (5))',
+        sql: `SELECT coalesce((SELECT pg_get_constraintdef(oid) FROM pg_constraint
+                               WHERE conrelid = to_regclass('public.audit_anchor')
+                                 AND conname = 'audit_anchor_head_hash_len'), '(absent)')`,
+        holds: 'CHECK ((octet_length(head_hash) = 32))',
+      },
+      {
+        title:
+          "audit_anchor's ACL: app_rw SELECT and INSERT (head_seq, head_hash, s3_key) only; nothing to any other role",
+        sql: `SELECT coalesce((SELECT c.relacl::text || ' ' ||
+                                      (SELECT string_agg(a.attname || '=' || a.attacl::text, ',' ORDER BY a.attnum)
+                                         FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attacl IS NOT NULL)
+                                 FROM pg_class c WHERE c.oid = to_regclass('public.audit_anchor')), '(absent)')`,
+        holds:
+          '{app_ddl=arwdDxtm/app_ddl,app_rw=r/app_ddl} head_seq={app_rw=a/app_ddl},head_hash={app_rw=a/app_ddl},s3_key={app_rw=a/app_ddl}',
       },
     ],
   },
