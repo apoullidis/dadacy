@@ -691,7 +691,12 @@ for (const s of SUITE_TABLE) {
       failures.push(
         `${s.id}: RED. ${red?.[0] ?? ''} (exit ${String(code)}). Misbehaving case(s): ` +
           `${bad.length > 0 ? bad.join(', ') : '(not parsed — read the output)'}. ` +
-          `This suite is green on \`main\`; something in this change set broke it.`,
+          // T-238: this line said "This suite is green on `main`; something in this change set
+          // broke it." Nothing here measures `main`: GREEN is the state recorded in this table, and
+          // OD-263 was red ON `main` (a timing-dependent suite). So it says what is known.
+          `This suite is rostered GREEN in scripts/gates/negative-suites.ts — that is the state ` +
+          `recorded when its entry was last set, not a run of \`main\`. Either this change set ` +
+          `broke it or it is red on \`main\` too; run it on \`main\` before deciding which.`,
       );
       console.log(out.trimEnd().split('\n').slice(-25).join('\n'));
       continue;
