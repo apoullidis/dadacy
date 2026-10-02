@@ -1343,7 +1343,7 @@ if [ "$BASE_IDENT_PARTITIONS" -gt 0 ]; then
   K162_TAG=I-TSC
   K162_RE="^GATE FAIL  db:introspect:check — $((BASE_IDENT_PARTITIONS * 4)) problem\(s\):\$"
 fi
-check K162 "(T-165; T-214) the rule deleted (the step made a pass-through): the regenerated file is refused and the parent is unrendered, as before this ticket (I-TSC first while a committed partitioned table has an identity column)" "$K162_TAG" "$K162_RE"
+check K162 "(T-165; T-214) the rule deleted (the step made a pass-through): the regenerated file is refused, by I-VACUOUS with the parent unrendered as before T-165, or by I-TSC first while a committed partitioned table has an identity column (that branch checks only the refusal)" "$K162_TAG" "$K162_RE"
 
 policy_fixture "$PART_FIXTURE"
 write_schema
