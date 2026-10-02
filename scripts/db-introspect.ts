@@ -67,8 +67,10 @@
  *      is read (T-165 § contract, rework 2, R2). A shape it cannot check — a sub-partitioned
  *      table, a partition outside `public` (including one in a schema I-SCOPE admits), a parent
  *      with no partition, an object any partition carries alone, a partition whose columns are not
- *      the parent's, an identity column, a name with no counterpart on the parent or on any
- *      partition — fails the run.
+ *      the parent's, an identity column whose sequence the catalogue does not fully name or whose
+ *      template rendering is not the measured null shape, a name with no counterpart on the parent
+ *      or on any partition — fails the run. An identity column is rendered from the PARENT's
+ *      sequence (T-214), because drizzle-kit renders a partition's with nulls.
  *   4c. [I-POLICY] (T-152 rework 1, OD-109) drizzle-kit keeps a row-level security policy's
  *      `using` and `withCheck` only for the first pg_policies row it receives per table, from a query
  *      with no ORDER BY, so on a table with two or more policies the rendering is wrong and follows
@@ -506,7 +508,7 @@ function main(): void {
   }
   const partitionedBody = parted.ok ? parted.body : mappedBody;
   console.log(
-    `  partitions: ${parted.ok ? `${String(parted.parents)} partitioned table(s) rendered from a partition; ${String(parted.removed)} partition declaration(s) removed; ${String(parted.mapped)} name(s) mapped to the parent's; ${String(parted.policies)} policy entr(ies) added from pg_policy; ${String(parted.names)} export name(s) checked against drizzle-kit's; ${String(parted.checked)} constraint/index/trigger/policy/rule/statistics/replica-identity entr(ies) on partitions checked for a parent counterpart; ${String(parted.mirrored)} (parent name, partition) pair(s) checked for a partition counterpart` : 'failed'}`,
+    `  partitions: ${parted.ok ? `${String(parted.parents)} partitioned table(s) rendered from a partition; ${String(parted.removed)} partition declaration(s) removed; ${String(parted.mapped)} name(s) mapped to the parent's; ${String(parted.policies)} policy entr(ies) added from pg_policy; ${String(parted.names)} export name(s) checked against drizzle-kit's; ${String(parted.checked)} constraint/index/trigger/policy/rule/statistics/replica-identity entr(ies) on partitions checked for a parent counterpart; ${String(parted.mirrored)} (parent name, partition) pair(s) checked for a partition counterpart; ${String(parted.identities)} identity column(s) rendered from the parent's sequence` : 'failed'}`,
   );
 
   // 4c. row-level security policies checked against and rendered from pg_policy (T-152 rework 1, OD-109)

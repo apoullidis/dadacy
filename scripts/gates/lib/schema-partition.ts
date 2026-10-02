@@ -32,12 +32,20 @@
  *      Anything else a partition can carry is NOT read (T-165 § contract, rework 2, R2's residue).
  *   3b. The mirror, for **every** partition too (rework 2, OE-37 (A), OD-157): each constraint and
  *      index the PARENT owns must have a counterpart on every partition, not only on the template.
+ *   2b. (T-214) An IDENTITY column is rendered from the PARENT's sequence. drizzle-kit renders a
+ *      partition's identity column as `{ name: "null", startWith: null, increment: null,
+ *      minValue: null, maxValue: null }` (measured: a partition has no sequence of its own), so the
+ *      template's argument is replaced by what drizzle-kit writes for a plain table's identity
+ *      (`generateIdentityParams`, bin.cjs 83845), filled from the parent's `pg_sequence` row. Only
+ *      that exact null shape is replaced; any other is refused. The free-standing `pgSequence`
+ *      drizzle-kit also renders for the parent's identity sequence (it never meets the parent, so it
+ *      does not drop it as it does for a plain table) is removed, and must exist exactly once.
  *   4. Every other partition of that parent in `public` is then removed from the rendering.
  * Everything it cannot check, among what it reads, is a problem: a sub-partitioned table, a partition outside `public`, a parent with no partition, an
  * object of any partition's own, a partition whose
- * column shape is not the parent's, an identity column (drizzle-kit renders a partition's as
- * `name: "null", startWith: null`, measured), a name in the template with no counterpart on the
- * parent, a constraint or index the parent has and ANY partition does not, an export name
+ * column shape is not the parent's, an identity column whose sequence the catalogue does not fully
+ * name or whose template rendering is not the measured null shape, a name in the template with no
+ * counterpart on the parent, a constraint or index the parent has and ANY partition does not, an export name
  * this step and drizzle-kit would spell differently, and PostgreSQL's per-partition clone of a
  * foreign key on a table that is not itself a partition. It does NOT follow that a partitioned
  * family never passes with something unread: what a partition carries outside the read set in 3
@@ -66,6 +74,24 @@ export interface CataloguePartition {
   }[];
 }
 
+/**
+ * T-214: one identity column of a partitioned table, with the parameters of the sequence PostgreSQL
+ * created for it on the PARENT (`pg_sequence`). Every value is the catalogue's text; `sequence` is
+ * null when the catalogue names no sequence for the column.
+ */
+export interface CatalogueIdentity {
+  readonly column: string;
+  /** `pg_attribute.attidentity`: 'a' (ALWAYS) or 'd' (BY DEFAULT) */
+  readonly generation: string;
+  readonly sequence: string | null;
+  readonly start: string | null;
+  readonly increment: string | null;
+  readonly min: string | null;
+  readonly max: string | null;
+  readonly cache: string | null;
+  readonly cycle: boolean | null;
+}
+
 /** One partitioned table in `public`, owned by no extension. */
 export interface CatalogueParent {
   readonly name: string;
@@ -74,6 +100,8 @@ export interface CatalogueParent {
   readonly columns: string;
   /** the parent has a column PostgreSQL generates as an identity */
   readonly identity: boolean;
+  /** T-214: each identity column of the parent and its sequence, in attnum order */
+  readonly identities: readonly CatalogueIdentity[];
   /** every constraint and index name the PARENT owns; each must be a partition's counterpart */
   readonly ownNames: readonly string[];
   readonly partitions: readonly CataloguePartition[];
@@ -112,6 +140,8 @@ export type PartitionResult =
       readonly checked: number;
       /** (parent constraint or index name, partition) pairs checked for a counterpart: the mirror, on EVERY partition */
       readonly mirrored: number;
+      /** T-214: identity columns rendered from the parent's sequence */
+      readonly identities: number;
     }
   | { readonly ok: false; readonly problems: readonly string[] };
 
@@ -142,6 +172,23 @@ export const PARTITIONS_SQL = `
          'identity', EXISTS (SELECT 1 FROM pg_attribute a
                               WHERE a.attrelid = p.oid AND a.attnum > 0 AND NOT a.attisdropped
                                 AND a.attidentity <> ''),
+         -- T-214: each identity column of the parent, with ITS sequence's parameters, in attnum
+         -- order. A partition has none of its own (pg_get_serial_sequence on a partition is NULL,
+         -- measured), so drizzle-kit renders the template's with nulls and this step renders the
+         -- parent's from here. The name is the regclass text drizzle-kit itself reads
+         -- (bin.cjs 18405: pg_get_serial_sequence(...)::regclass AS seq_name).
+         'identities', (SELECT coalesce(json_agg(json_build_object(
+                           'column', a.attname,
+                           'generation', a.attidentity::text,
+                           'sequence', pg_get_serial_sequence(format('%I.%I', 'public', p.relname), a.attname)::regclass::text,
+                           'start', s.seqstart::text, 'increment', s.seqincrement::text,
+                           'min', s.seqmin::text, 'max', s.seqmax::text, 'cache', s.seqcache::text,
+                           'cycle', s.seqcycle) ORDER BY a.attnum), '[]'::json)
+                          FROM pg_attribute a
+                          LEFT JOIN pg_sequence s
+                            ON s.seqrelid = pg_get_serial_sequence(format('%I.%I', 'public', p.relname), a.attname)::regclass
+                         WHERE a.attrelid = p.oid AND a.attnum > 0 AND NOT a.attisdropped
+                           AND a.attidentity <> ''),
          'ownNames', (SELECT coalesce(json_agg(DISTINCT o.name), '[]'::json) FROM (
                         SELECT con.conname AS name FROM pg_constraint con
                          WHERE con.conrelid = p.oid AND con.contype <> 'n'
@@ -289,6 +336,7 @@ export function parsePartitions(
     const columns: unknown = Reflect.get(r, 'columns');
     const identity: unknown = Reflect.get(r, 'identity');
     const ownNames: unknown = Reflect.get(r, 'ownNames');
+    const rawIdentities: unknown = Reflect.get(r, 'identities');
     const rawPartitions: unknown = Reflect.get(r, 'partitions');
     if (
       typeof name !== 'string' ||
@@ -296,12 +344,51 @@ export function parsePartitions(
       typeof identity !== 'boolean' ||
       !Array.isArray(columns) ||
       !(Array.isArray(ownNames) && ownNames.every((n) => typeof n === 'string')) ||
+      !Array.isArray(rawIdentities) ||
       !Array.isArray(rawPartitions)
     ) {
       return {
         ok: false,
-        problem: `a parent is not {name, isPartition, columns, identity, ownNames, partitions}`,
+        problem: `a parent is not {name, isPartition, columns, identity, identities, ownNames, partitions}`,
       };
+    }
+    const identities: CatalogueIdentity[] = [];
+    for (const row of rawIdentities) {
+      const ir: unknown = row;
+      if (typeof ir !== 'object' || ir === null)
+        return { ok: false, problem: 'an identity is not an object' };
+      const text = (k: string): string | null | undefined => {
+        const v: unknown = Reflect.get(ir, k);
+        return v === null ? null : typeof v === 'string' ? v : undefined;
+      };
+      const cycle: unknown = Reflect.get(ir, 'cycle');
+      const column = text('column');
+      const generation = text('generation');
+      const fields = ['sequence', 'start', 'increment', 'min', 'max', 'cache'].map(text);
+      if (
+        typeof column !== 'string' ||
+        typeof generation !== 'string' ||
+        fields.some((f) => f === undefined) ||
+        !(cycle === null || typeof cycle === 'boolean')
+      ) {
+        return {
+          ok: false,
+          problem:
+            'an identity is not {column, generation, sequence, start, increment, min, max, cache, cycle}',
+        };
+      }
+      const [sequence, start, increment, min, max, cache] = fields as (string | null)[];
+      identities.push({
+        column,
+        generation,
+        sequence: sequence ?? null,
+        start: start ?? null,
+        increment: increment ?? null,
+        min: min ?? null,
+        max: max ?? null,
+        cache: cache ?? null,
+        cycle,
+      });
     }
     const partitions: CataloguePartition[] = [];
     for (const p of rawPartitions) {
@@ -338,6 +425,7 @@ export function parsePartitions(
       isPartition,
       columns: JSON.stringify(columns),
       identity,
+      identities,
       ownNames: ownNames as string[],
       partitions,
     });
@@ -436,6 +524,64 @@ function declarations(sf: ts.SourceFile): Declaration[] {
   return out;
 }
 
+/**
+ * T-214: what drizzle-kit 0.31.10 renders as the argument of a PARTITION's identity call, measured
+ * (`T-214` evidence M3): `pg_get_serial_sequence` is NULL on a partition and information_schema
+ * gives no identity parameters there, so every field is `null`.
+ */
+const IDENTITY_FROM_PARTITION =
+  '{ name: "null", startWith: null, increment: null, minValue: null, maxValue: null }';
+const IDENTITY_METHOD: ReadonlySet<string> = new Set([
+  'generatedAlwaysAsIdentity',
+  'generatedByDefaultAsIdentity',
+]);
+
+/**
+ * T-214: the argument drizzle-kit 0.31.10's `generateIdentityParams` (bin.cjs 83845-83870) writes
+ * for a PLAIN table's identity column, here from the parent's sequence. Its fields come from
+ * information_schema as strings, so each is present; `cycle: true` only when the sequence cycles.
+ */
+function identityParams(i: CatalogueIdentity): string {
+  return `{ name: "${i.sequence ?? ''}", startWith: ${i.start ?? ''}, increment: ${i.increment ?? ''}, minValue: ${i.min ?? ''}, maxValue: ${i.max ?? ''}, cache: ${i.cache ?? ''}${i.cycle === true ? ', cycle: true' : ''} }`;
+}
+
+/** T-214: every `export const <ident> = pgSequence("<name>", …)` declaration. */
+function sequenceDeclarations(
+  sf: ts.SourceFile,
+): { readonly stmt: ts.Statement; readonly name: string }[] {
+  const out: { stmt: ts.Statement; name: string }[] = [];
+  for (const stmt of sf.statements) {
+    if (!ts.isVariableStatement(stmt)) continue;
+    const decl = stmt.declarationList.declarations[0];
+    const init = decl?.initializer;
+    if (
+      init === undefined ||
+      !ts.isCallExpression(init) ||
+      !ts.isIdentifier(init.expression) ||
+      init.expression.text !== 'pgSequence'
+    ) {
+      continue;
+    }
+    const first = init.arguments[0];
+    if (first !== undefined && ts.isStringLiteral(first)) out.push({ stmt, name: first.text });
+  }
+  return out;
+}
+
+/**
+ * T-214: the database column an identity call is on: the first argument of the column builder
+ * (`timestamp("occurred_at", …)`) when drizzle-kit wrote one, else the property key (`seq:`).
+ */
+function renderedColumn(call: ts.CallExpression): string | undefined {
+  let n: ts.Node = call;
+  while (n.parent !== undefined && !ts.isPropertyAssignment(n)) n = n.parent;
+  if (!ts.isPropertyAssignment(n)) return undefined;
+  const root = rootCall(n.initializer);
+  const first = root?.arguments[0];
+  if (first !== undefined && ts.isStringLiteral(first)) return first.text;
+  return ts.isIdentifier(n.name) || ts.isStringLiteral(n.name) ? n.name.text : undefined;
+}
+
 interface Edit {
   readonly start: number;
   readonly end: number;
@@ -492,6 +638,7 @@ export function canonicalPartitions(
       names: 0,
       checked: 0,
       mirrored: 0,
+      identities: 0,
     };
   }
 
@@ -515,6 +662,7 @@ export function canonicalPartitions(
   let emitted = 0;
   let checked = 0;
   let mirrored = 0;
+  let identities = 0;
 
   for (const parent of catalogue.parents) {
     const where = `partitioned table "${parent.name}"`;
@@ -522,9 +670,23 @@ export function canonicalPartitions(
       problems.push(`${where} is itself a partition: a sub-partitioned table is not represented`);
       continue;
     }
-    if (parent.identity) {
+    // T-214: an identity column is taken from the PARENT's sequence, never from the partition.
+    // drizzle-kit renders a partition's identity column with nulls (IDENTITY_FROM_PARTITION,
+    // measured), because PostgreSQL gives the partition no sequence of its own; the parent's is
+    // read in PARTITIONS_SQL. Anything the parent's identity does not fully name is refused.
+    const badIdentity = parent.identities.filter(
+      (i) =>
+        (i.generation !== 'a' && i.generation !== 'd') ||
+        i.sequence === null ||
+        QUOTE_UNSAFE.test(i.sequence) ||
+        [i.start, i.increment, i.min, i.max, i.cache].some(
+          (v) => v === null || !/^-?[0-9]+$/.test(v),
+        ) ||
+        i.cycle === null,
+    );
+    if (parent.identity && (parent.identities.length === 0 || badIdentity.length > 0)) {
       problems.push(
-        `${where} has an identity column: drizzle-kit renders a partition's identity column as \`name: "null", startWith: null\`, which is not the parent's, so this step will not take it from a partition`,
+        `${where} has an identity column whose sequence the catalogue does not fully name (${badIdentity.map((i) => `"${i.column}"`).join(', ') || 'none read'}), so this step cannot render the parent's identity`,
       );
       continue;
     }
@@ -644,6 +806,87 @@ export function canonicalPartitions(
       edits.push({ start: lit.getStart(sf), end: lit.getEnd(), text: `"${to}"` });
     }
 
+    // 2b. T-214: every identity column, from the PARENT's sequence. The template's identity calls,
+    // in source order, are its identity columns in attnum order (drizzle-kit renders columns by
+    // attnum); each must be on the column the catalogue names, be the generation the catalogue
+    // has, and carry exactly the null shape drizzle-kit was measured to render for a partition.
+    // Any other shape is refused rather than overwritten, so a drizzle-kit that one day renders a
+    // partition's identity differently stops this step instead of being silently replaced.
+    const identityCalls: ts.CallExpression[] = [];
+    const findIdentity = (node: ts.Node): void => {
+      if (
+        ts.isCallExpression(node) &&
+        ts.isPropertyAccessExpression(node.expression) &&
+        IDENTITY_METHOD.has(node.expression.name.text)
+      ) {
+        identityCalls.push(node);
+      }
+      ts.forEachChild(node, findIdentity);
+    };
+    findIdentity(decl.stmt);
+    identityCalls.sort((a, b) => a.getStart(sf) - b.getStart(sf));
+    if (identityCalls.length !== parent.identities.length) {
+      problems.push(
+        `${where}: partition "${template.name}" renders ${String(identityCalls.length)} identity column(s) and the parent has ${String(parent.identities.length)}`,
+      );
+      continue;
+    }
+    for (const [k, call] of identityCalls.entries()) {
+      const id = parent.identities[k];
+      if (id === undefined) continue;
+      const method = ts.isPropertyAccessExpression(call.expression)
+        ? call.expression.name.text
+        : '';
+      const column = renderedColumn(call);
+      const arg = call.arguments[0];
+      const wantMethod =
+        id.generation === 'a' ? 'generatedAlwaysAsIdentity' : 'generatedByDefaultAsIdentity';
+      if (column !== id.column) {
+        problems.push(
+          `${where}: partition "${template.name}" renders identity call ${String(k + 1)} on column ${column === undefined ? '(not found)' : `"${column}"`}, and the parent's identity column ${String(k + 1)} is "${id.column}"`,
+        );
+        continue;
+      }
+      if (method !== wantMethod) {
+        problems.push(
+          `${where}: partition "${template.name}" renders "${id.column}" as \`.${method}\`, and the parent's attidentity '${id.generation}' is \`.${wantMethod}\``,
+        );
+        continue;
+      }
+      if (
+        call.arguments.length !== 1 ||
+        arg === undefined ||
+        arg.getText(sf) !== IDENTITY_FROM_PARTITION
+      ) {
+        problems.push(
+          `${where}: partition "${template.name}" renders the identity of "${id.column}" as \`${call.arguments.map((a) => a.getText(sf)).join(', ')}\`, not the shape drizzle-kit was measured to render for a partition (\`${IDENTITY_FROM_PARTITION}\`), so this step will not overwrite it`,
+        );
+        continue;
+      }
+      // drizzle-kit drops an identity's sequence from its free-standing `pgSequence` list only when
+      // it meets that sequence on a table's identity column (bin.cjs 17985-17988). It never meets
+      // the parent, so the parent's sequence is rendered on its own as well (measured, T-214 M4).
+      // For a plain table it would not be: exactly one such declaration must exist, and it goes.
+      const seqDecls = sequenceDeclarations(sf).filter((d) => d.name === id.sequence);
+      if (seqDecls.length !== 1 || seqDecls[0] === undefined) {
+        problems.push(
+          `${where}: drizzle-kit rendered ${String(seqDecls.length)} free-standing pgSequence declaration(s) of the parent's identity sequence "${id.sequence ?? ''}", where exactly one was measured`,
+        );
+        continue;
+      }
+      identities += 1;
+      edits.push({ start: arg.getStart(sf), end: arg.getEnd(), text: identityParams(id) });
+      // From the statement itself through its own line end, leaving the blank lines around it as
+      // drizzle-kit lays them out when there is no such declaration (the committed file, T-214 M4b).
+      const seqEnd = seqDecls[0].stmt.getEnd();
+      edits.push({
+        start: seqDecls[0].stmt.getStart(sf),
+        end: source.charAt(seqEnd) === '\n' ? seqEnd + 1 : seqEnd,
+        text: '',
+      });
+    }
+    if (problems.length > 0) continue;
+
     // 3. the parent's own row-level security policies, which no partition carries.
     const mine = policies
       .filter((p) => p.table === parent.name)
@@ -709,7 +952,18 @@ export function canonicalPartitions(
     else body = fixed.body;
   }
   if (problems.length > 0) return { ok: false, problems };
-  return { ok: true, body, parents, removed, mapped, policies: emitted, names, checked, mirrored };
+  return {
+    ok: true,
+    body,
+    parents,
+    removed,
+    mapped,
+    policies: emitted,
+    names,
+    checked,
+    mirrored,
+    identities,
+  };
 }
 
 /** `pgPolicy` and `sql` must be imported where this step emitted policy entries. */
