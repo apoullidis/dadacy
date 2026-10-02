@@ -64,8 +64,9 @@
 # parent's policies added from pg_policy; the partitions leave the rendering and are on neither side
 # of I-VACUOUS (scripts/gates/lib/schema-partition.ts, [I-PART]). K150 is the control fixture
 # (db-introspect-partitioned.sql, whose `-- expect:`/`-- absent:` lines are written from the SQL),
-# K151–K154 are determinism and a partition attached after the file was written, K155–K161 the drifts and
-# shapes it refuses, K162–K163 the rule deleted two ways (I-VACUOUS, as before this ticket), K164 the
+# K151–K154 are determinism and a partition attached after the file was written, K155–K159c and K161 the
+# drifts and shapes it refuses (K160–K160n, T-214: an identity column is rendered from the parent's
+# sequence, no longer refused), K162–K163 the rule deleted two ways (I-VACUOUS, as before this ticket), K164 the
 # catalogue read.
 # T-165 — K165–K167 (OD-145): a relation in information_schema, pg_catalog or a pg_toast* schema reached
 # no check at all and the run passed. The catalogue read now also takes every relation of kind
@@ -1285,18 +1286,10 @@ restore
 
 t214_ident_plant
 mutate "$PARTITION" "      edits.push({ start: arg.getStart(sf), end: arg.getEnd(), text: identityParams(id) });" "      void identityParams;"
-write_schema
-node scripts/db-introspect.ts --check >"$OUT" 2>&1
-code=$?
-: >"$OUT.f"
-nf=0
-nok=0
-fact "inside t165Part: K160's identity line (the mutation removes it)" "$(block_count -x t165Part "$T214_ID_ALWAYS")" 0
-fact "inside t165Part: lines carrying drizzle-kit's partition shape name: \"null\"" "$(block_count t165Part 'name: "null"')" 1
-[ "$nok" -eq "$nf" ] && echo "ALL $nf IDENTITY FACTS HOLD" >>"$OUT.f"
-cat "$OUT.f" >>"$OUT"
-judge K160m "(T-214) MUTATION, the identity rewrite removed (mutation asserted landed): the file keeps drizzle-kit's null identity and K160's expected line is absent" PASS "$code" '^ALL [0-9]+ IDENTITY FACTS HOLD$'
-grep -E '^fact |^  partitions: ' "$OUT" | cut -c1-240 | sed 's/^/       /'
+git diff -U0 -- "$PARTITION" | grep -E '^[-+][^-+]' | sed 's/^/   mutation:   /'
+# With the rewrite removed, drizzle-kit's null shape reaches the generator's own typecheck, which refuses
+# it (TS2322 'null' is not assignable), so the write fails and db/schema.ts keeps no t165_part_id_seq.
+write_judge K160m "(T-214) MUTATION, the identity rewrite removed (mutation asserted landed): drizzle-kit's null identity reaches the generator's typecheck and the write is refused [I-TSC]" 1 I-TSC t165_part_id_seq 0
 restore
 
 t214_ident_plant
