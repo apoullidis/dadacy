@@ -11,6 +11,77 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import fs from 'node:fs';
 
+/**
+ * Every gate's stdout and stderr write SYNCHRONOUSLY (T-239, OD-262).
+ *
+ * Gates end in `process.exit` (`finish()` below, and the aggregates' own exits).
+ * `process.exit` discards any write libuv has not yet handed to the kernel, and
+ * on this host stdout is NOT synchronous when it is a pipe or a socket — both of
+ * which every gate meets (measured, tasks/state/EP-1/T-239.md R0–R0d):
+ *   - under `capture()` (spawnSync) fd 1 is an AF_UNIX socketpair with SO_SNDBUF
+ *     131072; one write of ~155 KB is accepted up to 146,176 bytes and the rest
+ *     is queued — so gate:constraint-suite's GATE PASS banner was dropped and
+ *     gate:heavy (correctly) refused the run;
+ *   - under `scripts/dev` fd 1 is a 64 KiB FIFO; gate:heavy's own ~150 KB print
+ *     of a sub-gate's output was cut at the first 64 KiB the same way.
+ * Setting the handle blocking makes write() return only after the kernel has
+ * every byte, so nothing is queued when `process.exit` runs. Files and TTYs are
+ * left alone (Node documents both as synchronous on Linux; T-239 measured pipes
+ * and sockets only). A pipe or socket whose
+ * handle cannot be made blocking is REFUSED (exit 70) rather than run lossy.
+ */
+function blockingStdio(): void {
+  for (const [fd, s] of [
+    [1, process.stdout],
+    [2, process.stderr],
+  ] as const) {
+    let lossy: boolean;
+    try {
+      const st = fs.fstatSync(fd);
+      lossy = st.isFIFO() || st.isSocket();
+    } catch {
+      continue; // fd closed: nothing to lose
+    }
+    if (!lossy) continue;
+    const h = (s as unknown as { _handle?: { setBlocking?: (on: boolean) => number } })._handle;
+    const rc = typeof h?.setBlocking === 'function' ? h.setBlocking(true) : -1;
+    if (rc !== 0) {
+      fs.writeSync(
+        2,
+        `GATE CRASH  fd ${String(fd)} is a pipe/socket that cannot be made blocking ` +
+          `(setBlocking -> ${String(rc)}); refusing to run a gate whose output process.exit ` +
+          `could drop (T-239).\n`,
+      );
+      process.exit(70);
+    }
+  }
+}
+blockingStdio();
+
+/**
+ * `process.exit`, refusing to drop output (T-239). After `blockingStdio()` no
+ * write can still be pending here (`writableLength` counts a partly-sent write
+ * whole); if one is, the gate's own output is
+ * incomplete, so this exits 70 with a GATE CRASH line written straight to fd 2
+ * instead of letting `code` stand for a run whose text was cut.
+ */
+export function exitFlushed(code: number): never {
+  const queued = process.stdout.writableLength + process.stderr.writableLength;
+  if (queued > 0) {
+    try {
+      fs.writeSync(
+        2,
+        `\nGATE CRASH  stdout/stderr writes totalling ${String(queued)} byte(s) not completed at exit ` +
+          `(intended exit ${String(code)}); the printed output is incomplete (T-239).\n`,
+      );
+    } catch {
+      // fd 2 itself is full or gone: the exit status below still says it.
+    }
+    process.exit(70);
+  }
+  process.exit(code);
+}
+
 export const REPO_ROOT: string = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   '..',
@@ -88,9 +159,9 @@ export function toolVersions(): ReadonlyMap<string, string> {
 export function finish(gate: string, failures: readonly string[]): never {
   if (failures.length === 0) {
     console.log(`\nGATE PASS  ${gate}`);
-    process.exit(0);
+    exitFlushed(0);
   }
   console.error(`\nGATE FAIL  ${gate} — ${String(failures.length)} problem(s):`);
   for (const f of failures) console.error(`  - ${f}`);
-  process.exit(1);
+  exitFlushed(1);
 }

@@ -78,7 +78,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { REPO_ROOT, capture } from './lib/run.ts';
+import { REPO_ROOT, capture, exitFlushed } from './lib/run.ts';
 import { HEAVY_ROSTER, PR_ROW, SPEC_HEAVY_ROW, heavyRosterProblems } from './lib/heavy-roster.ts';
 import type { AnchorSpec, HeavyEntry, Segment } from './lib/heavy-roster.ts';
 
@@ -569,7 +569,7 @@ const banner = rosterOnly
 if (failures.length > 0) {
   console.error(`\nGATE FAIL  gate:heavy${banner} — ${String(failures.length)} problem(s):`);
   for (const f of failures) console.error(`  - ${f}`);
-  process.exit(1);
+  exitFlushed(1);
 }
 console.log(`\nGATE PASS  gate:heavy${banner}`);
-process.exit(0);
+exitFlushed(0);

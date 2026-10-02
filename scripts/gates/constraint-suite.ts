@@ -615,6 +615,9 @@ const run = capture(
   { NO_COLOR: '1' },
 );
 // stderr first: it carries pnpm's banner, which belongs above the run's output.
+// ~150 KB in one write. It reaches the reader whole only because lib/run.ts makes
+// stdout blocking on import; on a non-blocking socketpair it was cut at 146,176
+// bytes and finish()'s process.exit dropped the rest, banner included (T-239).
 process.stderr.write(run.stderr);
 process.stdout.write(run.stdout);
 if (run.code !== 0) fail(`the constraint suites exited ${String(run.code)}`);

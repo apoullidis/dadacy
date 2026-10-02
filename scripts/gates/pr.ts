@@ -35,7 +35,7 @@
  *      inside the gates that can suffer it.
  */
 import { spawnSync } from 'node:child_process';
-import { REPO_ROOT, capture } from './lib/run.ts';
+import { REPO_ROOT, capture, exitFlushed } from './lib/run.ts';
 import { ROSTER, SPEC_PR_ROW, PROGRAMME, rosterProblems } from './lib/roster.ts';
 import type { RosterEntry } from './lib/roster.ts';
 
@@ -284,7 +284,7 @@ const banner = rosterOnly
 if (failures.length > 0) {
   console.error(`\nGATE FAIL  gate:pr${banner} — ${String(failures.length)} problem(s):`);
   for (const f of failures) console.error(`  - ${f}`);
-  process.exit(1);
+  exitFlushed(1);
 }
 console.log(`\nGATE PASS  gate:pr${banner}`);
-process.exit(0);
+exitFlushed(0);
