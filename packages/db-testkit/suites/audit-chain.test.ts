@@ -532,16 +532,17 @@ describe('0021 — concurrency: two sessions never chain off the same head (COMM
     assert.ok(a !== undefined && b !== undefined && o !== undefined);
     assertPermitted('A', a);
     assertPermitted('B', b);
-    assertHas('observer', o, 'observed: t215-A=holds t215-B=waits');
     const aEntry = field(a, 'cc-A').split(' entry=')[1];
     assert.ok(aEntry !== undefined && aEntry.length === 64, a.output);
     assert.ok(
       field(b, 'cc-B').includes(` prev=${aEntry} `),
       `B must chain to A.\nA: ${a.output}\nB: ${b.output}`,
     );
-    const r = await asSuperuser(SHARED_PREDECESSORS, WHOLE_CHAIN_LINKS);
+    const r = await asSuperuser(walkOf(['cc-A', 'cc-B']), SHARED_PREDECESSORS, WHOLE_CHAIN_LINKS);
+    // The chain is judged first, so a run without the lock reports the fork itself; then the wait.
     assertHas('no fork', r, 'rows sharing a predecessor: none');
     assertHas('no fork', r, ' 0 mislinked');
+    assertHas('observer', o, 'observed: t215-A=holds t215-B=waits');
   });
 
   test('seq is drawn under the lock: A draws its default seq, then spends 3 s in its own VALUES before its trigger runs; B inserts and commits in between; C follows. All three land, in seq order B, A, C, each chained to the one before', async () => {
