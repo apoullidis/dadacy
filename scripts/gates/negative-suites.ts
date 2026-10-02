@@ -362,7 +362,12 @@ const SUITES: readonly Suite[] = [
     //   $ git cat-file blob c4eda1b:scripts/negative-tests/db-introspect.sh | sha256sum
     //   dd55da6dc6d80f780cc3027cc64c191d76052b6901f5229542a4f09a227fdbde
     // MEASURED against a real database at c4eda1b: `ALL 144 CASES BEHAVED AS EXPECTED`, exit 0 (DBI5).
-    digest: 'dd55da6dc6d80f780cc3027cc64c191d76052b6901f5229542a4f09a227fdbde',
+    // RE-PINNED 2026-10-02 by T-214 rework 1 (QA-O3): K162's description only; no case added or
+    // removed, no expectation changed. Red first at ef90e5b with the old pin (T-214.md, R1-NS-OLDPIN).
+    // Taken with the instrument, never edited by hand:
+    //   $ git cat-file blob ef90e5b:scripts/negative-tests/db-introspect.sh | sha256sum
+    //   59b74e097b927d6844ec47ee685430103c606833bdbee9767c994981a8a46702
+    digest: '59b74e097b927d6844ec47ee685430103c606833bdbee9767c994981a8a46702',
     // T-234 (T-232 QA-S-F1, NS1): every read of db/schema.ts or a generated artefact in the suite is
     // classified by this committed instrument on EVERY run of this gate, not only when the digest
     // moves, and the instrument is itself held against a fixture of the read shapes it must flag.
