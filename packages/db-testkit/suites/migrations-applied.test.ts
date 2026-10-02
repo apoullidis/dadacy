@@ -40,7 +40,7 @@ import {
 import { assertPermitted, assertRefused, INT10_RAISE } from '../src/expect.ts';
 
 const SUITE = 'migrations-applied';
-const HIGHEST_COMMITTED = '0020';
+const HIGHEST_COMMITTED = '0021';
 const COMMITTED_DIR = path.join(REPO_ROOT, MIGRATIONS_DIR);
 const RECORD_SQL = `SELECT coalesce(shobj_description(oid, 'pg_database'), '(no comment)')
                       FROM pg_database WHERE datname = current_database()`;
@@ -879,6 +879,37 @@ const CREATED_BY: Readonly<
                                  FROM pg_class c WHERE c.oid = to_regclass('public.audit_log')), '(absent)')`,
         holds:
           '{app_ddl=arwdDxtm/app_ddl,app_rw=r/app_ddl} occurred_at,actor_type,actor_id,action,subject_type,subject_id,data_class,policy_basis,reason_code,rationale,before_hash,after_hash,request_context,source_outbox_id',
+      },
+    ],
+  },
+  '0021': {
+    source: 'T-215',
+    // Each probe names one object 0021 creates (the function audit_log_chain() or the trigger
+    // trg_audit_log_chain), and each returns a value rather than raising once it is gone:
+    // to_regprocedure returns NULL for a missing function, and every read is coalesced.
+    probes: [
+      {
+        title:
+          'function public.audit_log_chain() exists: owner app_ddl, SECURITY DEFINER, EXECUTE revoked from PUBLIC, search_path pinned',
+        sql: `SELECT coalesce((SELECT pg_get_userbyid(proowner) || ' ' || prosecdef::text || ' ' || proacl::text || ' ' ||
+                                      array_to_string(proconfig, ';')
+                                 FROM pg_proc WHERE oid = to_regprocedure('public.audit_log_chain()')), '(absent)')`,
+        holds: 'app_ddl true {app_ddl=X/app_ddl} search_path=pg_catalog, pg_temp',
+      },
+      {
+        title:
+          'trigger trg_audit_log_chain is BEFORE INSERT FOR EACH ROW on public.audit_log, enabled, executing audit_log_chain()',
+        sql: `SELECT coalesce((SELECT tgtype::text || ' ' || tgenabled::text FROM pg_trigger
+                               WHERE tgrelid = to_regclass('public.audit_log') AND tgname = 'trg_audit_log_chain'
+                                 AND tgfoid = to_regprocedure('public.audit_log_chain()')), '(absent)')`,
+        holds: '7 O',
+      },
+      {
+        title: 'trg_audit_log_chain is cloned to all 36 partitions (37 trigger rows, 36 clones)',
+        sql: `SELECT coalesce((SELECT count(*) || ' ' || count(*) FILTER (WHERE tgparentid <> 0) FROM pg_trigger
+                               WHERE tgname = 'trg_audit_log_chain' AND tgfoid = to_regprocedure('public.audit_log_chain()')
+                              HAVING count(*) > 0), '(absent)')`,
+        holds: '37 36',
       },
     ],
   },

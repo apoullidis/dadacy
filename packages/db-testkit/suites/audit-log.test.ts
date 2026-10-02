@@ -18,10 +18,12 @@
  * constraints, indexes, the sequence, owner, table and column ACLs, the comment, and the counts of
  * non-internal triggers, rewrite rules and policies with both row-level-security flags (T-234's pin).
  *
- * Until T-215's trigger exists, app_rw cannot complete an INSERT: the two hashes are NOT NULL and not in
- * its grant. Cases that need an app_rw row to LAND install a STAND-IN BEFORE INSERT trigger (superuser,
- * committed) that fills both hashes with constants, run, and drop it in `finally`; the trigger-count
- * pins run outside those cases. The stand-in is a fixture: it is not T-215's and proves no chain.
+ * 0021 (T-215) puts trg_audit_log_chain on this table: it refuses a supplied hash (KV070) and draws seq
+ * itself. This file tests the TABLE 0020 built, so every superuser and owner (app_ddl) session here runs
+ * with that trigger DISABLED inside its never-committed transaction (CHAIN_OFF, the owner's V-L7
+ * position), and the committed fixture rows are written the same way and the trigger re-enabled before
+ * COMMIT. app_rw sessions cannot disable it and run with the chain ON: their rows land with hashes the
+ * trigger computed. The chain itself is tested in audit-chain.test.ts.
  *
  * Every refusal asserts psql's exit status AND its `ERROR:  <SQLSTATE>: <message>` line AND, where
  * PostgreSQL gives one, the `CONSTRAINT NAME:` or `COLUMN NAME:` field, and exactly one ERROR line, so a
@@ -140,6 +142,9 @@ const PRESENT = (action: string): string => `row ${action} count=1`;
 
 let db: Cluster;
 
+/** 0021's chain trigger, switched off inside a superuser's or the owner's transaction (see the header). */
+const CHAIN_OFF = 'ALTER TABLE public.audit_log DISABLE TRIGGER trg_audit_log_chain';
+
 beforeAll(async () => {
   db = await acquireMigratedCluster(SUITE);
   await db.sql({
@@ -148,9 +153,13 @@ beforeAll(async () => {
         ([role, login]) =>
           `CREATE ROLE ${login} LOGIN PASSWORD '${PROBE_PASSWORD}' IN ROLE ${role}`,
       ),
+      'BEGIN',
+      CHAIN_OFF,
       fullRow(FIX_A),
       fullRow(FIX_B),
       fullRow(FIX_C),
+      'ALTER TABLE public.audit_log ENABLE TRIGGER trg_audit_log_chain',
+      'COMMIT',
     ],
   });
 }, 300_000);
@@ -165,10 +174,15 @@ afterAll(async () => {
  */
 const inTransaction = (commands: string[]): string[] =>
   commands[0] === 'BEGIN' ? commands : ['BEGIN', ...commands];
+/** The same, with 0021's chain trigger disabled for the transaction (superuser and owner only). */
+const beneathChain = (commands: string[]): string[] => {
+  const t = inTransaction(commands);
+  return [t[0] ?? 'BEGIN', CHAIN_OFF, ...t.slice(1)];
+};
 
 /** Statements as the bootstrap superuser, SQLSTATE in the message, stopping at the first error. */
 function asSuperuser(...commands: string[]): Promise<PsqlResult> {
-  return db.psql({ commands: inTransaction(commands), verbose: true, stopOnError: true });
+  return db.psql({ commands: beneathChain(commands), verbose: true, stopOnError: true });
 }
 
 /** Statements over a real login, SQLSTATE in the message, stopping at the first error. */
@@ -176,7 +190,7 @@ function asLogin(login: string, ...commands: string[]): Promise<PsqlResult> {
   return db.psql({
     user: login,
     password: PROBE_PASSWORD,
-    commands: inTransaction(commands),
+    commands: login === LOGINS.app_ddl ? beneathChain(commands) : inTransaction(commands),
     verbose: true,
     stopOnError: true,
   });
@@ -204,36 +218,6 @@ function assertRead(what: string, r: PsqlResult, state: string): void {
     r.output.includes(state),
     `${what}: expected the precondition ${JSON.stringify(state)}.\n${r.output}`,
   );
-}
-
-/**
- * Run `body` with a STAND-IN BEFORE INSERT trigger on audit_log that fills both hashes (a fixture
- * standing in for T-215's trigger, which this migration does not create). Committed by the superuser so
- * a login's session sees it; dropped in `finally`, and its absence asserted.
- */
-async function withStandIn(body: () => Promise<void>): Promise<void> {
-  await db.sql({
-    commands: [
-      `CREATE FUNCTION public.t214_standin() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN NEW.prev_entry_hash := sha256('standin-p'::bytea); NEW.entry_hash := sha256('standin-e'::bytea); RETURN NEW; END$$`,
-      'CREATE TRIGGER t214_standin BEFORE INSERT ON public.audit_log FOR EACH ROW EXECUTE FUNCTION public.t214_standin()',
-    ],
-  });
-  try {
-    await body();
-  } finally {
-    await db.sql({
-      commands: [
-        'DROP TRIGGER t214_standin ON public.audit_log',
-        'DROP FUNCTION public.t214_standin()',
-      ],
-    });
-    assert.equal(
-      await db.value(
-        `SELECT count(*) FROM pg_trigger WHERE tgname LIKE 't214_standin%' OR tgfoid = to_regprocedure('public.t214_standin()')`,
-      ),
-      '0',
-    );
-  }
 }
 
 const denied = (table: string): string => `ERROR:  42501: permission denied for table ${table}`;
@@ -432,11 +416,11 @@ describe('0020 — the 36 premade partitions (U-3)', () => {
     );
   });
 
-  test('the parent AND every partition: 0 non-internal triggers, 0 rewrite rules, 0 policies, row-level security neither enabled nor forced (T-234)', async () => {
+  test("the parent AND every partition: exactly 1 non-internal trigger (0021's trg_audit_log_chain, enabled: its own pin is audit-chain.test.ts), 0 rewrite rules, 0 policies, row-level security neither enabled nor forced (T-234)", async () => {
     assert.equal(
       await db.value(
         `SELECT string_agg(DISTINCT
-                  (SELECT count(*) FROM pg_trigger WHERE tgrelid = c.oid AND NOT tgisinternal) || ' triggers, ' ||
+                  (SELECT count(*) || ' triggers ' || string_agg(tgname || ':' || tgenabled::text, ',') FROM pg_trigger WHERE tgrelid = c.oid AND NOT tgisinternal) || ', ' ||
                   (SELECT count(*) FROM pg_rewrite WHERE ev_class = c.oid) || ' rules, rls=' ||
                   c.relrowsecurity || ', force=' || c.relforcerowsecurity || ', ' ||
                   (SELECT count(*) FROM pg_policy WHERE polrelid = c.oid) || ' policies', ' ## ') || ' x' || count(*)
@@ -444,7 +428,7 @@ describe('0020 — the 36 premade partitions (U-3)', () => {
           WHERE c.oid = 'public.audit_log'::regclass
              OR c.oid IN (SELECT inhrelid FROM pg_inherits WHERE inhparent = 'public.audit_log'::regclass)`,
       ),
-      '0 triggers, 0 rules, rls=false, force=false, 0 policies x37',
+      '1 triggers trg_audit_log_chain:O, 0 rules, rls=false, force=false, 0 policies x37',
     );
   });
 });
@@ -893,13 +877,13 @@ describe('0020 — app_rw: SELECT, and INSERT on fourteen columns; no UPDATE, DE
   });
 
   for (const target of ['audit_log', FIRST] as const) {
-    test(`CONTROL — app_rw writing T-067 Q4 (the fourteen columns, no hash) into ${target} passes every privilege check and stops at prev_entry_hash's NOT NULL (23502): until T-215's trigger exists app_rw cannot complete a row`, async () => {
-      assertRefusedBy(
-        `app_rw Q4 into ${target}`,
-        await asLogin(LOGINS.app_rw, relayRow({ table: target, source: '3001' })),
-        notNull('prev_entry_hash', FIRST),
-        'COLUMN NAME:  prev_entry_hash',
+    test(`CONTROL — app_rw writing T-067 Q4 (the fourteen columns, no hash) into ${target} passes every privilege check and lands, both hashes set by 0021's chain trigger (T-215)`, async () => {
+      const r = await asLogin(
+        LOGINS.app_rw,
+        `${relayRow({ table: target, source: '3001' })} RETURNING 'q4 hashes ' || octet_length(prev_entry_hash) || '/' || octet_length(entry_hash)`,
       );
+      assertPermitted(`app_rw Q4 into ${target}`, r);
+      assertRead(`app_rw Q4 into ${target}`, r, 'q4 hashes 32/32');
     });
   }
 
@@ -962,27 +946,25 @@ describe('0020 — app_rw: SELECT, and INSERT on fourteen columns; no UPDATE, DE
   });
 });
 
-describe('0020 — app_rw rows land once a trigger supplies the hashes (a STAND-IN for T-215, installed and dropped by this block)', () => {
-  test("CONTROL — with the stand-in, app_rw's Q4 lands through the parent and through a partition by name, each in its month, with a seq and both hashes; a duplicate relay is REFUSED (23505); ON CONFLICT DO NOTHING inserts nothing", async () => {
-    await withStandIn(async () => {
-      const r = await asLogin(
-        LOGINS.app_rw,
-        `${relayRow({ occurredAt: "'2026-12-24 18:00:00+00'", source: '4001', action: "'rw-parent'" })} RETURNING 'parent row -> ' || tableoid::regclass || ' seq>0:' || (seq > 0) || ' hashes:' || octet_length(prev_entry_hash) || '/' || octet_length(entry_hash)`,
-        `${relayRow({ table: OTHER, occurredAt: "'2027-03-20 00:00:00+00'", source: '4002', action: "'rw-by-name'" })} RETURNING 'by-name row -> ' || tableoid::regclass`,
-        `${relayRow({ occurredAt: "'2026-12-24 18:00:00+00'", source: '4001', action: "'rw-again'" })} ON CONFLICT (source_outbox_id, occurred_at) DO NOTHING`,
-        `SELECT 'rows for 4001: ' || count(*) FROM public.audit_log WHERE source_outbox_id = 4001`,
-      );
-      assertPermitted('app_rw rows land', r);
-      assertRead('app_rw rows land', r, 'parent row -> audit_log_p202612 seq>0:true hashes:32/32');
-      assertRead('app_rw rows land', r, `by-name row -> ${OTHER}`);
-      assertRead('app_rw rows land', r, 'INSERT 0 0');
-      assertRead('app_rw rows land', r, 'rows for 4001: 1');
-      const dup = await asLogin(
-        LOGINS.app_rw,
-        relayRow({ occurredAt: "'2026-10-15 12:00:00+00'", source: '1001', action: "'rw-dup'" }),
-      );
-      assertRefusedBy('app_rw duplicate relay', dup, unique23505(FIRST));
-    });
+describe("0020 — app_rw rows land, their hashes set by 0021's trg_audit_log_chain (T-215)", () => {
+  test("CONTROL — app_rw's Q4 lands through the parent and through a partition by name, each in its month, with a seq and both hashes; a duplicate relay is REFUSED (23505); ON CONFLICT DO NOTHING inserts nothing", async () => {
+    const r = await asLogin(
+      LOGINS.app_rw,
+      `${relayRow({ occurredAt: "'2026-12-24 18:00:00+00'", source: '4001', action: "'rw-parent'" })} RETURNING 'parent row -> ' || tableoid::regclass || ' seq>0:' || (seq > 0) || ' hashes:' || octet_length(prev_entry_hash) || '/' || octet_length(entry_hash)`,
+      `${relayRow({ table: OTHER, occurredAt: "'2027-03-20 00:00:00+00'", source: '4002', action: "'rw-by-name'" })} RETURNING 'by-name row -> ' || tableoid::regclass`,
+      `${relayRow({ occurredAt: "'2026-12-24 18:00:00+00'", source: '4001', action: "'rw-again'" })} ON CONFLICT (source_outbox_id, occurred_at) DO NOTHING`,
+      `SELECT 'rows for 4001: ' || count(*) FROM public.audit_log WHERE source_outbox_id = 4001`,
+    );
+    assertPermitted('app_rw rows land', r);
+    assertRead('app_rw rows land', r, 'parent row -> audit_log_p202612 seq>0:true hashes:32/32');
+    assertRead('app_rw rows land', r, `by-name row -> ${OTHER}`);
+    assertRead('app_rw rows land', r, 'INSERT 0 0');
+    assertRead('app_rw rows land', r, 'rows for 4001: 1');
+    const dup = await asLogin(
+      LOGINS.app_rw,
+      relayRow({ occurredAt: "'2026-10-15 12:00:00+00'", source: '1001', action: "'rw-dup'" }),
+    );
+    assertRefusedBy('app_rw duplicate relay', dup, unique23505(FIRST));
   });
 });
 
