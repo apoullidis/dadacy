@@ -845,7 +845,10 @@ echo "== R-RESTORE-PUBLIC (T-241, OE-76, OD-275): a marked DOWN file may restore
 # `GRANT <privileges> ON FUNCTION|PROCEDURE|ROUTINE <signatures> TO PUBLIC` when every (object, privilege)
 # pair was revoked FROM PUBLIC by a plain top-level REVOKE in the paired up file, compared as
 # PostgreSQL resolves names (unquoted folded to lower case, ASCII only; quoted exact; U&"…" decoded;
-# comments are separators). Every PASS case asserts the gate's admission record, so a PASS that admitted
+# comments are separators). The gate compares NAMES, not objects; rework 1 (QA F1) keeps a name pointing
+# at the revoked routine by admitting a marked down file only if it holds nothing but GRANT and REVOKE
+# statements and its up file holds no statement that can change what a name designates (CQ90-CQ9F).
+# Every PASS case asserts the gate's admission record, so a PASS that admitted
 # nothing is BAD; every refusal asserts the reason. `rp` writes 9001's up file under `-- @phase: expand`.
 rp() {
   plant "$UP" "-- @phase: expand
@@ -1079,6 +1082,88 @@ checkwhy CQ82 "ON ALL FUNCTIONS IN SCHEMA (no signature to compare)" R-ANSWERING
 rp "$R3" "$MK
 GRANT EXECUTE ON ROUTINE pg_catalog.pg_advisory_lock(bigint) TO PUBLIC;"
 checkwhy CQ83 "revoked ON FUNCTION, restored ON ROUTINE (the object kind is compared too)" R-ANSWERING-SERVICE "ROUTINE pg_catalog.pg_advisory_lock(bigint) $NOTREV"
+
+echo "-- rework 1 (QA F1): a name must still designate the revoked routine when the down file's GRANT runs"
+# The gate compares NAMES. A down file that renames or re-schemas another routine (or a schema) into a
+# revoked name before its GRANT, or an up file that does so after its REVOKE, would get a GRANT on a
+# routine nobody revoked admitted. A marked down file therefore holds only GRANT and REVOKE statements,
+# and its up file holds no statement that can change what a name designates. QA1H/I/J/K/L/M and V11 are
+# QA's plants (T-241 § QA-5), verbatim in shape.
+FN='REVOKE EXECUTE ON FUNCTION public.t241_fn() FROM PUBLIC;'
+GFN='GRANT EXECUTE ON FUNCTION public.t241_fn() TO PUBLIC;'
+DOWNONLY='a marked down file holds only GRANT and REVOKE'
+UPMOVES='the paired up file holds a statement that can change what a name designates'
+rp "$FN" "$MK
+ALTER FUNCTION public.t241_fn() RENAME TO t241_fn_orig;
+ALTER FUNCTION public.t241_other() RENAME TO t241_fn;
+$GFN"
+checkwhy CQ90 "QA1H: the down renames another routine INTO the revoked name, then restores it" R-ANSWERING-SERVICE "$DOWNONLY"
+rp "$FN" "$MK
+ALTER FUNCTION public.t241_fn() RENAME TO t241_fn_orig;
+ALTER FUNCTION t241_elsewhere.t241_fn() SET SCHEMA public;
+$GFN"
+checkwhy CQ91 "QA1I: SET SCHEMA moves another routine into the revoked name" R-ANSWERING-SERVICE "$DOWNONLY"
+rp "REVOKE EXECUTE ON FUNCTION t241_s.t241_fn() FROM PUBLIC;" "$MK
+ALTER SCHEMA t241_s RENAME TO t241_s_orig;
+ALTER SCHEMA t241_other RENAME TO t241_s;
+GRANT EXECUTE ON FUNCTION t241_s.t241_fn() TO PUBLIC;"
+checkwhy CQ92 "QA1K: ALTER SCHEMA … RENAME swaps another schema into the qualified name" R-ANSWERING-SERVICE "$DOWNONLY"
+rp "REVOKE EXECUTE ON PROCEDURE public.t241_proc() FROM PUBLIC;" "$MK
+ALTER PROCEDURE public.t241_proc() RENAME TO t241_proc_orig;
+ALTER ROUTINE public.t241_other_proc() RENAME TO t241_proc;
+GRANT EXECUTE ON PROCEDURE public.t241_proc() TO PUBLIC;"
+checkwhy CQ93 "QA1L: ALTER PROCEDURE / ALTER ROUTINE … RENAME" R-ANSWERING-SERVICE "$DOWNONLY"
+rp "$R3" "$MK
+ALTER FUNCTION pg_catalog.pg_advisory_unlock_all() RENAME TO t241_unlock_all_orig;
+ALTER FUNCTION pg_catalog.pg_reload_conf() RENAME TO pg_advisory_unlock_all;
+GRANT EXECUTE ON FUNCTION pg_catalog.pg_advisory_unlock_all() TO PUBLIC;"
+checkwhy CQ94 "QA1M / V11: pg_reload_conf() renamed into pg_advisory_unlock_all()" R-ANSWERING-SERVICE "$DOWNONLY"
+rp "$FN" "$MK
+DROP FUNCTION public.t241_fn();
+CREATE FUNCTION public.t241_fn() RETURNS void LANGUAGE sql SECURITY DEFINER AS \$fn\$ SELECT 1 \$fn\$;
+$GFN"
+checkwhy CQ95 "QA1J: DROP + CREATE a new SECURITY DEFINER body under the revoked name" R-ANSWERING-SERVICE "$DOWNONLY"
+rp "$FN" "$MK
+SET search_path = t241_elsewhere, public;
+$GFN"
+checkwhy CQ96 "SET search_path in a marked down, names qualified" R-ANSWERING-SERVICE "$DOWNONLY"
+rp "$FN" "$MK
+DO \$d\$ BEGIN EXECUTE 'ALTER FUNCTION public.t241_other() RENAME TO t241_fn'; END \$d\$;
+$GFN"
+checkwhy CQ97 "a DO block (dynamic RENAME) in a marked down" R-ANSWERING-SERVICE "$DOWNONLY"
+rp "$FN" "$MK
+ALTER FUNCTION public.t241_fn() OWNER TO app_ddl;
+$GFN"
+checkwhy CQ98 "any other statement, even one that moves no name (ALTER … OWNER): the down is GRANT/REVOKE only" R-ANSWERING-SERVICE "$DOWNONLY"
+rp "$FN" "$MK
+REVOKE EXECUTE ON FUNCTION public.t241_fn() FROM app_rw;
+$GFN"
+checkwhy CQ99 "CONTROL: T-240's shape, a REVOKE from a role and the restore" PASS "$ADMIT 1 GRANT … TO PUBLIC statement(s) on 1 routine(s)"
+rp "$FN
+ALTER FUNCTION public.t241_fn() RENAME TO t241_fn_old;
+ALTER FUNCTION public.t241_other() RENAME TO t241_fn;" "$MK
+$GFN"
+checkwhy CQ9A "the UP file renames another routine into the revoked name after its REVOKE (the down runs on the up's end state)" R-ANSWERING-SERVICE "$UPMOVES"
+rp "$FN
+ALTER FUNCTION t241_elsewhere.t241_fn() SET SCHEMA public;" "$MK
+$GFN"
+checkwhy CQ9B "the UP file moves a routine in by SET SCHEMA" R-ANSWERING-SERVICE "$UPMOVES"
+rp "$FN
+DO \$d\$ BEGIN EXECUTE 'ALTER SCHEMA t241_other RENAME TO public'; END \$d\$;" "$MK
+$GFN"
+checkwhy CQ9C "the UP file renames a schema in dynamic SQL" R-ANSWERING-SERVICE "$UPMOVES"
+rp "$FN
+CREATE OR REPLACE FUNCTION public.t241_fn() RETURNS void LANGUAGE sql AS \$fn\$ SELECT 1 \$fn\$;" "$MK
+$GFN"
+checkwhy CQ9D "the UP file replaces the revoked routine's body" R-ANSWERING-SERVICE "$UPMOVES"
+rp "$FN
+SET search_path = t241_elsewhere;" "$MK
+$GFN"
+checkwhy CQ9E "the UP file sets search_path" R-ANSWERING-SERVICE "$UPMOVES"
+rp "$FN
+DO \$assert\$ BEGIN PERFORM 1; END \$assert\$;" "$MK
+$GFN"
+checkwhy CQ9F "CONTROL: the up file also holds a DO assertion (0022's shape)" PASS "$ADMIT 1 GRANT … TO PUBLIC statement(s) on 1 routine(s)"
 
 echo "== R-MERGED (PROTOCOL §3, OD-13, OD-72) — every plant is on 0001, which is at the base"
 mutate "$UP1" "-- rotate every 30 days (SA §SEC-10)." "-- rotate every thirty days (SA §SEC-10)."
