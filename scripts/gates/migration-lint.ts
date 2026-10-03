@@ -1123,11 +1123,10 @@ function showToks(toks: readonly Tok[]): string {
  */
 function routineKey(toks: readonly Tok[]): string | null {
   const names: string[] = [];
-  let i = 0;
   const first = identName(toks[0]);
   if (first === null) return null;
   names.push(first);
-  i = 1;
+  let i = 1;
   if (toks[i]?.k === 'p' && toks[i]?.v === '.') {
     const second = identName(toks[i + 1]);
     if (second === null) return null;
