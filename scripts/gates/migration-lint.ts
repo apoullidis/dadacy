@@ -125,6 +125,24 @@
  *                        contract §6). Also refused (QA-F2): `CREATE ROLE|USER|GROUP` naming
  *                        it, `ALTER ROLE|USER|GROUP answering_service`, `OWNER TO
  *                        answering_service`, and `REASSIGN OWNED … TO answering_service`.
+ *                        ONE exception, and only for PUBLIC: R-RESTORE-PUBLIC below (T-241).
+ *   [R-RESTORE-PUBLIC]   (T-241, OE-76, OD-275) a `-- @restore-public: <reference>` marker is a `--`
+ *                        comment in the HEADER of a DOWN file `NNNN_slug.down.sql` whose paired
+ *                        `NNNN_slug.up.sql` exists, at most one per file, citing a ticket or decision.
+ *                        It admits, in that down file only, a plain top-level statement
+ *                        `GRANT <privileges> ON FUNCTION|PROCEDURE|ROUTINE <signature>[, …] TO PUBLIC`
+ *                        (no WITH GRANT OPTION, no GRANTED BY, no other grantee) when EVERY (object,
+ *                        privilege) pair in it was revoked FROM PUBLIC by a plain top-level REVOKE in the
+ *                        paired up file (not `REVOKE GRANT OPTION FOR`). Names are compared as PostgreSQL
+ *                        resolves them: unquoted folded to lower case (ASCII only), quoted exact, `U&"…"`
+ *                        decoded, comments separating tokens; the object kind, the schema qualification,
+ *                        the argument types and the privilege are compared as spelled. Anything else that
+ *                        grants to PUBLIC is refused by R-ANSWERING-SERVICE exactly as before, with the
+ *                        marker's reason appended. It never admits a grant to answering_service. THIS GATE
+ *                        CANNOT SEE whether PUBLIC held the privilege before the up file ran: a down file
+ *                        that "restores" a privilege PUBLIC never had is admitted. The review behind the
+ *                        reference, and PROTOCOL §3's two approvals, are that control. Every accepted marker
+ *                        is printed with what it admitted.
  *   [R-VENDOR-SQL]       (T-167, OD-150) a `-- @vendor-sql: <body> — <reference>` marker is a `--`
  *                        comment in the HEADER of an up file, names a body that up file defines
  *                        exactly once, and cites a ticket or decision. It exempts THAT BODY, and
@@ -409,6 +427,9 @@ const RUN_AS_FORM = /^[ \t]*--[ \t]*@run-as:[ \t]*bootstrap-superuser(?![A-Za-z0
  * refused for its placement rather than quietly ignored.
  */
 const VENDOR_SQL_LINE = /^[ \t]*--[ \t]*@vendor-sql\b/;
+/** (T-241) The reviewed restore-PUBLIC marker (R-RESTORE-PUBLIC), read line by line like the two above. */
+const RESTORE_PUBLIC_LINE = /^[ \t]*--[ \t]*@restore-public\b/;
+const RESTORE_PUBLIC_FORM = /^[ \t]*--[ \t]*@restore-public:[ \t]*(.*)$/;
 const VENDOR_SQL_FORM = /^[ \t]*--[ \t]*@vendor-sql:[ \t]*([^\s—]+)[ \t]*(.*)$/;
 
 /**
@@ -671,6 +692,14 @@ export interface FragmentRead {
   readonly bodies: string[][];
   /** Every body designator in the file, in source order. A repeat is an overload (T-167). */
   readonly bodyList: string[];
+  /**
+   * (T-241) Parallel to `texts`: for a fragment that is a whole TOP-LEVEL statement of the file (split
+   * on `;` outside every literal, at depth 0), the segments of that statement in source order, with the
+   * code split at the `;`; `null` for every other fragment (a string literal's or a dollar body's
+   * content). R-RESTORE-PUBLIC is the only reader: it re-reads the statement with identifier case and
+   * quoting intact, which `texts` has normalised away.
+   */
+  readonly stmts: (readonly Segment[] | null)[];
 }
 
 /**
@@ -698,15 +727,20 @@ export function readFragments(
 ): FragmentRead {
   const texts: string[] = [];
   const bodies: string[][] = [];
+  const stmts: (readonly Segment[] | null)[] = [];
   let cur = '';
-  const emit = (t: string, c: readonly string[]): void => {
+  /** (T-241) The segments of the statement being read, for `stmts`. */
+  let stmtSegs: Segment[] = [];
+  const emit = (t: string, c: readonly string[], st: readonly Segment[] | null = null): void => {
     if (t === '') return;
     texts.push(t);
     bodies.push([...c]);
+    stmts.push(st);
   };
   const push = (): void => {
-    emit(norm(cur), chain);
+    emit(norm(cur), chain, depth === 0 ? stmtSegs : null);
     cur = '';
+    stmtSegs = [];
   };
   const raw = (s: string, c: readonly string[]): void => {
     for (const part of s.split(';')) emit(norm(part), c);
@@ -729,11 +763,20 @@ export function readFragments(
     const s = segments[k];
     if (s === undefined) continue;
     if (s.kind === 'code') {
+      let piece = '';
       for (const ch of s.text) {
-        if (ch === ';') push();
-        else cur += ch;
+        if (ch === ';') {
+          if (piece !== '') stmtSegs.push({ kind: 'code', text: piece, body: piece, line: s.line });
+          piece = '';
+          push();
+        } else {
+          cur += ch;
+          piece += ch;
+        }
       }
+      if (piece !== '') stmtSegs.push({ kind: 'code', text: piece, body: piece, line: s.line });
     } else if (s.kind === 'ident') {
+      stmtSegs.push(s);
       // (T-227, OD-235) `U&"…"` [UESCAPE '<c>']: the `U&` is the tail of the code before it.
       const uPrefix = /(^|[^A-Za-z0-9_$])[Uu]&$/.exec(cur);
       if (uPrefix === null) {
@@ -753,15 +796,19 @@ export function readFragments(
         esc = n2.body;
         k += 2;
         cur += ' ';
+        stmtSegs.push(n1, n2);
       }
       cur += decodeUnicodeIdent(s.body, esc);
     } else if (s.kind === 'line-comment' || s.kind === 'block-comment') {
+      stmtSegs.push(s);
       cur += ' ';
     } else if (s.kind === 'string') {
+      stmtSegs.push(s);
       const inside = descend();
       cur += ' ';
       raw(decodeUnicodeIdentsInText(s.body.replace(/''/g, "'")), inside);
     } else {
+      stmtSegs.push(s);
       const inside = descend();
       cur += ' ';
       const inner = depth < 8 ? lex(s.body) : null;
@@ -769,11 +816,12 @@ export function readFragments(
         const r = readFragments(inner.segments, inside, ctx, depth + 1);
         texts.push(...r.texts);
         bodies.push(...r.bodies);
+        stmts.push(...r.texts.map(() => null));
       } else raw(s.body, inside);
     }
   }
   push();
-  return { texts, bodies, bodyList: ctx.bodyList };
+  return { texts, bodies, bodyList: ctx.bodyList, stmts };
 }
 
 /** The fragments alone. One reading: this is `readFragments().texts` and nothing else. */
@@ -943,6 +991,228 @@ function grantsIn(fragment: string): Grant[] {
   }
   return out;
 }
+
+// ---------------------------------------------------------------------------
+// 2a. (T-241) R-RESTORE-PUBLIC: a top-level statement re-read with identifier case intact
+// ---------------------------------------------------------------------------
+
+/**
+ * A token of one top-level statement. `w` is an unquoted word as written, `q` a quoted identifier's
+ * name (a `U&"…"` one decoded), `p` one punctuation character. Comments are separators and produce no
+ * token, so `pg_advisory/* x *\/_lock` is two words, as PostgreSQL reads it.
+ */
+interface Tok {
+  readonly k: 'w' | 'q' | 'p';
+  readonly v: string;
+}
+
+/** PostgreSQL folds an unquoted identifier to lower case in ASCII only (downcase_identifier). */
+const asciiLower = (s: string): string => s.replace(/[A-Z]/g, (c) => c.toLowerCase());
+const WORD_RE = /[A-Za-z0-9_$\u0080-￿]+/y;
+const U_AMP_TAIL = /(?:^|[^A-Za-z0-9_$\u0080-￿])[Uu]&$/;
+
+/** The tokens of a top-level statement; `plain` is false when it holds a string or dollar literal. */
+function stmtTokens(segs: readonly Segment[]): { toks: Tok[]; plain: boolean } {
+  const toks: Tok[] = [];
+  let plain = true;
+  for (let k = 0; k < segs.length; k += 1) {
+    const s = segs[k];
+    if (s === undefined || s.kind === 'line-comment' || s.kind === 'block-comment') continue;
+    if (s.kind === 'string' || s.kind === 'dollar') {
+      plain = false;
+      continue;
+    }
+    if (s.kind === 'ident') {
+      const prev = segs[k - 1];
+      let name = s.body;
+      if (prev?.kind === 'code' && U_AMP_TAIL.test(prev.text)) {
+        toks.splice(toks.length - 2, 2); // the `U` and `&` just read from `prev`
+        let esc = '\\';
+        const n1 = segs[k + 1];
+        const n2 = segs[k + 2];
+        if (
+          n1?.kind === 'code' &&
+          /^\s*UESCAPE\s*$/i.test(n1.text) &&
+          n2?.kind === 'string' &&
+          n2.body.length === 1
+        ) {
+          esc = n2.body;
+          k += 2;
+        }
+        name = decodeUnicodeIdent(s.body, esc);
+      }
+      toks.push({ k: 'q', v: name });
+      continue;
+    }
+    const t = s.text;
+    let i = 0;
+    while (i < t.length) {
+      const c = t.charAt(i);
+      if (/\s/.test(c)) {
+        i += 1;
+        continue;
+      }
+      WORD_RE.lastIndex = i;
+      const w = WORD_RE.exec(t);
+      if (w !== null) {
+        toks.push({ k: 'w', v: w[0] });
+        i += w[0].length;
+      } else {
+        toks.push({ k: 'p', v: c });
+        i += 1;
+      }
+    }
+  }
+  return { toks, plain };
+}
+
+const isWord = (t: Tok | undefined, w: string): boolean => t?.k === 'w' && asciiLower(t.v) === w;
+/** An identifier's resolved name: unquoted folded (ASCII), quoted exact; null for punctuation. */
+const identName = (t: Tok | undefined): string | null =>
+  t === undefined || t.k === 'p' ? null : t.k === 'w' ? asciiLower(t.v) : t.v;
+
+/** Index of the first word in `words` at parenthesis depth 0, at or after `from`; -1 if none. */
+function findTop(toks: readonly Tok[], from: number, words: readonly string[]): number {
+  let depth = 0;
+  for (let i = from; i < toks.length; i += 1) {
+    const t = toks[i];
+    if (t === undefined) continue;
+    if (t.k === 'p' && t.v === '(') depth += 1;
+    else if (t.k === 'p' && t.v === ')') depth -= 1;
+    else if (depth === 0 && t.k === 'w' && words.includes(asciiLower(t.v))) return i;
+  }
+  return -1;
+}
+
+/** Split on commas at parenthesis depth 0. */
+function splitTop(toks: readonly Tok[]): Tok[][] {
+  const out: Tok[][] = [[]];
+  let depth = 0;
+  for (const t of toks) {
+    if (t.k === 'p' && t.v === '(') depth += 1;
+    if (t.k === 'p' && t.v === ')') depth -= 1;
+    if (depth === 0 && t.k === 'p' && t.v === ',') out.push([]);
+    else out[out.length - 1]?.push(t);
+  }
+  return out;
+}
+
+/** How a routine signature is printed: resolved names, quoted only where PostgreSQL would need it. */
+function showToks(toks: readonly Tok[]): string {
+  let out = '';
+  let prevName = false;
+  for (const t of toks) {
+    if (t.k === 'p') {
+      out += t.v === ',' ? ', ' : t.v;
+      prevName = false;
+      continue;
+    }
+    const n = identName(t) ?? '';
+    const shown = t.k === 'w' || /^[a-z_][a-z0-9_$]*$/.test(n) ? n : `"${n.replace(/"/g, '""')}"`;
+    out += (prevName ? ' ' : '') + shown;
+    prevName = true;
+  }
+  return out;
+}
+
+/**
+ * A routine signature, `<name>[.<name>][(<argument tokens>)]`, as a comparison key in which every
+ * name is resolved (so `"pg_catalog"."x"` and `PG_CATALOG.X` are one key, and `"X"` and `x` are two);
+ * null when the tokens are not that shape.
+ */
+function routineKey(toks: readonly Tok[]): string | null {
+  const names: string[] = [];
+  let i = 0;
+  const first = identName(toks[0]);
+  if (first === null) return null;
+  names.push(first);
+  i = 1;
+  if (toks[i]?.k === 'p' && toks[i]?.v === '.') {
+    const second = identName(toks[i + 1]);
+    if (second === null) return null;
+    names.push(second);
+    i += 2;
+  }
+  let args: string | null = null;
+  if (i < toks.length) {
+    const open = toks[i];
+    const close = toks[toks.length - 1];
+    if (open?.k !== 'p' || open.v !== '(' || close?.k !== 'p' || close.v !== ')') return null;
+    const inner = toks.slice(i + 1, -1);
+    let depth = 0;
+    for (const t of inner) {
+      if (t.k === 'p' && t.v === '(') depth += 1;
+      if (t.k === 'p' && t.v === ')') depth -= 1;
+      if (depth < 0) return null;
+    }
+    if (depth !== 0) return null;
+    args = inner.map((t) => (t.k === 'p' ? t.v : JSON.stringify(identName(t)))).join(' ');
+  }
+  return JSON.stringify([names, args]);
+}
+
+const ROUTINE_KINDS: ReadonlySet<string> = new Set(['function', 'procedure', 'routine']);
+
+interface AclStmt {
+  /** Privilege names, lower case, `all privileges` read as `all`. */
+  readonly privs: readonly string[];
+  readonly kind: string;
+  readonly objects: readonly { readonly key: string; readonly shown: string }[];
+  readonly grantees: readonly (readonly Tok[])[];
+  /** `WITH …` / `GRANTED BY …` (GRANT), `GRANTED BY …` / `CASCADE` / `RESTRICT` (REVOKE). */
+  readonly tail: readonly Tok[];
+  /** REVOKE GRANT OPTION FOR: the privilege itself is not revoked. */
+  readonly optionOnly: boolean;
+}
+
+/** A GRANT or REVOKE on routines, or the reason the statement is not one. */
+function parseRoutineAcl(toks: readonly Tok[], verb: 'grant' | 'revoke'): AclStmt | string {
+  if (!isWord(toks[0], verb)) return `it is not a ${verb.toUpperCase()} statement`;
+  let i = 1;
+  const optionOnly =
+    verb === 'revoke' &&
+    isWord(toks[1], 'grant') &&
+    isWord(toks[2], 'option') &&
+    isWord(toks[3], 'for');
+  if (optionOnly) i = 4;
+  const on = findTop(toks, i, ['on']);
+  if (on < 0) return 'it names no object (no ON …)';
+  const privs: string[] = [];
+  for (const item of splitTop(toks.slice(i, on))) {
+    if (item.length === 0 || item.some((t) => t.k !== 'w'))
+      return 'its privilege list is not a list of privilege names';
+    const p = item.map((t) => asciiLower(t.v)).join(' ');
+    privs.push(p === 'all privileges' ? 'all' : p);
+  }
+  const kindTok = toks[on + 1];
+  const kind = kindTok?.k === 'w' ? asciiLower(kindTok.v) : '';
+  if (!ROUTINE_KINDS.has(kind))
+    return 'only FUNCTION, PROCEDURE and ROUTINE objects are admitted, each named by its signature (not a table, a schema, ALL … IN SCHEMA or any other class)';
+  const to = findTop(toks, on + 2, [verb === 'grant' ? 'to' : 'from']);
+  if (to < 0) return `it has no ${verb === 'grant' ? 'TO' : 'FROM'} clause`;
+  const objects: { key: string; shown: string }[] = [];
+  for (const o of splitTop(toks.slice(on + 2, to))) {
+    const key = routineKey(o);
+    if (key === null)
+      return `${showToks(o) || '(nothing)'} is not a routine signature <name>[.<name>][(<argument types>)]`;
+    objects.push({ key: `${kind} ${key}`, shown: `${kind.toUpperCase()} ${showToks(o)}` });
+  }
+  const end = findTop(
+    toks,
+    to + 1,
+    verb === 'grant' ? ['with', 'granted'] : ['granted', 'cascade', 'restrict'],
+  );
+  return {
+    privs,
+    kind,
+    objects,
+    grantees: splitTop(toks.slice(to + 1, end < 0 ? toks.length : end)),
+    tail: end < 0 ? [] : toks.slice(end),
+    optionOnly,
+  };
+}
+
+const isPublic = (g: readonly Tok[]): boolean => g.length === 1 && isWord(g[0], 'public');
 
 function snippet(s: string): string {
   return JSON.stringify(s.length > 110 ? `${s.slice(0, 107)}...` : s);
@@ -1203,6 +1473,90 @@ interface VendorExemption {
 }
 const vendorExemptions: VendorExemption[] = [];
 
+/**
+ * (T-241) R-RESTORE-PUBLIC. One entry per DOWN file holding at least one line read as the marker:
+ * the first such line, and whether the marker is usable (every placement, form and pairing check
+ * passed). An up file never has an entry, so nothing in an up file is ever admitted.
+ */
+const restoreMarkers = new Map<string, { readonly line: number; valid: boolean }>();
+let restoreLinesRead = 0;
+/** The review record, printed on every run: what each usable marker admitted. */
+const restoreAdmits = new Map<string, { line: number; stmts: number; routines: number }>();
+/** The (object key -> privileges) an up file revoked FROM PUBLIC in plain top-level REVOKEs. */
+const revokedCache = new Map<string, ReadonlyMap<string, ReadonlySet<string>>>();
+function revokedFromPublic(up: Migration): ReadonlyMap<string, ReadonlySet<string>> {
+  const hit = revokedCache.get(up.name);
+  if (hit !== undefined) return hit;
+  const out = new Map<string, Set<string>>();
+  if (up.lexed.error === null) {
+    for (const st of readFragments(up.lexed.segments).stmts) {
+      if (st === null) continue;
+      const { toks, plain } = stmtTokens(st);
+      if (!plain || !isWord(toks[0], 'revoke')) continue;
+      const r = parseRoutineAcl(toks, 'revoke');
+      if (typeof r === 'string' || r.optionOnly || !r.grantees.some(isPublic)) continue;
+      for (const o of r.objects) {
+        const set = out.get(o.key) ?? new Set<string>();
+        for (const p of r.privs) set.add(p);
+        out.set(o.key, set);
+      }
+    }
+  }
+  revokedCache.set(up.name, out);
+  return out;
+}
+
+/**
+ * Whether the marker admits one GRANT … TO PUBLIC fragment of a down file: null if it does, else
+ * the reason. `st` is the fragment's top-level statement (`FragmentRead.stmts`), null when the
+ * fragment is a literal's content.
+ */
+function restoreVerdict(
+  m: Migration,
+  st: readonly Segment[] | null,
+): { why: string | null; routines: number } {
+  const refuse = (why: string): { why: string; routines: number } => ({ why, routines: 0 });
+  if (st === null) {
+    return refuse(
+      'it is not a plain top-level GRANT statement (it sits in a string literal or a dollar-quoted body: a DO block, a function body, an EXECUTE string)',
+    );
+  }
+  const { toks, plain } = stmtTokens(st);
+  if (!plain) {
+    return refuse(
+      'it is not a plain top-level GRANT statement (the statement holds a string literal or a dollar-quoted body)',
+    );
+  }
+  const g = parseRoutineAcl(toks, 'grant');
+  if (typeof g === 'string') return refuse(g);
+  if (g.tail.length > 0) {
+    return refuse(
+      `it carries ${isWord(g.tail[0], 'with') ? 'WITH GRANT OPTION (or another WITH option)' : 'GRANTED BY'}; a restore re-creates PUBLIC's privilege and nothing else`,
+    );
+  }
+  if (g.grantees.length !== 1 || !isPublic(g.grantees[0] ?? [])) {
+    return refuse(
+      'the grantee list is not exactly PUBLIC (the bare keyword, alone); the marker never admits another grantee, answering_service above all',
+    );
+  }
+  const upName = `${m.num}_${m.slug}.up.sql`;
+  const up = byName.get(upName);
+  if (up === undefined) return refuse(`no paired up file ${MIGRATIONS_REL}/${upName}`);
+  const revoked = revokedFromPublic(up);
+  const missing: string[] = [];
+  for (const o of g.objects) {
+    for (const p of g.privs) {
+      if (revoked.get(o.key)?.has(p) !== true) {
+        missing.push(
+          `privilege ${p.toUpperCase()} on ${o.shown} was not revoked from PUBLIC by ${up.rel}`,
+        );
+      }
+    }
+  }
+  if (missing.length > 0) return refuse(missing.join('; '));
+  return { why: null, routines: g.objects.length };
+}
+
 for (const m of migrations) {
   if (m.lexed.error !== null) continue;
   const segs = m.lexed.segments;
@@ -1352,6 +1706,109 @@ for (const m of migrations) {
           `a comment beginning @vendor-sql that this gate does not read as a marker (it reads only a whole -- line in the header), so it exempts nothing: ${snippet(b.trim())}`,
         );
       });
+    }
+  }
+
+  // R-RESTORE-PUBLIC (T-241, OE-76), part 1: the marker lines themselves — placement, form,
+  // pairing. Read for EVERY file, the baseline and the up files included, so that a marker which
+  // cannot admit anything is refused rather than left standing as a claim a reviewer would read.
+  {
+    const lines = m.text.split('\n');
+    const headerEnd = headerEndLine(segs);
+    const commentLines = new Set(segs.filter((s) => s.kind === 'line-comment').map((s) => s.line));
+    let read = 0;
+    let firstLine = 0;
+    let valid = true;
+    lines.forEach((line, k) => {
+      if (!RESTORE_PUBLIC_LINE.test(line)) return;
+      const at = k + 1;
+      read += 1;
+      restoreLinesRead += 1;
+      const where = `${m.rel}:${String(at)}`;
+      if (read > 1) {
+        valid = false;
+        problem(
+          'R-RESTORE-PUBLIC',
+          where,
+          `a second -- @restore-public marker; line ${String(firstLine)} already carries one, and a file carries at most one`,
+        );
+        return;
+      }
+      firstLine = at;
+      if (at >= headerEnd || !commentLines.has(at)) {
+        valid = false;
+        problem(
+          'R-RESTORE-PUBLIC',
+          where,
+          `a -- @restore-public marker that is not a -- comment in the file header (before the first statement, outside every string, dollar-quoted body and block comment): ${snippet(line.trim())}`,
+        );
+        return;
+      }
+      if (m.dir === 'up') {
+        valid = false;
+        problem(
+          'R-RESTORE-PUBLIC',
+          where,
+          "a -- @restore-public marker in an up file; it admits a GRANT … TO PUBLIC only in a DOWN file, restoring what that down file's own up file revoked from PUBLIC (OE-76)",
+        );
+        return;
+      }
+      if (BASELINE.has(m.name)) {
+        valid = false;
+        problem(
+          'R-RESTORE-PUBLIC',
+          where,
+          'a -- @restore-public marker in the pinned 0001 baseline, whose content rules are not read at all (R-BASELINE); the marker admits nothing',
+        );
+        return;
+      }
+      // `.` does not match `\r`, so a CRLF line is matched without it (as R-RUN-AS does).
+      const form = RESTORE_PUBLIC_FORM.exec(line.replace(/\r$/, ''));
+      if (form === null) {
+        valid = false;
+        problem(
+          'R-RESTORE-PUBLIC',
+          where,
+          `not of the form \`-- @restore-public: <reference>\`: ${snippet(line.trim())}`,
+        );
+        return;
+      }
+      if (!REFERENCE.test(form[1] ?? '')) {
+        valid = false;
+        problem(
+          'R-RESTORE-PUBLIC',
+          where,
+          'the -- @restore-public marker cites no ticket or decision (T-NNN, OE-n, OD-n, EV-n, SQ-n) on its own line; a restore with no reference records no review',
+        );
+        return;
+      }
+      const upName = `${m.num}_${m.slug}.up.sql`;
+      if (!byName.has(upName)) {
+        valid = false;
+        problem(
+          'R-RESTORE-PUBLIC',
+          where,
+          `no paired up file ${MIGRATIONS_REL}/${upName}; the marker admits only what a down file's own up file revoked from PUBLIC`,
+        );
+      }
+    });
+    for (const s of segs) {
+      if (s.kind !== 'line-comment' && s.kind !== 'block-comment') continue;
+      s.body.split('\n').forEach((b, k) => {
+        if (!/^\s*@restore-public\b/.test(b)) return;
+        const at = s.line + k;
+        if (s.kind === 'line-comment' && RESTORE_PUBLIC_LINE.test(lines[at - 1] ?? '')) return; // read above
+        valid = false;
+        problem(
+          'R-RESTORE-PUBLIC',
+          `${m.rel}:${String(at)}`,
+          `a comment beginning @restore-public that this gate does not read as a marker (it reads only a whole -- line in the header), so it admits nothing: ${snippet(b.trim())}`,
+        );
+      });
+    }
+    if (read > 0 && m.dir === 'down' && !BASELINE.has(m.name)) {
+      restoreMarkers.set(m.name, { line: firstLine, valid });
+      if (valid) restoreAdmits.set(m.rel, { line: firstLine, stmts: 0, routines: 0 });
     }
   }
 
@@ -1716,7 +2173,9 @@ for (const m of migrations) {
 
   // GRANT-reading rules.
   const grantedTables = new Set<string>();
-  for (const f of frags) {
+  /** (T-241) Per fragment, the R-RESTORE-PUBLIC verdict, computed once for all its clauses. */
+  const restoreAt = new Map<number, string | null>();
+  frags.forEach((f, fi) => {
     for (const g of grantsIn(f)) {
       grantsRead += 1;
       const dangerous = /\b(?:UPDATE|DELETE|TRUNCATE|ALL)\b/.test(g.privileges);
@@ -1770,11 +2229,33 @@ for (const m of migrations) {
 
       const toVendor = g.grantees.includes('ANSWERING_SERVICE');
       const toPublic = g.grantees.includes('PUBLIC');
+      // (T-241) A usable -- @restore-public marker in a down file may admit this clause; without one
+      // the refusal is exactly what it was, word for word.
+      const marker = m.dir === 'down' ? restoreMarkers.get(m.name) : undefined;
+      let restoreNote = '';
+      if (toPublic && marker !== undefined) {
+        if (!marker.valid) {
+          restoreNote = `; the -- @restore-public marker (line ${String(marker.line)}) is refused (R-RESTORE-PUBLIC), so it admits nothing`;
+        } else {
+          if (!restoreAt.has(fi)) {
+            const v = restoreVerdict(m, read.stmts[fi] ?? null);
+            restoreAt.set(fi, v.why);
+            const rec = restoreAdmits.get(m.rel);
+            if (v.why === null && rec !== undefined) {
+              rec.stmts += 1;
+              rec.routines += v.routines;
+            }
+          }
+          const why = restoreAt.get(fi) ?? null;
+          if (why === null) continue;
+          restoreNote = `; -- @restore-public (line ${String(marker.line)}) does not admit it: ${why}`;
+        }
+      }
       if (toPublic) {
         problem(
           'R-ANSWERING-SERVICE',
           m.rel,
-          `grants to PUBLIC, and PUBLIC includes answering_service (T-020 contract §6): ${snippet(g.clause)}`,
+          `grants to PUBLIC, and PUBLIC includes answering_service (T-020 contract §6): ${snippet(g.clause)}${restoreNote}`,
         );
       } else if (toVendor) {
         const permitted =
@@ -1793,7 +2274,7 @@ for (const m of migrations) {
         }
       }
     }
-  }
+  });
 
   // R-TABLE-GRANT.
   if (m.dir === 'up') {
@@ -1965,6 +2446,14 @@ for (const v of vendorExemptions) {
   const tags = v.suppressed.length === 0 ? 'nothing' : [...v.suppressed].sort().join(', ');
   console.log(
     `    vendor-sql: ${v.rel}:${String(v.line)} exempts body ${v.body} — suppressed ${tags}`,
+  );
+}
+console.log(
+  `  -- @restore-public marker lines read: ${String(restoreLinesRead)}; usable markers: ${String(restoreAdmits.size)}; GRANT … TO PUBLIC statements they admitted: ${String([...restoreAdmits.values()].reduce((n, r) => n + r.stmts, 0))}`,
+);
+for (const [rel, r] of restoreAdmits) {
+  console.log(
+    `    restore-public: ${rel}:${String(r.line)} admits ${String(r.stmts)} GRANT … TO PUBLIC statement(s) on ${String(r.routines)} routine(s)`,
   );
 }
 console.log(
