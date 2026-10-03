@@ -6,8 +6,9 @@
 --
 -- WHAT "RESTORED" MEANS HERE, measured in tasks/state/EP-3/T-240.md: before 0022 each function's
 -- proacl is NULL (the built-in default, EXECUTE for PUBLIC and the owner). No GRANT can write NULL
--- back, so after this file proacl reads {=X/app,app=X/app}: the same privileges spelled out. pg_dump
--- treats the two the same (the schema dump after this file is compared with a pristine 0021's).
+-- back, so after this file proacl reads {app=X/app,=X/app}: the same privileges spelled out. A
+-- schema dump taken after this file is byte-identical to one of a project that never went past 0021
+-- (T-240 evidence, E4).
 --
 -- This file re-opens OD-273 (answering_service can again take the chain key). That is what reverting
 -- 0022 means.
