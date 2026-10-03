@@ -997,6 +997,9 @@ checkwhy CQ3D "the up file's REVOKE is dynamic SQL in a DO block" R-ANSWERING-SE
 rp "CREATE FUNCTION public.t241_later() RETURNS void LANGUAGE plpgsql AS \$fn\$ BEGIN REVOKE EXECUTE ON FUNCTION pg_catalog.pg_advisory_lock(bigint) FROM PUBLIC; END; \$fn\$;" "$MK
 $G1"
 checkwhy CQ3E "the up file's REVOKE is inside a function body it only defines" R-ANSWERING-SERVICE "pg_catalog.pg_advisory_lock(bigint) $NOTREV"
+rp "CREATE FUNCTION public.t241_later() RETURNS void LANGUAGE sql AS \$fn\$ REVOKE EXECUTE ON FUNCTION pg_catalog.pg_advisory_lock(bigint) FROM PUBLIC \$fn\$;" "$MK
+$G1"
+checkwhy CQ3K "the up file's REVOKE is the whole statement of a LANGUAGE sql body it only defines" R-ANSWERING-SERVICE "pg_catalog.pg_advisory_lock(bigint) $NOTREV"
 rp "REVOKE GRANT OPTION FOR EXECUTE ON FUNCTION pg_catalog.pg_advisory_lock(bigint) FROM PUBLIC;" "$MK
 $G1"
 checkwhy CQ3F "the up file revoked only the GRANT OPTION, not the privilege" R-ANSWERING-SERVICE "pg_catalog.pg_advisory_lock(bigint) $NOTREV"
@@ -1056,6 +1059,9 @@ checkwhy CQ70 "the GRANT as dynamic SQL in a DO block" R-ANSWERING-SERVICE "not 
 rp "$R3" "$MK
 CREATE FUNCTION public.t241_regrant() RETURNS void LANGUAGE plpgsql AS \$fn\$ BEGIN GRANT EXECUTE ON FUNCTION pg_catalog.pg_advisory_lock(bigint) TO PUBLIC; END; \$fn\$;"
 checkwhy CQ71 "the GRANT inside a function body the down file defines" R-ANSWERING-SERVICE "not a plain top-level GRANT statement"
+rp "$R3" "$MK
+CREATE FUNCTION public.t241_regrant() RETURNS void LANGUAGE sql AS \$fn\$ GRANT EXECUTE ON FUNCTION pg_catalog.pg_advisory_lock(bigint) TO PUBLIC \$fn\$;"
+checkwhy CQ73 "the GRANT as the whole statement of a LANGUAGE sql body the down file defines" R-ANSWERING-SERVICE "not a plain top-level GRANT statement"
 rp "$R3" "$MK
 GRANT EXECUTE ON FUNCTION pg_catalog.pg_advisory_lock('x' bigint) TO PUBLIC;"
 checkwhy CQ72 "a top-level GRANT holding a string literal (skipping it would leave a matching signature)" R-ANSWERING-SERVICE "the statement holds a string literal"
