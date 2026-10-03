@@ -40,7 +40,7 @@ import {
 import { assertPermitted, assertRefused, INT10_RAISE } from '../src/expect.ts';
 
 const SUITE = 'migrations-applied';
-const HIGHEST_COMMITTED = '0022';
+const HIGHEST_COMMITTED = '0023';
 const COMMITTED_DIR = path.join(REPO_ROOT, MIGRATIONS_DIR);
 const RECORD_SQL = `SELECT coalesce(shobj_description(oid, 'pg_database'), '(no comment)')
                       FROM pg_database WHERE datname = current_database()`;
@@ -941,6 +941,68 @@ const CREATED_BY: Readonly<
                  AND a.grantee IN ('app_rw'::regrole, 'app_ddl'::regrole)`,
         holds:
           'app_ddl:pg_advisory_xact_lock(bigint) app_rw:pg_advisory_xact_lock(bigint) app_rw:pg_advisory_xact_lock(integer,integer)',
+      },
+    ],
+  },
+  '0023': {
+    source: 'T-206',
+    // Each probe names one object 0023 creates (one of its three tables, or the exclusion constraint
+    // on staffed_interval), and each returns a value rather than raising once it is gone: to_regclass
+    // returns NULL for a missing name (coalesced), and the constraint and ACL reads are coalesced.
+    // 0023 creates no function, no trigger and no rule.
+    probes: [
+      {
+        title: 'table public.staffed_schedule_version exists, owned by app_ddl',
+        sql: `SELECT coalesce((SELECT pg_get_userbyid(relowner) FROM pg_class
+                               WHERE oid = to_regclass('public.staffed_schedule_version')), '(absent)')`,
+        holds: 'app_ddl',
+      },
+      {
+        title: 'table public.staffed_interval exists, owned by app_ddl',
+        sql: `SELECT coalesce((SELECT pg_get_userbyid(relowner) FROM pg_class
+                               WHERE oid = to_regclass('public.staffed_interval')), '(absent)')`,
+        holds: 'app_ddl',
+      },
+      {
+        title: 'table public.staffed_schedule_current exists, owned by app_ddl (E.2 U-3)',
+        sql: `SELECT coalesce((SELECT pg_get_userbyid(relowner) FROM pg_class
+                               WHERE oid = to_regclass('public.staffed_schedule_current')), '(absent)')`,
+        holds: 'app_ddl',
+      },
+      {
+        title:
+          "staffed_interval's exclusion constraint (contype 'x') is EXCLUDE USING gist (version_id WITH =, span WITH &&), SD 3180 verbatim (V1)",
+        sql: `SELECT coalesce((SELECT string_agg(conname || ' ' || contype::text || ' ' || pg_get_constraintdef(oid), ' ; ')
+                                 FROM pg_constraint
+                                WHERE conrelid = to_regclass('public.staffed_interval') AND contype = 'x'), '(absent)')`,
+        holds:
+          'staffed_interval_version_id_span_excl x EXCLUDE USING gist (version_id WITH =, span WITH &&)',
+      },
+      {
+        title:
+          'staffed_interval_span_shape is CHECK (non-empty, both bounds present, lower included, upper excluded) (U-15 (a))',
+        sql: `SELECT coalesce((SELECT pg_get_constraintdef(oid) FROM pg_constraint
+                               WHERE conrelid = to_regclass('public.staffed_interval')
+                                 AND conname = 'staffed_interval_span_shape'), '(absent)')`,
+        holds:
+          'CHECK (((NOT isempty(span)) AND (NOT lower_inf(span)) AND (NOT upper_inf(span)) AND lower_inc(span) AND (NOT upper_inc(span))))',
+      },
+      {
+        title:
+          "the three tables' ACLs: app_rw only (SELECT; version INSERT on seven columns and UPDATE (superseded_at); interval INSERT; pointer INSERT and UPDATE (current_version_id))",
+        sql: `SELECT coalesce((SELECT string_agg(c.relname || ' ' || c.relacl::text || ' ' ||
+                                      coalesce((SELECT string_agg(a.attname || '=' || a.attacl::text, ',' ORDER BY a.attnum)
+                                                  FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attacl IS NOT NULL), '-'),
+                                      ' ; ' ORDER BY c.relname)
+                                 FROM pg_class c
+                                WHERE c.oid IN (to_regclass('public.staffed_schedule_version'), to_regclass('public.staffed_interval'),
+                                                to_regclass('public.staffed_schedule_current'))), '(absent)')`,
+        holds:
+          'staffed_interval {app_ddl=arwdDxtm/app_ddl,app_rw=ar/app_ddl} - ; ' +
+          'staffed_schedule_current {app_ddl=arwdDxtm/app_ddl,app_rw=ar/app_ddl} current_version_id={app_rw=w/app_ddl} ; ' +
+          'staffed_schedule_version {app_ddl=arwdDxtm/app_ddl,app_rw=r/app_ddl} id={app_rw=a/app_ddl},jurisdiction={app_rw=a/app_ddl},' +
+          'effective_from={app_rw=a/app_ddl},published_by={app_rw=a/app_ddl},approval_id={app_rw=a/app_ddl},pattern={app_rw=a/app_ddl},' +
+          'note={app_rw=a/app_ddl},superseded_at={app_rw=w/app_ddl}',
       },
     ],
   },
