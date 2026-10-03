@@ -82,6 +82,12 @@
 # K187 is the control (the same three on the PARENT), K188 a stated bound (a partition disabling its
 # cloned trigger is NOT read). K189: the merge with T-153 — step 5a's partition exclusion removed.
 # (T-165's cases were K50–K80 until rework 2 renumbered them by +100 past T-153's K50–K62r.)
+# T-206 — K190–K192 (OE-31 IC-1 as amended, IC-2): tstzrange in the closed type map. K190 is the control on a
+# plant (an integer key, a char(26) owner, a NOT NULL and a nullable tstzrange, a date, a jsonb, and an EXCLUDE
+# USING gist over (owner WITH =, r WITH &&)): the ranges render as the mapped tstzrange, the EXCLUDE and its index
+# are NOT rendered, a range round-trips through pg/drizzle as its text in the session TimeZone, and an importer is
+# refused a number, a Date or null for the range. K191 deletes the tstzrange entry (asserted landed): the plant is
+# I-MAP again. K192 plants tstzrange[]: the map matches the exact type, so it is I-MAP.
 # T-232 (OD-246): no case assumes what the committed migration set contains. Every count a case pins
 # (int8 and geometry columns, policies, partitioned tables and partitions, relations) is BASE + the
 # plant's own share, BASE read once from the catalogue at HIGHEST and held against the generator's
@@ -178,7 +184,7 @@ cleanup_after_abort() {
   if [ "$(record)" != "kinvara-migrate version=$HIGHEST" ]; then
     node scripts/db-migrate.ts down --to "$HIGHEST" >"$OUT.abort" 2>&1 || cat "$OUT.abort"
   fi
-  rm -f "$M/${NEXT}_t138_plant.up.sql" "$M/${NEXT}_t138_plant.down.sql" "${T153_BITE:-}"
+  rm -f "$M/${NEXT}_t138_plant.up.sql" "$M/${NEXT}_t138_plant.down.sql" "${T153_BITE:-}" "${T206_BITE:-}"
   git checkout -q -- "$SCHEMA" "$SCRIPT" "$RENDER" "$ORDER" "$POLICY" "$PARTITION"
   echo "   abort cleanup: record now '$(record)'; git status --porcelain:"
   git status --porcelain
@@ -208,6 +214,8 @@ stats_mark() {
 
 # T-153: the importer K50/K53 plant into the root program; restore_tree() removes it.
 T153_BITE=packages/db-testkit/type-tests/t153-bite.ts
+# T-206: the importer K190 plants into the root program; restore_tree() removes it too.
+T206_BITE=packages/db-testkit/type-tests/t206-bite.ts
 
 # T-168 (OD-161). restore_tree is the working-tree half of restore(), split out UNCHANGED so the
 # traps below can call it on its own. It needs no database, which is the whole point: the tracked
@@ -218,7 +226,7 @@ T153_BITE=packages/db-testkit/type-tests/t153-bite.ts
 # (T-153 merge of main 3385ede: T-153's `rm -f "$T153_BITE"` is a working-tree action, so it moved
 # from the top of restore() into this half, where the traps reach it too.)
 restore_tree() {
-  rm -f "$T153_BITE"
+  rm -f "$T153_BITE" "$T206_BITE"
   rm -f "$M/${NEXT}_t138_plant.up.sql" "$M/${NEXT}_t138_plant.down.sql"
   git checkout -q -- "$SCHEMA" "$SCRIPT" "$RENDER" "$ORDER" "$POLICY" "$PARTITION"
   if [ -n "$(git status --porcelain)" ]; then
@@ -2219,6 +2227,121 @@ mutate "$RENDER" "    if (ranges.some(([a, b]) => i >= a && i < b)) continue;" "
 git diff -U0 -- "$RENDER" | grep -E '^[-+][^-+]' | sed 's/^/   mutation:   /'
 check K62r "(T-153 r1) RED BEFORE: with the string-literal filter removed (asserted above), the hint sentence inside the text DEFAULT is falsely refused" I-MAP \
   "rendering line [0-9]+ still carries drizzle-kit's bigint hint comment"
+
+echo "== T-206 (OE-31 IC-1, IC-2): tstzrange in the closed type map, measured through pg and drizzle"
+# The plant's columns, named from this SQL: id integer, owner char(26), r tstzrange NOT NULL, r_maybe
+# tstzrange, d date, j jsonb, and an EXCLUDE (owner WITH =, r WITH &&) that drizzle-kit does not render.
+plant_range() {
+  plant "$UP" "-- @phase: expand
+CREATE TABLE public.t206_range (
+  id integer PRIMARY KEY,
+  owner char(26) NOT NULL,
+  r tstzrange NOT NULL,
+  r_maybe tstzrange,
+  d date NOT NULL,
+  j jsonb NOT NULL,
+  CONSTRAINT t206_range_no_overlap EXCLUDE USING gist (owner WITH =, r WITH &&));"
+  plant "$DOWN" "DROP TABLE public.t206_range;"
+}
+
+# The driver round trip, through pg + drizzle-orm and the db/schema.ts just written. One connection, so a
+# SET TIME ZONE holds for the reads after it. The database's default TimeZone is read, not assumed.
+T206_ROUNDTRIP=$(
+  cat <<'EOF'
+import pg from "pg";
+import { drizzle } from "drizzle-orm/node-postgres";
+import { eq } from "drizzle-orm";
+import { t206Range } from "./db/schema.ts";
+const pool = new pg.Pool({ max: 1 });
+const db = drizzle(pool);
+const show = (v) => (v instanceof Date ? `Date ${v.toISOString()}` : `${typeof v} ${JSON.stringify(v)}`);
+try {
+  const tz = (await pool.query("SELECT current_setting('TimeZone') AS tz")).rows[0].tz;
+  console.log(`SESSION TimeZone ${tz}`);
+  await pool.query("INSERT INTO t206_range (id, owner, r, d, j) VALUES (1, 'o', '[2026-10-02T11:00:00Z,2026-10-02T23:00:00Z)', '2026-10-01', '{\"schema\": 1}')");
+  const [r] = await db.select().from(t206Range).where(eq(t206Range.id, 1));
+  console.log(`READ r ${show(r.r)}`);
+  console.log(`READ rMaybe ${show(r.rMaybe)}`);
+  console.log(`READ d ${show(r.d)}`);
+  console.log(`READ j ${show(r.j)}`);
+  const raw = (await pool.query("SELECT r, d FROM t206_range WHERE id = 1")).rows[0];
+  console.log(`RAW r ${show(raw.r)}`);
+  console.log(`RAW d ${show(raw.d)}`);
+  await db.insert(t206Range).values({ id: 2, owner: "o", r: "[2026-10-03T11:00:00Z,2026-10-03T23:00:00Z)", d: "2027-04-01", j: [1] });
+  const back = (await pool.query("SELECT lower(r) = '2026-10-03T11:00:00Z' AND upper(r) = '2026-10-03T23:00:00Z' AND lower_inc(r) AND NOT upper_inc(r) AS ok, d::text AS d, j::text AS j FROM t206_range WHERE id = 2")).rows[0];
+  console.log(`WRITE database reads r exact=${back.ok} d ${back.d} j ${back.j}`);
+  await pool.query("SET TIME ZONE 'Europe/Nicosia'");
+  const [n] = await db.select().from(t206Range).where(eq(t206Range.id, 1));
+  console.log(`READ under Europe/Nicosia r ${show(n.r)}`);
+} catch (e) {
+  console.log(`ROUNDTRIP THREW ${e.constructor.name}: ${e.message}; cause: ${e.cause?.message}`);
+}
+await pool.end();
+EOF
+)
+
+# The importer: lines 4-6 and 11 must be accepted, lines 7-10 and 12 refused; line 13 shows jsonb is unknown.
+T206_BITE_TEXT="import type { t206Range } from '../../../db/schema.ts';
+type Row = typeof t206Range.\$inferSelect;
+type Ins = typeof t206Range.\$inferInsert;
+export const okSelect: Row['r'] = '[\"2026-10-02 11:00:00+00\",\"2026-10-02 23:00:00+00\")';
+export const okInsert: Ins['r'] = '[2026-10-02T11:00:00Z,2026-10-02T23:00:00Z)';
+export const okMaybe: Row['rMaybe'] = null;
+export const numberSelect: Row['r'] = 5;
+export const numberInsert: Ins['r'] = 5;
+export const dateInsert: Ins['r'] = new Date(0);
+export const nullRequired: Row['r'] = null;
+export const dateAsString: Row['d'] = '2026-10-01';
+export const dateAsDate: Ins['d'] = new Date(0);
+export const jsonAnything: Ins['j'] = 42;"
+
+t206_tsc_errors() {
+  plant "$T206_BITE" "$T206_BITE_TEXT"
+  node_modules/.bin/tsc --noEmit -p tsconfig.json >"$OUT.tsc" 2>&1
+  grep -oE '^[^(: ]+\([0-9]+,[0-9]+\): error TS[0-9]+' "$OUT.tsc" | sed -E 's/^([^(]+)\(([0-9]+),[0-9]+\): error (TS[0-9]+)$/\1:\2 \3/' | sort -u | tr '\n' ' ' | sed 's/ $//'
+}
+
+plant_range
+write_schema
+node scripts/db-introspect.ts --check >"$OUT" 2>&1
+code=$?
+: >"$OUT.f"
+nf=0
+nok=0
+for spec in 't206Range|r: tstzrange("r").notNull(),' 't206Range|rMaybe: tstzrange("r_maybe"),' \
+  't206Range|d: date().notNull(),' 't206Range|j: jsonb().notNull(),'; do
+  fact "db/schema.ts, inside ${spec%%|*}: lines containing [${spec#*|}]" "$(block_count "${spec%%|*}" "${spec#*|}")" 1
+done
+fact "db/schema.ts, inside t206Range: lines naming the EXCLUDE, its index or an exclude() builder (IC-2: not rendered)" "$(block_count t206Range 't206_range_no_overlap')/$(block_count t206Range 'exclude')" 0/0
+fact "the generator's map line lists tstzrange" "$(grep -cE '^  mapped column type\(s\): .*\btstzrange\b' "$OUT")" 1
+fact "the catalogue holds the plant's EXCLUDE (contype x), so its absence from the rendering is drizzle-kit's" "$(psql -X -A -t -q -c "SELECT count(*) FROM pg_constraint WHERE conrelid = 'public.t206_range'::regclass AND contype = 'x' AND conname = 't206_range_no_overlap'")" 1
+node --input-type=module -e "$T206_ROUNDTRIP" >"$OUT.rt" 2>&1
+for line in 'SESSION TimeZone UTC' \
+  'READ r string "[\"2026-10-02 11:00:00+00\",\"2026-10-02 23:00:00+00\")"' 'READ rMaybe object null' \
+  'READ d string "2026-10-01"' 'READ j object {"schema":1}' \
+  'RAW r string "[\"2026-10-02 11:00:00+00\",\"2026-10-02 23:00:00+00\")"' 'RAW d Date 2026-10-01T00:00:00.000Z' \
+  'WRITE database reads r exact=true d 2027-04-01 j [1]' \
+  'READ under Europe/Nicosia r string "[\"2026-10-02 14:00:00+03\",\"2026-10-03 02:00:00+03\")"'; do
+  fact "driver round trip prints [$line]" "$(grep -cxF -- "$line" "$OUT.rt")" 1
+done
+fact "importer: exactly TS2322 on lines 7-10 (number, number, Date, null for the range) and 12 (a Date for the date)" "$(t206_tsc_errors)" "$T206_BITE:7 TS2322 $T206_BITE:8 TS2322 $T206_BITE:9 TS2322 $T206_BITE:10 TS2322 $T206_BITE:12 TS2322"
+sed 's/^/driver: /' "$OUT.rt" >>"$OUT.f"
+[ "$nok" -eq "$nf" ] && echo "ALL $nf TSTZRANGE FACTS HOLD" >>"$OUT.f"
+cat "$OUT.f" >>"$OUT"
+judge K190 "(T-206) CONTROL: tstzrange NOT NULL and nullable, date, jsonb, an EXCLUDE: the ranges render as the mapped tstzrange, the EXCLUDE is not rendered, a range is its text in the session TimeZone both ways through the driver, and an importer refuses a number, a Date and null for it" PASS "$code" '^ALL [0-9]+ TSTZRANGE FACTS HOLD$'
+grep -E '^fact |^driver: ' "$OUT" | cut -c1-240 | sed 's/^/       /'
+restore
+
+plant_range
+mutate "$RENDER" "    'tstzrange'," "    't206_removed_tstzrange',"
+grep -qF "    't206_removed_tstzrange'," "$RENDER" || abort "the tstzrange entry was not removed from $RENDER"
+git diff -U0 -- "$RENDER" | grep -E '^[-+][^-+]' | sed 's/^/   mutation:   /'
+check K191 "(T-206) the tstzrange entry deleted from the map (asserted above): the plant's range column is refused, I-MAP" I-MAP "column \"r\" has database type 'tstzrange'"
+
+plant "$UP" "-- @phase: expand
+CREATE TABLE public.t206_range (id integer PRIMARY KEY, rs tstzrange[]);"
+plant "$DOWN" "DROP TABLE public.t206_range;"
+check K192 "(T-206) tstzrange[] is not tstzrange: the map matches the exact type, so an array of the mapped type fails" I-MAP "column \"rs\" has database type 'tstzrange\[\]'"
 
 echo
 if [ "$bad" -eq 0 ]; then
