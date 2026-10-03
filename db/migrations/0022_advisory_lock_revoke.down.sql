@@ -1,4 +1,5 @@
 -- 0022_advisory_lock_revoke.down.sql
+-- @restore-public: OE-76 (OD-275); T-240 — restores the PUBLIC EXECUTE that 0022's up revoked, on exactly its 21 routines
 --
 -- Ticket: T-240. Reverses 0022: removes the two grants and gives PUBLIC back EXECUTE on all 21
 -- advisory-lock functions, which is the effective privilege set before 0022 (every role may EXECUTE
