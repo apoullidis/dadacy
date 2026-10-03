@@ -283,7 +283,11 @@ const SUITES: readonly Suite[] = [
     // becomes K160/K160b/K160m/K160n (rendered from the parent's sequence; drizzle-kit's own plain-table
     // anchor; each half mutated away). A GREEN count: `ALL 144 CASES BEHAVED AS EXPECTED` on a fresh db
     // project at c4eda1b (tasks/state/EP-3/T-214.md, DBI5).
-    cases: 144,
+    // 144 -> 147, 2026-10-03, T-206: K190 (tstzrange control on a plant), K191 (the tstzrange entry deleted:
+    // I-MAP), K192 (tstzrange[]: I-MAP). A GREEN count: `ALL 147 CASES BEHAVED AS EXPECTED` on a fresh db
+    // project at 6ef2382 (tasks/state/EP-8b/T-206.md, DBI3); d71a414 then removed one fact line from K190 (no
+    // case added or removed) and is re-measured by gate:heavy at T-206's final head.
+    cases: 147,
     state: 'NEEDS-SERVICE',
     why: 'db:introspect:check: the closed type map, canonical order, RLS policies, the pgboss exclusion (T-138, T-150, T-152, T-145)',
     owner:
@@ -376,7 +380,13 @@ const SUITES: readonly Suite[] = [
     // Taken with the instrument, never edited by hand:
     //   $ git cat-file blob ef90e5b:scripts/negative-tests/db-introspect.sh | sha256sum
     //   59b74e097b927d6844ec47ee685430103c606833bdbee9767c994981a8a46702
-    digest: '59b74e097b927d6844ec47ee685430103c606833bdbee9767c994981a8a46702',
+    // RE-PINNED 2026-10-03 by T-206: K190-K192 (tstzrange), K24's mutation made independent of the committed
+    // set (0023 commits the first exclusion constraint; OD-246's family), K190's redundant map-line fact
+    // dropped. Red first at d71a414 with the old pin (T-206.md, NS-OLDPIN). Taken with the instrument, never
+    // edited by hand:
+    //   $ git cat-file blob d71a414:scripts/negative-tests/db-introspect.sh | sha256sum
+    //   dba1b88f810b97859b4244bef360f30d128539297f7160b9382c0f5a63f7998d
+    digest: 'dba1b88f810b97859b4244bef360f30d128539297f7160b9382c0f5a63f7998d',
     // T-234 (T-232 QA-S-F1, NS1): every read of db/schema.ts or a generated artefact in the suite is
     // classified by this committed instrument on EVERY run of this gate, not only when the digest
     // moves, and the instrument is itself held against a fixture of the read shapes it must flag.
