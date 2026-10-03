@@ -1015,10 +1015,10 @@ GRANT EXECUTE ON FUNCTION pg_catalog.pg_advisory_lock(bigint) TO PUBLIC, app_adm
 checkwhy CQ50 "PUBLIC and a second grantee" R-ANSWERING-SERVICE "the grantee list is not exactly PUBLIC"
 rp "$R3" "$MK
 GRANT EXECUTE ON FUNCTION pg_catalog.pg_advisory_lock(bigint) TO PUBLIC WITH GRANT OPTION;"
-checkwhy CQ51 "WITH GRANT OPTION" R-ANSWERING-SERVICE "WITH GRANT OPTION"
+checkwhy CQ51 "WITH GRANT OPTION" R-ANSWERING-SERVICE "$NOTADMIT it carries WITH GRANT OPTION"
 rp "$R3" "$MK
 GRANT EXECUTE ON FUNCTION pg_catalog.pg_advisory_lock(bigint) TO PUBLIC GRANTED BY app_ddl;"
-checkwhy CQ52 "GRANTED BY" R-ANSWERING-SERVICE "GRANTED BY"
+checkwhy CQ52 "GRANTED BY" R-ANSWERING-SERVICE "$NOTADMIT it carries GRANTED BY"
 rp "$R3" "$MK
 GRANT EXECUTE ON FUNCTION pg_catalog.pg_advisory_lock(bigint) TO GROUP PUBLIC;"
 checkwhy CQ53 "TO GROUP PUBLIC" R-ANSWERING-SERVICE "the grantee list is not exactly PUBLIC"
