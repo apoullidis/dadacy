@@ -957,7 +957,16 @@ GRANT EXECUTE ON FUNCTION public.pg_advisory_lock(bigint) TO PUBLIC;"
 checkwhy CQ33 "the revoked name in another schema" R-ANSWERING-SERVICE "public.pg_advisory_lock(bigint) $NOTREV"
 rp "$R3" "$MK
 GRANT EXECUTE ON FUNCTION pg_advisory_lock(bigint) TO PUBLIC;"
-checkwhy CQ34 "the revoked name unqualified (search_path decides what it is)" R-ANSWERING-SERVICE "pg_advisory_lock(bigint) $NOTREV"
+checkwhy CQ34 "the revoked name unqualified (search_path decides what it is)" R-ANSWERING-SERVICE "FUNCTION pg_advisory_lock(bigint) is not schema-qualified"
+# T-241 self-attack A1: unqualified in BOTH files matches as text, but the down file can SET search_path
+# first, so the same text names another routine. Only schema-qualified names are admitted.
+rp "REVOKE EXECUTE ON FUNCTION t241_fn() FROM PUBLIC;" "$MK
+GRANT EXECUTE ON FUNCTION t241_fn() TO PUBLIC;"
+checkwhy CQ3I "A1: unqualified in both files" R-ANSWERING-SERVICE "FUNCTION t241_fn() is not schema-qualified"
+rp "REVOKE EXECUTE ON FUNCTION t241_fn() FROM PUBLIC;" "$MK
+SET search_path = kinvara_guard, pg_catalog;
+GRANT EXECUTE ON FUNCTION t241_fn() TO PUBLIC;"
+checkwhy CQ3J "A1: the down file moves search_path, then restores the 'same' unqualified name" R-ANSWERING-SERVICE "FUNCTION t241_fn() is not schema-qualified"
 rp "$R3" "$MK
 GRANT EXECUTE ON FUNCTION pg_catalog.pg_advisory_lock(bigint), pg_catalog.pg_advisory_lock_shared(bigint) TO PUBLIC;"
 checkwhy CQ35 "one revoked and one unrelated routine in one GRANT: the statement is refused whole" R-ANSWERING-SERVICE "pg_catalog.pg_advisory_lock_shared(bigint) $NOTREV"
