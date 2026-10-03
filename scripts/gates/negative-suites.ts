@@ -120,7 +120,11 @@ const SUITES: readonly Suite[] = [
     // re-planted; `judge` gained an optional WHY (the reason a case expects), unset for every older
     // case. Taken from the suite's own footer at 366eeb7 (`ALL 358 CASES BEHAVED AS EXPECTED`) after
     // this gate refused 358 against 295 — T-241 § Evidence.
-    cases: 358,
+    // 358 -> 374, 2026-10-03, T-241 rework 1 (QA F1): sixteen cases CQ90-CQ9F (a marked down holds only
+    // GRANT/REVOKE; its up moves no name). Two expectations re-classed in the same change before the
+    // lint change (CQ9A/CQ9C also R-PHASE); no older case touched. Footer `ALL 374` at 9fcc45d, after this
+    // gate refused 374 against 358 — T-241 § Rework 1.
+    cases: 374,
     state: 'GREEN',
     why: 'gate:migration-lint: expand/contract, protected objects (the I-5 objects since T-186, 0011\'s since T-192), R-TRIGGER-BYPASS by name, R-PROTECTED-RENAME, R-ADMIN-MEMBERSHIP, R-PROTECTED-TABLE, R-PROTECTED-EXTENSION, U&"…" decoding, R-ROLE-SWITCH, R-RUN-AS, R-MERGED, R-TRAILER, R-VENDOR-SQL, R-RESTORE-PUBLIC (T-021, T-031, T-167, T-186, T-192, T-227, T-241)',
   },
