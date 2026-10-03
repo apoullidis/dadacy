@@ -842,12 +842,12 @@ echo "== R-RESTORE-PUBLIC (T-241, OE-76, OD-275): a marked DOWN file may restore
 # T-240's shape: an up file revokes EXECUTE on pg_catalog routines FROM PUBLIC, so its down file must
 # GRANT … TO PUBLIC to be reversible, which R-ANSWERING-SERVICE refuses everywhere but 0001. The marker
 # `-- @restore-public: <reference>` in the down file's header admits a plain top-level
-# `GRANT <privileges> ON FUNCTION|PROCEDURE|ROUTINE <signatures> TO PUBLIC` when every (object, privilege)
-# pair was revoked FROM PUBLIC by a plain top-level REVOKE in the paired up file, compared as
-# PostgreSQL resolves names (unquoted folded to lower case, ASCII only; quoted exact; U&"…" decoded;
-# comments are separators). The gate compares NAMES, not objects; rework 1 (QA F1) keeps a name pointing
-# at the revoked routine by admitting a marked down file only if it holds nothing but GRANT and REVOKE
-# statements and its up file holds no statement that can change what a name designates (CQ90-CQ9F).
+# `GRANT <privileges> ON FUNCTION|PROCEDURE|ROUTINE <signatures> TO PUBLIC` when every (routine, privilege)
+# pair it NAMES is a pair a plain top-level REVOKE in the paired up file revoked FROM PUBLIC, names
+# compared as PostgreSQL resolves them (unquoted folded to lower case, ASCII only; quoted exact; U&"…"
+# decoded; comments are separators), AND both of these hold, because the gate compares NAMES, not objects
+# (rework 1, QA F1): (a) the marked down file holds nothing but GRANT and REVOKE statements; (b) its up
+# file holds no statement that can change what a name designates (CQ90-CQ9F).
 # Every PASS case asserts the gate's admission record, so a PASS that admitted
 # nothing is BAD; every refusal asserts the reason. `rp` writes 9001's up file under `-- @phase: expand`.
 rp() {
