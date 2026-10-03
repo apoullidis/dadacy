@@ -1143,7 +1143,7 @@ rp "$FN
 ALTER FUNCTION public.t241_fn() RENAME TO t241_fn_old;
 ALTER FUNCTION public.t241_other() RENAME TO t241_fn;" "$MK
 $GFN"
-checkwhy CQ9A "the UP file renames another routine into the revoked name after its REVOKE (the down runs on the up's end state)" R-ANSWERING-SERVICE "$UPMOVES"
+checkwhy CQ9A "the UP file renames another routine into the revoked name after its REVOKE (the down runs on the up's end state)" "R-PHASE R-ANSWERING-SERVICE" "$UPMOVES"
 rp "$FN
 ALTER FUNCTION t241_elsewhere.t241_fn() SET SCHEMA public;" "$MK
 $GFN"
@@ -1151,7 +1151,7 @@ checkwhy CQ9B "the UP file moves a routine in by SET SCHEMA" R-ANSWERING-SERVICE
 rp "$FN
 DO \$d\$ BEGIN EXECUTE 'ALTER SCHEMA t241_other RENAME TO public'; END \$d\$;" "$MK
 $GFN"
-checkwhy CQ9C "the UP file renames a schema in dynamic SQL" R-ANSWERING-SERVICE "$UPMOVES"
+checkwhy CQ9C "the UP file renames a schema in dynamic SQL" "R-PHASE R-ANSWERING-SERVICE" "$UPMOVES"
 rp "$FN
 CREATE OR REPLACE FUNCTION public.t241_fn() RETURNS void LANGUAGE sql AS \$fn\$ SELECT 1 \$fn\$;" "$MK
 $GFN"
