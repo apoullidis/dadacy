@@ -15,8 +15,8 @@
 --
 -- WHAT IT CREATES. One function, public.audit_log_chain(), and one BEFORE INSERT row trigger,
 -- trg_audit_log_chain, on the partitioned parent public.audit_log. PostgreSQL clones a row trigger
--- on a partitioned table to every partition (36 today, and any partition attached or created
--- later), so it fires for a row routed through the parent AND for a row inserted into a partition
+-- on a partitioned table to every partition (36 today, and any partition created or attached
+-- later; a detached partition loses it; all measured by T-215), so it fires for a row routed through the parent AND for a row inserted into a partition
 -- by name (measured by T-215).
 --
 -- WHAT THE TRIGGER DOES, for every row, in this order:
@@ -37,7 +37,8 @@
 --      predecessor (measured by T-215: a fork). Drawing seq again under the lock makes seq order
 --      the chain order. The default's value is discarded, as is any value supplied with
 --      OVERRIDING SYSTEM VALUE (seq has a default, so inside the trigger a supplied value cannot be
---      told from the default's). seq was never gap-free (identity); it now skips one value per row.
+--      told from the default's). seq was never gap-free (identity); it now skips at least one value
+--      per row.
 --   4. The head: the row with the greatest seq across every partition (ORDER BY seq DESC LIMIT 1
 --      on the parent). Its entry_hash is prev_entry_hash; with no row, the genesis value, 32 zero
 --      bytes (U-5 (4)). If the new seq is not above the head's, the row is REFUSED: KV071
@@ -70,14 +71,14 @@
 -- level but READ COMMITTED: KV072 AUDIT_CHAIN_ISOLATION. This check runs before the lock.
 --
 -- WHAT IS NOT CHECKED. The trigger is the chain's only writer while it is enabled. It does not bind:
---   - the owner app_ddl or the superuser, who can DISABLE it (ALTER TABLE … DISABLE TRIGGER,
---     session_replication_role = replica), drop it, or UPDATE and DELETE rows (V-L7, OD-78);
+--   - the owner app_ddl or the superuser, who can DISABLE it (ALTER TABLE … DISABLE TRIGGER, measured;
+--     the superuser's session_replication_role = replica, not measured), drop it, or UPDATE and DELETE rows (V-L7, OD-78);
 --     U-13 (a): detected by T-067's verifier and the S3 anchor (AV-4), not prevented here;
 --   - an UPDATE: there is no UPDATE trigger. app_rw holds no UPDATE (0020). An owner's UPDATE that
 --     moves a row to another partition fires this BEFORE INSERT trigger on the destination with the
 --     old hashes, and is therefore refused KV070 (measured); one that stays in its partition is not;
 --   - that the head itself is honest: it chains to whatever row has the greatest seq;
---   - a partition detached and later re-attached (it re-acquires the cloned trigger, T-214 bct R2).
+--   - a partition while it is detached (it has no clone then; ATTACH gives it one again).
 --
 -- LOCKING, FOR WRITERS. Every INSERT into audit_log holds the chain lock until its transaction ends,
 -- and every other INSERT waits for it. Insert last and commit promptly. A transaction that holds the

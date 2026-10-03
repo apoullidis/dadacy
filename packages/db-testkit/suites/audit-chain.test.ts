@@ -596,10 +596,11 @@ describe('0021 — concurrency: two sessions never chain off the same head (COMM
     ]);
     assert.ok(a !== undefined && b !== undefined);
     assertPermitted('A', a);
-    assertRefusedBy('B', b, KV072);
+    // The chain is judged first, so a run without the isolation check reports the fork itself.
     const r = await asSuperuser(SHARED_PREDECESSORS, WHOLE_CHAIN_LINKS);
     assertHas('rr', r, 'rows sharing a predecessor: none');
     assertHas('rr', r, ' 0 mislinked');
+    assertRefusedBy('B', b, KV072);
   });
 
   test("the single-key chain lock does not share key space with the two-key form: while A's insert holds it, another session's pg_try_advisory_xact_lock(1263944021, 1145656387) succeeds and pg_try_advisory_xact_lock(5428598235315393603) fails", async () => {
