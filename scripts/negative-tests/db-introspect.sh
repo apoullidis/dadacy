@@ -867,7 +867,10 @@ restore
 mutate "$ORDER" "  ['check', 5]," "  ['t152_removed_check', 5],"
 check K23 "(T-152) an extra-config kind the order step does not know (check removed from its table): refused, never passed through" I-ORDER 'extra-config entry .*check\(.* is not a kind this step orders'
 
-mutate "$ORDER" "con.contype IN ('p', 'u', 'f')" "con.contype IN ('x')"
+# T-206: the mutation selects a contype PostgreSQL never assigns ('-'). It was ('x'), which returned nothing only
+# while the committed set held no exclusion constraint; 0023's staffed_interval_version_id_span_excl made it
+# return that row, and the case then failed on a different I-ORDER message (OD-246's family).
+mutate "$ORDER" "con.contype IN ('p', 'u', 'f')" "con.contype IN ('-')"
 check K24 "(T-152) the catalogue returns no key for a rendered constraint: refused" I-ORDER 'primaryKey "account_role_pkey" has no matching PRIMARY KEY constraint'
 
 mutate "$ORDER" "'columns', (SELECT json_agg(a.attname ORDER BY k.ord)" "'columns', (SELECT json_agg(a.attname || '_t152' ORDER BY k.ord)"
@@ -2324,7 +2327,7 @@ for line in 'SESSION TimeZone UTC' \
   'READ under Europe/Nicosia r string "[\"2026-10-02 14:00:00+03\",\"2026-10-03 02:00:00+03\")"'; do
   fact "driver round trip prints [$line]" "$(grep -cxF -- "$line" "$OUT.rt")" 1
 done
-fact "importer: exactly TS2322 on lines 7-10 (number, number, Date, null for the range) and 12 (a Date for the date)" "$(t206_tsc_errors)" "$T206_BITE:7 TS2322 $T206_BITE:8 TS2322 $T206_BITE:9 TS2322 $T206_BITE:10 TS2322 $T206_BITE:12 TS2322"
+fact "importer: exactly TS2322 on lines 7-10 (number, number, Date, null for the range) and 12 (a Date for the date), listed in sort -u order" "$(t206_tsc_errors)" "$T206_BITE:10 TS2322 $T206_BITE:12 TS2322 $T206_BITE:7 TS2322 $T206_BITE:8 TS2322 $T206_BITE:9 TS2322"
 sed 's/^/driver: /' "$OUT.rt" >>"$OUT.f"
 [ "$nok" -eq "$nf" ] && echo "ALL $nf TSTZRANGE FACTS HOLD" >>"$OUT.f"
 cat "$OUT.f" >>"$OUT"
