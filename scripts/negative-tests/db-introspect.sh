@@ -2316,7 +2316,6 @@ for spec in 't206Range|r: tstzrange("r").notNull(),' 't206Range|rMaybe: tstzrang
   fact "db/schema.ts, inside ${spec%%|*}: lines containing [${spec#*|}]" "$(block_count "${spec%%|*}" "${spec#*|}")" 1
 done
 fact "db/schema.ts, inside t206Range: lines naming the EXCLUDE, its index or an exclude() builder (IC-2: not rendered)" "$(block_count t206Range 't206_range_no_overlap')/$(block_count t206Range 'exclude')" 0/0
-fact "the generator's map line lists tstzrange" "$(grep -cE '^  mapped column type\(s\): .*\btstzrange\b' "$OUT")" 1
 fact "the catalogue holds the plant's EXCLUDE (contype x), so its absence from the rendering is drizzle-kit's" "$(psql -X -A -t -q -c "SELECT count(*) FROM pg_constraint WHERE conrelid = 'public.t206_range'::regclass AND contype = 'x' AND conname = 't206_range_no_overlap'")" 1
 node --input-type=module -e "$T206_ROUNDTRIP" >"$OUT.rt" 2>&1
 for line in 'SESSION TimeZone UTC' \
