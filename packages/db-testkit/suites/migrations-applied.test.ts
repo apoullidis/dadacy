@@ -40,7 +40,7 @@ import {
 import { assertPermitted, assertRefused, INT10_RAISE } from '../src/expect.ts';
 
 const SUITE = 'migrations-applied';
-const HIGHEST_COMMITTED = '0021';
+const HIGHEST_COMMITTED = '0022';
 const COMMITTED_DIR = path.join(REPO_ROOT, MIGRATIONS_DIR);
 const RECORD_SQL = `SELECT coalesce(shobj_description(oid, 'pg_database'), '(no comment)')
                       FROM pg_database WHERE datname = current_database()`;
@@ -910,6 +910,37 @@ const CREATED_BY: Readonly<
                                WHERE tgname = 'trg_audit_log_chain' AND tgfoid = to_regprocedure('public.audit_log_chain()')
                               HAVING count(*) > 0), '(absent)')`,
         holds: '37 36',
+      },
+    ],
+  },
+  '0022': {
+    source: 'T-240',
+    // 0022 creates no object: it changes the ACL of the 21 pg_catalog advisory-lock functions. Each
+    // probe names those functions and reads their privileges, which differ between 0021 (a NULL ACL:
+    // EXECUTE for PUBLIC) and 0022.
+    probes: [
+      {
+        title:
+          'PUBLIC holds EXECUTE on none of the 21 pg_catalog advisory-lock functions, so answering_service, app_safety_rw and app_admin_rw may EXECUTE none',
+        sql: `SELECT count(*) FILTER (WHERE a.grantee = 0) || ' ' ||
+                     (SELECT count(*) FILTER (WHERE has_function_privilege(r, p2.oid, 'EXECUTE'))
+                        FROM unnest(ARRAY['answering_service','app_safety_rw','app_admin_rw']) r
+                       CROSS JOIN pg_proc p2
+                       WHERE p2.pronamespace = 'pg_catalog'::regnamespace AND p2.proname ~ '^pg_(try_)?advisory_')
+                FROM pg_proc p CROSS JOIN LATERAL aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
+               WHERE p.pronamespace = 'pg_catalog'::regnamespace AND p.proname ~ '^pg_(try_)?advisory_'`,
+        holds: '0 0',
+      },
+      {
+        title:
+          'app_rw holds EXECUTE on pg_advisory_xact_lock(bigint) and (integer, integer) only; app_ddl on pg_advisory_xact_lock(bigint) only, granted explicitly',
+        sql: `SELECT coalesce(string_agg(pg_get_userbyid(a.grantee) || ':' || replace(p.oid::regprocedure::text, ' ', ''), ' '
+                                     ORDER BY pg_get_userbyid(a.grantee) || ':' || replace(p.oid::regprocedure::text, ' ', '') COLLATE "C"), '(none)')
+                FROM pg_proc p CROSS JOIN LATERAL aclexplode(p.proacl) a
+               WHERE p.pronamespace = 'pg_catalog'::regnamespace AND p.proname ~ '^pg_(try_)?advisory_'
+                 AND a.grantee IN ('app_rw'::regrole, 'app_ddl'::regrole)`,
+        holds:
+          'app_ddl:pg_advisory_xact_lock(bigint) app_rw:pg_advisory_xact_lock(bigint) app_rw:pg_advisory_xact_lock(integer,integer)',
       },
     ],
   },
