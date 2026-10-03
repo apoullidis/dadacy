@@ -1056,6 +1056,9 @@ checkwhy CQ70 "the GRANT as dynamic SQL in a DO block" R-ANSWERING-SERVICE "not 
 rp "$R3" "$MK
 CREATE FUNCTION public.t241_regrant() RETURNS void LANGUAGE plpgsql AS \$fn\$ BEGIN GRANT EXECUTE ON FUNCTION pg_catalog.pg_advisory_lock(bigint) TO PUBLIC; END; \$fn\$;"
 checkwhy CQ71 "the GRANT inside a function body the down file defines" R-ANSWERING-SERVICE "not a plain top-level GRANT statement"
+rp "$R3" "$MK
+GRANT EXECUTE ON FUNCTION pg_catalog.pg_advisory_lock('x' bigint) TO PUBLIC;"
+checkwhy CQ72 "a top-level GRANT holding a string literal (skipping it would leave a matching signature)" R-ANSWERING-SERVICE "the statement holds a string literal"
 
 echo "-- object classes: routines only"
 rp "REVOKE SELECT ON TABLE public.t241_t FROM PUBLIC;" "$MK
