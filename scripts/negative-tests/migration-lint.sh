@@ -27,6 +27,10 @@
 #
 # T-167 adds one section (CV*): R-VENDOR-SQL, the reviewed `-- @vendor-sql` marker (OD-150).
 #
+# T-241 adds one section (CQ*): R-RESTORE-PUBLIC, the reviewed `-- @restore-public` marker that lets a
+# down file restore exactly what its up file revoked from PUBLIC (OE-76, OD-275), and `checkwhy`, which
+# also asserts the REASON the gate gives (a PASS case asserts the admission record).
+#
 # T-031 adds four sections: R-ROLE-SWITCH (CR*), R-RUN-AS (CM*), runner-read marker lines in a
 # merged migration under R-MERGED (C8F-C8I, OD-86), and R-TRAILER (CT*). The R-TRAILER cases
 # COMMIT in a second detached worktree under /tmp (git identity t031-negative-test, never merged),
@@ -125,9 +129,21 @@ judge() {
     want=$(printf '%s\n' $expect | sort -u | tr '\n' ' ' | sed 's/ $//')
     if [ "$code" -eq 1 ] && grep -q '^GATE FAIL  gate:migration-lint — ' "$OUT" && [ "$got" = "$want" ]; then verdict=ok; fi
   fi
+  # T-241: a case may also name the REASON it expects (WHY, set by checkwhy). The gate's output must
+  # contain it verbatim, so a refusal for some other reason, or a PASS that admitted nothing, is BAD.
+  if [ "$verdict" = ok ] && [ -n "$WHY" ] && ! grep -qF -- "$WHY" "$OUT"; then verdict=BAD; fi
   [ "$verdict" = ok ] || bad=$((bad + 1))
   printf '%-4s %s  %s\n       exit %s; expected %s; reported %s\n' "$verdict" "$id" "$desc" "$code" "$expect" "${got:-none}"
+  if [ -n "$WHY" ]; then printf '       expected in the output: %s\n' "$WHY"; fi
   grep -E '^  - \[' "$OUT" | cut -c1-240 | sed 's/^/       /'
+}
+
+WHY=
+# checkwhy <id> <description> <expect> <reason>: check, and the gate's output must contain <reason> (T-241).
+checkwhy() {
+  WHY=$4
+  check "$1" "$2" "$3"
+  WHY=
 }
 
 # check <id> <description> <expect> [gate args...]: run the gate on the planted tree, judge, restore.
@@ -821,6 +837,230 @@ DROP FUNCTION public.t167_vendor(text);"
 check CV3B "a marker in a down file, which R-PHASE and R-TABLE-GRANT never read" R-VENDOR-SQL
 mutate "$UP1" "-- 0001_extensions_and_roles.up.sql" $'-- @vendor-sql: public.t167_vendor — OD-150; T-167\n-- 0001_extensions_and_roles.up.sql'
 check CV3C "a marker prepended to the pinned 0001 baseline, whose content rules are not read" R-VENDOR-SQL
+
+echo "== R-RESTORE-PUBLIC (T-241, OE-76, OD-275): a marked DOWN file may restore exactly what its UP file revoked from PUBLIC"
+# T-240's shape: an up file revokes EXECUTE on pg_catalog routines FROM PUBLIC, so its down file must
+# GRANT … TO PUBLIC to be reversible, which R-ANSWERING-SERVICE refuses everywhere but 0001. The marker
+# `-- @restore-public: <reference>` in the down file's header admits a plain top-level
+# `GRANT <privileges> ON FUNCTION|PROCEDURE|ROUTINE <signatures> TO PUBLIC` when every (object, privilege)
+# pair was revoked FROM PUBLIC by a plain top-level REVOKE in the paired up file, compared as
+# PostgreSQL resolves names (unquoted folded to lower case, ASCII only; quoted exact; U&"…" decoded;
+# comments are separators). Every PASS case asserts the gate's admission record, so a PASS that admitted
+# nothing is BAD; every refusal asserts the reason. `rp` writes 9001's up file under `-- @phase: expand`.
+rp() {
+  plant "$UP" "-- @phase: expand
+$1"
+  plant "$DOWN" "$2"
+}
+R3='REVOKE EXECUTE ON FUNCTION
+  pg_catalog.pg_advisory_lock(bigint),
+  pg_catalog.pg_try_advisory_lock(integer, integer),
+  pg_catalog.pg_advisory_unlock_all()
+FROM PUBLIC;'
+MK='-- @restore-public: OE-76; T-241'
+ADMIT='restore-public: db/migrations/9001_t021_plant.down.sql:1 admits'
+NOTADMIT='-- @restore-public (line 1) does not admit it:'
+NOTREV='was not revoked from PUBLIC by db/migrations/9001_t021_plant.up.sql'
+G1='GRANT EXECUTE ON FUNCTION pg_catalog.pg_advisory_lock(bigint) TO PUBLIC;'
+
+echo "-- admitted: the marker restores what the up file revoked"
+rp "$R3" "$MK
+GRANT EXECUTE ON FUNCTION pg_catalog.pg_advisory_lock(bigint), pg_catalog.pg_try_advisory_lock(integer, integer), pg_catalog.pg_advisory_unlock_all() TO PUBLIC;"
+checkwhy CQ00 "CONTROL: all three routines the up file revoked, in one GRANT" PASS "$ADMIT 1 GRANT … TO PUBLIC statement(s) on 3 routine(s)"
+rp "$R3" "$MK
+GRANT EXECUTE ON FUNCTION pg_catalog.pg_advisory_unlock_all() TO PUBLIC;"
+checkwhy CQ01 "CONTROL: a subset of what the up file revoked" PASS "$ADMIT 1 GRANT … TO PUBLIC statement(s) on 1 routine(s)"
+rp "$R3" "$MK
+GRANT EXECUTE ON FUNCTION pg_catalog.pg_try_advisory_lock(integer, integer) TO PUBLIC;
+$G1"
+checkwhy CQ02 "CONTROL: two GRANT statements, in another order than the REVOKE list" PASS "$ADMIT 2 GRANT … TO PUBLIC statement(s) on 2 routine(s)"
+rp "$R3" "$MK
+grant execute on function
+  \"pg_catalog\".\"pg_advisory_lock\"( /* the bigint form */ BIGINT ),
+  PG_CATALOG.PG_TRY_ADVISORY_LOCK(integer,integer)   -- the int4 pair
+to public;"
+checkwhy CQ03 "CONTROL: the same routines spelled differently (case, quotes that match the folded name, comments, spacing)" PASS "$ADMIT 1 GRANT … TO PUBLIC statement(s) on 2 routine(s)"
+rp "$R3" "$MK
+GRANT EXECUTE ON FUNCTION pg_catalog.U&\"pg\\005fadvisory\\005flock\"(bigint), pg_catalog.u&\"pg!005ftry!005fadvisory!005flock\" UESCAPE '!'(integer, integer) TO PUBLIC;"
+checkwhy CQ04 "CONTROL: U&\"…\" spellings (one with UESCAPE) that decode to the revoked names" PASS "$ADMIT 1 GRANT … TO PUBLIC statement(s) on 2 routine(s)"
+rp "REVOKE EXECUTE ON FUNCTION pg_catalog.pg_advisory_lock(bigint) FROM app_rw, PUBLIC;" "$MK
+$G1"
+checkwhy CQ05 "CONTROL: the up file revoked FROM app_rw, PUBLIC (PUBLIC among other grantees)" PASS "$ADMIT 1 GRANT … TO PUBLIC statement(s) on 1 routine(s)"
+rp "$R3" "$MK
+SELECT 1;"
+checkwhy CQ06 "CONTROL: a marker with nothing to admit is printed as admitting 0" PASS "$ADMIT 0 GRANT … TO PUBLIC statement(s) on 0 routine(s)"
+rp "REVOKE ALL PRIVILEGES ON FUNCTION public.t241_fn(text) FROM PUBLIC;" "$MK
+GRANT ALL ON FUNCTION public.t241_fn(text) TO PUBLIC;"
+checkwhy CQ07 "CONTROL: ALL PRIVILEGES revoked, ALL restored (one privilege, two spellings)" PASS "$ADMIT 1 GRANT … TO PUBLIC statement(s) on 1 routine(s)"
+rp "REVOKE EXECUTE ON PROCEDURE public.t241_proc() FROM PUBLIC;" "$MK
+GRANT EXECUTE ON PROCEDURE public.t241_proc() TO PUBLIC;"
+checkwhy CQ08 "CONTROL: a PROCEDURE" PASS "$ADMIT 1 GRANT … TO PUBLIC statement(s) on 1 routine(s)"
+
+echo "-- unchanged without a usable marker"
+rp "$R3" "$G1"
+checkwhy CQ10 "no marker: the down file's GRANT TO PUBLIC is refused exactly as before T-241" R-ANSWERING-SERVICE "grants to PUBLIC, and PUBLIC includes answering_service (T-020 contract §6): \"GRANT EXECUTE ON FUNCTION PG_CATALOG.PG_ADVISORY_LOCK(BIGINT) TO PUBLIC\""
+rp "$MK
+$R3" "$G1"
+checkwhy CQ11 "the marker in the UP file and the GRANT in the down file" "R-RESTORE-PUBLIC R-ANSWERING-SERVICE" "in an up file"
+
+echo "-- the marker's own form and placement"
+rp "$MK
+$R3
+$G1" "-- the down file of a planted migration"
+checkwhy CQ20 "the marker in an UP file that grants to PUBLIC: the marker is refused, the grant still is" "R-RESTORE-PUBLIC R-ANSWERING-SERVICE" "in an up file"
+rp "$MK
+$R3" "-- the down file of a planted migration"
+checkwhy CQ21 "the marker in an UP file that grants nothing" R-RESTORE-PUBLIC "in an up file"
+rp "$R3" "-- @restore-public:
+$G1"
+checkwhy CQ22 "the marker with no reference" "R-RESTORE-PUBLIC R-ANSWERING-SERVICE" "cites no ticket or decision"
+rp "$R3" "-- @restore-public: reviewed by the tech lead
+$G1"
+checkwhy CQ23 "the marker with words but no ticket or decision" "R-RESTORE-PUBLIC R-ANSWERING-SERVICE" "cites no ticket or decision"
+rp "$R3" "-- @restore-public OE-76; T-241
+$G1"
+checkwhy CQ24 "the marker without its colon" "R-RESTORE-PUBLIC R-ANSWERING-SERVICE" "not of the form"
+rp "$R3" "SELECT 1;
+$MK
+$G1"
+checkwhy CQ25 "the marker after the first statement" "R-RESTORE-PUBLIC R-ANSWERING-SERVICE" "not a -- comment in the file header"
+rp "$R3" "/* @restore-public: OE-76; T-241 */
+$G1"
+checkwhy CQ26 "the marker in a block comment" "R-RESTORE-PUBLIC R-ANSWERING-SERVICE" "a comment beginning @restore-public that this gate does not read"
+rp "$R3" "SELECT '
+$MK
+';
+$G1"
+checkwhy CQ27 "a marker line inside a string literal" "R-RESTORE-PUBLIC R-ANSWERING-SERVICE" "not a -- comment in the file header"
+rp "$R3" "$MK
+$MK
+$G1"
+checkwhy CQ28 "two markers in one file" "R-RESTORE-PUBLIC R-ANSWERING-SERVICE" "a second -- @restore-public marker"
+plant "$DOWN" "$MK
+$G1"
+checkwhy CQ29 "a marked down file with no paired up file" "R-STRUCT R-RESTORE-PUBLIC R-ANSWERING-SERVICE" "no paired up file"
+mutate "$DOWN1" "-- 0001_extensions_and_roles.down.sql" $'-- @restore-public: OE-76; T-241\n-- 0001_extensions_and_roles.down.sql'
+checkwhy CQ2A "the marker prepended to the pinned 0001 baseline down file" R-RESTORE-PUBLIC "baseline"
+
+echo "-- the objects: identical signatures, as PostgreSQL resolves them"
+rp "SELECT 1;" "$MK
+$G1"
+checkwhy CQ30 "the up file revoked nothing" R-ANSWERING-SERVICE "pg_catalog.pg_advisory_lock(bigint) $NOTREV"
+rp "$R3" "$MK
+GRANT EXECUTE ON FUNCTION pg_catalog.pg_advisory_lock_shared(bigint) TO PUBLIC;"
+checkwhy CQ31 "a routine the up file did not revoke" R-ANSWERING-SERVICE "pg_catalog.pg_advisory_lock_shared(bigint) $NOTREV"
+rp "$R3" "$MK
+GRANT EXECUTE ON FUNCTION pg_catalog.pg_advisory_lock(integer, integer) TO PUBLIC;"
+checkwhy CQ32 "the revoked name with another signature" R-ANSWERING-SERVICE "pg_catalog.pg_advisory_lock(integer, integer) $NOTREV"
+rp "$R3" "$MK
+GRANT EXECUTE ON FUNCTION public.pg_advisory_lock(bigint) TO PUBLIC;"
+checkwhy CQ33 "the revoked name in another schema" R-ANSWERING-SERVICE "public.pg_advisory_lock(bigint) $NOTREV"
+rp "$R3" "$MK
+GRANT EXECUTE ON FUNCTION pg_advisory_lock(bigint) TO PUBLIC;"
+checkwhy CQ34 "the revoked name unqualified (search_path decides what it is)" R-ANSWERING-SERVICE "pg_advisory_lock(bigint) $NOTREV"
+rp "$R3" "$MK
+GRANT EXECUTE ON FUNCTION pg_catalog.pg_advisory_lock(bigint), pg_catalog.pg_advisory_lock_shared(bigint) TO PUBLIC;"
+checkwhy CQ35 "one revoked and one unrelated routine in one GRANT: the statement is refused whole" R-ANSWERING-SERVICE "pg_catalog.pg_advisory_lock_shared(bigint) $NOTREV"
+rp "REVOKE EXECUTE ON FUNCTION public.t241_fn() FROM PUBLIC;" "$MK
+GRANT EXECUTE ON FUNCTION public.\"T241_FN\"() TO PUBLIC;"
+checkwhy CQ36 "a quoted upper-case name is another object than the folded one the up file revoked" R-ANSWERING-SERVICE "public.\"T241_FN\"() $NOTREV"
+rp "REVOKE EXECUTE ON FUNCTION public.\"T241_Fn\"() FROM PUBLIC;" "$MK
+GRANT EXECUTE ON FUNCTION public.T241_FN() TO PUBLIC;"
+checkwhy CQ37 "an unquoted name folds to lower case, so it is not the quoted mixed-case one revoked" R-ANSWERING-SERVICE "public.t241_fn() $NOTREV"
+rp "$R3" "$MK
+GRANT EXECUTE ON FUNCTION pg_catalog.U&\"pg\\005fadvisory\\005flock\\005fshared\"(bigint) TO PUBLIC;"
+checkwhy CQ38 "a U&\"…\" name that decodes to a routine the up file did not revoke" R-ANSWERING-SERVICE "pg_catalog.pg_advisory_lock_shared(bigint) $NOTREV"
+rp "REVOKE EXECUTE ON FUNCTION public.\"t241_é\"() FROM PUBLIC;" "$MK
+GRANT EXECUTE ON FUNCTION public.T241_É() TO PUBLIC;"
+checkwhy CQ39 "PostgreSQL folds ASCII only: unquoted T241_É is t241_É, not the revoked \"t241_é\"" R-ANSWERING-SERVICE "public.t241_É() $NOTREV"
+rp "$R3" "$MK
+GRANT EXECUTE ON FUNCTION pg_catalog.pg_advisory/* x */_lock(bigint) TO PUBLIC;"
+checkwhy CQ3A "a comment splitting a name (a separator to PostgreSQL, not nothing)" R-ANSWERING-SERVICE "$NOTADMIT"
+rp "$R3" "$MK
+GRANT EXECUTE ON FUNCTION pg_catalog.pg_advisory_lock(big/**/int) TO PUBLIC;"
+checkwhy CQ3B "a comment splitting an argument type" R-ANSWERING-SERVICE "pg_catalog.pg_advisory_lock(big int) $NOTREV"
+rp "SELECT 'REVOKE EXECUTE ON FUNCTION pg_catalog.pg_advisory_lock(bigint) FROM PUBLIC';" "$MK
+$G1"
+checkwhy CQ3C "the up file's REVOKE is a string literal, which the migration does not execute" R-ANSWERING-SERVICE "pg_catalog.pg_advisory_lock(bigint) $NOTREV"
+rp "DO \$d\$ BEGIN EXECUTE 'REVOKE EXECUTE ON FUNCTION pg_catalog.pg_advisory_lock(bigint) FROM PUBLIC'; END \$d\$;" "$MK
+$G1"
+checkwhy CQ3D "the up file's REVOKE is dynamic SQL in a DO block" R-ANSWERING-SERVICE "pg_catalog.pg_advisory_lock(bigint) $NOTREV"
+rp "CREATE FUNCTION public.t241_later() RETURNS void LANGUAGE plpgsql AS \$fn\$ BEGIN REVOKE EXECUTE ON FUNCTION pg_catalog.pg_advisory_lock(bigint) FROM PUBLIC; END; \$fn\$;" "$MK
+$G1"
+checkwhy CQ3E "the up file's REVOKE is inside a function body it only defines" R-ANSWERING-SERVICE "pg_catalog.pg_advisory_lock(bigint) $NOTREV"
+rp "REVOKE GRANT OPTION FOR EXECUTE ON FUNCTION pg_catalog.pg_advisory_lock(bigint) FROM PUBLIC;" "$MK
+$G1"
+checkwhy CQ3F "the up file revoked only the GRANT OPTION, not the privilege" R-ANSWERING-SERVICE "pg_catalog.pg_advisory_lock(bigint) $NOTREV"
+rp "REVOKE EXECUTE ON FUNCTION pg_catalog.pg_advisory_lock(bigint) FROM app_rw;" "$MK
+$G1"
+checkwhy CQ3G "the up file revoked from app_rw, not from PUBLIC" R-ANSWERING-SERVICE "pg_catalog.pg_advisory_lock(bigint) $NOTREV"
+rp "/* $R3 */ SELECT 1;" "$MK
+$G1"
+checkwhy CQ3H "the up file's REVOKE is inside a comment" R-ANSWERING-SERVICE "pg_catalog.pg_advisory_lock(bigint) $NOTREV"
+
+echo "-- the privileges: only the privilege the up file revoked, spelled as it spelled it"
+rp "$R3" "$MK
+GRANT ALL ON FUNCTION pg_catalog.pg_advisory_lock(bigint) TO PUBLIC;"
+checkwhy CQ40 "EXECUTE revoked, ALL restored" R-ANSWERING-SERVICE "privilege ALL on FUNCTION pg_catalog.pg_advisory_lock(bigint) $NOTREV"
+rp "$R3" "$MK
+GRANT EXECUTE, USAGE ON FUNCTION pg_catalog.pg_advisory_lock(bigint) TO PUBLIC;"
+checkwhy CQ41 "EXECUTE revoked, EXECUTE and USAGE restored" R-ANSWERING-SERVICE "privilege USAGE on FUNCTION pg_catalog.pg_advisory_lock(bigint) $NOTREV"
+rp "REVOKE ALL ON FUNCTION public.t241_fn(text) FROM PUBLIC;" "$MK
+GRANT EXECUTE ON FUNCTION public.t241_fn(text) TO PUBLIC;"
+checkwhy CQ42 "ALL revoked, EXECUTE restored (the gate compares spellings; restore it as the up file wrote it)" R-ANSWERING-SERVICE "privilege EXECUTE on FUNCTION public.t241_fn(text) $NOTREV"
+
+echo "-- the grantee and the options: exactly PUBLIC, nothing more"
+rp "$R3" "$MK
+GRANT EXECUTE ON FUNCTION pg_catalog.pg_advisory_lock(bigint) TO PUBLIC, app_admin_rw;"
+checkwhy CQ50 "PUBLIC and a second grantee" R-ANSWERING-SERVICE "the grantee list is not exactly PUBLIC"
+rp "$R3" "$MK
+GRANT EXECUTE ON FUNCTION pg_catalog.pg_advisory_lock(bigint) TO PUBLIC WITH GRANT OPTION;"
+checkwhy CQ51 "WITH GRANT OPTION" R-ANSWERING-SERVICE "WITH GRANT OPTION"
+rp "$R3" "$MK
+GRANT EXECUTE ON FUNCTION pg_catalog.pg_advisory_lock(bigint) TO PUBLIC GRANTED BY app_ddl;"
+checkwhy CQ52 "GRANTED BY" R-ANSWERING-SERVICE "GRANTED BY"
+rp "$R3" "$MK
+GRANT EXECUTE ON FUNCTION pg_catalog.pg_advisory_lock(bigint) TO GROUP PUBLIC;"
+checkwhy CQ53 "TO GROUP PUBLIC" R-ANSWERING-SERVICE "the grantee list is not exactly PUBLIC"
+rp "$R3" "$MK
+GRANT EXECUTE ON FUNCTION pg_catalog.pg_advisory_lock(bigint) TO \"public\";"
+checkwhy CQ54 "TO \"public\" quoted (refused: only the bare keyword is admitted)" R-ANSWERING-SERVICE "the grantee list is not exactly PUBLIC"
+
+echo "-- answering_service, in any form, is never admitted"
+rp "$R3" "$MK
+GRANT EXECUTE ON FUNCTION pg_catalog.pg_advisory_lock(bigint) TO PUBLIC, answering_service;"
+checkwhy CQ60 "PUBLIC and answering_service" R-ANSWERING-SERVICE "the grantee list is not exactly PUBLIC"
+rp "REVOKE EXECUTE ON FUNCTION pg_catalog.pg_advisory_lock(bigint) FROM answering_service, PUBLIC;" "$MK
+GRANT EXECUTE ON FUNCTION pg_catalog.pg_advisory_lock(bigint) TO answering_service;"
+checkwhy CQ61 "the up file revoked from answering_service; the down file grants it back to answering_service" R-ANSWERING-SERVICE "grants answering_service something other than exactly INSERT on out_of_hours_report"
+rp "$R3" "$MK
+GRANT answering_service TO PUBLIC;"
+checkwhy CQ62 "the role answering_service granted TO PUBLIC" R-ANSWERING-SERVICE "grants the role answering_service"
+rp "$R3" "$MK
+ALTER FUNCTION pg_catalog.pg_advisory_lock(bigint) OWNER TO answering_service;"
+checkwhy CQ63 "ownership of a revoked routine to answering_service" R-ANSWERING-SERVICE "ownership to answering_service"
+
+echo "-- where the GRANT sits: a plain top-level statement only"
+rp "$R3" "$MK
+DO \$d\$ BEGIN EXECUTE 'GRANT EXECUTE ON FUNCTION pg_catalog.pg_advisory_lock(bigint) TO PUBLIC'; END \$d\$;"
+checkwhy CQ70 "the GRANT as dynamic SQL in a DO block" R-ANSWERING-SERVICE "not a plain top-level GRANT statement"
+rp "$R3" "$MK
+CREATE FUNCTION public.t241_regrant() RETURNS void LANGUAGE plpgsql AS \$fn\$ BEGIN GRANT EXECUTE ON FUNCTION pg_catalog.pg_advisory_lock(bigint) TO PUBLIC; END; \$fn\$;"
+checkwhy CQ71 "the GRANT inside a function body the down file defines" R-ANSWERING-SERVICE "not a plain top-level GRANT statement"
+
+echo "-- object classes: routines only"
+rp "REVOKE SELECT ON TABLE public.t241_t FROM PUBLIC;" "$MK
+GRANT SELECT ON TABLE public.t241_t TO PUBLIC;"
+checkwhy CQ80 "a TABLE revoked and restored" R-ANSWERING-SERVICE "only FUNCTION, PROCEDURE and ROUTINE"
+rp "REVOKE SELECT ON public.t241_t FROM PUBLIC;" "$MK
+GRANT SELECT ON public.t241_t TO PUBLIC;"
+checkwhy CQ81 "a table with the TABLE keyword omitted" R-ANSWERING-SERVICE "only FUNCTION, PROCEDURE and ROUTINE"
+rp "REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC;" "$MK
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO PUBLIC;"
+checkwhy CQ82 "ON ALL FUNCTIONS IN SCHEMA (no signature to compare)" R-ANSWERING-SERVICE "only FUNCTION, PROCEDURE and ROUTINE"
+rp "$R3" "$MK
+GRANT EXECUTE ON ROUTINE pg_catalog.pg_advisory_lock(bigint) TO PUBLIC;"
+checkwhy CQ83 "revoked ON FUNCTION, restored ON ROUTINE (the object kind is compared too)" R-ANSWERING-SERVICE "ROUTINE pg_catalog.pg_advisory_lock(bigint) $NOTREV"
 
 echo "== R-MERGED (PROTOCOL §3, OD-13, OD-72) — every plant is on 0001, which is at the base"
 mutate "$UP1" "-- rotate every 30 days (SA §SEC-10)." "-- rotate every thirty days (SA §SEC-10)."
