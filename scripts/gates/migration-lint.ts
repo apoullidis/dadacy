@@ -132,16 +132,23 @@
  *                        It admits, in that down file only, a plain top-level statement
  *                        `GRANT <privileges> ON FUNCTION|PROCEDURE|ROUTINE <signature>[, …] TO PUBLIC`
  *                        (no WITH GRANT OPTION, no GRANTED BY, no other grantee) when EVERY (object,
- *                        privilege) pair in it was revoked FROM PUBLIC by a plain top-level REVOKE in the
- *                        paired up file (not `REVOKE GRANT OPTION FOR`). Names are compared as PostgreSQL
+ *                        privilege) pair in it NAMES a pair revoked FROM PUBLIC by a plain top-level REVOKE in
+ *                        the paired up file (not `REVOKE GRANT OPTION FOR`). Names are compared as PostgreSQL
  *                        resolves them: unquoted folded to lower case (ASCII only), quoted exact, `U&"…"`
  *                        decoded, comments separating tokens; the object kind, the schema qualification,
  *                        the argument types and the privilege are compared as spelled, and every routine in
- *                        the GRANT must be schema-qualified (search_path, A1). Anything else that
+ *                        the GRANT must be schema-qualified (search_path, A1). The comparison is of NAMES,
+ *                        not objects, so (rework 1, QA F1) a name is kept pointing at the revoked routine:
+ *                        the marked down file holds nothing but GRANT and REVOKE statements, and its up
+ *                        file holds no RENAME, SET SCHEMA, CREATE|DROP FUNCTION|PROCEDURE|ROUTINE|SCHEMA|
+ *                        EXTENSION, ALTER SCHEMA|EXTENSION or search_path (dynamic SQL read). Anything else that
  *                        grants to PUBLIC is refused by R-ANSWERING-SERVICE exactly as before, with the
  *                        marker's reason appended. It never admits a grant to answering_service. THIS GATE
  *                        CANNOT SEE whether PUBLIC held the privilege before the up file ran: a down file
- *                        that "restores" a privilege PUBLIC never had is admitted. The review behind the
+ *                        that "restores" a privilege PUBLIC never had is admitted, a built-in PUBLIC never
+ *                        held included, given a no-op REVOKE in the up (QA O2). Argument types are compared
+ *                        as tokens, unresolved: a quoted keyword type `"bigint"` compares equal to `bigint`,
+ *                        which PostgreSQL resolves differently (QA O1). The review behind the
  *                        reference, and PROTOCOL §3's two approvals, are that control. Every accepted marker
  *                        is printed with what it admitted.
  *   [R-VENDOR-SQL]       (T-167, OD-150) a `-- @vendor-sql: <body> — <reference>` marker is a `--`
@@ -1491,6 +1498,70 @@ const restoreMarkers = new Map<string, { readonly line: number; valid: boolean }
 let restoreLinesRead = 0;
 /** The review record, printed on every run: what each usable marker admitted. */
 const restoreAdmits = new Map<string, { line: number; stmts: number; routines: number }>();
+/** Rework 1 (QA F1): the reasons, as the negative suite asserts them. */
+const DOWN_ONLY_ACL = 'a marked down file holds only GRANT and REVOKE';
+const UP_MOVES_NAMES =
+  'the paired up file holds a statement that can change what a name designates';
+/**
+ * Statements that can change which routine a schema-qualified name designates, read over EVERY
+ * fragment of an up file (dynamic SQL and bodies included, since EXECUTE runs them). A deny-list,
+ * because an up file legitimately holds other statements (0022's DO assertion). `ALTER … OWNER` is
+ * absent on purpose: ownership does not change what a name designates.
+ */
+const NAME_MOVERS: readonly (readonly [RegExp, string])[] = [
+  [/\bRENAME\b/, 'RENAME'],
+  [/\bSET SCHEMA\b/, 'SET SCHEMA'],
+  [
+    /\bCREATE (?:OR REPLACE )?(?:FUNCTION|PROCEDURE|SCHEMA|EXTENSION)\b/,
+    'CREATE FUNCTION|PROCEDURE|SCHEMA|EXTENSION',
+  ],
+  [
+    /\bDROP (?:FUNCTION|PROCEDURE|ROUTINE|SCHEMA|EXTENSION)\b/,
+    'DROP FUNCTION|PROCEDURE|ROUTINE|SCHEMA|EXTENSION',
+  ],
+  [/\bALTER (?:SCHEMA|EXTENSION)\b/, 'ALTER SCHEMA|EXTENSION'],
+  [/\bSEARCH_PATH\b/, 'search_path'],
+];
+const upMoverCache = new Map<string, string | null>();
+function upNameMover(up: Migration): string | null {
+  if (upMoverCache.has(up.name)) return upMoverCache.get(up.name) ?? null;
+  let hit: string | null = up.lexed.error === null ? null : 'a file this gate cannot lex';
+  if (hit === null) {
+    for (const f of readFragments(up.lexed.segments).texts) {
+      const m = NAME_MOVERS.find(([re]) => re.test(f));
+      if (m !== undefined) {
+        hit = `${m[1]}: ${snippet(f)}`;
+        break;
+      }
+    }
+  }
+  upMoverCache.set(up.name, hit);
+  return hit;
+}
+/**
+ * The first fragment of a down file that is not a plain top-level GRANT or REVOKE, or null. An
+ * allow-list: nothing that could repoint a name has to be named to be refused. A fragment with no
+ * top-level statement (a literal's or a body's content) belongs to a statement that is not one.
+ */
+const downNonAclCache = new Map<string, string | null>();
+function downNonAcl(m: Migration): string | null {
+  if (downNonAclCache.has(m.name)) return downNonAclCache.get(m.name) ?? null;
+  let hit: string | null = null;
+  const read = readFragments(m.lexed.segments);
+  read.texts.forEach((f, i) => {
+    if (hit !== null) return;
+    const st = read.stmts[i] ?? null;
+    if (st === null) {
+      hit = f;
+      return;
+    }
+    const { toks, plain } = stmtTokens(st);
+    if (!plain || !(isWord(toks[0], 'grant') || isWord(toks[0], 'revoke'))) hit = f;
+  });
+  downNonAclCache.set(m.name, hit);
+  return hit;
+}
+
 /** The (object key -> privileges) an up file revoked FROM PUBLIC in plain top-level REVOKEs. */
 const revokedCache = new Map<string, ReadonlyMap<string, ReadonlySet<string>>>();
 function revokedFromPublic(up: Migration): ReadonlyMap<string, ReadonlySet<string>> {
@@ -1571,6 +1642,21 @@ function restoreVerdict(
     }
   }
   if (missing.length > 0) return refuse(missing.join('; '));
+  // Rework 1 (QA F1). The comparison above is of NAMES. A name designates the revoked routine at the
+  // GRANT only if nothing between the REVOKE and the GRANT moved it: the up file after its REVOKE
+  // (the down runs on the state the up left), and the down file before its GRANT.
+  const downOther = downNonAcl(m);
+  if (downOther !== null) {
+    return refuse(
+      `${DOWN_ONLY_ACL} statements, and this one holds ${snippet(downOther)}; any other statement can change which routine a name designates before the GRANT (RENAME, SET SCHEMA, DROP and CREATE, search_path) (T-241 rework 1, QA F1)`,
+    );
+  }
+  const upMove = upNameMover(up);
+  if (upMove !== null) {
+    return refuse(
+      `${UP_MOVES_NAMES} (${upMove}), so a name it revoked is not known to designate the routine the down file's GRANT reaches (T-241 rework 1, QA F1)`,
+    );
+  }
   return { why: null, routines: g.objects.length };
 }
 
