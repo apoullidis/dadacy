@@ -38,10 +38,11 @@
 --      the chain order. The default's value is discarded, as is any value supplied with
 --      OVERRIDING SYSTEM VALUE (seq has a default, so inside the trigger a supplied value cannot be
 --      told from the default's). seq is strictly increasing along the chain and is not gap-free
---      (identity). Each row consumes at least two sequence values, but two ADJACENT chained rows
---      can still differ by 1 (the later row's default may have been drawn before the earlier row's
---      trigger drew; measured by T-215's QA). Any step of 1 or more between consecutive chained rows
---      is legitimate.
+--      (identity). Each row written through the column default (every app_rw row) consumes at
+--      least two sequence values; an owner or superuser row with OVERRIDING SYSTEM VALUE consumes
+--      one. Two ADJACENT chained rows can still differ by 1 (the later row's default may have been
+--      drawn before the earlier row's trigger drew; measured by T-215's QA). Any step of 1 or more
+--      between consecutive chained rows is legitimate.
 --   4. The head: the row with the greatest seq across every partition (ORDER BY seq DESC LIMIT 1
 --      on the parent). Its entry_hash is prev_entry_hash; with no row, the genesis value, 32 zero
 --      bytes (U-5 (4)). If the new seq is not above the head's, the row is REFUSED: KV071
@@ -82,10 +83,11 @@
 --     old hashes, and is therefore refused KV070 (measured); one that stays in its partition is not;
 --   - that the head itself is honest: it chains to whatever row has the greatest seq;
 --   - a partition while it is detached (it has no clone then; ATTACH gives it one again);
---   - who else takes the chain key: pg_advisory_lock is EXECUTE for PUBLIC, so any role
---     (answering_service included) can hold 5428598235315393603 at session level and stall
---     every append for as long as it holds it (measured by T-215's QA: a lock timeout inside this
---     function, no row). Not prevented here (OD-273); a reconciler is to watch for it.
+--   - who else takes the chain key: as this file leaves it, pg_advisory_lock is EXECUTE for
+--     PUBLIC, so any role (answering_service included) can hold 5428598235315393603 at session
+--     level and stall every append for as long as it holds it (measured by T-215's QA: a lock
+--     timeout inside this function, no row). Not prevented here (OD-273); 0022 (T-240, OE-74)
+--     revokes the advisory-lock functions from PUBLIC; a reconciler is to watch for the rest.
 --
 -- LOCKING, FOR WRITERS. Every INSERT into audit_log holds the chain lock until its transaction ends,
 -- and every other INSERT waits for it. Insert last and commit promptly. A transaction that holds the
