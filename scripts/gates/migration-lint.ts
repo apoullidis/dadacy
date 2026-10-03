@@ -136,7 +136,8 @@
  *                        paired up file (not `REVOKE GRANT OPTION FOR`). Names are compared as PostgreSQL
  *                        resolves them: unquoted folded to lower case (ASCII only), quoted exact, `U&"…"`
  *                        decoded, comments separating tokens; the object kind, the schema qualification,
- *                        the argument types and the privilege are compared as spelled. Anything else that
+ *                        the argument types and the privilege are compared as spelled, and every routine in
+ *                        the GRANT must be schema-qualified (search_path, A1). Anything else that
  *                        grants to PUBLIC is refused by R-ANSWERING-SERVICE exactly as before, with the
  *                        marker's reason appended. It never admits a grant to answering_service. THIS GATE
  *                        CANNOT SEE whether PUBLIC held the privilege before the up file ran: a down file
@@ -1157,7 +1158,12 @@ interface AclStmt {
   /** Privilege names, lower case, `all privileges` read as `all`. */
   readonly privs: readonly string[];
   readonly kind: string;
-  readonly objects: readonly { readonly key: string; readonly shown: string }[];
+  /** `qualified`: the name is `<schema>.<name>`, so search_path cannot change what it names. */
+  readonly objects: readonly {
+    readonly key: string;
+    readonly shown: string;
+    readonly qualified: boolean;
+  }[];
   readonly grantees: readonly (readonly Tok[])[];
   /** `WITH …` / `GRANTED BY …` (GRANT), `GRANTED BY …` / `CASCADE` / `RESTRICT` (REVOKE). */
   readonly tail: readonly Tok[];
@@ -1190,12 +1196,16 @@ function parseRoutineAcl(toks: readonly Tok[], verb: 'grant' | 'revoke'): AclStm
     return 'only FUNCTION, PROCEDURE and ROUTINE objects are admitted, each named by its signature (not a table, a schema, ALL … IN SCHEMA or any other class)';
   const to = findTop(toks, on + 2, [verb === 'grant' ? 'to' : 'from']);
   if (to < 0) return `it has no ${verb === 'grant' ? 'TO' : 'FROM'} clause`;
-  const objects: { key: string; shown: string }[] = [];
+  const objects: { key: string; shown: string; qualified: boolean }[] = [];
   for (const o of splitTop(toks.slice(on + 2, to))) {
     const key = routineKey(o);
     if (key === null)
       return `${showToks(o) || '(nothing)'} is not a routine signature <name>[.<name>][(<argument types>)]`;
-    objects.push({ key: `${kind} ${key}`, shown: `${kind.toUpperCase()} ${showToks(o)}` });
+    objects.push({
+      key: `${kind} ${key}`,
+      shown: `${kind.toUpperCase()} ${showToks(o)}`,
+      qualified: o[1]?.k === 'p' && o[1].v === '.',
+    });
   }
   const end = findTop(
     toks,
@@ -1542,6 +1552,14 @@ function restoreVerdict(
   const upName = `${m.num}_${m.slug}.up.sql`;
   const up = byName.get(upName);
   if (up === undefined) return refuse(`no paired up file ${MIGRATIONS_REL}/${upName}`);
+  // Self-attack A1: an unqualified name resolves through search_path, which the down file can move
+  // (`SET search_path = …;` before the GRANT), so equal text would not be the same routine.
+  const unqualified = g.objects.filter((o) => !o.qualified);
+  if (unqualified.length > 0) {
+    return refuse(
+      `${unqualified.map((o) => o.shown).join(', ')} is not schema-qualified; an unqualified name resolves through search_path, which a down file can change before its GRANT, so the marker admits only <schema>.<name>(…) (T-241 A1)`,
+    );
+  }
   const revoked = revokedFromPublic(up);
   const missing: string[] = [];
   for (const o of g.objects) {
