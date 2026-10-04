@@ -44,6 +44,23 @@
  * So: `./scripts/svc down <ticket>` before the heavy stage's service segment.
  * DOCKER.md §5 asks that of every evidence run anyway.
  *
+ * THE FOOTER'S CASE COUNT IS HELD AGAINST THE PIN (T-237, OD-267). `gate:negative-suites` pins
+ * this suite's case count (`cases:` in its SUITES entry `db-introspect`) but cannot run it, so until
+ * T-237 nothing compared a real run's count with that pin: a detached commit whose suite printed
+ * `ALL 143 CASES BEHAVED AS EXPECTED` against a pin of 144 got GATE PASS here (QA on T-214). The pin
+ * is read from scripts/gates/negative-suites.ts's SYNTAX TREE (the `cases` numeric literal of the one
+ * SUITES element whose `id` is 'db-introspect'), BEFORE the suite runs; an unreadable pin, or more
+ * or fewer than one such entry, is GATE FAIL without running anything. A green footer over any other
+ * count is GATE FAIL, and a red footer reports its count beside the pin. The pin and the footer are
+ * two readings of two artefacts (a number a person wrote when the suite was last measured, and the
+ * count a real run printed), so neither is taken on the other's word.
+ *
+ * `KINVARA_DBI_SUITE=<path>` replaces the suite with another script, for the cases in
+ * scripts/negative-tests/heavy-gates.sh that attack this judgement without a database (the same
+ * convention as gate:negative-suites' KINVARA_NEG_SUITES_TABLE). Every banner of such a run says
+ * `[OVERRIDE SUITE: <path>]`, so it can never be read as, or carried by gate:heavy as, a real pass:
+ * gate:heavy requires the exact line `GATE PASS  gate:db-introspect-suite`.
+ *
  * THE SUITE REFUSES A DIRTY TREE, and so this gate does. That is not a
  * preference — the suite plants migrations and deletes db/schema.ts, and
  * T-168 gave it EXIT/INT/TERM traps precisely because an interrupted run must
@@ -51,11 +68,78 @@
  * anyway (PROTOCOL §3). This mirrors `gate:pr`'s clean-tree requirement
  * (T-005 § contract §4) rather than inventing a second convention.
  */
+import fs from 'node:fs';
+import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import ts from 'typescript';
 import { REPO_ROOT } from './lib/run.ts';
 
-const NAME = 'gate:db-introspect-suite';
-const SUITE = 'scripts/negative-tests/db-introspect.sh';
+const OVERRIDE = process.env['KINVARA_DBI_SUITE'] ?? '';
+const NAME =
+  OVERRIDE === ''
+    ? 'gate:db-introspect-suite'
+    : `gate:db-introspect-suite [OVERRIDE SUITE: ${OVERRIDE}]`;
+const SUITE = OVERRIDE === '' ? 'scripts/negative-tests/db-introspect.sh' : OVERRIDE;
+const ROSTER = 'scripts/gates/negative-suites.ts';
+const ENTRY = 'db-introspect';
+
+/**
+ * T-237 (OD-267): the case count gate:negative-suites pins for this suite, read from the roster's
+ * syntax tree: the numeric literal `cases` of the one element of `const SUITES = [...]` whose `id` is
+ * the string 'db-introspect'. Anything else (no such entry, two, a `cases` that is not a literal) is
+ * an error, never a default.
+ */
+function pinnedCases(): { readonly cases: number } | { readonly error: string } {
+  const file = path.join(REPO_ROOT, ROSTER);
+  let text: string;
+  try {
+    text = fs.readFileSync(file, 'utf8');
+  } catch {
+    return { error: `${ROSTER} cannot be read` };
+  }
+  const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const counts: (number | null)[] = [];
+  const prop = (o: ts.ObjectLiteralExpression, key: string): ts.Expression | undefined => {
+    for (const p of o.properties) {
+      if (
+        ts.isPropertyAssignment(p) &&
+        (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name)) &&
+        p.name.text === key
+      )
+        return p.initializer;
+    }
+    return undefined;
+  };
+  const visit = (n: ts.Node): void => {
+    if (
+      ts.isVariableDeclaration(n) &&
+      ts.isIdentifier(n.name) &&
+      n.name.text === 'SUITES' &&
+      n.initializer !== undefined &&
+      ts.isArrayLiteralExpression(n.initializer)
+    ) {
+      for (const el of n.initializer.elements) {
+        if (!ts.isObjectLiteralExpression(el)) continue;
+        const id = prop(el, 'id');
+        if (id === undefined || !ts.isStringLiteral(id) || id.text !== ENTRY) continue;
+        const c = prop(el, 'cases');
+        counts.push(c !== undefined && ts.isNumericLiteral(c) ? Number(c.text) : null);
+      }
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(sf);
+  const only = counts[0];
+  if (counts.length !== 1 || only === undefined || only === null) {
+    return {
+      error:
+        `${ROSTER} has ${String(counts.length)} SUITES entr(ies) with id '${ENTRY}'` +
+        (counts.length === 1 ? ' and its `cases` is not a numeric literal' : '') +
+        '; exactly one, with a literal case count, is required',
+    };
+  }
+  return { cases: only };
+}
 
 const project = process.env['KINVARA_PROJECT'] ?? '';
 const pghost = process.env['PGHOST'] ?? '';
@@ -68,6 +152,18 @@ if (project === '' || pghost === '') {
   console.error('');
   console.error('  The suite is committed and is not a stub. This banner means only that the');
   console.error('  current invocation has no database to point it at.');
+  process.exit(1);
+}
+
+const pin = pinnedCases();
+if ('error' in pin) {
+  console.error(`GATE FAIL  ${NAME} — 1 problem(s):`);
+  console.error(
+    `  - cannot read the case count gate:negative-suites pins for this suite: ${pin.error}.`,
+  );
+  console.error(
+    '    Without it a run that skipped a case is indistinguishable from a full one (OD-267).',
+  );
   process.exit(1);
 }
 
@@ -84,7 +180,9 @@ if ((dirty.stdout ?? '').trim() !== '') {
   process.exit(1);
 }
 
-console.log(`$ bash ${SUITE}   (project ${project}, PGHOST ${pghost})`);
+console.log(
+  `$ bash ${SUITE}   (project ${project}, PGHOST ${pghost}; pinned at ${String(pin.cases)} cases in ${ROSTER})`,
+);
 const started = Date.now();
 const r = spawnSync('bash', [SUITE], {
   cwd: REPO_ROOT,
@@ -116,6 +214,22 @@ if (green === null && red === null) {
 }
 
 if (green !== null) {
+  const n = Number(green[1]);
+  if (n !== pin.cases) {
+    console.error(
+      `\nGATE FAIL  ${NAME} — the footer reports ${String(n)} case(s); ${ROSTER} pins '${ENTRY}' at ${String(pin.cases)}.`,
+    );
+    console.error(
+      '  A case was added, deleted or skipped (OD-267: a case calling an undefined helper was',
+    );
+    console.error(
+      '  skipped with a green footer). A pass over a different set of cases is not the pass',
+    );
+    console.error(
+      `  that was pinned: re-verify the suite, then move \`cases\` in ${ROSTER} with the new number.`,
+    );
+    process.exit(1);
+  }
   if (code !== 0) {
     console.error(
       `\nGATE FAIL  ${NAME} — the footer is green and the exit status is ${String(code)}; the two disagree.`,
@@ -131,6 +245,11 @@ console.error(
   `\nGATE FAIL  ${NAME} — !! ${String(red?.[1])} of ${String(red?.[2])} cases misbehaved  (exit ${String(code)}, ${String(secs)}s)`,
 );
 console.error('  gate:heavy rosters this suite BLOCKING (T-190, OD-220): every case must behave.');
+if (Number(red?.[2]) !== pin.cases) {
+  console.error(
+    `  And the footer counts ${String(red?.[2])} case(s), where ${ROSTER} pins '${ENTRY}' at ${String(pin.cases)} (OD-267).`,
+  );
+}
 console.error("  This gate prints the suite's last six lines only; the suite's own `BAD` lines");
 console.error(
   '  name the cases (run `bash scripts/negative-tests/db-introspect.sh` under svc run).',

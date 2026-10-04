@@ -50,6 +50,7 @@ BACKED=(
   scripts/gates/lib/roster.ts
   .github/workflows/heavy.yml
   package.json
+  scripts/gates/negative-suites.ts
 )
 for f in "${BACKED[@]}"; do
   d="$BK/$(printf '%s' "$f" | tr / _)"
@@ -501,6 +502,64 @@ CASE="S5"
 run_raw "S5 gate:db-introspect-suite with no database refuses by the same rule" NONZERO \
   'GATE NEEDS A SERVICE  gate:db-introspect-suite' 'is committed and is not a stub' \
   -- node scripts/gates/db-introspect-suite.ts
+
+echo
+echo "=== D. gate:db-introspect-suite: the footer's case count against the pin, and an undefined helper (T-237, OD-267) ==="
+# The pin is read HERE from the roster's text, by awk; the gate reads it from the roster's syntax tree. Two
+# readings of one number, so D0 (the control) is also the check that they agree.
+DBI_PIN="$(awk "/^    id: 'db-introspect',\$/ { f = 1 } f && /^    cases: [0-9]+,\$/ { gsub(/[^0-9]/, \"\"); print; exit }" scripts/gates/negative-suites.ts)"
+if ! [[ "$DBI_PIN" =~ ^[0-9]+$ ]]; then
+  printf '!! %-62s %s\n' "D*" "HARNESS ERROR: db-introspect's pin not found in scripts/gates/negative-suites.ts ('$DBI_PIN')"
+  harness=$((harness + 1)); DBI_PIN=0
+fi
+# dbifake <name> <exit> <line>: a stand-in suite that prints one footer line and exits.
+dbifake() { printf '#!/usr/bin/env bash\necho %q\nexit %s\n' "$3" "$2" > "$TMP/$1"; }
+dbi() { KINVARA_PROJECT=t237-fixture PGHOST=no-database KINVARA_DBI_SUITE="$TMP/$1" node scripts/gates/db-introspect-suite.ts; }
+
+CASE="D0"; dbifake d0 0 "ALL $DBI_PIN CASES BEHAVED AS EXPECTED"
+run_case "D0 CONTROL: a green footer at the pinned count" PASS \
+  "GATE PASS  gate:db-introspect-suite [OVERRIDE SUITE: $TMP/d0]" "pinned at $DBI_PIN cases" -- dbi d0
+
+CASE="D1"; dbifake d1 0 "ALL $((DBI_PIN - 1)) CASES BEHAVED AS EXPECTED"
+run_case "D1 OD-267: a green footer one case short of the pin (T-214's 143 of 144)" FAIL \
+  "the footer reports $((DBI_PIN - 1)) case(s)" "pins 'db-introspect' at $DBI_PIN" -- dbi d1
+
+CASE="D2"; dbifake d2 0 "ALL $((DBI_PIN + 1)) CASES BEHAVED AS EXPECTED"
+run_case "D2 a green footer one case over the pin" FAIL \
+  "the footer reports $((DBI_PIN + 1)) case(s)" -- dbi d2
+
+CASE="D3"; dbifake d3 1 "!! 1 of $((DBI_PIN - 1)) cases misbehaved"
+run_case "D3 a red footer over a different count says both" FAIL \
+  "!! 1 of $((DBI_PIN - 1)) cases misbehaved" "And the footer counts $((DBI_PIN - 1)) case(s)" -- dbi d3
+
+CASE="D4"; dbifake d4 0 "ALL $DBI_PIN CASES BEHAVED AS EXPECTED"
+mut scripts/gates/negative-suites.ts "    id: 'db-introspect'," "    id: 'db-introspect-renamed'," &&
+  run_case "D4 no roster entry to read the pin from: refused before the suite runs" FAIL \
+    'cannot read the case count' "0 SUITES entr(ies) with id 'db-introspect'" -- dbi d4
+
+# D5/D6: the suite's OWN handler and footer, cut from the committed file by their anchors, around two
+# calls of a helper nobody defined (one at top level, one inside $( )). Before T-237 such a call printed
+# `command not found` and the footer stayed green over fewer cases.
+DBI=scripts/negative-tests/db-introspect.sh
+sed -n '/^command_not_found_handle() {$/,/^}$/p' "$DBI" > "$TMP/dbi-handler"
+sed -n '/^# T-237 (OD-267): every call of an undefined command/,$p' "$DBI" > "$TMP/dbi-footer"
+if [ "$(grep -c . "$TMP/dbi-handler")" -lt 3 ] || ! grep -q '^undefined=' "$TMP/dbi-footer"; then
+  printf '!! %-62s %s\n' "D5" "HARNESS ERROR: the OD-267 handler or footer is not in $DBI"
+  harness=$((harness + 1))
+fi
+dbimini() { # dbimini <name> <body line...>: two cases already counted, then the body, then the footer
+  local n=$1; shift
+  { echo '#!/usr/bin/env bash'; echo 'UNDEFINED=$(mktemp); total=2; bad=0'; cat "$TMP/dbi-handler"
+    printf '%s\n' "$@"; cat "$TMP/dbi-footer"; } > "$TMP/$n"
+}
+CASE="D5"; dbimini d5 't237_no_such_helper K1 "a case calling a helper nobody defined"' 'v=$(t237_no_such_helper_in_cs K2)'
+run_raw "D5 OD-267: two calls of an undefined helper are two BAD cases" NONZERO \
+  'BAD  t237_no_such_helper: command not found' 'BAD  t237_no_such_helper_in_cs: command not found' \
+  'BAD  OD-267  2 call(s) of a command that does not exist' '!! 2 of 4 cases misbehaved' -- bash "$TMP/d5"
+
+CASE="D6"; dbimini d6 'true'
+run_raw "D6 CONTROL: no undefined call, the footer is the cases' own" ZERO \
+  'ALL 2 CASES BEHAVED AS EXPECTED' -- bash "$TMP/d6"
 
 echo
 echo "=== W. gate:workflow W8 — the heavy stage's mirrored, never-executed YAML ==="
