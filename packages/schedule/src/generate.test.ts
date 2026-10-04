@@ -599,6 +599,32 @@ describe('seasons: wrap and a 02-29 boundary', () => {
 });
 
 describe('season list order', () => {
+  test('blocks of one weekday listed later-first still come out sorted by startsAt (QA-F1)', () => {
+    // Mon 14:00-15:00 is listed BEFORE Mon 10:00-11:00. Mon 2026-10-05 is EEST (+3).
+    const pattern = {
+      schema: 1,
+      zone: 'Europe/Nicosia',
+      seasons: [
+        {
+          key: 'all',
+          startsOn: '01-01',
+          blocks: [block(0, '14:00', '15:00', false), block(0, '10:00', '11:00', false)],
+        },
+      ],
+    };
+    const out = gen(pattern, '2026-10-01');
+    expect(out.slice(0, 2).map(span)).toEqual([
+      ['2026-10-05T07:00:00Z', '2026-10-05T08:00:00Z'],
+      ['2026-10-05T11:00:00Z', '2026-10-05T12:00:00Z'],
+    ]);
+    expect(out).toHaveLength(156);
+    for (let i = 1; i < out.length; i++) {
+      expect((out[i - 1] as StaffedInterval).startsAt.getTime()).toBeLessThan(
+        (out[i] as StaffedInterval).startsAt.getTime(),
+      );
+    }
+  });
+
   test('listing the launch seasons in the other order generates the same spans and seasons', () => {
     const reversed = { ...LAUNCH, seasons: [...LAUNCH.seasons].reverse() };
     expect(reversed.seasons.map((x) => x.startsOn)).toEqual(['06-01', '10-01']);

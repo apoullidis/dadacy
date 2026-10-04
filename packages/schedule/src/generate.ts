@@ -153,7 +153,8 @@ function seasonFor(sorted: readonly StaffedSeason[], mmdd: string): StaffedSeaso
 }
 
 /**
- * The generator's own postcondition: `spans` sorted by start, and no two overlapping. The schema
+ * The generator's own postcondition, checked on its sorted output. It does NOT sort: given `spans`
+ * already sorted by start, it throws unless each span ends at or before the next one starts. The schema
  * refuses every within-season and cross-season wall-clock overlap (OE-78 (3)), and wall time →
  * instant is non-decreasing under `resolveLocal`'s rules (a gap time moves to the transition, an
  * ambiguous one to its first instant), so no accepted pattern reaches the throw. It stays as a

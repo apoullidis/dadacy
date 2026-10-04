@@ -168,6 +168,30 @@ describe('StaffedPatternV1 refuses a cross-season overlap at entry (OE-78 (3))',
     ).toBe(false);
   });
 
+  test('three seasons: each boundary is checked in calendar order, the earlier season into the later (QA-F2)', () => {
+    // a (01-01) Tue 20:00 -> Wed 03:00 tail runs into b (06-01) Wed 01:00-02:00; c (09-01) is clear.
+    const p = {
+      schema: 1,
+      zone: 'Europe/Nicosia',
+      seasons: [
+        { key: 'a', startsOn: '01-01', blocks: [block(1, '20:00', '03:00', true)] },
+        { key: 'b', startsOn: '06-01', blocks: [block(2, '01:00', '02:00', false)] },
+        { key: 'c', startsOn: '09-01', blocks: [block(4, '12:00', '13:00', false)] },
+      ],
+    };
+    expect(pathsOf(p)).toEqual(['seasons.1.blocks.0']);
+    // CONTROL: the same three seasons with b's block after the tail are accepted.
+    const ok = {
+      ...p,
+      seasons: [
+        p.seasons[0],
+        { ...p.seasons[1], blocks: [block(2, '03:00', '04:00', false)] },
+        p.seasons[2],
+      ],
+    };
+    expect(accepts(ok)).toBe(true);
+  });
+
   test('the wrap from the last season (11-01) into the first (03-01) is a boundary too', () => {
     const p = two(
       [block(0, '01:00', '02:00', false)],
