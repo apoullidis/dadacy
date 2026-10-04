@@ -84,11 +84,14 @@
  *     start script that is a simple command (`node src/main.ts`, `next
  *     start`) is spawned as argv with no shell and no `--run` in between, so
  *     `child.kill()` reaches the application itself. Anything a shell is
- *     actually needed for — a pipe, a `&&`, a redirect, a quote, and A
- *     LEADING VARIABLE ASSIGNMENT (`NODE_ENV=production next start`) — goes
- *     to `/bin/sh -c` instead. SIMPLE_COMMAND below is the exact line between
- *     the two, and it explains why the first word's character class is not
- *     the arguments' (T-151 rework 1, QA-F1).
+ *     actually needed for — a pipe, a `&&`, a redirect, a quote, A LEADING
+ *     VARIABLE ASSIGNMENT (`NODE_ENV=production next start`), and A FIRST WORD
+ *     THAT IS NO EXECUTABLE FILE (`exec node app.js`: `exec` is a shell
+ *     builtin, T-185 / OD-211) — goes to `/bin/sh -e -o pipefail -c` instead
+ *     (the flags: see THE SHELL PATH below). SIMPLE_COMMAND and
+ *     isExecutableOnPath below are the exact line between the two, and the
+ *     first explains why the first word's character class is not the
+ *     arguments' (T-151 rework 1, QA-F1).
  *  2. THE CHILD LEADS ITS OWN PROCESS GROUP, AND THE SIGNAL GOES TO THE
  *     GROUP. `spawn(..., { detached: true })` makes the child a process-group
  *     leader; `process.kill(-pgid, sig)` then reaches every process in it,
@@ -100,24 +103,33 @@
  *     exits at once with `status` and does not wait (see child.on('exit')
  *     in runReal for why, and for what `status` is on a signal death).
  *
- *     That wait is not belt-and-braces. Measured in node:24.20.0-alpine: for
- *     a compound script, busybox ash does not exec its child, TAKES the
- *     forwarded SIGTERM itself and exits `sig=SIGTERM` while the application
- *     is still draining — 4 polls later the group was still alive and the app
- *     then exited 0. Without the wait, PID 1 would have exited first and
- *     killed it. For a simple command ash DOES exec, which is the second
- *     reason path 1 exists: it does not depend on that optimisation.
+ *     That wait is not belt-and-braces. WHETHER BUSYBOX ASH STAYS DEPENDS ON
+ *     WHAT FOLLOWS THE APPLICATION IN THE SCRIPT, not on whether the script
+ *     has an operator in it (T-185, OD-210, measured in kinvara/core:dev —
+ *     state/EP-1/T-185.md § E1/§ E3). ash EXECS the last command it runs when
+ *     nothing follows it, so the application IS this process's direct child
+ *     for `VAR=value cmd`, `exec cmd`, `cd /app && cmd`, `true ; cmd`,
+ *     `(cmd)` and `cmd > file`. ash STAYS, with the application as its child,
+ *     when something follows the application or it is one end of a pipe:
+ *     `cmd ; true`, `cmd && true`, `cmd || true`, `cmd | cat`, `cmd & wait`.
+ *     T-151 said "a compound script is not exec'd" and that was false for the
+ *     first list (it put `&&` and `;` in the wrong one). When ash stays it
+ *     TAKES the forwarded SIGTERM itself and exits `sig=SIGTERM` while the
+ *     application is still draining — 4 polls later the group was still
+ *     alive and the app then exited 0 (T-151, node:24.20.0-alpine). Without
+ *     the wait, PID 1 would have exited first and killed it. Path 1 exists
+ *     partly so that the common case does not depend on that optimisation.
  *
- *     AND ON THAT SHELL PATH THE WAIT CANNOT END ON ITS OWN CONDITION. This
- *     is a standing bound, not a remote edge case (T-151 rework 1, QA-A1;
- *     re-measured in node:24.20.0-alpine, state/EP-1/T-151.md § Rework 1
- *     R1.5). Once ash dies on the forwarded signal the application is
- *     reparented to PID 1, and this process does not reap a child it never
+ *     AND WHERE THE SHELL STAYS THE WAIT CANNOT END ON ITS OWN CONDITION.
+ *     This is a standing bound, not a remote edge case (T-151 rework 1,
+ *     QA-A1; re-measured in node:24.20.0-alpine, state/EP-1/T-151.md
+ *     § Rework 1 R1.5). Once ash dies on the forwarded signal the application
+ *     is reparented to PID 1, and this process does not reap a child it never
  *     spawned — so the moment it finishes draining it becomes a ZOMBIE,
  *     `kill(-pgid, 0)` still SUCCEEDS on a zombie, and waitForGroup below
  *     therefore polls until the deadline — first forwarded signal +
- *     GROUP_DRAIN_MS — and exits 128+signum. So a CLEAN drain behind a true
- *     compound script keeps the container up until that deadline and reports
+ *     GROUP_DRAIN_MS — and exits 128+signum. So a CLEAN drain behind a shell
+ *     that stays keeps the container up until that deadline and reports
  *     143 every time. The deadline is inside the stop_grace_period all five
  *     application services declare, because gate:app-images §7 holds every
  *     grace at >= GROUP_DRAIN_MS + 5 s, reading the constant from this file
@@ -145,9 +157,10 @@
  *     than exiting when the drain ends — and on the shell path reports 143.
  *     Reading /proc/<pid>/stat and treating state Z as gone would end both;
  *     it is a second mechanism change (OD-196's trigger). What IS bounded:
- *     `VAR=value cmd args` is not a compound script — ash execs it, so the
- *     direct child IS the application (measured, T-151 § Rework 1 R1.5) — and
- *     no app in this repository declares a compound start script.
+ *     every shape in the EXEC list above leaves no shell — the direct child
+ *     IS the application (measured, T-151 § Rework 1 R1.5 for `VAR=value
+ *     cmd`; T-185 § E1/§ E3 for the rest) — and no app in this repository
+ *     declares a start script in the STAYS list.
  *
  * WHAT THIS PROCESS CAN AND CANNOT REPORT. On path 1 the direct child is the
  * application, so its EXIT CODE is the application's and a clean drain shows
@@ -159,11 +172,12 @@
  * reported 130 and read as SIGINT (qa-verification on T-180, QA-F2; the
  * expression was T-018's, d434296). ON PATH 1 THAT NUMBER IS THE
  * APPLICATION'S OWN, and the stderr line says so. On path 2 the direct child is
- * the shell OR — if the shell exec'd, as busybox ash does for `VAR=value cmd` —
- * the start command itself, and this process does not check which, so the line
- * reports the number and says it does not know whose death it is (T-181 rework
- * 1, OD-209: rework 0's line said "for the SHELL", false whenever the shell had
- * exec'd). One sentence for both paths was T-151's, and it was false on path 1
+ * the shell OR a command the shell exec'd in its place — for `VAR=value cmd`
+ * and `exec cmd` the start command, for an `&&`/`;` list its LAST command
+ * (T-185, OD-210; the EXEC list above) — and this process does not check
+ * which, so the line reports the number and says it does not know whose death
+ * it is (T-181 rework 1, OD-209: rework 0's line said "for the SHELL", false
+ * whenever the shell had exec'd). One sentence for both paths was T-151's, and it was false on path 1
  * — the CONDITION tech-lead
  * attached to T-180's second approval (TL-5), closed with the mapping in one
  * commit because a correct number carrying "this is not the app's own" is worse
@@ -175,12 +189,32 @@
  * beside the 137, and V8's own heap OOM is not a cgroup event at all (it
  * aborts, so 134, with `FATAL ERROR … JavaScript heap out of memory` in the
  * log and OOMKilled=false). Measured both ways in the image, T-181 § Evidence.
+ *
+ * THE SHELL PATH RUNS WITH ERREXIT AND PIPEFAIL (T-185, OD-213). Where the
+ * shell STAYS, the number this process reports is the SHELL's exit status,
+ * and a plain `/bin/sh -c` lets a script carry on past a failed command:
+ * tech-lead measured an application's SIGSEGV under `node app.js ; true` and
+ * `node app.js | cat` as container ExitCode=0 (T-181 § tech-lead
+ * verification), the unsafe direction, and `node app.js | pino-pretty` is an
+ * ordinary start line. So the shell is started as `/bin/sh -e -o pipefail -c`:
+ * with -e a command that fails ends the shell with that command's status, and
+ * with pipefail a pipeline's status is its rightmost FAILING member's. In
+ * every shape measured they turned a 0 into a non-zero or left the status as
+ * it was; that is a list of measurements, not a rule, because a script that
+ * BRANCHES on a status can be steered by them either way. Red-before (0) and
+ * green-after (139) in the image: state/EP-1/T-185.md § E1/§ E3; in the suite:
+ * entrypoint-lifecycle L19/L20. WHAT IT DOES NOT COVER: a script that HANDLES
+ * or DISCARDS a status itself — `cmd || true` and `cmd & wait` (both measured
+ * at 0 after the change), and by POSIX's errexit rules an `if`/`while`
+ * condition, a `!`, or `set +e` (not measured). A shell with NO pipefail (the toolbox's dash, for one) gets
+ * `-e` alone, and a script containing `|` is then REFUSED at boot rather than
+ * run with a pipe that could exit 0 over a crash (shellOptions below; L20).
  */
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 
 const APP = process.env.KINVARA_APP ?? 'unknown';
 const KIND = process.env.KINVARA_APP_KIND ?? 'http';
@@ -209,14 +243,61 @@ const log = (...a) => process.stderr.write(`[${APP}] ${a.join(' ')}\n`);
  * backtick, `~`, `*`, `?`, `[`, `]`, `{`, `}`, `'`, `"`, `\`, `|`, `&`, `;`,
  * `<`, `>`, `(`, `)`, `#`, a tab, a double space — is outside BOTH classes,
  * and `=` is outside the first, so a script containing one takes the
- * `/bin/sh -c` path. Within these two classes there is nothing left for a
- * shell to interpret, so a misjudgement can only fall back to the more
- * general path, never the other way. THE CLAIM IS ABOUT THESE TWO CHARACTER
- * CLASSES, not about shells in general. What falsifies it is a classification
- * table over plausible start scripts, run against the regex copied out of
- * this file: § Rework 1 R1.1.
+ * `/bin/sh` path. THE CLAIM IS ABOUT THESE TWO CHARACTER CLASSES, not about
+ * shells in general. What falsifies it is a classification table over
+ * plausible start scripts, run against the regex copied out of this file:
+ * state/EP-1/T-151.md § Rework 1 R1.1.
+ *
+ * THE CHARACTER CLASSES ARE NOT THE WHOLE TEST (T-185, OD-211). T-151 said
+ * "within these two classes there is nothing left for a shell to interpret",
+ * and a SHELL BUILTIN as the first word falsified it: `exec node app.js` is in
+ * both classes, was spawned as a file named `exec`, and the container died at
+ * boot with ENOENT, exit 1 (state/EP-1/T-185.md § E1, B04). `cd`, `export`,
+ * `ulimit`, `.` and `:` are the same shape. So the argv path ALSO requires the
+ * first word to be an executable file where the spawn will look for it
+ * (isExecutableOnPath, below), and a first word that is not one goes to the
+ * shell — which runs a builtin, or says `not found` and exits 127. The test
+ * is the filesystem, not a list of builtin names, so no name can be missing
+ * from it; a name that is BOTH a builtin and a file (`echo`, `true`, `test`)
+ * stays on the argv path and runs the file. Falsified by entrypoint-lifecycle
+ * L21 (and in the image, § E3).
  */
 const SIMPLE_COMMAND = /^[A-Za-z0-9_@.:/+,-]+(?: [A-Za-z0-9_@.:/+=,-]+)*$/;
+
+/**
+ * Whether `word` names an executable regular file the argv spawn below would
+ * find: a word with a `/` is resolved against the app directory (the spawn's
+ * cwd), any other word is looked up in `searchPath` in order, an empty entry
+ * meaning the cwd as execvp(3) treats it. T-185, OD-211: see SIMPLE_COMMAND.
+ */
+function isExecutableOnPath(word, searchPath, cwd) {
+  const candidates = word.includes('/')
+    ? [path.resolve(cwd, word)]
+    : searchPath.split(':').map((dir) => path.resolve(cwd, dir === '' ? '.' : dir, word));
+  return candidates.some((file) => {
+    try {
+      fs.accessSync(file, fs.constants.X_OK);
+      return fs.statSync(file).isFile();
+    } catch {
+      return false;
+    }
+  });
+}
+
+/**
+ * The options /bin/sh is started with on the shell path (T-185, OD-213; the
+ * header, THE SHELL PATH RUNS WITH ERREXIT AND PIPEFAIL). `-e` is POSIX and
+ * every /bin/sh takes it. `-o pipefail` is not in every /bin/sh — busybox ash,
+ * the image's, takes it; dash 0.5.12, the toolbox's, refuses it and exits 2 —
+ * so it is asked for only where this /bin/sh accepts it, and `pipefail` says
+ * which. Measured, not assumed: one `/bin/sh -o pipefail -c :` at boot, on the
+ * shell path only.
+ */
+function shellOptions() {
+  const probe = spawnSync('/bin/sh', ['-o', 'pipefail', '-c', ':'], { stdio: 'ignore' });
+  const pipefail = probe.status === 0;
+  return { pipefail, flags: pipefail ? ['-e', '-o', 'pipefail'] : ['-e'] };
+}
 
 /** How long after the FIRST FORWARDED SIGNAL this process may wait for the
  *  child's process group to empty (T-180). The deadline is fixed when that
@@ -375,12 +456,39 @@ function runReal(script) {
       .join(':'),
   };
 
-  const simple = SIMPLE_COMMAND.test(script);
-  const [file, ...args] = simple ? script.split(' ') : ['/bin/sh', '-c', script];
+  // THE ONE CLASSIFICATION (T-151; T-185 adds the first-word file test, OD-211).
+  // `simple` chooses the spawn below AND the stderr line in child.on('exit'), so
+  // the two cannot disagree.
+  const firstWord = script.split(' ')[0] ?? '';
+  const inClasses = SIMPLE_COMMAND.test(script);
+  const simple = inClasses && isExecutableOnPath(firstWord, env.PATH, APP_DIR);
+  const shell = simple ? null : shellOptions();
+  if (shell !== null) {
+    // NO PIPEFAIL, NO PIPE (T-185, OD-213). Without pipefail a pipeline reports
+    // its LAST member's status, so `node app.js | cat` turns the application's
+    // crash into 0. Refused here, loudly and before anything starts, rather than
+    // run. Busybox ash has pipefail, so the shipping images never take this
+    // branch; it is what a /bin/sh without it (dash, the toolbox's) does, and it
+    // keeps a base-image change from re-opening OD-213 in silence (L20).
+    if (!shell.pipefail && script.includes('|')) {
+      log(
+        `refusing start '${script}': it contains '|' and this /bin/sh has no pipefail, so a ` +
+          `pipeline would report its LAST command's status and an application crash could exit 0 ` +
+          `(T-185, OD-213); exiting 1`,
+      );
+      process.exit(1);
+    }
+  }
+  const [file, ...args] =
+    shell === null ? script.split(' ') : ['/bin/sh', ...shell.flags, '-c', script];
+  const shellArgv = shell === null ? '' : `/bin/sh ${shell.flags.join(' ')} -c`;
   log(
     simple
       ? `mode=real  running start (${script}) as a direct child in ${APP_DIR}`
-      : `mode=real  running start via /bin/sh -c (${script}) in ${APP_DIR}`,
+      : `mode=real  running start via ${shellArgv} (${script}) in ${APP_DIR}` +
+          (inClasses
+            ? ` (its first word, ${firstWord}, is not an executable file on PATH, so a shell runs it)`
+            : ''),
   );
 
   const child = spawn(file, args, { cwd: APP_DIR, stdio: 'inherit', detached: true, env });
@@ -492,15 +600,19 @@ function runReal(script) {
       //
       // ON THE SHELL PATH THIS PROCESS DOES NOT KNOW WHOSE DEATH IT SAW, so the
       // line does not say (T-181 rework 1, OD-209). The direct child is /bin/sh
-      // — unless the shell exec'd the start command, and then it IS the start
-      // command: busybox ash does that for `VAR=value cmd`, which is exactly the
-      // shape the SIMPLE_COMMAND test above sends here. Nothing here checks
-      // which happened. Rework 0's line said "for the SHELL, because this
-      // process cannot see the application's own exit status", which is false
-      // on every clause when the shell exec'd (a shell is never SIGKILLed on its
-      // own, and there is no shell left). This sentence is true of both
-      // topologies: scripts/negative-tests/entrypoint-lifecycle.sh L14 (the
-      // shell stays) and L16 (the shell exec'd) assert the same text.
+      // — unless the shell exec'd a command in its place, and then it IS that
+      // command: busybox ash execs the last command it runs when nothing
+      // follows it, so for `VAR=value cmd` or `exec cmd` that is the start
+      // command and for `cd /app && node app.js` it is `node app.js`, the LAST
+      // command of the list and not the whole script (T-185, OD-210; the
+      // header's EXEC list). Nothing here checks which happened. T-181's line
+      // said "or, if the shell exec'd, the start command itself", which named
+      // one candidate too few (QA2-1 on T-181); rework 0's said "for the SHELL,
+      // because this process cannot see the application's own exit status",
+      // false on every clause when the shell exec'd. This sentence is true of
+      // both topologies: scripts/negative-tests/entrypoint-lifecycle.sh L14 (the
+      // shell stays) and L16 (the shell exec'd) assert the same text, and both
+      // assert T-181's clause ABSENT.
       log(
         simple
           ? `the application itself (the start command, ${script}) was ended by ${sig}; ` +
@@ -508,8 +620,8 @@ function runReal(script) {
               `signal death, and waiting for its process group`
           : `the direct child was ended by ${sig}; reporting ${String(status)} = ` +
               `128 + ${String(signo ?? 0)}, and waiting for its process group. It was started ` +
-              `as /bin/sh -c (${script}), so it is either that shell or, if the shell exec'd, ` +
-              `the start command itself; this process does not check which, so it does not ` +
+              `as ${shellArgv} (${script}), so it is either that shell or a command the shell ` +
+              `exec'd in its place; this process does not check which, so it does not ` +
               `say whose signal death ${String(status)} is`,
       );
     }

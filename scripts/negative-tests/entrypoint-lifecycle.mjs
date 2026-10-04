@@ -1,5 +1,6 @@
 /**
- * scripts/negative-tests/entrypoint-lifecycle.mjs — T-180, extended by T-181.
+ * scripts/negative-tests/entrypoint-lifecycle.mjs — T-180, extended by T-181
+ * and T-185.
  *
  * WHAT THIS JUDGES. docker/app-runtime/entrypoint.mjs is PID 1 in every
  * application image. After it forwards a signal and its direct child exits,
@@ -46,8 +47,10 @@
  *        group -> 137, and PID 1 says the number IS the application's own. On
  *        the ARGV path that is true, and until T-181 it said the opposite.
  *   L14  the SHELL path, compound: `node app.js ; true`, so /bin/sh is the
- *        direct child (asserted: the app's parent is NOT the entrypoint). 143,
- *        and PID 1 says it does not know whose signal death that is.
+ *        direct child (asserted: the app's parent is NOT the entrypoint, and
+ *        since T-185 a missing ppid line is "set-up did not land" rather than
+ *        read as "not the direct child" — QA2-3 on T-181). 143, and PID 1 says
+ *        it does not know whose signal death that is.
  *   L16  the SHELL path where the shell is REPLACED by the application
  *        (T-181 rework 1, QA-1 / OD-209): `NODE_ENV=production exec node app.js`
  *        goes to /bin/sh -c (its first word contains `=`), and the shell execs,
@@ -59,7 +62,9 @@
  *        /bin/sh is dash 0.5.12, which does not (measured, T-181 § Rework 1).
  *        PID 1 sees only its direct child's pid and death, so the explicit
  *        `exec` gives it the identical view on any /bin/sh. The literal
- *        `VAR=value cmd` shape under ash is measured in the image, not here.
+ *        `VAR=value cmd` shape under ash is measured in the image, not here,
+ *        and so is ash exec'ing the LAST command of an `&&`/`;` list
+ *        (`cd /app && node app.js`, T-185 / OD-210): dash does neither.
  *   L15  THE BOUND, pinned rather than described (tech-lead TL-1 on T-180): a
  *        signal the application SURVIVES fixes the deadline for a LATER stop, so
  *        a stop more than GROUP_DRAIN_MS after it gets NO group wait and a
@@ -72,12 +77,33 @@
  *        and `helper: drained` printed) while every other case is green against
  *        that same variant, so nothing else here would catch the change.
  *
+ *   L19  T-185, OD-213: `node app.js ; true` (the shell STAYS, asserted) and the
+ *        app SIGSEGVs with no signal forwarded -> 139. A plain `/bin/sh -c`
+ *        carried on to `true` and PID 1 reported 0; the shell now runs with -e.
+ *   L20  T-185, OD-213: `node app.js | cat`. On a /bin/sh WITH pipefail, 139 as
+ *        L19. On one WITHOUT it — the toolbox's dash, so this is the branch the
+ *        suite holds — PID 1 REFUSES the script at boot (exit 1, the refusal
+ *        line, the app never started), because the pipe's status would be
+ *        `cat`'s 0. The pipefail branch is measured in the image only.
+ *   L21  T-185, OD-211: `exec node app.js`. Inside SIMPLE_COMMAND's classes, but
+ *        `exec` is no file: it was spawned as one and died ENOENT at boot. Now
+ *        the shell runs it and execs node, so the app IS the direct child
+ *        (asserted) and its SIGSEGV is its own 139.
+ *   L22  T-185: the control for L19 — the same shape, the app exits 0 on its
+ *        own -> 0. -e must not make a clean completion a failure.
+ *   The shell-path boot line each case asserts carries the shell's options,
+ *   and which options THIS /bin/sh gets is asked of /bin/sh by the suite itself
+ *   (SH_PIPEFAIL), not read from entrypoint.mjs.
+ *
  * THE LINE PID 1 PRINTS, and which cases hold it. L13 (argv) asserts the
  * "which IS its own signal death" sentence and the shell-path sentence ABSENT;
  * L14 and L16 (shell path, one per topology) assert the reverse. The shell-path
  * sentence claims neither whose death it was nor that it was the shell's,
  * because PID 1 does not check whether the shell exec'd: L14 and L16 are the
  * two answers to that question and the SAME sentence must be true of both.
+ * Both also assert T-181's clause "if the shell exec'd, the start command
+ * itself" ABSENT: ash execs the LAST command of a list, which is not the start
+ * command (T-185, OD-210/OD-212).
  *
  * WHAT IT DOES NOT JUDGE. It runs entrypoint.mjs as an ordinary process in
  * whatever container runs this suite, NOT as PID 1, so it does not reproduce a
@@ -129,7 +155,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 
 const IMPL = process.env.KINVARA_ENTRYPOINT_IMPL || 'docker/app-runtime/entrypoint.mjs';
 const implText = fs.readFileSync(IMPL, 'utf8');
@@ -246,9 +272,12 @@ const START = {
   argv: 'node app.js',
   compound: 'node app.js ; true',
   varexec: 'NODE_ENV=production exec node app.js',
+  // T-185: OD-213's second measured shape, and OD-211's.
+  pipe: 'node app.js | cat',
+  exec: 'exec node app.js',
 };
 const fixtures = { argv: fixture };
-for (const kind of ['compound', 'varexec']) {
+for (const kind of ['compound', 'varexec', 'pipe', 'exec']) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `kinvara-t181-${kind}-`));
   fs.writeFileSync(
     path.join(dir, 'package.json'),
@@ -259,6 +288,21 @@ for (const kind of ['compound', 'varexec']) {
   fixtures[kind] = dir;
 }
 const reEscape = (s) => s.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+
+/**
+ * THE SHELL'S OPTIONS, AS THIS SUITE EXPECTS THEM (T-185, OD-213). PID 1 starts
+ * the shell path as `/bin/sh -e -o pipefail -c` where /bin/sh accepts pipefail
+ * and `/bin/sh -e -c` where it does not. Which of the two THIS /bin/sh is, is
+ * asked here directly of /bin/sh — not read from entrypoint.mjs — so the boot
+ * line each shell-path case asserts is an expectation about the environment,
+ * not a copy of the code's own choice. In the toolbox /bin/sh is dash 0.5.12,
+ * which has no pipefail (measured, state/EP-1/T-185.md), so these cases hold
+ * the `-e` branch and the pipe REFUSAL (L20); the pipefail branch is measured
+ * in the image (busybox ash), not here.
+ */
+const SH_PIPEFAIL =
+  spawnSync('/bin/sh', ['-o', 'pipefail', '-c', ':'], { stdio: 'ignore' }).status === 0;
+const SH_ARGV = SH_PIPEFAIL ? '/bin/sh -e -o pipefail -c' : '/bin/sh -e -c';
 
 /**
  * Run one case. `signals` are ms offsets after boot at which SIGTERM is sent to
@@ -412,17 +456,27 @@ const shellLine = (script, sig, n, signo) =>
   new RegExp(
     reEscape(
       `the direct child was ended by ${sig}; reporting ${String(n)} = 128 + ${String(signo)}, ` +
-        `and waiting for its process group. It was started as /bin/sh -c (${script}), so it is ` +
-        `either that shell or, if the shell exec'd, the start command itself; this process does ` +
+        `and waiting for its process group. It was started as ${SH_ARGV} (${script}), so it is ` +
+        `either that shell or a command the shell exec'd in its place; this process does ` +
         `not check which, so it does not say whose signal death ${String(n)} is`,
     ),
   );
 const ARGV_CLAIM = /which IS its own signal death/;
 const SHELL_CLAIM = /does not say whose signal death/;
-/** Every spelling rework 0 printed on the shell path. Each asserted a fact PID 1
- *  does not have — "for the SHELL", "cannot see the application's own exit
- *  status" — and was false when the shell had exec'd (OD-209). */
-const OLD_SHELL_CLAIMS = [/for the SHELL/, /cannot see the application's own exit status/];
+/** Every spelling PID 1 has printed on the shell path and withdrawn. Rework 0's
+ *  two asserted a fact PID 1 does not have — "for the SHELL", "cannot see the
+ *  application's own exit status" — and were false when the shell had exec'd
+ *  (OD-209). T-181's named one candidate too few: busybox ash execs the LAST
+ *  command of an `&&`/`;` list, which is not "the start command itself" (QA2-1
+ *  on T-181, OD-210, OD-212 — T-185). */
+const OLD_SHELL_CLAIMS = [
+  /for the SHELL/,
+  /cannot see the application's own exit status/,
+  /if the shell exec'd, the start command itself/,
+];
+/** The refusal PID 1 prints for a pipe on a /bin/sh with no pipefail (T-185). */
+const PIPE_REFUSAL =
+  /refusing start 'node app\.js \| cat': it contains '\|' and this \/bin\/sh has no pipefail/;
 
 const cases = [
   {
@@ -627,6 +681,63 @@ const cases = [
     ['L17', 'SIGBUS', 135, ' (outside the six)'],
     ['L18', 'SIGHUP', 129, ' (outside the six)'],
   ].map(selfSignalCase),
+  // ---------------------------------------------------------------- T-185
+  {
+    // L19: OD-213, the LIST shape. `node app.js ; true`: the shell STAYS (the
+    // app is its child, asserted), and the app dies by SIGSEGV with NO signal
+    // forwarded. Under a plain `/bin/sh -c` the shell carried on to `true` and
+    // PID 1 reported the SHELL's 0 — tech-lead measured container ExitCode=0 in
+    // the image (T-181). With -e the shell stops at the failed command and
+    // exits with its status, 128 + 11. RED at main 4fc5f5d (exit 0).
+    ...selfSignalCase(['L19', 'SIGSEGV', 139, ' — SHELL STAYS, `; true` (OD-213)']),
+    fixture: 'compound',
+    directChild: false,
+  },
+  SH_PIPEFAIL
+    ? {
+        // L20, on a /bin/sh WITH pipefail: the pipe reports the app's 139.
+        ...selfSignalCase(['L20', 'SIGSEGV', 139, ' — SHELL STAYS, `| cat` (OD-213)']),
+        fixture: 'pipe',
+        directChild: false,
+      }
+    : {
+        // L20, on a /bin/sh WITHOUT pipefail (the toolbox's dash): OD-213's PIPE
+        // shape cannot be run safely — its status would be `cat`'s 0 — so PID 1
+        // REFUSES it at boot, exit 1, before anything starts. RED at main
+        // 4fc5f5d, which ran it.
+        id: 'L20',
+        label: 'pipe on a /bin/sh with NO pipefail -> refused at boot, exit 1 (OD-213)',
+        env: { LC_MODE: 'self-signal', LC_SIG: 'SIGSEGV', LC_LIFE_MS: '1000', LC_HELPER: 'none' },
+        signals: [],
+        fixture: 'pipe',
+        refused: PIPE_REFUSAL,
+        expect: { code: 1, from: 'spawn', min: 0, max: 5_000, deadlineLine: false },
+        landed: [],
+      },
+  {
+    // L21: OD-211. `exec node app.js` is inside SIMPLE_COMMAND's classes, and
+    // `exec` is a shell builtin, not a file: at main 4fc5f5d it was spawned as a
+    // file named `exec` and died at boot, ENOENT, exit 1 (CRASH here). Now it
+    // goes to the shell, which execs node — so the app IS the direct child
+    // (asserted) and its SIGSEGV is reported as its own 139.
+    ...selfSignalCase(['L21', 'SIGSEGV', 139, ' — `exec node app.js` (OD-211)']),
+    fixture: 'exec',
+    directChild: true,
+  },
+  {
+    // L22: the CONTROL for L19. -e must not turn a clean completion behind a
+    // shell that stays into a failure: `node app.js ; true`, the app exits 0 on
+    // its own -> 0.
+    id: 'L22',
+    label: 'control: SHELL STAYS, `; true`, app exits 0 on its own -> 0',
+    env: { LC_MODE: 'self-exit', LC_LIFE_MS: '1000', LC_CODE: '0', LC_HELPER: 'none' },
+    signals: [],
+    fixture: 'compound',
+    directChild: false,
+    expect: { code: 0, from: 'boot', min: 900, max: 1000 + 2 * SLACK_MS, deadlineLine: false },
+    landed: [/app: exiting on its own with 0/],
+    absent: [/SIGTERM/],
+  },
 ];
 
 const results = await Promise.all(cases.map((c) => runCase(c.env, c.signals, c.fixture ?? 'argv')));
@@ -639,8 +750,31 @@ cases.forEach((c, i) => {
   const bootLine =
     kind === 'argv'
       ? /mode=real {2}running start \(node app\.js\) as a direct child/
-      : new RegExp(`mode=real {2}running start via /bin/sh -c \\(${reEscape(START[kind])}\\)`);
-  if (r.bootAt === null || !bootLine.test(r.log)) {
+      : new RegExp(
+          `mode=real {2}running start via ${reEscape(SH_ARGV)} \\(${reEscape(START[kind])}\\)` +
+            // T-185, OD-211: a first word in SIMPLE_COMMAND's classes that is no
+            // executable file is on this path for that reason, and says so.
+            (kind === 'exec'
+              ? reEscape(' in ') +
+                '\\S+' +
+                reEscape(
+                  ' (its first word, exec, is not an executable file on PATH, so a shell runs it)',
+                )
+              : ''),
+        );
+  if (c.refused) {
+    // T-185: a start PID 1 must REFUSE. Refused = the refusal line, exit 1, and
+    // the app never started; anything else (it ran, it crashed, it hung) is not.
+    verdict = 'MISBEHAVED';
+    if (!c.refused.test(r.log))
+      problems.push(`PID 1 did not print the refusal ${String(c.refused)}`);
+    else if (/app: pid=/.test(r.log)) problems.push('the app STARTED; it should have been refused');
+    else if (r.code !== 1) problems.push(`exit status ${String(r.code)}, expected 1`);
+    else if (r.exitAt - r.t0 > c.expect.max)
+      problems.push(`refused only after ${String(r.exitAt - r.t0)} ms`);
+    else verdict = 'OK';
+    r.elapsed = r.exitAt - r.t0;
+  } else if (r.bootAt === null || !bootLine.test(r.log)) {
     verdict = 'CRASH';
     problems.push(`the app never booted in REAL mode on the ${kind} path`);
   } else if (r.notReady) {
@@ -665,7 +799,12 @@ cases.forEach((c, i) => {
       );
     // T-181 rework 1: the process topology is set-up too. L16 means nothing if
     // a shell was still in between, and L14 means nothing if there was not.
-    if (c.directChild !== undefined && (r.appPpid === r.epPid) !== c.directChild)
+    // T-185 (QA2-3 on T-181): a missing ppid line is set-up that did not land,
+    // never a topology. Before this, `null === epPid` read as "not the direct
+    // child", so L14 passed on a log with no ppid in it.
+    if (c.directChild !== undefined && r.appPpid === null)
+      problems.push(`set-up did not land: the app printed no ppid, so its topology is unknown`);
+    else if (c.directChild !== undefined && (r.appPpid === r.epPid) !== c.directChild)
       problems.push(
         `set-up did not land: the app's parent is ${String(r.appPpid)}, the entrypoint is ${String(r.epPid)}; ` +
           `expected the app ${c.directChild ? 'to BE' : 'NOT to be'} the direct child`,
@@ -697,7 +836,12 @@ cases.forEach((c, i) => {
   }
   const mark = verdict === 'OK' ? '  ' : '!!';
   if (verdict !== 'OK') bad += 1;
-  const origin = c.expect.from === 'signal' ? 'after 1st signal' : 'after boot';
+  const origin =
+    c.expect.from === 'signal'
+      ? 'after 1st signal'
+      : c.expect.from === 'spawn'
+        ? 'after spawn'
+        : 'after boot';
   // T-238: how long the helper took to come up after the app's line — printed,
   // not judged, so the margin the old 500 ms schedule relied on is on record.
   const up =
