@@ -2,26 +2,33 @@
 """db-introspect.sh's read-classifier: an exhaustive, mechanical list of every place the suite READS
 db/schema.ts or a generated artefact, or hands an expectation to a judging helper, each classified by
 rule. Written for T-232 rework 2 (OD-246, QA-F1, QA-R-F1); committed and tightened by T-234 (QA-S-F1,
-NS1); run on every `gate:negative-suites` by the suite's roster entry in scripts/gates/negative-suites.ts.
+NS1); T-237 closed T-234's bounds (i)-(iv) by mechanism and added the REMEDY lines; run on every
+`gate:negative-suites` by the suite's roster entry in scripts/gates/negative-suites.ts.
 
     python3 scripts/gates/classify-introspect-reads.py scripts/negative-tests/db-introspect.sh
 
 Exit 0: every taken line is classified, and every whole-file read of db/schema.ts is justified.
 Exit 1: at least one row is FLAGGED (its category ends in -UNJUSTIFIED or -UNSUBTRACTED, or is
 UNCLASSIFIED), or a WHOLE_FILE_OK / EXACT_LINES entry no longer matches the lines it was written for.
+After the FLAGGED line a `REMEDY <category>:` line says what to do for each category that was flagged.
 Exit 2: usage.
 
 WHAT IT IS MEASURED TO CATCH is exactly scripts/gates/classify-introspect-reads.fixture: every line marked
 `# attack:` there is flagged and every `# control:` line is not, and gate:negative-suites checks that on
-every run. That is QA-S1's four shapes (T-232), T-234's fifteen, and QA's 52 attack shapes (T-234 § QA-1,
-R01-R52 except R42, which is a control). Nothing wider is claimed; the bounds are listed at the end.
+every run. That is QA-S1's four shapes (T-232), T-234's fifteen, QA's 52 attack shapes (T-234 § QA-1,
+R01-R52 except R42, which is a control), and T-237's seventeen (TL-F1's G1-G3, G5-G7, E2 and O2d; O1a/c/e/f;
+O2a/b/c/e/f): 88 attack lines and 10 controls. O3 is not a fixture line (the fixture defines no scope
+function); it is held by gate:pr-gate-suite's case B19, which inserts a rebinding line into the real suite's
+block_count. Nothing wider is claimed; the bounds are listed at the end.
 
 SELECTION (mechanical, not by reading). A non-comment line is taken if it
   (a) mentions db/schema.ts in a spelling this reader recognises ($SCHEMA, any ${SCHEMA...} expansion,
       the literal path, a glob under db/), `HEAD:`, `git show`/`git cat-file`, "$OUT" or $OUT.<suffix>
-      (the generator's output and derived files) (a spelling counts as a READ, rule 1, only where it
-      begins a shell word or sits inside double quotes; glued to preceding characters in an unquoted
-      word it is not seen, BOUNDS (i)), or
+      (the generator's output and derived files), wherever it sits in a word: glued to preceding
+      characters (`<"$SCHEMA"`, $PWD/db/schema.ts, ../app/db/schema.ts, an absolute path) included
+      (T-237, TL-F1), and in a non-canonical spelling, which is first rewritten (`db//schema.ts`,
+      `db/./schema.ts`, `db/x/../schema.ts`, a brace list such as `db/schema.{ts,}` one of whose
+      expansions is the file: canon(), T-237, O2), or
   (b) calls a judging helper (check, check_facts, part_check, policy_check, write_judge, partlocal_case,
       system_case, shape_case, judge, fact, facts_into, block_count, head_count), or
   (c) continues such a call (the previous taken line ends with a backslash), or
@@ -31,18 +38,17 @@ THE RULES:
   1. A READ of db/schema.ts. Every recognised spelling is rewritten to one token, and each occurrence is
      judged by its position:
        - inside a quoted argument of echo, printf, abort or a judging helper (PROSE_CMDS): prose, because
-         those commands print it, or look for it as a regex in $OUT;
+         those commands print it, or look for it as a regex in $OUT. NOT prose when that command's output
+         is piped (`|`, `|&`; not `||`) into the next command, which then reads it (T-237, O1);
        - in one of the closed HARNESS_CTX contexts (restore, git diff, cmp/cp with $OUT.s1, rm, >>,
          mutate, the definition): harness;
        - after `git show <rev>:` / `git cat-file`: a read of the COMMITTED file (rule 3);
        - on a line whose whole text is an EXACT_LINES entry, inside its scope function, within its
          count (rule 4);
-       - ANYWHERE ELSE, where the spelling begins a shell word or sits inside a quoted word
-         ("./$SCHEMA", "$PWD/db/schema.ts" quoted, node -e '...db/schema.ts...', an assignment's value,
-         a function argument, cat |, `< "$SCHEMA"` with the space, a glob such as db/sch*.ts): a
-         whole-file read, which needs a counted WHOLE_FILE_OK entry or the run exits 1. Glued to
-         preceding characters in an unquoted word (`<"$SCHEMA"`, unquoted $PWD/db/schema.ts) it is NOT
-         seen: BOUNDS (i).
+       - ANYWHERE ELSE ("./$SCHEMA", "$PWD/db/schema.ts" quoted or not, node -e '...db/schema.ts...', an
+         assignment's value, a function argument, cat |, `<"$SCHEMA"` with or without the space,
+         `$(<"$SCHEMA")`, ../app/db/schema.ts, an absolute path, a glob such as db/sch*.ts): a
+         whole-file read, which needs a counted WHOLE_FILE_OK entry or the run exits 1.
      T-232's rule needed `grep|awk ... "$SCHEMA"` in that order (QA-S1 A1-A3). T-234's first version
      treated every double-quoted word as prose (QA-F1 R47/R51).
   2. The content rules that let a line PASS (PLANT-LITERAL, COMMITTED-OBJECT, GENERIC-REFUSAL,
@@ -53,20 +59,16 @@ THE RULES:
   4. Exemptions are SCOPED and COUNTED, never granted by text alone:
        - WHOLE_FILE_OK keys and EXACT_LINES texts each match exactly their count of lines, and an
          EXACT_LINES text holds only inside its scope function (block_count's body, head_count, rehash's
-         node body). A copy borrows nothing (QA-F1 R34/R35/R37);
+         node body), and only while that function's whole body hashes to its SCOPE_BODY_SHA pin, so a body
+         that rebinds its arguments before an exempt line withdraws the exemption (T-237, O3). A copy
+         borrows nothing (QA-F1 R34/R35/R37);
        - HELPER-DEF's loop and `local` shapes hold only inside a HELPER_FUNCS body (QA-F1 R26/R33);
        - an abort makes a line HARNESS only in the closed HARNESS_ABORT shapes (QA-F1 R41/R48);
        - block_count's block name must be plant-named or one of BLOCK_VARS (QA-F1 R36).
 
-BOUNDS (not claimed; the mechanism fixes for (i)-(iv) are T-237's):
-  - (i) TL-F1: a recognised spelling glued to preceding characters in an unquoted word: `<"$SCHEMA"`,
-    `<$SCHEMA`, `$(<"$SCHEMA")`, unquoted `$PWD/db/schema.ts`, `"$REPO_ROOT"/db/schema.ts`,
-    `../app/db/schema.ts`, an absolute path. Not seen as a read; with a plant in the pattern such a line
-    passes (T-234 § tech-lead verification TL-2). -> T-237.
-  - (iii) O2: a non-canonical spelling of the path (`db//schema.ts`, `db/./schema.ts`,
-    `db/schema.{ts,}`) is not recognised as the file. -> T-237.
-  - (iv) O3: a helper body (block_count, head_count, rehash) that rebinds its arguments (`set --`,
-    reassigning $1) before an exempt EXACT_LINES line: the exempt line keeps its exemption. -> T-237.
+BOUNDS (not claimed). T-234's (i)-(iv) are closed by mechanism (T-237): (i) a glued spelling, (ii) a
+piped PROSE_CMDS argument, (iii) the non-canonical spellings above, (iv) a scope helper's body changed. What
+remains:
   - Spellings it does not recognise as the file: a path assembled from pieces ($'db/sch\x65ma.ts', a
     backslash continuation, `cd db && ... schema.ts`, `grep -r ... db --include=...`, `git grep ...
     'db/*.ts'`), an alias through another name (QF=..., declare -n, ${!v}, a copy such as $OUT.s1), and a
@@ -74,15 +76,23 @@ BOUNDS (not claimed; the mechanism fixes for (i)-(iv) are T-237's):
     flagged. Each such shape in the fixture is caught only because the line that JUDGES its result
     matches no rule (UNCLASSIFIED). A future line that judges such a result in a shape some rule does
     classify would pass.
-  - (ii) A quoted argument of a PROSE_CMDS command is prose even if it spells the file, and even when
-    that command's output is piped into a command that reads it (`echo "./$SCHEMA" | xargs grep ...`,
-    `| while read`, `| sh`; QA-R1-O1). A helper or abort handed the path in quotes is not treated as
-    reading it. -> T-237.
+  - A path run is canonicalised only when it holds both `db` and `schema` and one of its comma-list brace
+    expansions resolves to a path ENDING in db/schema.ts. A brace RANGE (`db/schema.t{s..s}`) and a glob
+    inside a brace list (`db/{sch*,x}.ts`) are not resolved, and a line reading through either passes when
+    it names a plant (T-237 § Evidence, BOUNDS). A glob under db/ outside braces is recognised as before.
+  - A quoted argument of a PROSE_CMDS command is prose when its output is not piped on the same physical
+    line: `echo "./$SCHEMA" >"$OUT.x"` followed by a later read of "$OUT.x", or a pipe moved to the next line
+    by a backslash continuation, is not seen as a read. Each such echo line is flagged only because it is
+    UNCLASSIFIED (the DISPLAY rule admits `echo "== ..."` alone).
+  - A scope helper's body is pinned, not a function that wraps it: `bc() { block_count accountRole "$2"; }`
+    is not a taken line, and a call `$(bc t153Money 'role:')` naming a plant passes (an alias through
+    another name).
   - A BLOCK_VARS name (`"$b"`, `"${spec%%|*}"`) rebound to a committed declaration is filed BLOCK.
   - It reads one physical line at a time.
   - A regex over $OUT that contains a plant name is filed PLANT-LITERAL (T-232 § Rework 2's residual
     route for regexes over generator output).
 """
+import hashlib
 import re
 import sys
 
@@ -95,10 +105,9 @@ lines = open(path, encoding='utf-8').read().split('\n')
 HELPERS = r'(check|check_facts|part_check|policy_check|write_judge|partlocal_case|system_case|shape_case|judge|fact|facts_into|block_count|head_count)'
 # Every spelling of the file this reader recognises: $SCHEMA, any ${SCHEMA...} expansion (${SCHEMA:-},
 # ${SCHEMA%.ts}...), the literal path with or without ./, and any GLOB under db/ (db/sch*.ts, db/*.ts,
-# db/schema.t[s]), which can name the file. The scanner judges it as a read only where it begins a shell
-# word or sits inside double quotes: glued to preceding characters in an unquoted word (`<"$SCHEMA"`,
-# $PWD/db/schema.ts) it is skipped, and db//schema.ts, db/./schema.ts, db/schema.{ts,} are not matched
-# (docstring BOUNDS (i), (iii); T-237).
+# db/schema.t[s]), which can name the file. contexts() sees it wherever it sits in a word, glued to
+# preceding characters included (T-237, TL-F1); canon() first rewrites a non-canonical spelling
+# (db//schema.ts, db/./schema.ts, db/schema.{ts,}) to the canonical one (T-237, O2).
 SCHEMA_ANY = r'(?:\$\{SCHEMA(?:[^A-Za-z0-9_}][^}]*)?\}|\$SCHEMA(?![A-Za-z0-9_])|(?:\./)?db/schema\.ts\b|(?:\./)?db/[A-Za-z0-9_.-]*[*?\[][A-Za-z0-9_.*?\[\]-]*)'
 sel_a = re.compile(SCHEMA_ANY + r'|HEAD:|git (?:show|cat-file)|"\$OUT"|\$OUT\.|\$OUT\b')
 sel_b = re.compile(r'^\s*(?:if\s+)?' + HELPERS + r'\b|\$\((block_count|head_count)\b')
@@ -116,9 +125,83 @@ def strip_desc(l):
     return DESC.sub(lambda m: (m.group(1) or m.group(2)) + ' "<description>"', l, count=1)
 
 
+# T-237 (O2): a non-canonical spelling of the path is rewritten to db/schema.ts before any rule reads the
+# line. A PATH RUN is a maximal run of path characters (no quote, no $, no space); one that holds both `db`
+# and `schema` is brace-expanded (`db/schema.{ts,}`, `db/{schema,x}.ts`), then each expansion has `//`
+# collapsed, `.` segments dropped and `name/..` pairs resolved (`db//schema.ts`, `db/./schema.ts`,
+# `db/x/../schema.ts`, `./db/../db/schema.ts`). If an expansion so resolved ENDS in the path component
+# pair db/schema.ts and the run was not already spelled that way, the run becomes that resolved path.
+# A canonical spelling is left byte for byte as written, so no WHOLE_FILE_OK key or EXACT_LINES text moves.
+PATH_RUN = re.compile(r'[A-Za-z0-9_.,{}/*?\[\]~+-]+')
+
+
+def brace_expand(w, limit=64):
+    """bash's brace expansion of one word, comma lists only (no ranges), at most `limit` results."""
+    m = None
+    depth = 0
+    for j, ch in enumerate(w):
+        if ch == '{':
+            if depth == 0:
+                start = j
+            depth += 1
+        elif ch == '}' and depth > 0:
+            depth -= 1
+            if depth == 0:
+                inner = w[start + 1:j]
+                parts, d, cur = [], 0, ''
+                for x in inner:
+                    if x == ',' and d == 0:
+                        parts.append(cur)
+                        cur = ''
+                        continue
+                    d += (x == '{') - (x == '}')
+                    cur += x
+                parts.append(cur)
+                if len(parts) > 1:
+                    m = (start, j, parts)
+                    break
+    if m is None:
+        return [w]
+    start, end, parts = m
+    out = []
+    for p in parts:
+        out.extend(brace_expand(w[:start] + p + w[end + 1:], limit))
+        if len(out) >= limit:
+            break
+    return out[:limit]
+
+
+def resolve(path):
+    """`//` collapsed, `.` segments dropped, `name/..` pairs resolved; a leading `..` or `/` is kept."""
+    lead = '/' if path.startswith('/') else ''
+    segs = []
+    for seg in path.split('/'):
+        if seg in ('', '.'):
+            continue
+        if seg == '..' and segs and segs[-1] != '..':
+            segs.pop()
+        else:
+            segs.append(seg)
+    return lead + '/'.join(segs)
+
+
+def canon(l):
+    def fix(m):
+        w = m.group(0)
+        if 'db' not in w or 'schema' not in w:
+            return w
+        for e in brace_expand(w):
+            r = resolve(e)
+            noncanonical = e != w or r != re.sub(r'^(?:\./)+', '', e)
+            if noncanonical and (r == 'db/schema.ts' or r.endswith('/db/schema.ts')):
+                return r
+        return w
+    return PATH_RUN.sub(fix, l)
+
+
 def normalise(l):
     """Every spelling of db/schema.ts becomes one token, quotes included when the quoted word is only it."""
-    s = re.sub(r'"\$\{SCHEMA\}"|"\$SCHEMA"|"(?:\./)?db/schema\.ts"|\'(?:\./)?db/schema\.ts\'', TOK, l)
+    s = re.sub(r'"\$\{SCHEMA\}"|"\$SCHEMA"|"(?:\./)?db/schema\.ts"|\'(?:\./)?db/schema\.ts\'', TOK, canon(l))
     return re.sub(SCHEMA_ANY, TOK, s)
 
 
@@ -132,9 +215,11 @@ KEYWORDS = {'if', 'then', 'else', 'elif', 'do', 'while', 'until', '!', '{', '}',
 
 
 def contexts(s):
-    """For each TOK occurrence in s: (position, innermost context, owning command). The context is 'top',
-    'cs' ($( )), 'paren', 'dq' or 'sq'; the owning command is the first word of the simple command the
-    occurrence (or the quoted word holding it) belongs to, None for an assignment's value or unknown."""
+    """For each TOK occurrence in s: [position, innermost context, owning command, piped]. The context is
+    'top', 'cs' ($( )), 'paren', 'dq' or 'sq'; the owning command is the first word of the simple command
+    the occurrence (or the quoted word holding it) belongs to, None for an assignment's value or unknown.
+    `piped` (T-237, O1) is True when that simple command's standard output feeds a pipe (`|` or `|&`,
+    never `||`), so whatever it prints is read by the next command."""
     out, i = [], 0
     stack = [{'k': 'top', 'cmd': None, 'want': True}]
 
@@ -150,7 +235,8 @@ def contexts(s):
         if s.startswith(TOK, i):
             cf = cmdframe()
             owner = f.get('owner') if k in ('dq', 'sq') else cf['cmd']
-            out.append((i, k, owner))
+            out.append([i, k, owner, False])
+            cf.setdefault('pending', []).append(len(out) - 1)
             if k not in ('dq', 'sq') and cf['want']:
                 cf['cmd'], cf['want'] = '<schema>', False
             i += len(TOK)
@@ -177,9 +263,19 @@ def contexts(s):
         if c in ' \t':
             i += 1
             continue
+        if c == '&' and i > 0 and s[i - 1] in '<>':
+            i += 1  # a redirection (`2>&1`, `>&2`), part of the word before it
+            continue
         if c in ';|&\n':
+            # T-237 (O1): `|` and `|&` pipe this simple command's output into the next; `||`, `&&`, `;`,
+            # `&` and a newline only end it.
+            step = 2 if s.startswith(('||', '&&', '|&'), i) else 1
+            if c == '|' and not s.startswith('||', i):
+                for j in f.get('pending', []):
+                    out[j][3] = True
+            f['pending'] = []
             f['cmd'], f['want'] = None, True
-            i += 1
+            i += step
             continue
         if c == '\\':
             i += 2
@@ -211,7 +307,9 @@ def contexts(s):
                 stack.pop()
             i += 1
             continue
-        m = re.match(r'[^\s;|&()\'"$]+', s[i:])
+        # T-237 (TL-F1): a word stops AT the token, so a spelling glued to preceding characters in an
+        # unquoted word (`<"$SCHEMA"`, $PWD/db/schema.ts, ../app/db/schema.ts, an absolute path) is seen.
+        m = re.match(r'(?:(?!' + TOK + r')[^\s;|&()\'"$])+', s[i:])
         if m is None:  # a lone $ (a $VAR or ${...}): part of a word
             if f['want']:
                 f['cmd'], f['want'] = '?', False
@@ -267,6 +365,18 @@ EXACT_LINES = {
 # The variables block_count may take as its block name: each is bound by a loop over plant names in the
 # suite (K59's spec list, K60's block list). Any other variable is BLOCK-UNJUSTIFIED (QA-F1 R36).
 BLOCK_VARS = {'"${spec%%|*}"', '"$b"'}
+# T-237 (O3): the WHOLE BODY of each EXACT_LINES scope function is pinned, so an exempt line keeps its
+# exemption only while the function around it is the one that was justified. A body that rebinds its
+# arguments (`set -- accountRole "$2"`, `1=...` through a loop) before an exempt line, or changes it in any
+# other way, turns every exempt line in it EXEMPT-LINE-UNJUSTIFIED and the run exits 1. The digest is the
+# sha256 of the body's lines (the `name() {` line through its closing `}`), each stripped of surrounding
+# whitespace, blank lines and `#` comment lines dropped, joined by newlines; the classifier prints the value it
+# measured for a body that does not match. Re-pin only after re-reading every exempt line in that body.
+SCOPE_BODY_SHA = {
+    'block_count': '70d995b76fe998e9a216cb8fcb0f7fc6ba42b6950d7bb055614fe190175d85e7',
+    'head_count': '7082ac95b85d4a2a7e5f067afc7286678bbabd2be0df262f9ed9d6cae68b6a4c',
+    'rehash': '19b553ad048d319d9f21db7c64e243dde0043c2db1142fa7a9d2bcc2cda8a07a',
+}
 
 
 def block_ok(a):
@@ -318,13 +428,15 @@ def schema_reads(norm):
             for m in re.finditer(r'\S*:' + re.escape(TOK), norm):
                 covered.add(m.end() - len(TOK))
     reads = []
-    for pos, ctx, owner in contexts(norm):
+    for pos, ctx, owner, piped in contexts(norm):
         if pos in covered:
             continue
-        if ctx in ('dq', 'sq') and owner in PROSE_CMDS:
+        if ctx in ('dq', 'sq') and owner in PROSE_CMDS and not piped:
             # a quoted argument of echo/printf/abort or of a judging helper: a message, a format, or a
             # regex over $OUT. Quoted anywhere else ("./$SCHEMA", "$PWD/db/schema.ts", node -e '...'),
-            # it is an operand: a read.
+            # it is an operand: a read. So is a PROSE_CMDS argument whose command's output is PIPED
+            # (`echo "./$SCHEMA" | xargs grep`, `| while read`, `| sh`): the next command reads what it
+            # prints (T-237, O1).
             continue
         reads.append(pos)
     return reads, head
@@ -388,6 +500,16 @@ for i, raw in enumerate(lines, 1):
     if cur is not None and raw.rstrip() == '}':
         cur = None
 
+# T-237 (O3): each scope function's body, measured against SCOPE_BODY_SHA.
+body_of = {}
+for i, raw in enumerate(lines, 1):
+    if fn_of.get(i) in SCOPE_BODY_SHA:
+        t = raw.strip()
+        if t and not t.startswith('#'):
+            body_of.setdefault(fn_of[i], []).append(t)
+body_sha = {fn: hashlib.sha256('\n'.join(b).encode()).hexdigest() for fn, b in body_of.items()}
+body_changed = {fn for fn, h in body_sha.items() if h != SCOPE_BODY_SHA[fn]}
+
 taken = []
 prev_cont = False
 for i, raw in enumerate(lines, 1):
@@ -395,7 +517,7 @@ for i, raw in enumerate(lines, 1):
     if l.startswith('#') or l == '':
         prev_cont = False
         continue
-    if sel_a.search(l) or sel_b.search(l) or sel_d.search(l) or prev_cont:
+    if sel_a.search(l) or sel_a.search(canon(l)) or sel_b.search(l) or sel_d.search(l) or prev_cont:
         taken.append((i, l))
         prev_cont = l.endswith('\\')
     else:
@@ -416,7 +538,7 @@ for i, l in taken:
     if norm.strip() in EXACT_LINES:
         n, scope, ecat, _ = EXACT_LINES[norm.strip()]
         exact_hits[norm.strip()].append(i)
-        cat = ecat if scope is None or CUR_FN == scope else 'EXEMPT-LINE-UNJUSTIFIED'
+        cat = ecat if scope is None or (CUR_FN == scope and scope not in body_changed) else 'EXEMPT-LINE-UNJUSTIFIED'
     elif head == 'UNSUBTRACTED':
         cat = 'HEAD-UNSUBTRACTED'
     elif any(not block_ok(a) for a in blocks):
@@ -476,9 +598,9 @@ counts = {}
 for _, c, _ in out:
     counts[c] = counts.get(c, 0) + 1
 print(f'{len(out)} line(s) taken from {path}; ' + ', '.join(f'{k} {v}' for k, v in sorted(counts.items())))
-print('  SCHEMA-WHOLE-FILE: a whole-file read of db/schema.ts in a recognised spelling that begins a shell word or sits inside double quotes (not glued in an unquoted word: BOUNDS (i)), outside prose and harness contexts (rule 1), justified line by line in WHOLE_FILE_OK (printed below the table)')
+print('  SCHEMA-WHOLE-FILE: a whole-file read of db/schema.ts in a recognised spelling (glued to other characters, or non-canonical and rewritten, included), outside prose and harness contexts (rule 1; prose piped into the next command is a read), justified line by line in WHOLE_FILE_OK (printed below the table)')
 print('  BLOCK-UNJUSTIFIED: block_count over a block name that is neither plant-named nor one of BLOCK_VARS')
-print('  EXEMPT-LINE-UNJUSTIFIED: an EXACT_LINES text outside its scope function, or matched by more lines than its count')
+print('  EXEMPT-LINE-UNJUSTIFIED: an EXACT_LINES text outside its scope function, matched by more lines than its count, or inside a scope function whose body no longer hashes to SCOPE_BODY_SHA')
 print('  HEAD-UNSUBTRACTED: a read of the COMMITTED db/schema.ts that is not subtracted from the same read of the working file (rule 3)')
 for name, desc, _ in RULES:
     print(f'  {name}: {desc}')
@@ -498,5 +620,50 @@ for i, c, l in out:
 print()
 for k in stale:
     print(f'STALE JUSTIFICATION: a WHOLE_FILE_OK key or EXACT_LINES entry matches no taken line: `{k}`')
+for fn in sorted(body_changed):
+    print(f'SCOPE BODY CHANGED: {fn}() hashes to {body_sha[fn]}, pinned {SCOPE_BODY_SHA[fn]}; its EXACT_LINES '
+          f'exemptions are withdrawn (T-237, O3)')
 print(f'FLAGGED {len(flagged)} line(s): {", ".join(str(i) for i in flagged) or "none"}')
+
+# T-237 (T-234 TL S2): what to do about each kind of red, printed for every category the run flagged, so
+# the remedy is on the screen that shows the red. gate:negative-suites repeats these lines in its failure.
+REMEDY = {
+    'SCHEMA-WHOLE-FILE-UNJUSTIFIED':
+        'count the fact inside the plant\'s own declaration (`block_count <plantExport> \'<text>\'`), or as the '
+        'plant\'s share (`$(( $(grep -cF -- \'<text>\' "$SCHEMA") - $(head_count \'<text>\') ))`), or against a name '
+        'set psql reads in the same run. Only if a whole-file search is the one honest instrument, add a '
+        'WHOLE_FILE_OK entry in scripts/gates/classify-introspect-reads.py: the KEY is the line\'s text as the '
+        'classifier normalises it (every spelling of the file written @SCHEMA@, a helper\'s description written '
+        '"<description>"); the COUNT is the number of suite lines it must match; the WHY must say why the '
+        'committed migration set cannot satisfy the search: the searched literal names a plant object, or the '
+        'expectation is read from psql in the same run (OD-246). A key matching more or fewer lines than its '
+        'count withdraws itself.',
+    'HEAD-UNSUBTRACTED':
+        'a read of the COMMITTED file (git show HEAD:..., git cat-file, head_count) is allowed only as the right '
+        'operand of $(( A - B )) whose left operand A is the same command over the working file (rule 3).',
+    'BLOCK-UNJUSTIFIED':
+        'give block_count a plant declaration (t1NN...) as its block, or, for a variable, add it to BLOCK_VARS with '
+        'a comment naming the loop that binds it to plant names only.',
+    'EXEMPT-LINE-UNJUSTIFIED':
+        'an EXACT_LINES text is exempt only inside its scope function, exactly COUNT times, and only while that '
+        'function\'s body hashes to SCOPE_BODY_SHA. Move a copy back into its function or reshape it; if you '
+        'changed block_count, head_count or rehash on purpose, re-read every exempt line in it, then re-pin '
+        'SCOPE_BODY_SHA to the value printed under SCOPE BODY CHANGED and say why in the commit.',
+    'COUNT-LITERAL-UNJUSTIFIED':
+        'derive the count as BASE_* (read from the catalogue by psql) plus the plant\'s share (OD-246); if the '
+        'literal belongs to the case\'s own mutation, add a COUNT_OK entry whose text says why the committed set '
+        'cannot change it.',
+    'UNCLASSIFIED':
+        'no rule describes the line. Prefer reshaping it into a shape a rule already classifies (block_count, the '
+        'plant\'s share, a BASE_*/psql expectation, a plant-literal regex over $OUT, a judging helper given exact '
+        'tags, an `echo "== ..."` display line). Otherwise extend the ONE predicate in RULES that describes it, '
+        'and add the shape to classify-introspect-reads.fixture as a `# control:` line, plus an `# attack:` line '
+        'for the nearest shape the widened rule must still refuse.',
+    'STALE':
+        'a WHOLE_FILE_OK key or EXACT_LINES text matches no taken line: delete the entry, or correct its text to '
+        'the line it was written for.',
+}
+seen = sorted({c.split(' (+')[0] for i, c, _ in out if i in flagged})
+for c in seen + (['STALE'] if stale else []):
+    print(f'REMEDY {c}: {REMEDY[c]}')
 sys.exit(1 if flagged or stale else 0)
