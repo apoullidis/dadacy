@@ -268,3 +268,15 @@ fact "Q28" "$(grep -c t153Money db/s{c,}hema.ts)" 1
 fact "Q29" "$(grep -c t153Money d{b,}/schema.ts)" 1
 # control: C10 an escaped-dot regex naming the file, the quoted argument of a judging helper (prose)
 check K999 "C10 t153Money" PASS 'db/schema\.ts: byte-identical to a fresh introspection'
+# Top-level twins of Q17-Q20 (T-237 rework 1): no $( ) around them, so the compound-pipe and redirect rules
+# are the only thing that can catch each.
+# attack: Q17t a { } group piped, top level
+{ echo "./$SCHEMA"; } | xargs grep -c t153Money
+# attack: Q18t a ( ) subshell piped, top level
+( echo "./$SCHEMA" ) | xargs grep -c t153Money
+# attack: Q19t a for loop's echo, piped after done, top level
+for s in x; do echo "./$SCHEMA"; done | xargs grep -c t153Money
+# attack: Q19u an if body's echo, piped after fi, top level
+if true; then echo "./$SCHEMA"; fi | xargs grep -c t153Money
+# attack: Q20t echo redirected into a process substitution, top level
+echo "./$SCHEMA" > >(xargs grep -c t153Money)
