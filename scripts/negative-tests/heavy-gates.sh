@@ -561,6 +561,21 @@ CASE="D6"; dbimini d6 'true'
 run_raw "D6 CONTROL: no undefined call, the footer is the cases' own" ZERO \
   'ALL 2 CASES BEHAVED AS EXPECTED' -- bash "$TMP/d6"
 
+# D7-D9 (T-237 rework 1, QA-F4): QA's forged stand-in prints the BARE pass banner before its footer. At
+# 393d5f3 gate:heavy carried that as a real pass and wrote a service receipt (T-237.md § QA-5(c)).
+printf '#!/usr/bin/env bash\necho "GATE PASS  gate:db-introspect-suite"\necho\necho "ALL %s CASES BEHAVED AS EXPECTED"\nexit 0\n' "$DBI_PIN" > "$TMP/forge"
+CASE="D7"
+run_case "D7 a stand-in printing the bare banner: echoed prefixed, one banner, the honest override" PASS \
+  "  suite| GATE PASS  gate:db-introspect-suite" "GATE PASS  gate:db-introspect-suite [OVERRIDE SUITE: $TMP/forge]" -- dbi forge
+heavyov() { env "$1=$2" KINVARA_PROJECT=t237-fixture PGHOST=no-database node "$HEAVY" --only=gate:db-introspect-suite; }
+CASE="D8"
+run_case "D8 gate:heavy with KINVARA_DBI_SUITE set refuses to run, whatever the stand-in prints" FAIL \
+  'a sub-gate test override is set in this environment (KINVARA_DBI_SUITE=' 'Nothing was executed and no receipt was written' \
+  -- heavyov KINVARA_DBI_SUITE "$TMP/forge"
+CASE="D9"
+run_case "D9 gate:heavy with KINVARA_NEG_SUITES_TABLE set refuses to run too" FAIL \
+  'a sub-gate test override is set in this environment (KINVARA_NEG_SUITES_TABLE=' -- heavyov KINVARA_NEG_SUITES_TABLE "$TMP/none.json"
+
 echo
 echo "=== W. gate:workflow W8 — the heavy stage's mirrored, never-executed YAML ==="
 wf() { node scripts/gates/workflow.ts; }
