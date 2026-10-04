@@ -110,8 +110,12 @@
  *                        permits it. The database-side half is db-testkit's `rewrite-rules` suite, which
  *                        refuses any rule in the application schemas after every migration has run. A view's
  *                        own `_RETURN` rule comes from `CREATE VIEW` and is not this rule's; `DROP RULE` and
- *                        `ALTER RULE … RENAME` are not refused. Like every rule here, a statement assembled
- *                        from pieces at run time (`format()`, concatenation) is not read as one.
+ *                        `ALTER RULE … RENAME` are not refused. An escape string (`E'CREATE\\nRULE …'`,
+ *                        `\\x52`, octal, `\\u0052`) is decoded before it is read (rework 1, QA-F3). Like every
+ *                        rule here, a statement assembled from pieces at run time (`format()` with the
+ *                        keyword as an argument, concatenation) is not read as one, and a `U&'…'` string
+ *                        constant is not decoded. Any text that spells `CREATE RULE`, a `COMMENT ON`
+ *                        string included, is refused: a false refusal, never a false pass (QA-O2).
  *   [R-APPEND-ONLY]      no UPDATE, DELETE, TRUNCATE or ALL is granted on `audit_log`,
  *                        `case_note` or `decision_record`, on a table named after one with an
  *                        underscore suffix (a partition), or on `ALL TABLES IN SCHEMA`
@@ -212,7 +216,8 @@
  * comments, nested block comments, `'…'` strings (with a backslash escape only after an `E`
  * prefix), `"…"` identifiers and `$tag$…$tag$` bodies. A dollar body is lexed again as SQL
  * for the content rules, because a function body is SQL. A single-quoted string is scanned
- * as raw text, because it may be dynamic SQL passed to EXECUTE. Errors in either direction
+ * as raw text, because it may be dynamic SQL passed to EXECUTE; an `E'…'` escape string is first
+ * decoded as PostgreSQL decodes it (T-237 rework 1, QA-F3, `decodeEscapeString`). Errors in either direction
  * produce a false FAIL, never a false PASS.
  *
  * (T-227, OD-235) A Unicode-escaped identifier, `U&"…"` with an optional `UESCAPE '<c>'`, is decoded
@@ -502,6 +507,30 @@ function newlines(s: string): number {
   return s.split('\n').length - 1;
 }
 
+/**
+ * T-237 rework 1 (QA-F3). PostgreSQL's escape-string decoding (`E'…'`, standard_conforming_strings on):
+ * `\\b \\f \\n \\r \\t`, `\\o`, `\\oo`, `\\ooo` (octal), `\\xh`, `\\xhh` (hex), `\\uXXXX`,
+ * `\\UXXXXXXXX`, and any other `\\c` as `c`. A malformed Unicode escape is left as written (PostgreSQL
+ * refuses it at apply time). `''` is left for the reader to fold, as in a standard string.
+ */
+export function decodeEscapeString(body: string): string {
+  const simple: Readonly<Record<string, string>> = { b: '\b', f: '\f', n: '\n', r: '\r', t: '\t' };
+  return body.replace(
+    /\\(?:([bfnrt])|([0-7]{1,3})|x([0-9A-Fa-f]{1,2})|u([0-9A-Fa-f]{4})|U([0-9A-Fa-f]{8})|([\s\S]))/g,
+    (_m, s1?: string, oct?: string, hex?: string, u4?: string, u8?: string, other?: string) => {
+      if (s1 !== undefined) return simple[s1] ?? s1;
+      if (oct !== undefined) return String.fromCodePoint(parseInt(oct, 8) & 0xff);
+      if (hex !== undefined) return String.fromCodePoint(parseInt(hex, 16));
+      const cp = u4 ?? u8;
+      if (cp !== undefined) {
+        const n = parseInt(cp, 16);
+        return n <= 0x10ffff ? String.fromCodePoint(n) : _m;
+      }
+      return other ?? '';
+    },
+  );
+}
+
 export function lex(sql: string): Lexed {
   const segments: Segment[] = [];
   const n = sql.length;
@@ -582,7 +611,10 @@ export function lex(sql: string): Lexed {
       }
       if (!closed) return unterminated('string literal', line);
       const text = sql.slice(i, j + 1);
-      segments.push({ kind: 'string', text, body: text.slice(1, -1), line });
+      // T-237 rework 1 (QA-F3): an escape string's body is DECODED as PostgreSQL decodes it, so dynamic
+      // SQL spelled with escapes (`EXECUTE E'CREATE\\nRULE …'`) is read as the statement it becomes.
+      const raw = text.slice(1, -1);
+      segments.push({ kind: 'string', text, body: escapes ? decodeEscapeString(raw) : raw, line });
       line += newlines(text);
       i = j + 1;
       continue;
