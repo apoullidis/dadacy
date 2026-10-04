@@ -106,19 +106,25 @@
 # rehash() also reads and rewrites the whole file: that is the tamper itself, and nothing is judged from it.
 # gate:negative-suites runs that classifier over this file on every run, with no database. It goes red
 # on: an unjustified whole-file read in a spelling the classifier recognises ($SCHEMA, ${SCHEMA...}, the
-# literal path, a glob under db/) where that spelling begins a shell word or sits inside double quotes,
-# outside a message; a read of the committed file not subtracted from the same read of the working file;
-# a copied or out-of-scope exemption; or an unclassifiable line. What it is measured to catch is exactly
-# its fixture (scripts/gates/classify-introspect-reads.fixture). It does NOT see a path assembled from
-# pieces, an alias through another name or a copy, eval, a command held in a variable, or a read split
-# across a backslash continuation: those are caught only when the line judging the result is
-# unclassifiable. Nor does it see (T-237 owns the fixes): (i) a spelling glued to preceding characters
-# in an unquoted word (`<"$SCHEMA"`, `<$SCHEMA`, `$(<"$SCHEMA")`, unquoted $PWD/db/schema.ts,
-# "$REPO_ROOT"/db/schema.ts, ../app/db/schema.ts, an absolute path); (ii) a path quoted as an argument of
-# echo/printf/abort or a judging helper, even when that output is piped into a command that reads it;
-# (iii) db//schema.ts, db/./schema.ts, db/schema.{ts,}; (iv) a helper body that rebinds its arguments
-# before an exempt line. Bounds: the classifier's docstring and tasks/state/EP-2/T-234.md. See the BASE
-# block below.
+# literal path, a glob under db/), wherever it sits in a word (glued to preceding characters, as in
+# `<"$SCHEMA"` or ../app/db/schema.ts, included) and after a non-canonical spelling (db//schema.ts,
+# db/./schema.ts, db/schema.{ts,}) is rewritten, outside a message whose output is not piped into another
+# command; a read of the committed file not subtracted from the same read of the working file; a copied
+# or out-of-scope exemption, or an exempt line in block_count, head_count or rehash whose whole body no
+# longer matches its pin; or an unclassifiable line. Each red prints what to do (REMEDY). What it is
+# measured to catch is exactly its fixture (scripts/gates/classify-introspect-reads.fixture), plus the body
+# pin, held by gate:pr-gate-suite's B19 (T-237). It does NOT see a path assembled from pieces, an alias
+# through another name or a copy (a function wrapping block_count included), eval, a command held in a
+# variable, a read split across a backslash continuation, a brace range or a glob inside a brace list, or
+# a message written to a file that a later line reads: those are caught only when a line involved is
+# unclassifiable. Bounds: the classifier's docstring and tasks/state/EP-2/T-237.md. See the BASE block
+# below.
+#
+# T-237 (OD-267): a call of a command that does not exist (a case placed before its helper is defined, a
+# misspelt helper) is counted at the footer as one more case, and a BAD one, by command_not_found_handle;
+# before T-237 it printed `command not found` and the footer stayed green over one case fewer. And
+# gate:db-introspect-suite holds the footer's case count against the pin in gate:negative-suites, so a case
+# skipped in any other way is red there too.
 #
 #   cd /home/alex/projects/nanny/app && ./scripts/svc run <ticket> -- bash scripts/negative-tests/db-introspect.sh
 #
@@ -163,6 +169,17 @@ PART_FIXTURE=scripts/negative-tests/db-introspect-partitioned.sql
 OUT=$(mktemp)
 total=0
 bad=0
+# T-237 (OD-267): an undefined command is a misbehaving case, never a silent skip. bash runs
+# command_not_found_handle in a subshell, so it cannot add to $bad: it records the name in $UNDEFINED, and
+# the footer counts each record as one more case and one more BAD. It prints to stderr because inside
+# $( ) standard output is the value being captured. A child process (`bash -c`, `node`) does not inherit
+# the function, so a missing command THERE is that process's own exit status, as before.
+UNDEFINED=$(mktemp)
+command_not_found_handle() {
+  printf '%s\n' "$1" >>"$UNDEFINED"
+  printf 'BAD  %s: command not found; counted as a misbehaving case at the footer (OD-267)\n' "$1" >&2
+  return 127
+}
 echo "highest committed migration $HIGHEST; plants are numbered $NEXT"
 
 record() {
@@ -272,7 +289,7 @@ restore() {
 #
 # restore_tree aborts (exit 2) when the tree does not come back clean, so "restored", "could not
 # restore" and "was never touched" stay three distinguishable outcomes from inside a trap too.
-trap 'restore_tree; rm -f "$OUT" "$OUT".*' EXIT
+trap 'restore_tree; rm -f "$OUT" "$OUT".* "$UNDEFINED"' EXIT
 trap 'echo; echo "INTERRUPTED (SIGINT) — restoring the working tree"; restore_tree; trap - EXIT; exit 130' INT
 trap 'echo; echo "TERMINATED (SIGTERM) — restoring the working tree"; restore_tree; trap - EXIT; exit 143' TERM
 
@@ -2346,6 +2363,14 @@ plant "$DOWN" "DROP TABLE public.t206_range;"
 check K192 "(T-206) tstzrange[] is not tstzrange: the map matches the exact type, so an array of the mapped type fails" I-MAP "column \"rs\" has database type 'tstzrange\[\]'"
 
 echo
+# T-237 (OD-267): every call of an undefined command is one more case, and a BAD one.
+undefined=$(grep -c . "$UNDEFINED")
+if [ "$undefined" -gt 0 ]; then
+  echo "BAD  OD-267  $undefined call(s) of a command that does not exist, each counted as one misbehaving case:"
+  sed 's/^/       /' "$UNDEFINED"
+  total=$((total + undefined))
+  bad=$((bad + undefined))
+fi
 if [ "$bad" -eq 0 ]; then
   echo "ALL $total CASES BEHAVED AS EXPECTED"
   exit 0
