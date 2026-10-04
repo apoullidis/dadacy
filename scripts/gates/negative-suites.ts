@@ -127,7 +127,10 @@ const SUITES: readonly Suite[] = [
     // 374 -> 382, 2026-10-04, T-237: eight cases CW1-CW8 for R-RULE (five CREATE RULE plants, three controls).
     // No older case touched. CW1-CW5 were BAD against the previous lint (`!! 5 of 382` at e4d71c6); footer
     // `ALL 382 CASES BEHAVED AS EXPECTED` at 4e8c507 — T-237.md, ML-REDFIRST / ML-GREEN.
-    cases: 382,
+    // 382 -> 387, 2026-10-04, T-237 rework 1 (QA-F3): CW9-CW13, escape-string spellings of CREATE RULE
+    // (four refusals) and a standard-string control. CW9-CW12 BAD against the previous lint (`!! 4 of 387` at
+    // dea2f2f); footer `ALL 387 CASES BEHAVED AS EXPECTED` at 49bedfa — T-237.md § Rework 1.
+    cases: 387,
     state: 'GREEN',
     why: 'gate:migration-lint: expand/contract, protected objects (the I-5 objects since T-186, 0011\'s since T-192), R-TRIGGER-BYPASS by name, R-PROTECTED-RENAME, R-ADMIN-MEMBERSHIP, R-PROTECTED-TABLE, R-PROTECTED-EXTENSION, U&"…" decoding, R-ROLE-SWITCH, R-RUN-AS, R-MERGED, R-TRAILER, R-VENDOR-SQL, R-RESTORE-PUBLIC, R-RULE (T-021, T-031, T-167, T-186, T-192, T-227, T-241, T-237)',
   },
@@ -273,7 +276,10 @@ const SUITES: readonly Suite[] = [
     // 39 -> 46, 2026-10-04, T-237 (OD-267): section D, D0-D6 (gate:db-introspect-suite's footer held
     // against db-introspect's pin, and the suite's own undefined-command handler). Taken from the suite's
     // own footer at 639fd31, `ALL 46 CASES BEHAVED AS EXPECTED` (tasks/state/EP-2/T-237.md, HG-639fd31).
-    cases: 46,
+    // 46 -> 49, 2026-10-04, T-237 rework 1 (QA-F4): D7-D9 (a stand-in forging the bare banner; gate:heavy
+    // under KINVARA_DBI_SUITE and KINVARA_NEG_SUITES_TABLE). `!! 3 of 49` against the previous gates at
+    // f86d3be; footer `ALL 49 CASES BEHAVED AS EXPECTED` at 8a851a4 — T-237.md § Rework 1.
+    cases: 49,
     state: 'GREEN',
     why: "gate:heavy: the roster held against SD §QD-4's heavy row, the cross-file anchor on the PR roster's SERVICE class, the evidence anchors, the receipt coverage rule, and gate:workflow's W8 (T-006)",
   },

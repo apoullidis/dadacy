@@ -107,18 +107,21 @@
 # gate:negative-suites runs that classifier over this file on every run, with no database. It goes red
 # on: an unjustified whole-file read in a spelling the classifier recognises ($SCHEMA, ${SCHEMA...}, the
 # literal path, a glob under db/), wherever it sits in a word (glued to preceding characters, as in
-# `<"$SCHEMA"` or ../app/db/schema.ts, included) and after a non-canonical spelling (db//schema.ts,
-# db/./schema.ts, db/schema.{ts,}) is rewritten, outside a message whose output is not piped into another
-# command; a read of the committed file not subtracted from the same read of the working file; a copied
-# or out-of-scope exemption, or an exempt line in block_count, head_count or rehash whose whole body no
-# longer matches its pin; or an unclassifiable line. Each red prints what to do (REMEDY). What it is
-# measured to catch is exactly its fixture (scripts/gates/classify-introspect-reads.fixture), plus the body
-# pin, held by gate:pr-gate-suite's B19 (T-237). It does NOT see a path assembled from pieces, an alias
-# through another name or a copy (a function wrapping block_count included), eval, a command held in a
-# variable, a read split across a backslash continuation, a brace range or a glob inside a brace list, or
-# a message written to a file that a later line reads: those are caught only when a line involved is
-# unclassifiable. Bounds: the classifier's docstring and tasks/state/EP-2/T-237.md. See the BASE block
-# below.
+# `<"$SCHEMA"` or ../app/db/schema.ts, included) and after a non-canonical spelling is rewritten
+# (db//schema.ts, db/./schema.ts, db/x/../schema.ts, a brace list one of whose expansions is the file, an
+# escaped letter, a glob whose last two components match db/schema.ts such as */schema.ts); outside a
+# message no other command on the same line reads (an echo piped directly or through a { } group, ( )
+# subshell or do/done body, run inside $( ), <( ) or >( ), or redirected into >( ) is a read); a read of the
+# committed file not subtracted from the same read of the working file; a copied or out-of-scope exemption,
+# or an exempt line in block_count, head_count or rehash whose whole body no longer matches its pin; or an
+# unclassifiable line. Each red prints what to do (REMEDY). What it is measured to catch is exactly its
+# fixture (scripts/gates/classify-introspect-reads.fixture), plus the body pin, held by gate:pr-gate-suite's
+# B19 (T-237). It does NOT see: a path assembled from pieces, quote-split ('db'/schema.ts) or a brace range;
+# an alias through another name or a copy; a function wrapping block_count, or one shadowing a command its
+# body calls (awk, grep); eval or a command held in a variable; a top-level echo whose output goes to a file
+# a later line reads, or whose pipe is on the next physical line. The echo lines of the last two are
+# flagged only because they are unclassifiable. Bounds: the classifier's docstring and
+# tasks/state/EP-2/T-237.md § Rework 1. See the BASE block below.
 #
 # T-237 (OD-267): a call of a command that does not exist (a case placed before its helper is defined, a
 # misspelt helper) is counted at the footer as one more case, and a BAD one, by command_not_found_handle;
