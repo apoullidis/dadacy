@@ -106,12 +106,13 @@
  *     That wait is not belt-and-braces. WHETHER BUSYBOX ASH STAYS DEPENDS ON
  *     WHAT FOLLOWS THE APPLICATION IN THE SCRIPT, not on whether the script
  *     has an operator in it (T-185, OD-210, measured in kinvara/core:dev —
- *     state/EP-1/T-185.md § E1/§ E3). ash EXECS the last command it runs when
- *     nothing follows it, so the application IS this process's direct child
- *     for `VAR=value cmd`, `exec cmd`, `cd /app && cmd`, `true ; cmd`,
- *     `(cmd)` and `cmd > file`. ash STAYS, with the application as its child,
- *     when something follows the application or it is one end of a pipe:
- *     `cmd ; true`, `cmd && true`, `cmd || true`, `cmd | cat`, `cmd & wait`.
+ *     state/EP-1/T-185.md § E1/§ E3; a list of measured shapes, not a rule).
+ *     ash EXEC'D the application, so it IS this process's direct child, for
+ *     `VAR=value cmd`, `exec cmd`, `cd /app && cmd`, `true ; cmd`, `(cmd)` and
+ *     `cmd > file`. ash STAYED, with the application as its child, for
+ *     `cmd ; true`, `cmd && true`, `cmd || true`, `cmd | cat`, `cmd & wait`
+ *     and `cmd ; node -e 0` — something followed the application, or it was
+ *     one end of a pipe.
  *     T-151 said "a compound script is not exec'd" and that was false for the
  *     first list (it put `&&` and `;` in the wrong one). When ash stays it
  *     TAKES the forwarded SIGTERM itself and exits `sig=SIGTERM` while the
@@ -154,7 +155,8 @@
  *     real image: state/EP-1/T-180.md § Evidence E1/E4. WHAT IS STILL LEFT,
  *     AND IS NOT T-180's: a zombie is still counted as alive, so a clean
  *     drain that leaves one keeps the container up until the deadline rather
- *     than exiting when the drain ends — and on the shell path reports 143.
+ *     than exiting when the drain ends — and, where the shell STAYS, reports
+ *     143.
  *     Reading /proc/<pid>/stat and treating state Z as gone would end both;
  *     it is a second mechanism change (OD-196's trigger). What IS bounded:
  *     every shape in the EXEC list above leaves no shell — the direct child
@@ -601,11 +603,10 @@ function runReal(script) {
       // ON THE SHELL PATH THIS PROCESS DOES NOT KNOW WHOSE DEATH IT SAW, so the
       // line does not say (T-181 rework 1, OD-209). The direct child is /bin/sh
       // — unless the shell exec'd a command in its place, and then it IS that
-      // command: busybox ash execs the last command it runs when nothing
-      // follows it, so for `VAR=value cmd` or `exec cmd` that is the start
-      // command and for `cd /app && node app.js` it is `node app.js`, the LAST
-      // command of the list and not the whole script (T-185, OD-210; the
-      // header's EXEC list). Nothing here checks which happened. T-181's line
+      // command: busybox ash did that, measured, for `VAR=value cmd` and
+      // `exec cmd` (the start command) and for `cd /app && node app.js` (its
+      // LAST command, `node app.js`, not the whole script) — T-185, OD-210;
+      // the header's exec'd/stayed lists. Nothing here checks which happened. T-181's line
       // said "or, if the shell exec'd, the start command itself", which named
       // one candidate too few (QA2-1 on T-181); rework 0's said "for the SHELL,
       // because this process cannot see the application's own exit status",
