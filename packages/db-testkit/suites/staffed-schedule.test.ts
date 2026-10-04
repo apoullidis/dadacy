@@ -440,6 +440,85 @@ describe('0023 — V1: no two intervals of one version overlap (SD 3180, the EXC
   });
 });
 
+describe('0023 — V1 and ON CONFLICT (rework 1, QA-F1): what an arbiter does to an overlapping interval', () => {
+  const overlapCount = `SELECT 'overlapping pairs in version B: ' || count(*) FROM public.staffed_interval a
+     JOIN public.staffed_interval b ON a.version_id = b.version_id AND a.id < b.id AND a.span && b.span
+    WHERE a.version_id = ${q(VER_B)}`;
+
+  test('NOT HELD — app_rw INSERT … ON CONFLICT DO NOTHING (no target) of a span overlapping an existing interval: NO error, the row is silently skipped (INSERT 0 0)', async () => {
+    const r = await asLogin(
+      LOGINS.app_rw,
+      readInterval(INT_A1),
+      `${interval(ulid('OCN1'), VER_A, span('2026-10-02T22:00:00Z', '2026-10-03T01:00:00Z'))} ON CONFLICT DO NOTHING`,
+      `SELECT 'skipped row present: ' || count(*) FROM public.staffed_interval WHERE id = ${q(ulid('OCN1'))}`,
+    );
+    assertPermitted('targetless ON CONFLICT DO NOTHING', r);
+    assertRead('targetless ON CONFLICT DO NOTHING', r, INTERVAL_PRESENT(INT_A1));
+    assertRead('targetless ON CONFLICT DO NOTHING', r, 'INSERT 0 0');
+    assertRead('targetless ON CONFLICT DO NOTHING', r, 'skipped row present: 0');
+  });
+
+  test(`NOT HELD — app_rw INSERT … ON CONFLICT ON CONSTRAINT ${'staffed_interval_version_id_span_excl'} DO NOTHING: the same silent skip`, async () => {
+    const r = await asLogin(
+      LOGINS.app_rw,
+      `${interval(ulid('OCN2'), VER_A, span('2026-10-02T12:00:00Z', '2026-10-02T13:00:00Z'))} ON CONFLICT ON CONSTRAINT ${EXCL} DO NOTHING`,
+    );
+    assertPermitted('exclusion-targeted ON CONFLICT DO NOTHING', r);
+    assertRead('exclusion-targeted ON CONFLICT DO NOTHING', r, 'INSERT 0 0');
+  });
+
+  test("NOT HELD — Q2's shape with ON CONFLICT DO NOTHING: three new rows, two overlapping each other, land 2 of 3 with no error; V1 still holds (no overlapping pair is stored)", async () => {
+    const r = await asLogin(
+      LOGINS.app_rw,
+      `INSERT INTO public.staffed_interval (id, version_id, span)
+       SELECT i, ${q(VER_B)}, tstzrange(s, e, '[)')
+         FROM unnest(ARRAY[${q(ulid('OCQ1'))}, ${q(ulid('OCQ2'))}, ${q(ulid('OCQ3'))}]::char(26)[],
+                     ARRAY['2027-04-02T10:00:00Z', '2027-04-02T11:00:00Z', '2027-04-02T14:00:00Z']::timestamptz[],
+                     ARRAY['2027-04-02T12:00:00Z', '2027-04-02T13:00:00Z', '2027-04-02T15:00:00Z']::timestamptz[]) AS t(i, s, e)
+       ON CONFLICT DO NOTHING`,
+      `SELECT 'version B rows: ' || count(*) FROM public.staffed_interval WHERE version_id = ${q(VER_B)}`,
+      overlapCount,
+    );
+    assertPermitted('partial landing', r);
+    assertRead('partial landing', r, 'INSERT 0 2');
+    assertRead('partial landing', r, 'version B rows: 2');
+    assertRead('partial landing', r, 'overlapping pairs in version B: 0');
+  });
+
+  test('app_rw INSERT … ON CONFLICT (id) DO NOTHING of an overlapping span under a NEW id is still REFUSED by the exclusion constraint (23P01): the id arbiter does not arbitrate the EXCLUDE', async () => {
+    const r = await asLogin(
+      LOGINS.app_rw,
+      readInterval(INT_A1),
+      `${interval(ulid('OCID'), VER_A, span('2026-10-02T22:00:00Z', '2026-10-03T01:00:00Z'))} ON CONFLICT (id) DO NOTHING`,
+    );
+    assertRead('ON CONFLICT (id), new id', r, INTERVAL_PRESENT(INT_A1));
+    assertRefusedBy('ON CONFLICT (id), new id', r, EXCL_23P01, EXCL_FIELD);
+  });
+
+  test('CONTROL — app_rw retrying an existing interval exactly (same id, same span) with ON CONFLICT (id) DO NOTHING: INSERT 0 0, no error (an idempotent retry)', async () => {
+    const r = await asLogin(
+      LOGINS.app_rw,
+      readInterval(INT_A1),
+      `${interval(INT_A1, VER_A, SPAN_A1)} ON CONFLICT (id) DO NOTHING`,
+      readInterval(INT_A1),
+    );
+    assertPermitted('exact retry', r);
+    assertRead('exact retry', r, 'INSERT 0 0');
+    assertRead('exact retry', r, INTERVAL_PRESENT(INT_A1));
+  });
+
+  test('ON CONFLICT … DO UPDATE cannot target the exclusion constraint (42809), as app_rw', async () => {
+    assertRefusedBy(
+      'DO UPDATE on the exclusion',
+      await asLogin(
+        LOGINS.app_rw,
+        `${interval(ulid('OCDU'), VER_A, SPAN_A1)} ON CONFLICT ON CONSTRAINT ${EXCL} DO UPDATE SET span = EXCLUDED.span`,
+      ),
+      'ERROR:  42809: ON CONFLICT DO UPDATE not supported with exclusion constraints',
+    );
+  });
+});
+
 describe('0023 — the span shape: staffed_interval_span_shape (OE-31 U-15 (a), OE-77)', () => {
   for (const [label, literal] of [
     ["'empty'", `'empty'::tstzrange`],
