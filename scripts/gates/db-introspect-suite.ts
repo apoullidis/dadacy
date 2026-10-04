@@ -58,8 +58,11 @@
  * `KINVARA_DBI_SUITE=<path>` replaces the suite with another script, for the cases in
  * scripts/negative-tests/heavy-gates.sh that attack this judgement without a database (the same
  * convention as gate:negative-suites' KINVARA_NEG_SUITES_TABLE). Every banner of such a run says
- * `[OVERRIDE SUITE: <path>]`, so it can never be read as, or carried by gate:heavy as, a real pass:
- * gate:heavy requires the exact line `GATE PASS  gate:db-introspect-suite`.
+ * `[OVERRIDE SUITE: <path>]`. That alone did not keep it out of gate:heavy: a stand-in that PRINTED the
+ * bare banner had it echoed and carried as a real pass, with a receipt (T-237 QA-F4). Two mechanisms now
+ * close that, each sufficient: every line of the suite this gate echoes is prefixed `  suite| `, so no
+ * echoed line is a banner; and gate:heavy refuses to run at all while KINVARA_DBI_SUITE (or any sub-gate
+ * test override it lists) is set. heavy-gates.sh D7 and D8 attack both.
  *
  * THE SUITE REFUSES A DIRTY TREE, and so this gate does. That is not a
  * preference — the suite plants migrations and deletes db/schema.ts, and
@@ -201,7 +204,16 @@ const secs = Math.round((Date.now() - started) / 100) / 10;
 const green = /^ALL (\d+) CASES BEHAVED AS EXPECTED$/m.exec(text);
 const red = /^!! (\d+) of (\d+) cases misbehaved$/m.exec(text);
 
-console.log(text.trimEnd().split('\n').slice(-6).join('\n'));
+// T-237 (QA-F4): every echoed suite line carries a prefix, so nothing the suite prints (a stand-in's
+// forged `GATE PASS  gate:db-introspect-suite` included) can be read as this gate's own banner.
+console.log(
+  text
+    .trimEnd()
+    .split('\n')
+    .slice(-6)
+    .map((l) => `  suite| ${l}`)
+    .join('\n'),
+);
 
 if (green === null && red === null) {
   console.error(

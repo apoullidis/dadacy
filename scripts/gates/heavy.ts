@@ -328,6 +328,25 @@ function judge(entry: HeavyEntry, o: Observation): string[] {
   return problems;
 }
 
+// ===================================== 0. no sub-gate test override (T-237 QA-F4)
+/**
+ * A sub-gate's TEST OVERRIDE swaps the thing it judges for a stand-in, so a stand-in that prints a bare
+ * pass banner made a forged `GATE PASS  gate:heavy` and wrote a service receipt for the tree (T-237
+ * QA-5(c)). gate:heavy therefore refuses to run at all, and so writes no receipt, while any of them is set
+ * in its environment, whatever the stand-in prints. A new override in a sub-gate belongs in this list.
+ */
+const TEST_OVERRIDES = ['KINVARA_DBI_SUITE', 'KINVARA_NEG_SUITES_TABLE'] as const;
+const overridesSet = TEST_OVERRIDES.filter((v) => (process.env[v] ?? '') !== '');
+if (overridesSet.length > 0) {
+  console.error('GATE FAIL  gate:heavy — 1 problem(s):');
+  console.error(
+    `  - a sub-gate test override is set in this environment (${overridesSet.map((v) => `${v}=${process.env[v] ?? ''}`).join(', ')}). ` +
+      'An override replaces what a sub-gate judges with a stand-in, so no verdict of this run could be a real one. ' +
+      'Nothing was executed and no receipt was written. Unset it and run gate:heavy again (T-237 QA-F4).',
+  );
+  exitFlushed(1);
+}
+
 // ============================================================ 1. the roster
 const failures: string[] = [];
 for (const p of heavyRosterProblems()) failures.push(`roster: ${p}`);
