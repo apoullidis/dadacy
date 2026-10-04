@@ -515,12 +515,20 @@ function checkReads(s: Suite, abs: string): string[] {
     const shown = [...suFlagged]
       .slice(0, 12)
       .map((n) => `line ${String(n)}: ${rows.get(n) ?? '?'}`);
-    const stale = su.out.split('\n').filter((l) => l.startsWith('STALE JUSTIFICATION'));
+    const stale = su.out
+      .split('\n')
+      .filter((l) => l.startsWith('STALE JUSTIFICATION') || l.startsWith('SCOPE BODY CHANGED'));
+    // T-237 (T-234 TL S2): the classifier's own REMEDY line for each category it flagged, verbatim, so
+    // the red says what to do and not only where.
+    const remedies = su.out.split('\n').filter((l) => l.startsWith('REMEDY '));
     problems.push(
       `${s.id}: ${s.file} has ${String(suFlagged.size)} read(s) the read-classifier flags (exit ${String(su.code)}): ` +
         `${[...shown, ...stale].join('; ') || '(see the classifier output)'}. Every whole-file read of db/schema.ts ` +
         `needs a written justification in ${rc.script}'s WHOLE_FILE_OK, every read of the committed file must be ` +
-        `subtracted from the same read of the working file, and every line must be classifiable (T-232 § Rework 2, T-234).`,
+        `subtracted from the same read of the working file, and every line must be classifiable (T-232 § Rework 2, T-234).` +
+        (remedies.length > 0
+          ? `\n      ${remedies.join('\n      ')}`
+          : `\n      (the classifier printed no REMEDY line; read ${rc.script}'s docstring)`),
     );
   }
   if (problems.length === 0) {
@@ -534,7 +542,7 @@ function checkReads(s: Suite, abs: string): string[] {
 
 /**
  * THE DIFFERENTIAL HARNESS (the convention T-036 set for this repo, and the
- * reason this gate has EIGHTEEN cases against it — B0..B17 in
+ * reason this gate has TWENTY-ONE cases against it — B0..B20 in
  * scripts/negative-tests/pr-gates.sh — instead of one green run).
  *
  * A full pass of the real suites is 290.4s at 8c35307 — the six

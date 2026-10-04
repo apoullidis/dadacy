@@ -452,6 +452,33 @@ CASE="B17"; table "$(dbi_entry scripts/negative-tests/db-introspect.sh "\"readCl
 run_case "B17 a read-classifier that stopped flagging is caught by its fixture" FAIL \
   'the read-classifier no longer flags' -- runneg
 
+# T-237. B18: TL-F1's glued spelling (`<"$SCHEMA"`, a plant in the pattern), which T-234's classifier filed
+# PLANT-LITERAL and exited 0 on; the red must carry the classifier's REMEDY for the category.
+{ cat scripts/negative-tests/db-introspect.sh; printf '%s\n' "fact \"T-237 G1\" \"\$(grep -c 't153Money' <\"\$SCHEMA\")\" 1"; } > "$TMP/dbi-plus-g1.sh"
+B18_LINE="$(wc -l < "$TMP/dbi-plus-g1.sh" | tr -d ' ')"
+CASE="B18"; table "$(dbi_entry "$TMP/dbi-plus-g1.sh" "$RC")" >/dev/null
+run_case "B18 TL-F1: a glued spelling (<\"\$SCHEMA\") is a read, and the red says what a justification needs" FAIL \
+  "line ${B18_LINE}: SCHEMA-WHOLE-FILE-UNJUSTIFIED" 'REMEDY SCHEMA-WHOLE-FILE-UNJUSTIFIED:' \
+  'the COUNT is the number of suite lines it must match' -- runneg
+
+# B19: O3, T-234 tech-lead TL-3's probe byte for byte: block_count's body rebinds its arguments before its
+# exempt lines. The body pin withdraws the exemption (the exempt lines themselves are unchanged).
+awk '{ print } /^  if \[ "\$1" = -x \]; then x=x; shift; fi$/ && !d { print "  [ \"$1\" = t153Money ] && set -- accountRole \"$2\""; d = 1 }' \
+  scripts/negative-tests/db-introspect.sh > "$TMP/dbi-o3.sh"
+[ "$(diff scripts/negative-tests/db-introspect.sh "$TMP/dbi-o3.sh" | grep -c '^>')" -eq 1 ] &&
+  grep -qxF '  [ "$1" = t153Money ] && set -- accountRole "$2"' "$TMP/dbi-o3.sh" ||
+  { echo "HARNESS ERROR: B19's rebinding line did not land in block_count"; exit 2; }
+CASE="B19"; table "$(dbi_entry "$TMP/dbi-o3.sh" "$RC")" >/dev/null
+run_case "B19 O3: a block_count body that rebinds its arguments withdraws its exempt lines" FAIL \
+  'SCOPE BODY CHANGED: block_count()' 'EXEMPT-LINE-UNJUSTIFIED' 'REMEDY EXEMPT-LINE-UNJUSTIFIED:' -- runneg
+
+# B20: a line no rule classifies (T-234 TL-1's T1, a harmless display of the path) is red, and the red
+# says how to make it classifiable.
+{ cat scripts/negative-tests/db-introspect.sh; printf '%s\n' 'echo "regenerating $SCHEMA"'; } > "$TMP/dbi-plus-t1.sh"
+CASE="B20"; table "$(dbi_entry "$TMP/dbi-plus-t1.sh" "$RC")" >/dev/null
+run_case "B20 an unclassifiable line is red, with the classifier's remedy for it" FAIL \
+  'UNCLASSIFIED' 'REMEDY UNCLASSIFIED:' 'classify-introspect-reads.fixture as a `# control:` line' -- runneg
+
 echo
 echo "=== C. gate:unit-tests — OD-57 and OD-3 ==="
 UT=scripts/gates/unit-tests.ts

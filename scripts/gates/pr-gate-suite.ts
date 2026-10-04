@@ -27,7 +27,9 @@ import { REPO_ROOT, finish } from './lib/run.ts';
 
 const SUITE = 'scripts/negative-tests/pr-gates.sh';
 /** Raise this in the same change set that adds a case. */
-const CASES = 74;
+// 74 -> 77, 2026-10-04, T-237: B18-B20 (TL-F1's glued spelling, O3's rebinding block_count, an
+// unclassifiable line), each red with the classifier's REMEDY line in the gate's failure text.
+const CASES = 77;
 
 const failures: string[] = [];
 const abs = path.join(REPO_ROOT, SUITE);
