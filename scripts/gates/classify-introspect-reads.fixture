@@ -192,3 +192,48 @@ if [ "$(grep -c 'pgTable(' "$REPO_ROOT/$SCHEMA")" -eq 12 ]; then v=ok; else v=BA
 fact "R51" "$(grep -cE 't152Child|pgTable\(' "$PWD/db/schema.ts")" 13
 # attack: R52 local with bare $SCHEMA (control: must be flagged)
 local qn=$(grep -c 'pgTable(' "$SCHEMA")
+
+# ---- T-237: the bounds T-234 left open, each now an attack. With a plant named in the pattern, each line
+# below exited 0 under T-234's classifier (main 8d2394f): tasks/state/EP-2/T-237.md § Evidence, red first.
+# TL-F1 (T-234 § tech-lead verification TL-2): a recognised spelling glued to preceding characters in an
+# unquoted word. G1-G3, G5-G7 and E2 are the tech-lead's probes byte for byte; O2d is TL-3's.
+# attack: G1 <"$SCHEMA", no space
+fact "G1" "$(grep -c 't153Money' <"$SCHEMA")" 1
+# attack: G2 <$SCHEMA
+fact "G2" "$(grep -c 't153Money' <$SCHEMA)" 1
+# attack: G3 $(<"$SCHEMA") in a here-string
+fact "G3" "$(grep -c 't153Money' <<<"$(<"$SCHEMA")")" 1
+# attack: G5 unquoted $PWD/db/schema.ts
+fact "G5" "$(grep -c 't153Money' $PWD/db/schema.ts)" 1
+# attack: G6 "$REPO_ROOT"/db/schema.ts
+fact "G6" "$(grep -c 't153Money' "$REPO_ROOT"/db/schema.ts)" 1
+# attack: G7 ../app/db/schema.ts
+fact "G7" "$(grep -c 't153Money' ../app/db/schema.ts)" 1
+# attack: E2 an absolute path
+fact "E2" "$(grep -c 't153Money' /home/alex/projects/nanny/app/db/schema.ts)" 1
+# attack: O2d ./db/../db/schema.ts
+fact "O2d" "$(grep -cE 't153Money|pgTable\(' ./db/../db/schema.ts)" 13
+# O1 (T-234 QA-R1-O1): a quoted argument of echo/printf whose output is piped into a command that reads it.
+# attack: O1a echo "./$SCHEMA" | xargs grep
+fact "O1a" "$(echo "./$SCHEMA" | xargs grep -cE 't153Money|pgTable\(')" 13
+# attack: O1c echo "$PWD/db/schema.ts" | xargs cat
+fact "O1c" "$(echo "$PWD/db/schema.ts" | xargs cat | grep -c 't153Money')" 1
+# attack: O1e printf a command line naming "./$SCHEMA", piped into sh
+fact "O1e" "$(printf 'grep -c t153Money %s\n' "./$SCHEMA" | sh)" 1
+# attack: O1f echo "./$SCHEMA" | while read
+fact "O1f" "$(echo "./$SCHEMA" | while read -r f; do grep -c t153Money "$f"; done)" 1
+# O2 (T-234 QA-R1-O2): a non-canonical spelling of the path.
+# attack: O2a db//schema.ts
+fact "O2a" "$(grep -cE 't153Money|pgTable\(' db//schema.ts)" 13
+# attack: O2b db/./schema.ts
+fact "O2b" "$(grep -cE 't153Money|pgTable\(' db/./schema.ts)" 13
+# attack: O2c db/schema.{ts,}
+fact "O2c" "$(grep -cE 't153Money|pgTable\(' db/schema.{ts,})" 13
+# attack: O2e db/{schema,t153}.ts, a brace list one of whose expansions is the file
+fact "O2e" "$(grep -c 't153Money' db/{schema,t153}.ts)" 1
+# attack: O2f db/x/../schema.ts
+fact "O2f" "$(grep -c 't153Money' db/x/../schema.ts)" 1
+# control: C8 a display line naming the file, not piped (DISPLAY)
+echo "== K999 regenerating db/schema.ts"
+# control: C9 an abort message naming the file after `||`, which is not a pipe (HARNESS)
+grep -q 'pgTable("t138_plant"' "$OUT.w" || { cat "$OUT.w"; abort "regeneration did not add t138_plant to $SCHEMA"; }
