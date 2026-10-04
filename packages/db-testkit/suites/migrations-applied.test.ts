@@ -980,12 +980,12 @@ const CREATED_BY: Readonly<
       },
       {
         title:
-          'staffed_interval_span_shape is CHECK (non-empty, both bounds present, lower included, upper excluded) (U-15 (a))',
+          'staffed_interval_span_shape is CHECK (non-empty, both bounds present and finite, lower included, upper excluded) (U-15 (a), OE-77)',
         sql: `SELECT coalesce((SELECT pg_get_constraintdef(oid) FROM pg_constraint
                                WHERE conrelid = to_regclass('public.staffed_interval')
                                  AND conname = 'staffed_interval_span_shape'), '(absent)')`,
         holds:
-          'CHECK (((NOT isempty(span)) AND (NOT lower_inf(span)) AND (NOT upper_inf(span)) AND lower_inc(span) AND (NOT upper_inc(span))))',
+          'CHECK (((NOT isempty(span)) AND (NOT lower_inf(span)) AND (NOT upper_inf(span)) AND lower_inc(span) AND (NOT upper_inc(span)) AND isfinite(lower(span)) AND isfinite(upper(span))))',
       },
       {
         title:

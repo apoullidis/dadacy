@@ -217,8 +217,8 @@ const COMMENTS: Record<(typeof TABLES)[number], string> = {
   staffed_interval:
     'The materialised absolute UTC intervals of a staffed schedule version (SD §DB-15; SA §SA-4 I-7). id is a ULID ' +
     'the generator supplies. No two intervals of one version overlap (the exclusion constraint). CHECK ' +
-    'staffed_interval_span_shape: a span is non-empty, has both bounds, includes its lower bound and excludes its ' +
-    'upper bound; it does not check that a bound is finite. app_rw may SELECT and INSERT, and holds no UPDATE, ' +
+    'staffed_interval_span_shape: a span is non-empty, has both bounds, both finite, includes its lower bound and ' +
+    'excludes its upper bound; it does not bound the length of a span. app_rw may SELECT and INSERT, and holds no UPDATE, ' +
     'DELETE or TRUNCATE. These are grants: they bind app_rw, not the table owner app_ddl or the superuser. Nothing ' +
     'here refuses an interval added to an existing version. No other role is granted any privilege, and there is ' +
     'no row-level security.',
@@ -269,7 +269,7 @@ describe('0023 — the tables, their owner, columns, constraints, indexes, ACLs 
         'staffed_interval.staffed_interval_id_not_null=n NOT NULL id deferrable=false del=  upd= ',
         'staffed_interval.staffed_interval_pkey=p PRIMARY KEY (id) deferrable=false del=  upd= ',
         'staffed_interval.staffed_interval_span_not_null=n NOT NULL span deferrable=false del=  upd= ',
-        'staffed_interval.staffed_interval_span_shape=c CHECK (((NOT isempty(span)) AND (NOT lower_inf(span)) AND (NOT upper_inf(span)) AND lower_inc(span) AND (NOT upper_inc(span)))) deferrable=false del=  upd= ',
+        'staffed_interval.staffed_interval_span_shape=c CHECK (((NOT isempty(span)) AND (NOT lower_inf(span)) AND (NOT upper_inf(span)) AND lower_inc(span) AND (NOT upper_inc(span)) AND isfinite(lower(span)) AND isfinite(upper(span)))) deferrable=false del=  upd= ',
         'staffed_interval.staffed_interval_version_id_fkey=f FOREIGN KEY (version_id) REFERENCES staffed_schedule_version(id) deferrable=false del=a upd=a',
         'staffed_interval.staffed_interval_version_id_not_null=n NOT NULL version_id deferrable=false del=  upd= ',
         'staffed_interval.staffed_interval_version_id_span_excl=x EXCLUDE USING gist (version_id WITH =, span WITH &&) deferrable=false del=  upd= ',
@@ -440,7 +440,7 @@ describe('0023 — V1: no two intervals of one version overlap (SD 3180, the EXC
   });
 });
 
-describe('0023 — the span shape: staffed_interval_span_shape (OE-31 U-15 (a))', () => {
+describe('0023 — the span shape: staffed_interval_span_shape (OE-31 U-15 (a), OE-77)', () => {
   for (const [label, literal] of [
     ["'empty'", `'empty'::tstzrange`],
     [
@@ -512,18 +512,45 @@ describe('0023 — the span shape: staffed_interval_span_shape (OE-31 U-15 (a))'
     assertRead("app_rw '[)' spans", r, 'ok false');
   });
 
-  test("NOT HELD — app_rw writes spans bounded by 'infinity' and '-infinity', and a 100-year span: all accepted; the CHECK reads that a bound is present, not that it is finite", async () => {
+  // OE-77: 'infinity' and '-infinity' are values, so lower_inf/upper_inf alone admit them; isfinite refuses them.
+  const INFINITE = [
+    ['[a, infinity) — an infinite upper bound', `'[2030-01-01T00:00:00Z,infinity)'::tstzrange`],
+    ['[-infinity, b) — an infinite lower bound', `'[-infinity,2030-01-01T00:00:00Z)'::tstzrange`],
+    ['[-infinity, infinity) — both bounds infinite', `'[-infinity,infinity)'::tstzrange`],
+  ] as const;
+  for (const [label, literal] of INFINITE) {
+    for (const [who, run] of [
+      ['the superuser', (...c: string[]) => asSuperuser(...c)],
+      ['app_rw', (...c: string[]) => asLogin(LOGINS.app_rw, ...c)],
+    ] as const) {
+      test(`a span ${label} is REFUSED by staffed_interval_span_shape (23514), as ${who} (OE-77)`, async () => {
+        const r = await run(
+          `SELECT 'bounds present: ' || (NOT lower_inf(${literal}) AND NOT upper_inf(${literal}))`,
+          interval(ulid('INF'), VER_B, literal),
+        );
+        assertRead(`${who} span ${label}`, r, 'bounds present: true');
+        assertRefusedBy(`${who} span ${label}`, r, SHAPE_23514, SHAPE_FIELD);
+      });
+    }
+  }
+
+  test('the superuser moving a fixture interval to an infinite upper bound (UPDATE) is REFUSED (23514, OE-77)', async () => {
+    const r = await asSuperuser(
+      readInterval(INT_A1),
+      `UPDATE public.staffed_interval SET span = '[2026-10-02T11:00:00Z,infinity)' WHERE id = ${q(INT_A1)}`,
+    );
+    assertRead('superuser UPDATE to infinity', r, INTERVAL_PRESENT(INT_A1));
+    assertRefusedBy('superuser UPDATE to infinity', r, SHAPE_23514, SHAPE_FIELD);
+  });
+
+  test('NOT HELD — app_rw writes a 100-year span: accepted; the CHECK does not bound the length of a span', async () => {
     const r = await asLogin(
       LOGINS.app_rw,
-      `${interval(ulid('INF1'), VER_B, `'[2030-01-01T00:00:00Z,infinity)'::tstzrange`)} RETURNING 'accepted upper infinity, upper_inf=' || upper_inf(span)`,
-      `${interval(ulid('INF2'), VER_B, `'[-infinity,2020-01-01T00:00:00Z)'::tstzrange`)} RETURNING 'accepted lower -infinity, lower_inf=' || lower_inf(span)`,
       version(ulid('LONGV'), APR_B),
       `${interval(ulid('LONG'), ulid('LONGV'), span('2020-01-01T00:00:00Z', '2120-01-01T00:00:00Z'))} RETURNING 'accepted 100 years'`,
     );
-    assertPermitted('infinite and long spans', r);
-    assertRead('infinite and long spans', r, 'accepted upper infinity, upper_inf=false');
-    assertRead('infinite and long spans', r, 'accepted lower -infinity, lower_inf=false');
-    assertRead('infinite and long spans', r, 'accepted 100 years');
+    assertPermitted('long span', r);
+    assertRead('long span', r, 'accepted 100 years');
   });
 });
 

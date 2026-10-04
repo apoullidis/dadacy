@@ -9,7 +9,7 @@
 --          containment query it serves); SA §SA-4 I-7 (493-548), §DA-14 1441-1443.
 -- Rulings: tasks/state/EP-2/OE-30-34-rulings.md, binding under OE-50 (Part F): A.2 U-1 and U-4;
 --          E.2 U-3, U-5, U-7, U-14; B.1 C5 (a) and C6 (a); B.3 OE-31 U-8 (a) and U-15 (a);
---          decisions.md OE-31 IC-1 (as amended) and IC-2; OD-223.
+--          decisions.md OE-77 (finite bounds), OE-31 IC-1 (as amended) and IC-2; OD-223.
 -- Contracts: T-020 § Published contract §3-§5 (roles, explicit grants, the SA §INT-10 guard);
 --          T-231 (the guard after 0014); T-150 (the closed type map) and T-145; T-021 (rework 2)
 --          and T-031 (lint); T-136 (runner); T-137 (tripwire); T-140 (account), T-030 (approval).
@@ -19,11 +19,12 @@
 --   A.2 U-1  staffed_interval.id char(26) PRIMARY KEY, a ULID the generator supplies. SD declares
 --            no key for the table; ADR 0001 §1 requires one. The EXCLUDE stays as SD 3180 writes
 --            it. EV proposed by T-206.
---   U-15 (a) CONSTRAINT staffed_interval_span_shape: a span is non-empty, has a lower and an upper
---            bound, includes its lower bound and excludes its upper bound ('[)'). SD writes no
---            CHECK. EV proposed by T-206. The CHECK reads the bounds' presence, not their values:
---            a bound of 'infinity' or '-infinity' is a value, so a span ending at 'infinity' passes
---            it (the suite pins that as NOT HELD).
+--   U-15 (a) and OE-77  CONSTRAINT staffed_interval_span_shape: a span is non-empty, has a lower
+--            and an upper bound, includes its lower bound and excludes its upper bound ('[)')
+--            (U-15 (a)), and both bounds are finite (OE-77: 'infinity' and '-infinity' are values,
+--            not missing bounds, so lower_inf/upper_inf alone admit them). SD writes no CHECK. EV
+--            proposed by T-206 (one EV covering U-15 (a) and OE-77). It does not bound a span's
+--            length.
 --   E.2 U-3  staffed_schedule_current, verbatim (jurisdiction text PRIMARY KEY; current_version_id
 --            char(26) NOT NULL REFERENCES staffed_schedule_version(id), no ON DELETE clause).
 -- The EXCLUDE is unnamed, as SD writes it; PostgreSQL names it staffed_interval_version_id_span_excl
@@ -63,7 +64,7 @@
 -- interval into any existing version, at any time); that the pointer names a version of its own
 -- jurisdiction, or one that is not superseded; that a version has any interval; that published_by
 -- is an operator or that approval_id is a countersigned approval of this publish (T-086's); a span's
--- length, or that its bounds are finite; anything about jurisdiction, note or pattern beyond NOT
+-- length; anything about jurisdiction, note or pattern beyond NOT
 -- NULL (a JSON null is a non-NULL jsonb). These are grants and constraints: the grants bind app_rw
 -- only, and the owner app_ddl and the superuser can UPDATE or DELETE any row. The constraints bind
 -- every writer. PostgreSQL's own refusals print values in their DETAIL (a 23505 or 23P01 prints the
@@ -96,7 +97,7 @@ CREATE TABLE public.staffed_interval (
   version_id char(26) NOT NULL REFERENCES public.staffed_schedule_version(id),
   span       tstzrange NOT NULL,
   EXCLUDE USING gist (version_id WITH =, span WITH &&),
-  CONSTRAINT staffed_interval_span_shape CHECK (NOT isempty(span) AND NOT lower_inf(span) AND NOT upper_inf(span) AND lower_inc(span) AND NOT upper_inc(span))
+  CONSTRAINT staffed_interval_span_shape CHECK (NOT isempty(span) AND NOT lower_inf(span) AND NOT upper_inf(span) AND lower_inc(span) AND NOT upper_inc(span) AND isfinite(lower(span)) AND isfinite(upper(span)))
 );
 CREATE INDEX idx_staffed_interval_span ON public.staffed_interval USING gist (span);
 CREATE INDEX ON public.staffed_interval (version_id);
@@ -116,6 +117,6 @@ GRANT UPDATE (current_version_id) ON public.staffed_schedule_current TO app_rw;
 COMMENT ON TABLE public.staffed_schedule_version IS
   'A published Staffed-Hours schedule version (SD §DB-15; SA §SA-4 I-7). app_rw may SELECT, may INSERT only id, jurisdiction, effective_from, published_by, approval_id, pattern and note, so published_at takes now() and superseded_at starts NULL for it, and may UPDATE only superseded_at. The rule that superseded_at is set once, from NULL, is not held by this table. It holds no DELETE or TRUNCATE. These are grants: they bind app_rw, not the table owner app_ddl or the superuser. pattern is the authored pattern, kept for provenance; its shape is not checked here. No other role is granted any privilege, and there is no row-level security.';
 COMMENT ON TABLE public.staffed_interval IS
-  'The materialised absolute UTC intervals of a staffed schedule version (SD §DB-15; SA §SA-4 I-7). id is a ULID the generator supplies. No two intervals of one version overlap (the exclusion constraint). CHECK staffed_interval_span_shape: a span is non-empty, has both bounds, includes its lower bound and excludes its upper bound; it does not check that a bound is finite. app_rw may SELECT and INSERT, and holds no UPDATE, DELETE or TRUNCATE. These are grants: they bind app_rw, not the table owner app_ddl or the superuser. Nothing here refuses an interval added to an existing version. No other role is granted any privilege, and there is no row-level security.';
+  'The materialised absolute UTC intervals of a staffed schedule version (SD §DB-15; SA §SA-4 I-7). id is a ULID the generator supplies. No two intervals of one version overlap (the exclusion constraint). CHECK staffed_interval_span_shape: a span is non-empty, has both bounds, both finite, includes its lower bound and excludes its upper bound; it does not bound the length of a span. app_rw may SELECT and INSERT, and holds no UPDATE, DELETE or TRUNCATE. These are grants: they bind app_rw, not the table owner app_ddl or the superuser. Nothing here refuses an interval added to an existing version. No other role is granted any privilege, and there is no row-level security.';
 COMMENT ON TABLE public.staffed_schedule_current IS
   'The current staffed schedule version of each jurisdiction (SD §DB-15). app_rw may SELECT, INSERT and UPDATE only current_version_id, and holds no DELETE or TRUNCATE. These are grants: they bind app_rw, not the table owner app_ddl or the superuser. The database does not check that the version belongs to this jurisdiction or is not superseded. No other role is granted any privilege, and there is no row-level security.';
