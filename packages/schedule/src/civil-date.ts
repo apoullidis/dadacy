@@ -83,14 +83,13 @@ export function weekdayMonday0(d: CivilDate): number {
 }
 
 /**
- * `d` plus `months` calendar months, or `undefined` when that day does not exist in the target
- * month (31 August + 18 months is "28 February 31st"). The spec says only "18 calendar months"
- * (E.2 U-7); it does not say whether such a date clamps or overflows, so neither is chosen here.
+ * `d` plus `months` calendar months. When that day does not exist in the target month, it CLAMPS to
+ * the month's last day (OE-78 (2): 31 Aug 2026 + 18 months = 29 Feb 2028; 31 Aug 2027 + 18 months =
+ * 28 Feb 2029), the same convention as PostgreSQL's `date + interval 'N months'`.
  */
-export function addCalendarMonths(d: CivilDate, months: number): CivilDate | undefined {
+export function addCalendarMonths(d: CivilDate, months: number): CivilDate {
   const index = d.year * 12 + (d.month - 1) + months;
   const year = Math.floor(index / 12);
   const month = index - year * 12 + 1;
-  if (d.day > daysInMonth(year, month)) return undefined;
-  return { year, month, day: d.day };
+  return { year, month, day: Math.min(d.day, daysInMonth(year, month)) };
 }

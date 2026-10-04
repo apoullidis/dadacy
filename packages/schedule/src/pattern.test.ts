@@ -131,6 +131,75 @@ describe('StaffedPatternV1 refuses', () => {
   });
 });
 
+describe('StaffedPatternV1 refuses a cross-season overlap at entry (OE-78 (3))', () => {
+  const two = (aBlocks: unknown[], bBlocks: unknown[], aOn = '01-01', bOn = '07-01') => ({
+    schema: 1,
+    zone: 'Europe/Nicosia',
+    seasons: [
+      { key: 'a', startsOn: aOn, blocks: aBlocks },
+      { key: 'b', startsOn: bOn, blocks: bBlocks },
+    ],
+  });
+
+  test('a tail of the season before the boundary into the next season first-day block, with a reason', () => {
+    const p = two([block(1, '20:00', '04:00', true)], [block(2, '02:00', '03:00', false)]);
+    const r = parseStaffedPatternV1(p);
+    expect(r.success).toBe(false);
+    expect(r.success ? [] : r.issues.map((i) => [i.path.join('.'), i.message])).toEqual([
+      [
+        'seasons.1.blocks.0',
+        'block 0 of season b overlaps block 0 of season a, whose next-day tail runs into the boundary day 07-01',
+      ],
+    ]);
+    // CONTROL: the next season's block starting exactly where the tail ends is contiguous.
+    expect(
+      accepts(two([block(1, '20:00', '04:00', true)], [block(2, '04:00', '05:00', false)])),
+    ).toBe(true);
+    // CONTROL: a block on another weekday than the tail's next day.
+    expect(
+      accepts(two([block(1, '20:00', '04:00', true)], [block(3, '02:00', '03:00', false)])),
+    ).toBe(true);
+  });
+
+  test('every weekday is checked, whatever weekday the boundary falls on this year (Sun tail into Mon)', () => {
+    // 07-01 is a Wednesday in 2026 and a Thursday in 2027; a Sunday->Monday clash is still refused.
+    expect(
+      accepts(two([block(6, '22:00', '02:00', true)], [block(0, '01:00', '02:00', false)])),
+    ).toBe(false);
+  });
+
+  test('the wrap from the last season (11-01) into the first (03-01) is a boundary too', () => {
+    const p = two(
+      [block(0, '01:00', '02:00', false)],
+      [block(6, '22:00', '02:00', true)],
+      '03-01',
+      '11-01',
+    );
+    expect(pathsOf(p)).toEqual(['seasons.0.blocks.0']);
+  });
+
+  test('a 02-29 season followed by 03-01: the season before 02-29 also borders 03-01 (common years)', () => {
+    const p = {
+      schema: 1,
+      zone: 'Europe/Nicosia',
+      seasons: [
+        { key: 'a', startsOn: '01-01', blocks: [block(0, '22:00', '03:00', true)] },
+        { key: 'leap', startsOn: '02-29', blocks: [] },
+        { key: 'c', startsOn: '03-01', blocks: [block(1, '01:00', '02:00', false)] },
+      ],
+    };
+    expect(pathsOf(p)).toEqual(['seasons.2.blocks.0']);
+    // CONTROL: only two seasons, 02-29 and 03-01, with no blocks: accepted.
+    expect(accepts(two([], [], '02-29', '03-01'))).toBe(true);
+  });
+
+  test('a single season has no boundary: its year end is covered by the week rule alone', () => {
+    expect(
+      accepts(withSeason([block(6, '22:00', '02:00', true), block(0, '02:00', '03:00', false)])),
+    ).toBe(true);
+  });
+});
+
 describe('parseStaffedPatternV1', () => {
   test('refusal issues do not echo the planted values, but do name an unknown key', () => {
     const planted = {

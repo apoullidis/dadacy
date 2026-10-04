@@ -15,6 +15,7 @@ import { describe, expect, test } from 'vitest';
 import {
   HORIZON_MONTHS,
   StaffedGenerationError,
+  assertDisjoint,
   generateStaffedIntervals,
   intervalArrays,
   newIntervalId,
@@ -26,6 +27,10 @@ const HOUR = 3_600_000;
 const iso = (d: Date): string => d.toISOString().replace('.000Z', 'Z');
 const span = (i: StaffedInterval): [string, string] => [iso(i.startsAt), iso(i.endsAt)];
 const hours = (i: StaffedInterval): number => (i.endsAt.getTime() - i.startsAt.getTime()) / HOUR;
+
+/** The intervals only, for the tests that do not look at adjustments. */
+const gen = (...args: Parameters<typeof generateStaffedIntervals>): readonly StaffedInterval[] =>
+  generateStaffedIntervals(...args).intervals;
 
 function on(intervals: readonly StaffedInterval[], localDate: string): StaffedInterval[] {
   return intervals.filter((i) => i.localDate === localDate);
@@ -74,7 +79,7 @@ const addDay = (localDate: string): string =>
   new Date(Date.parse(`${localDate}T00:00:00Z`) + 24 * HOUR).toISOString().slice(0, 10);
 
 describe('launch pattern, effective 2026-10-01 (the 18-month horizon)', () => {
-  const out = generateStaffedIntervals(LAUNCH, '2026-10-01');
+  const out = gen(LAUNCH, '2026-10-01');
 
   test('548 intervals, one per local date 2026-10-01..2028-03-31, none outside it (E.2 U-7, U-11)', () => {
     expect(HORIZON_MONTHS).toBe(18);
@@ -231,8 +236,8 @@ describe('launch pattern, effective 2026-10-01 (the 18-month horizon)', () => {
 });
 
 describe('launch pattern, effective 2026-01-01 and 2026-06-01 (the 2026 boundaries and March 2026)', () => {
-  const jan = generateStaffedIntervals(LAUNCH, '2026-01-01');
-  const jun = generateStaffedIntervals(LAUNCH, '2026-06-01');
+  const jan = gen(LAUNCH, '2026-01-01');
+  const jun = gen(LAUNCH, '2026-06-01');
 
   test('counts: 546 from 2026-01-01 (to 2027-07-01), 548 from 2026-06-01 (to 2027-12-01)', () => {
     expect(jan).toHaveLength(546);
@@ -298,8 +303,8 @@ describe('launch pattern, effective 2026-01-01 and 2026-06-01 (the 2026 boundari
 });
 
 describe('Part F C4 (a): a synthetic window spanning 03:00-04:00 local (22:00 to 10:00 every night)', () => {
-  const jan = generateStaffedIntervals(SPANNING, '2026-01-01');
-  const jun = generateStaffedIntervals(SPANNING, '2026-06-01');
+  const jan = gen(SPANNING, '2026-01-01');
+  const jun = gen(SPANNING, '2026-06-01');
 
   test('March 2026: Sat 28 night is 11 h; Fri 27 and Sun 29 nights are 12 h', () => {
     expect(span(only(jan, '2026-03-27'))).toEqual(['2026-03-27T20:00:00Z', '2026-03-28T08:00:00Z']);
@@ -335,24 +340,24 @@ describe('Part F C4 (a): a synthetic window spanning 03:00-04:00 local (22:00 to
 
 describe('SD §DB-6 rules 3-4: a block edge inside the 03:00-04:00 gap or overlap', () => {
   test('start in the spring gap (Sun 03:30-05:00) resolves forward to the transition, 01:00Z', () => {
-    const out = generateStaffedIntervals(sundayOnly('03:30', '05:00'), '2026-01-01');
+    const out = gen(sundayOnly('03:30', '05:00'), '2026-01-01');
     expect(span(only(out, '2026-03-29'))).toEqual(['2026-03-29T01:00:00Z', '2026-03-29T02:00:00Z']);
     expect(span(only(out, '2026-03-22'))).toEqual(['2026-03-22T01:30:00Z', '2026-03-22T03:00:00Z']);
   });
 
   test('start in the autumn overlap (Sun 03:30-05:00) takes the first (EEST) instant: 2.5 h', () => {
-    const out = generateStaffedIntervals(sundayOnly('03:30', '05:00'), '2026-01-01');
+    const out = gen(sundayOnly('03:30', '05:00'), '2026-01-01');
     expect(span(only(out, '2026-10-25'))).toEqual(['2026-10-25T00:30:00Z', '2026-10-25T03:00:00Z']);
     expect(hours(only(out, '2026-10-25'))).toBe(2.5);
   });
 
   test('end in the spring gap (Sun 01:00-03:30) resolves forward to 01:00Z: 2 h', () => {
-    const out = generateStaffedIntervals(sundayOnly('01:00', '03:30'), '2026-01-01');
+    const out = gen(sundayOnly('01:00', '03:30'), '2026-01-01');
     expect(span(only(out, '2026-03-29'))).toEqual(['2026-03-28T23:00:00Z', '2026-03-29T01:00:00Z']);
   });
 
   test('end in the autumn overlap (Sun 01:00-03:30) takes the first instant, 00:30Z: 2.5 h', () => {
-    const out = generateStaffedIntervals(sundayOnly('01:00', '03:30'), '2026-01-01');
+    const out = gen(sundayOnly('01:00', '03:30'), '2026-01-01');
     expect(span(only(out, '2026-10-25'))).toEqual(['2026-10-24T22:00:00Z', '2026-10-25T00:30:00Z']);
   });
 
@@ -362,59 +367,150 @@ describe('SD §DB-6 rules 3-4: a block edge inside the 03:00-04:00 gap or overla
       zone: 'Europe/Nicosia',
       seasons: [{ key: 'all', startsOn: '01-01', blocks: [block(5, '03:00', '04:00', false)] }],
     };
-    const out = generateStaffedIntervals(pattern, '2026-06-01');
+    const out = gen(pattern, '2026-06-01');
     expect(span(only(out, '2026-10-24'))).toEqual(['2026-10-24T00:00:00Z', '2026-10-24T01:00:00Z']);
   });
 });
 
-describe('refusals: what the generator will not decide (each reported as a question in T-080.md)', () => {
-  test('a literal Sunday 03:00-04:00 block collapses to [a,a) on the spring Sunday: empty_after_dst, named', () => {
-    const e = thrown(() => generateStaffedIntervals(sundayOnly('03:00', '04:00'), '2026-10-01'));
-    expect([e.reason, e.localDate, e.message]).toEqual([
-      'empty_after_dst',
-      '2027-03-28',
-      'empty_after_dst',
+describe('OE-78: spring-gap skips and shifts are reported, the horizon end clamps', () => {
+  test('OE-78 (1): a Sunday 03:00-04:00 block is skipped and flagged on both spring Sundays, not refused', () => {
+    const r = generateStaffedIntervals(sundayOnly('03:00', '04:00'), '2026-10-01');
+    // 78 Sundays in 2026-10-01..2028-03-31; the spring Sundays 2027-03-28 and 2028-03-26 are empty.
+    expect(r.intervals).toHaveLength(76);
+    expect(on(r.intervals, '2027-03-28')).toHaveLength(0);
+    expect(on(r.intervals, '2028-03-26')).toHaveLength(0);
+    expect(
+      r.adjustments.map((a) =>
+        a.reason === 'spring_gap_empty'
+          ? [a.reason, a.localDate, a.season, a.weekday, a.localStart, a.localEnd, iso(a.utcUsed)]
+          : [a.reason],
+      ),
+    ).toEqual([
+      [
+        'spring_gap_empty',
+        '2027-03-28',
+        'all',
+        6,
+        { date: '2027-03-28', time: '03:00' },
+        { date: '2027-03-28', time: '04:00' },
+        '2027-03-28T01:00:00Z',
+      ],
+      [
+        'spring_gap_empty',
+        '2028-03-26',
+        'all',
+        6,
+        { date: '2028-03-26', time: '03:00' },
+        { date: '2028-03-26', time: '04:00' },
+        '2028-03-26T01:00:00Z',
+      ],
     ]);
-    // CONTROL: the same block one hour later never collapses.
-    expect(generateStaffedIntervals(sundayOnly('04:00', '05:00'), '2026-10-01')).toHaveLength(78);
+    // The autumn Sundays keep their interval: 03:00 takes its first (EEST) instant, 04:00 is EET.
+    expect(span(only(r.intervals, '2026-10-25'))).toEqual([
+      '2026-10-25T00:00:00Z',
+      '2026-10-25T02:00:00Z',
+    ]);
+    expect(span(only(r.intervals, '2027-10-31'))).toEqual([
+      '2027-10-31T00:00:00Z',
+      '2027-10-31T02:00:00Z',
+    ]);
   });
 
-  test('effective_from + 18 months naming a missing day (31 Aug -> 31 Feb) is horizon_end_not_a_date', () => {
-    const e = thrown(() => generateStaffedIntervals(LAUNCH, '2026-08-31'));
-    expect([e.reason, e.localDate]).toEqual(['horizon_end_not_a_date', '2026-08-31']);
-    expect(thrown(() => generateStaffedIntervals(LAUNCH, '2027-08-29')).reason).toBe(
-      'horizon_end_not_a_date',
-    );
-    // CONTROL: 2026-08-29 + 18 months is 2028-02-29, a leap day: 549 dates.
-    const ok = generateStaffedIntervals(LAUNCH, '2026-08-29');
-    expect([ok.length, ok[0]?.localDate, ok[ok.length - 1]?.localDate]).toEqual([
-      549,
-      '2026-08-29',
-      '2028-02-28',
+  test('OE-78 (1): Sunday 03:30-04:00 (end at the gap end) and 03:00-03:30 are empty too; 03:30-04:30 is not', () => {
+    for (const [start, end] of [
+      ['03:30', '04:00'],
+      ['03:00', '03:30'],
+    ] as const) {
+      const r = generateStaffedIntervals(sundayOnly(start, end), '2026-01-01');
+      expect(r.adjustments.map((a) => [a.reason, iso(a.utcUsed)])).toEqual([
+        ['spring_gap_empty', '2026-03-29T01:00:00Z'],
+        ['spring_gap_empty', '2027-03-28T01:00:00Z'],
+      ]);
+      expect(r.intervals).toHaveLength(76);
+    }
+    // CONTROL: 03:30-04:30 is not empty: [01:00Z, 01:30Z) on each spring Sunday, its start shifted.
+    const c = generateStaffedIntervals(sundayOnly('03:30', '04:30'), '2026-01-01');
+    expect(span(only(c.intervals, '2026-03-29'))).toEqual([
+      '2026-03-29T01:00:00Z',
+      '2026-03-29T01:30:00Z',
     ]);
+    expect(c.adjustments.map((a) => a.reason)).toEqual(['spring_gap_shift', 'spring_gap_shift']);
+  });
+
+  test('OE-78 (4): a start in the gap (Sun 03:30-05:00) is one lower shift per spring Sunday, naming the interval', () => {
+    const r = generateStaffedIntervals(sundayOnly('03:30', '05:00'), '2026-01-01');
+    expect(r.intervals).toHaveLength(78);
+    const ids = [only(r.intervals, '2026-03-29').id, only(r.intervals, '2027-03-28').id];
+    expect(
+      r.adjustments.map((a) =>
+        a.reason === 'spring_gap_shift'
+          ? [a.id, a.bound, a.localRequested, iso(a.utcUsed)]
+          : [a.reason],
+      ),
+    ).toEqual([
+      [ids[0], 'lower', { date: '2026-03-29', time: '03:30' }, '2026-03-29T01:00:00Z'],
+      [ids[1], 'lower', { date: '2027-03-28', time: '03:30' }, '2027-03-28T01:00:00Z'],
+    ]);
+  });
+
+  test('OE-78 (4): an end in the gap is an upper shift, dated on the day the end falls (Sat 22:00 -> Sun 03:30)', () => {
+    const pattern = {
+      schema: 1,
+      zone: 'Europe/Nicosia',
+      seasons: [{ key: 'all', startsOn: '01-01', blocks: [block(5, '22:00', '03:30', true)] }],
+    };
+    const r = generateStaffedIntervals(pattern, '2026-01-01');
+    const sat = only(r.intervals, '2026-03-28');
+    expect(span(sat)).toEqual(['2026-03-28T20:00:00Z', '2026-03-29T01:00:00Z']);
+    expect(r.adjustments).toEqual([
+      {
+        reason: 'spring_gap_shift',
+        id: sat.id,
+        bound: 'upper',
+        localRequested: { date: '2026-03-29', time: '03:30' },
+        utcUsed: new Date('2026-03-29T01:00:00Z'),
+      },
+      expect.objectContaining({
+        bound: 'upper',
+        localRequested: { date: '2027-03-28', time: '03:30' },
+      }),
+    ]);
+  });
+
+  test('OE-78 (4): no adjustment for the launch pattern, the synthetic window, or an autumn-overlap bound', () => {
+    expect(generateStaffedIntervals(LAUNCH, '2026-10-01').adjustments).toEqual([]);
+    expect(generateStaffedIntervals(SPANNING, '2026-01-01').adjustments).toEqual([]);
+    expect(
+      generateStaffedIntervals(sundayOnly('01:00', '03:30'), '2026-06-01').adjustments.map((a) =>
+        a.reason === 'spring_gap_shift' ? a.localRequested : a.reason,
+      ),
+    ).toEqual([{ date: '2027-03-28', time: '03:30' }]);
+  });
+
+  test('OE-78 (2): effective_from + 18 months clamps to the month end (31 Aug 2026 -> 29 Feb 2028)', () => {
+    const last = (from: string) => {
+      const r = gen(LAUNCH, from);
+      return [r.length, r[0]?.localDate, r[r.length - 1]?.localDate];
+    };
+    expect(last('2026-08-31')).toEqual([547, '2026-08-31', '2028-02-28']);
+    expect(last('2027-08-31')).toEqual([547, '2027-08-31', '2029-02-27']);
+    expect(last('2027-08-29')).toEqual([549, '2027-08-29', '2029-02-27']);
+    // CONTROL: a day that exists is not moved: 2026-08-29 + 18 months is 2028-02-29.
+    expect(last('2026-08-29')).toEqual([549, '2026-08-29', '2028-02-28']);
   });
 
   test('an effective_from that is not a calendar date is effective_from_invalid', () => {
     for (const bad of ['2026-02-29', '2026-13-01', '2026-1-01', '2026-10-01T00:00', '']) {
-      expect(thrown(() => generateStaffedIntervals(LAUNCH, bad)).reason).toBe(
-        'effective_from_invalid',
-      );
+      expect(thrown(() => gen(LAUNCH, bad)).reason).toBe('effective_from_invalid');
     }
   });
 
-  test('a pattern the schema refuses is pattern_invalid (the generator parses its input itself)', () => {
-    expect(
-      thrown(() => generateStaffedIntervals({ ...LAUNCH, schema: 2 }, '2026-10-01')).reason,
-    ).toBe('pattern_invalid');
-    expect(thrown(() => generateStaffedIntervals(null, '2026-10-01')).reason).toBe(
+  test('a pattern the schema refuses is pattern_invalid, including a cross-season overlap (OE-78 (3))', () => {
+    expect(thrown(() => gen({ ...LAUNCH, schema: 2 }, '2026-10-01')).reason).toBe(
       'pattern_invalid',
     );
-  });
-
-  test('two seasons whose intervals overlap at their boundary are intervals_overlap, named by date', () => {
-    // 'a' (from 01-01): Tue 20:00 -> Wed 04:00. 'b' (from 07-01): Wed 02:00-03:00. Neither season
-    // overlaps itself, but Tue 30 Jun 2026 (a) runs into Wed 1 Jul 2026 (b).
-    const pattern = {
+    expect(thrown(() => gen(null, '2026-10-01')).reason).toBe('pattern_invalid');
+    const crossing = {
       schema: 1,
       zone: 'Europe/Nicosia',
       seasons: [
@@ -422,8 +518,33 @@ describe('refusals: what the generator will not decide (each reported as a quest
         { key: 'b', startsOn: '07-01', blocks: [block(2, '02:00', '03:00', false)] },
       ],
     };
-    const e = thrown(() => generateStaffedIntervals(pattern, '2026-01-01'));
-    expect([e.reason, e.localDate]).toEqual(['intervals_overlap', '2026-07-01']);
+    expect(thrown(() => gen(crossing, '2026-01-01')).reason).toBe('pattern_invalid');
+  });
+
+  test('assertDisjoint, the backstop no accepted pattern reaches, refuses an overlap and names its date', () => {
+    const at = (s: string, e: string, d: string) => ({
+      startsAt: new Date(s),
+      endsAt: new Date(e),
+      localDate: d,
+    });
+    const e = thrown(() =>
+      assertDisjoint([
+        at('2026-06-30T17:00:00Z', '2026-07-01T01:00:00Z', '2026-06-30'),
+        at('2026-06-30T23:00:00Z', '2026-07-01T00:00:00Z', '2026-07-01'),
+      ]),
+    );
+    expect([e.reason, e.localDate, e.message]).toEqual([
+      'intervals_overlap',
+      '2026-07-01',
+      'intervals_overlap',
+    ]);
+    // CONTROL: contiguous spans are disjoint.
+    expect(() =>
+      assertDisjoint([
+        at('2026-06-30T17:00:00Z', '2026-06-30T23:00:00Z', '2026-06-30'),
+        at('2026-06-30T23:00:00Z', '2026-07-01T00:00:00Z', '2026-07-01'),
+      ]),
+    ).not.toThrow();
   });
 });
 
@@ -434,14 +555,14 @@ describe('weekday numbering (Part F C9 (b): 0 = Monday ... 6 = Sunday)', () => {
       zone: 'Europe/Nicosia',
       seasons: [{ key: 'all', startsOn: '01-01', blocks: [block(0, '12:00', '13:00', false)] }],
     };
-    const out = generateStaffedIntervals(pattern, '2026-10-01');
+    const out = gen(pattern, '2026-10-01');
     expect(out[0]?.localDate).toBe('2026-10-05');
     expect(out.every((i) => isoWeekdayMonday0(i.localDate) === 0 && i.weekday === 0)).toBe(true);
     expect(out).toHaveLength(78);
   });
 
   test('a weekday-6 block lands on Sundays only, starting Sun 2026-10-04', () => {
-    const out = generateStaffedIntervals(sundayOnly('12:00', '13:00'), '2026-10-01');
+    const out = gen(sundayOnly('12:00', '13:00'), '2026-10-01');
     expect(out[0]?.localDate).toBe('2026-10-04');
     expect(span(out[0] as StaffedInterval)).toEqual([
       '2026-10-04T09:00:00Z',
@@ -469,7 +590,7 @@ describe('seasons: wrap and a 02-29 boundary', () => {
         },
       ],
     };
-    const out = generateStaffedIntervals(pattern, '2026-10-01');
+    const out = gen(pattern, '2026-10-01');
     expect(
       ['2027-02-28', '2027-03-01', '2028-02-28', '2028-02-29'].map((d) => only(out, d).season),
     ).toEqual(['base', 'leap', 'base', 'leap']);
@@ -477,9 +598,18 @@ describe('seasons: wrap and a 02-29 boundary', () => {
   });
 });
 
+describe('season list order', () => {
+  test('listing the launch seasons in the other order generates the same spans and seasons', () => {
+    const reversed = { ...LAUNCH, seasons: [...LAUNCH.seasons].reverse() };
+    expect(reversed.seasons.map((x) => x.startsOn)).toEqual(['06-01', '10-01']);
+    const key = (i: StaffedInterval) => [...span(i), i.season];
+    expect(gen(reversed, '2026-10-01').map(key)).toEqual(gen(LAUNCH, '2026-10-01').map(key));
+  });
+});
+
 describe('ids (A.2 U-1) and the Q2 bind arrays', () => {
   test('one fresh, distinct ULID per interval by default', () => {
-    const out = generateStaffedIntervals(LAUNCH, '2026-10-01');
+    const out = gen(LAUNCH, '2026-10-01');
     expect(out.every((i) => /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/.test(i.id))).toBe(true);
     expect(new Set(out.map((i) => i.id)).size).toBe(548);
     expect(newIntervalId()).toMatch(/^[0-7][0-9A-HJKMNP-TV-Z]{25}$/);
@@ -488,18 +618,16 @@ describe('ids (A.2 U-1) and the Q2 bind arrays', () => {
   test('an injected id source is used, and a non-ULID from it is refused', () => {
     let n = 0;
     const fixed = () => `01J080TEST${String(n++).padStart(16, '0')}`;
-    const out = generateStaffedIntervals(LAUNCH, '2026-10-01', { newId: fixed });
+    const out = gen(LAUNCH, '2026-10-01', { newId: fixed });
     expect([out[0]?.id, out[547]?.id]).toEqual([
       '01J080TEST0000000000000000',
       '01J080TEST0000000000000547',
     ]);
-    expect(() =>
-      generateStaffedIntervals(LAUNCH, '2026-10-01', { newId: () => 'not-a-ulid' }),
-    ).toThrow('invalid_input');
+    expect(() => gen(LAUNCH, '2026-10-01', { newId: () => 'not-a-ulid' })).toThrow('invalid_input');
   });
 
   test('intervalArrays: parallel ids, starts and ends as UTC ISO instants with Z', () => {
-    const out = generateStaffedIntervals(LAUNCH, '2026-10-01');
+    const out = gen(LAUNCH, '2026-10-01');
     const a = intervalArrays(out);
     expect([a.ids.length, a.startsAt.length, a.endsAt.length]).toEqual([548, 548, 548]);
     expect([a.ids[0], a.startsAt[0], a.endsAt[0]]).toEqual([
@@ -516,14 +644,10 @@ describe('determinism: the host time zone plays no part', () => {
     try {
       process.env['TZ'] = 'UTC';
       expect(new Date(2026, 0, 1).getTimezoneOffset()).toBe(0);
-      const utc = [LAUNCH, SPANNING].map((p) =>
-        generateStaffedIntervals(p, '2026-01-01').map(span),
-      );
+      const utc = [LAUNCH, SPANNING].map((p) => gen(p, '2026-01-01').map(span));
       process.env['TZ'] = 'Asia/Tokyo';
       expect(new Date(2026, 0, 1).getTimezoneOffset()).toBe(-540);
-      const tokyo = [LAUNCH, SPANNING].map((p) =>
-        generateStaffedIntervals(p, '2026-01-01').map(span),
-      );
+      const tokyo = [LAUNCH, SPANNING].map((p) => gen(p, '2026-01-01').map(span));
       expect(tokyo).toEqual(utc);
       expect(utc[0]).toHaveLength(546);
     } finally {

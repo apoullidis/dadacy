@@ -49,16 +49,18 @@ describe('civil dates', () => {
     ]).toEqual([29, 28, 30, 31]);
   });
 
-  test('addCalendarMonths: 18 months, year rollover, and undefined for a day the target month lacks', () => {
+  test('addCalendarMonths: 18 months, year rollover, and a missing day clamped to the month end (OE-78 (2))', () => {
     const add = (s: string, m: number) => {
       const r = addCalendarMonths(parseCivilDate(s) ?? { year: 0, month: 0, day: 0 }, m);
-      return r && formatCivilDate(r);
+      return formatCivilDate(r);
     };
     expect(add('2026-10-01', 18)).toBe('2028-04-01');
     expect(add('2026-06-01', 18)).toBe('2027-12-01');
     expect(add('2026-08-29', 18)).toBe('2028-02-29');
-    expect(add('2026-08-31', 18)).toBeUndefined();
-    expect(add('2027-08-29', 18)).toBeUndefined();
+    expect(add('2026-08-31', 18)).toBe('2028-02-29');
+    expect(add('2027-08-29', 18)).toBe('2029-02-28');
+    expect(add('2027-08-31', 18)).toBe('2029-02-28');
+    expect(add('2026-10-31', 1)).toBe('2026-11-30');
     expect(add('2026-12-31', 1)).toBe('2027-01-31');
   });
 });
