@@ -9,10 +9,16 @@
  * covers every table, the ones no suite pins and every future one, in one assertion.
  *
  * THE SWEEP. Every `pg_rewrite` row whose relation lives in a schema that is not PostgreSQL's own
- * (`pg_catalog`, `information_schema`, `pg_toast*`, `pg_temp_*`), except the `_RETURN` rule of a view or
- * materialized view, which IS that view's definition (PostgreSQL stores every view as one). So: any rule
- * on a table or a partitioned table, and any rule on a view other than its definition. On the committed
- * migration set it must read `none`.
+ * (`pg_catalog`, `information_schema`, `pg_toast*`, `pg_temp_*`) and is not a member of an extension,
+ * except the `_RETURN` rule of a view or materialized view, which IS that view's definition (PostgreSQL
+ * stores every view as one). So: any rule on a table or a partitioned table, and any rule on a view other
+ * than its definition. On the committed migration set it must read `none`.
+ *
+ * EXTENSION MEMBERS ARE LEFT OUT, AND PINNED INSTEAD. PostGIS installs three INSTEAD rules on its own view
+ * `public.geometry_columns` (measured: the first run of this suite named them). They are the extension's,
+ * not a migration's, so the sweep skips every relation with a `pg_depend` 'e' row, and a separate case pins
+ * the rules on such relations to exactly those three, so a new one (an extension upgrade, or a table a
+ * migration made an extension member with `ALTER EXTENSION … ADD`) still turns a case red.
  *
  * WHAT MAKES IT A CHECK AND NOT A READING (PROTOCOL §5.1). (1) The sweep is shown REFUSING: inside a
  * transaction that is never committed, a rule is created on one table of EVERY application schema that
@@ -45,19 +51,30 @@ afterAll(async () => {
 /** A schema that is PostgreSQL's own; everything else is an application schema. */
 const NOT_SYSTEM = `n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname !~ '^pg_(toast|temp_)'`;
 
-/** Every rewrite rule in the application schemas except a view's own definition, or `none`. */
-const SWEEP = `SELECT coalesce(string_agg(n.nspname || '.' || c.relname || ':' || r.rulename || ':' || c.relkind::text, ', '
+/** The relation is a member of an extension (PostGIS's `geometry_columns` view, `spatial_ref_sys`). */
+const EXTENSION_MEMBER = `EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e')`;
+
+/** Rewrite rules in the application schemas, a view's own _RETURN rule aside, filtered by `extra`. */
+const rules = (
+  extra: string,
+): string => `SELECT coalesce(string_agg(n.nspname || '.' || c.relname || ':' || r.rulename || ':' || c.relkind::text, ', '
                                          ORDER BY n.nspname, c.relname, r.rulename), 'none')
                  FROM pg_rewrite r
                  JOIN pg_class c ON c.oid = r.ev_class
                  JOIN pg_namespace n ON n.oid = c.relnamespace
-                WHERE ${NOT_SYSTEM} AND NOT (r.rulename = '_RETURN' AND c.relkind IN ('v', 'm'))`;
+                WHERE ${NOT_SYSTEM} AND NOT (r.rulename = '_RETURN' AND c.relkind IN ('v', 'm')) AND ${extra}`;
+
+/** THE SWEEP: every such rule on a relation that no extension owns, or `none`. */
+const SWEEP = rules(`NOT ${EXTENSION_MEMBER}`);
+
+/** The rules on extension members, which the sweep leaves out; pinned exactly below. */
+const EXTENSION_RULES = rules(EXTENSION_MEMBER);
 
 /** One table (relkind r or p) per application schema, the first by name: `schema.table:relkind`. */
 const ONE_TABLE_PER_SCHEMA = `SELECT string_agg(t, ' ' ORDER BY t) FROM (
     SELECT DISTINCT ON (n.nspname) n.nspname || '.' || c.relname || ':' || c.relkind::text AS t
       FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-     WHERE ${NOT_SYSTEM} AND c.relkind IN ('r', 'p') AND NOT c.relispartition
+     WHERE ${NOT_SYSTEM} AND c.relkind IN ('r', 'p') AND NOT c.relispartition AND NOT ${EXTENSION_MEMBER}
      ORDER BY n.nspname, c.relname) x`;
 
 /**
@@ -87,6 +104,13 @@ describe('T-237 — rewrite rules in the application schemas', () => {
 
   test('the committed migration set: no rewrite rule on any relation in the application schemas, except the _RETURN rule of a view', async () => {
     assert.equal(await db.value(SWEEP), 'none');
+  });
+
+  test('the rules the sweep leaves out, on relations an extension owns, are exactly PostGIS three on geometry_columns', async () => {
+    assert.equal(
+      await db.value(EXTENSION_RULES),
+      'public.geometry_columns:geometry_columns_delete:v, public.geometry_columns:geometry_columns_insert:v, public.geometry_columns:geometry_columns_update:v',
+    );
   });
 
   test('REFUSAL: a rule on one table of every application schema, in three shapes, and an INSTEAD rule on a view, are each named by the sweep', async () => {
