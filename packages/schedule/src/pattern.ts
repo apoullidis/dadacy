@@ -112,7 +112,11 @@ export type StaffedPatternV1 = z.infer<typeof StaffedPatternV1> & { readonly zon
 export type StaffedSeason = StaffedPatternV1['seasons'][number];
 export type StaffedBlock = StaffedSeason['blocks'][number];
 
-/** Parse and validate; `success: false` carries Zod's issues (paths and messages, never values). */
+/**
+ * Parse and validate; `success: false` carries Zod's issues. For the values `pattern.test.ts` plants (a
+ * zone string, a weekday number, a time string) the issues do not echo them; an unrecognised KEY's
+ * name IS named. That is a test of these cases, not a Zod guarantee.
+ */
 export function parseStaffedPatternV1(
   input: unknown,
 ): { success: true; data: StaffedPatternV1 } | { success: false; issues: z.core.$ZodIssue[] } {

@@ -130,3 +130,27 @@ describe('StaffedPatternV1 refuses', () => {
     }
   });
 });
+
+describe('parseStaffedPatternV1', () => {
+  test('refusal issues do not echo the planted values, but do name an unknown key', () => {
+    const planted = {
+      schema: 1,
+      zone: 'Secret/Zone_X9Q',
+      seasons: [
+        {
+          key: 'all',
+          startsOn: '01-01',
+          blocks: [
+            { weekday: 987654, start: 'zz:q7', end: '23:00', endsNextDay: false, leakykey: 1 },
+          ],
+        },
+      ],
+    };
+    const r = parseStaffedPatternV1(planted);
+    expect(r.success).toBe(false);
+    const text = JSON.stringify(r.success ? [] : r.issues);
+    expect(text.length).toBeGreaterThan(0);
+    for (const v of ['Secret/Zone_X9Q', '987654', 'zz:q7']) expect(text).not.toContain(v);
+    expect(text).toContain('leakykey');
+  });
+});

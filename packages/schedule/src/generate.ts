@@ -26,8 +26,8 @@
  *   - `horizon_end_not_a_date`: effective_from + 18 months names a day the target month lacks;
  *   - `empty_after_dst`: a block whose start and end resolve to the same instant (both inside a
  *     spring-forward gap) — `[a,a)` is refused by the table's CHECK;
- *   - `intervals_overlap`: two intervals overlap in time (possible only across a season boundary,
- *     since the schema refuses overlap within a season) — the table's EXCLUDE refuses it.
+ *   - `intervals_overlap`: two intervals overlap in time — the table's EXCLUDE refuses it. The schema
+ *     refuses overlap within a season; this postcondition is shown red for a season-boundary case.
  */
 import { randomBytes } from 'node:crypto';
 import { resolveLocal, ulid, type Ulid } from '@kinvara/domain-types';

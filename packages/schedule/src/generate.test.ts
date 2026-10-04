@@ -402,7 +402,7 @@ describe('refusals: what the generator will not decide (each reported as a quest
     }
   });
 
-  test('a pattern the schema refuses is pattern_invalid, even when cast to the type', () => {
+  test('a pattern the schema refuses is pattern_invalid (the generator parses its input itself)', () => {
     expect(
       thrown(() => generateStaffedIntervals({ ...LAUNCH, schema: 2 }, '2026-10-01')).reason,
     ).toBe('pattern_invalid');
