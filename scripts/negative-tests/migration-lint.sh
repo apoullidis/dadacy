@@ -643,6 +643,17 @@ check CW7 "CONTROL: DROP RULE" PASS
 pair expand "CREATE VIEW public.t237_view AS SELECT 1 AS x;
 GRANT SELECT ON public.t237_view TO app_rw;"
 check CW8 "CONTROL: CREATE VIEW, whose _RETURN rule is the view itself" PASS
+# T-237 rework 1 (QA-F3): an escape string is decoded before it is read.
+pair expand "DO \$do\$ BEGIN EXECUTE E'CREATE\\nRULE t237_rule AS ON DELETE TO public.account DO INSTEAD NOTHING'; END \$do\$;"
+check CW9 "QA R15: an E-string with \\n between CREATE and RULE" R-RULE
+pair expand "DO \$do\$ BEGIN EXECUTE E'CREATE \\x52ULE t237_rule AS ON DELETE TO public.account DO INSTEAD NOTHING'; END \$do\$;"
+check CW10 "QA R16: an E-string with a hex escape, \\x52 for R" R-RULE
+pair expand "DO \$do\$ BEGIN EXECUTE e'CREATE \\122ULE t237_rule AS ON DELETE TO public.account DO INSTEAD NOTHING'; END \$do\$;"
+check CW11 "a lower-case e-string with an octal escape, \\122 for R" R-RULE
+pair expand "DO \$do\$ BEGIN EXECUTE E'CREATE \\u0052ULE t237_rule AS ON DELETE TO public.account DO INSTEAD NOTHING'; END \$do\$;"
+check CW12 "an E-string with a Unicode escape, \\u0052 for R" R-RULE
+pair expand "DO \$do\$ BEGIN PERFORM 'CREATE\\nRULE'; END \$do\$;"
+check CW13 "CONTROL: a STANDARD string keeps its backslash, so CREATE\\nRULE is not two words" PASS
 
 echo "== R-ANSWERING-SERVICE (T-020 contract §6)"
 pair expand "GRANT SELECT ON out_of_hours_report TO answering_service;"
