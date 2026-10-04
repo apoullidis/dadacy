@@ -46,7 +46,7 @@ afterAll(async () => {
 const NOT_SYSTEM = `n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname !~ '^pg_(toast|temp_)'`;
 
 /** Every rewrite rule in the application schemas except a view's own definition, or `none`. */
-const SWEEP = `SELECT coalesce(string_agg(n.nspname || '.' || c.relname || ':' || r.rulename || ':' || c.relkind, ', '
+const SWEEP = `SELECT coalesce(string_agg(n.nspname || '.' || c.relname || ':' || r.rulename || ':' || c.relkind::text, ', '
                                          ORDER BY n.nspname, c.relname, r.rulename), 'none')
                  FROM pg_rewrite r
                  JOIN pg_class c ON c.oid = r.ev_class
@@ -55,7 +55,7 @@ const SWEEP = `SELECT coalesce(string_agg(n.nspname || '.' || c.relname || ':' |
 
 /** One table (relkind r or p) per application schema, the first by name: `schema.table:relkind`. */
 const ONE_TABLE_PER_SCHEMA = `SELECT string_agg(t, ' ' ORDER BY t) FROM (
-    SELECT DISTINCT ON (n.nspname) n.nspname || '.' || c.relname || ':' || c.relkind AS t
+    SELECT DISTINCT ON (n.nspname) n.nspname || '.' || c.relname || ':' || c.relkind::text AS t
       FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
      WHERE ${NOT_SYSTEM} AND c.relkind IN ('r', 'p') AND NOT c.relispartition
      ORDER BY n.nspname, c.relname) x`;
