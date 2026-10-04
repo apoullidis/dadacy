@@ -236,7 +236,27 @@ importers:
 
   packages/pricing: {}
 
-  packages/schedule: {}
+  packages/schedule:
+    dependencies:
+      '@kinvara/domain-types':
+        specifier: workspace:*
+        version: link:../domain-types
+      zod:
+        specifier: 4.5.4
+        version: 4.5.4
+    devDependencies:
+      '@vitest/coverage-v8':
+        specifier: 5.0.0
+        version: 5.0.0(vitest@5.0.0)
+      typescript:
+        specifier: 6.0.3
+        version: 6.0.3
+      vite:
+        specifier: 8.2.2
+        version: 8.2.2(@types/node@26.4.1)(esbuild@0.28.2)(tsx@4.23.13)(yaml@2.8.1)
+      vitest:
+        specifier: 5.0.0
+        version: 5.0.0(@types/node@26.4.1)(@vitest/coverage-v8@5.0.0)(vite@8.2.2(@types/node@26.4.1)(esbuild@0.28.2)(tsx@4.23.13)(yaml@2.8.1))
 
   packages/text-normalise: {}
 
