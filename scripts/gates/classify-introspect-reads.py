@@ -16,8 +16,9 @@ Exit 2: usage.
 WHAT IT IS MEASURED TO CATCH is exactly scripts/gates/classify-introspect-reads.fixture: every line marked
 `# attack:` there is flagged and every `# control:` line is not, and gate:negative-suites checks that on
 every run. That is QA-S1's four shapes (T-232), T-234's fifteen, QA's 52 attack shapes (T-234 § QA-1,
-R01-R52 except R42, which is a control), and T-237's seventeen (TL-F1's G1-G3, G5-G7, E2 and O2d; O1a/c/e/f;
-O2a/b/c/e/f): 88 attack lines and 10 controls. O3 is not a fixture line (the fixture defines no scope
+R01-R52 except R42, which is a control), T-237's seventeen (TL-F1's G1-G3, G5-G7, E2 and O2d; O1a/c/e/f;
+O2a/b/c/e/f), and T-237 rework 1's eighteen: qa-verification's Q14, Q16-Q21, Q23-Q25, Q27-Q29 and five
+top-level twins Q17t, Q18t, Q19t, Q19u, Q20t: 106 attack lines and 11 controls. O3 is not a fixture line (the fixture defines no scope
 function); it is held by gate:pr-gate-suite's case B19, which inserts a rebinding line into the real suite's
 block_count. Nothing wider is claimed; the bounds are listed at the end.
 
@@ -27,8 +28,10 @@ SELECTION (mechanical, not by reading). A non-comment line is taken if it
       (the generator's output and derived files), wherever it sits in a word: glued to preceding
       characters (`<"$SCHEMA"`, $PWD/db/schema.ts, ../app/db/schema.ts, an absolute path) included
       (T-237, TL-F1), and in a non-canonical spelling, which is first rewritten (`db//schema.ts`,
-      `db/./schema.ts`, `db/x/../schema.ts`, a brace list such as `db/schema.{ts,}` one of whose
-      expansions is the file: canon(), T-237, O2), or
+      `db/./schema.ts`, `db/x/../schema.ts`, a brace list such as `db/schema.{ts,}`, `db/s{c,}hema.ts` or
+      `d{b,}/schema.ts` one of whose expansions is the file, an escaped letter `db/sch\\ema.ts`, and a glob
+      in the directory or file component such as `d?/schema.ts`, `*/schema.ts`, `[d]b/schema.ts`: canon(),
+      T-237 O2 and rework 1, QA-F1/QA-F2), or
   (b) calls a judging helper (check, check_facts, part_check, policy_check, write_judge, partlocal_case,
       system_case, shape_case, judge, fact, facts_into, block_count, head_count), or
   (c) continues such a call (the previous taken line ends with a backslash), or
@@ -39,7 +42,9 @@ THE RULES:
      judged by its position:
        - inside a quoted argument of echo, printf, abort or a judging helper (PROSE_CMDS): prose, because
          those commands print it, or look for it as a regex in $OUT. NOT prose when that command's output
-         is piped (`|`, `|&`; not `||`) into the next command, which then reads it (T-237, O1);
+         is read by another command on the same physical line (T-237 O1, rework 1 QA-F1): piped (`|`,
+         `|&`; not `||`) directly or through the `{ }` group, `( )` subshell or `do ... done`/`then ... fi`
+         body holding it; run inside `$( )`, `<( )` or `>( )`; or redirected into `>( )`;
        - in one of the closed HARNESS_CTX contexts (restore, git diff, cmp/cp with $OUT.s1, rm, >>,
          mutate, the definition): harness;
        - after `git show <rev>:` / `git cat-file`: a read of the COMMITTED file (rule 3);
@@ -76,22 +81,24 @@ remains:
     flagged. Each such shape in the fixture is caught only because the line that JUDGES its result
     matches no rule (UNCLASSIFIED). A future line that judges such a result in a shape some rule does
     classify would pass.
-  - A path run is canonicalised only when it holds both `db` and `schema` and one of its comma-list brace
-    expansions resolves to a path ENDING in db/schema.ts. A brace RANGE (`db/schema.t{s..s}`) and a glob
-    inside a brace list (`db/{sch*,x}.ts`) are not resolved, and a line reading through either passes when
-    it names a plant (T-237 § Evidence, BOUNDS). A glob under db/ outside braces is recognised as before.
-  - A quoted argument of a PROSE_CMDS command is prose when its output is not piped on the same physical
-    line: `echo "./$SCHEMA" >"$OUT.x"` followed by a later read of "$OUT.x", or a pipe moved to the next line
-    by a backslash continuation, is not seen as a read. Each such echo line is flagged only because it is
-    UNCLASSIFIED (the DISPLAY rule admits `echo "== ..."` alone).
-  - A scope helper's body is pinned, not a function that wraps it: `bc() { block_count accountRole "$2"; }`
-    is not a taken line, and a call `$(bc t153Money 'role:')` naming a plant passes (an alias through
-    another name).
+  - A path run (unquoted path characters, backslash escapes included) is canonicalised through comma-list
+    brace expansion, `//`, `.`, `name/..` and a glob matched against db/schema.ts. A brace RANGE
+    (`db/schema.t{s..s}`) is not expanded, and a path split by QUOTES (`'db'/schema.ts`, `db/"schema".ts`)
+    is not joined: a line reading through either passes when it names a plant (T-237 § Rework 1, R1-BOUNDS).
+  - A quoted argument of a PROSE_CMDS command at the top level is prose when nothing on the same physical
+    line reads its output: `echo "./$SCHEMA" >"$OUT.x"` followed by a later read of "$OUT.x", or a top-level
+    echo whose pipe is moved to the next line by a backslash continuation, is not seen as a read. Each such
+    echo line is flagged only because it is UNCLASSIFIED (the DISPLAY rule admits `echo "== ..."` alone);
+    the later read of the copy is the copy bound above.
+  - A scope helper's body is pinned, not a function that wraps it, nor a command its body calls:
+    `bc() { block_count accountRole "$2"; }`, or a function named `awk` or `grep` defined before block_count,
+    is not a taken line, and a call naming a plant passes (an alias through another name; QA-O1).
   - A BLOCK_VARS name (`"$b"`, `"${spec%%|*}"`) rebound to a committed declaration is filed BLOCK.
   - It reads one physical line at a time.
   - A regex over $OUT that contains a plant name is filed PLANT-LITERAL (T-232 § Rework 2's residual
     route for regexes over generator output).
 """
+import fnmatch
 import hashlib
 import re
 import sys
@@ -126,13 +133,16 @@ def strip_desc(l):
 
 
 # T-237 (O2): a non-canonical spelling of the path is rewritten to db/schema.ts before any rule reads the
-# line. A PATH RUN is a maximal run of path characters (no quote, no $, no space); one that holds both `db`
-# and `schema` is brace-expanded (`db/schema.{ts,}`, `db/{schema,x}.ts`), then each expansion has `//`
-# collapsed, `.` segments dropped and `name/..` pairs resolved (`db//schema.ts`, `db/./schema.ts`,
-# `db/x/../schema.ts`, `./db/../db/schema.ts`). If an expansion so resolved ENDS in the path component
-# pair db/schema.ts and the run was not already spelled that way, the run becomes that resolved path.
+# line. A PATH RUN is a maximal run of path characters and backslash escapes (no quote, no $, no space). Its
+# escapes are dropped as bash drops them (`db/sch\ema.ts`), it is brace-expanded (`db/schema.{ts,}`,
+# `db/s{c,}hema.ts`, `d{b,}/schema.ts`), then each expansion has `//` collapsed, `.` segments dropped and
+# `name/..` pairs resolved (`db//schema.ts`, `db/./schema.ts`, `db/x/../schema.ts`, `./db/../db/schema.ts`).
+# If an expansion so resolved ENDS in the path component pair db/schema.ts, or holds a glob whose last two
+# components match db and schema.ts (`d?/schema.ts`, `*/schema.ts`, `[d]b/schema.ts`; rework 1, QA-F2), and
+# the run was not already spelled canonically, it is rewritten: to the resolved path, or db/schema.ts for a glob.
 # A canonical spelling is left byte for byte as written, so no WHOLE_FILE_OK key or EXACT_LINES text moves.
-PATH_RUN = re.compile(r'[A-Za-z0-9_.,{}/*?\[\]~+-]+')
+PATH_RUN = re.compile(r'(?:[A-Za-z0-9_.,{}/*?\[\]~+-]|\\.)+')
+GLOB = re.compile(r'[*?\[]')
 
 
 def brace_expand(w, limit=64):
@@ -185,16 +195,26 @@ def resolve(path):
     return lead + '/'.join(segs)
 
 
+def names_schema(p):
+    """A resolved path names the file: it ends in the components db/schema.ts, or (rework 1, QA-F2) it holds
+    a glob whose last two components would match db and schema.ts (`d?/schema.ts`, `*/schema.ts`,
+    `[d]b/schema.ts`, db/sch*.ts)."""
+    if p == 'db/schema.ts' or p.endswith('/db/schema.ts'):
+        return True
+    comps = p.split('/')
+    return bool(GLOB.search(p)) and len(comps) >= 2 and fnmatch.fnmatchcase('db', comps[-2]) \
+        and fnmatch.fnmatchcase('schema.ts', comps[-1])
+
+
 def canon(l):
     def fix(m):
         w = m.group(0)
-        if 'db' not in w or 'schema' not in w:
-            return w
-        for e in brace_expand(w):
+        w0 = re.sub(r'\\(.)', r'\1', w)  # rework 1 (QA-F1 Q27): bash drops an unquoted backslash
+        for e in brace_expand(w0):
             r = resolve(e)
-            noncanonical = e != w or r != re.sub(r'^(?:\./)+', '', e)
-            if noncanonical and (r == 'db/schema.ts' or r.endswith('/db/schema.ts')):
-                return r
+            noncanonical = w0 != w or e != w0 or r != re.sub(r'^(?:\./)+', '', e) or GLOB.search(r)
+            if noncanonical and names_schema(r):
+                return 'db/schema.ts' if GLOB.search(r) else r
         return w
     return PATH_RUN.sub(fix, l)
 
@@ -216,18 +236,35 @@ KEYWORDS = {'if', 'then', 'else', 'elif', 'do', 'while', 'until', '!', '{', '}',
 
 def contexts(s):
     """For each TOK occurrence in s: [position, innermost context, owning command, piped]. The context is
-    'top', 'cs' ($( )), 'paren', 'dq' or 'sq'; the owning command is the first word of the simple command
-    the occurrence (or the quoted word holding it) belongs to, None for an assignment's value or unknown.
-    `piped` (T-237, O1) is True when that simple command's standard output feeds a pipe (`|` or `|&`,
-    never `||`), so whatever it prints is read by the next command."""
+    'top', 'cs' ($( )), 'paren', 'ps' (<( ) or >( )), 'dq' or 'sq'; the owning command is the first word of
+    the simple command the occurrence (or the quoted word holding it) belongs to, None for an assignment's
+    value or unknown. `piped` (T-237 O1, widened in rework 1 for QA-F1) is True when what the owning command
+    prints is read by another command on the same physical line:
+      - its standard output feeds a pipe (`|` or `|&`, never `||`), directly or through the compound
+        command holding it: a `{ ...; }` group, a `( ... )` subshell, or a loop/if body closed by
+        `done`/`fi` and then piped;
+      - it runs inside a command substitution `$( ... )` or a process substitution `<( ... )`/`>( ... )`,
+        whose output is captured and handed to another command (`"$(echo ...)"`, `<<<"$(echo ...)"`,
+        `xargs -a <(echo ...)`);
+      - its output is redirected into a process substitution (`echo ... > >(xargs grep ...)`)."""
     out, i = [], 0
-    stack = [{'k': 'top', 'cmd': None, 'want': True}]
+    stack = [{'k': 'top', 'cmd': None, 'want': True, 'pending': [], 'groups': [], 'all': []}]
+    CMD = ('top', 'cs', 'paren', 'ps')
 
     def cmdframe():
         for f in reversed(stack):
-            if f['k'] in ('top', 'cs', 'paren'):
+            if f['k'] in CMD:
                 return f
         return stack[0]
+
+    def frame(kind):
+        return {'k': kind, 'cmd': None, 'want': True, 'pending': [], 'groups': [], 'all': []}
+
+    def end_command(f):
+        # the simple command ends without a pipe: inside an open group its occurrences wait for the group
+        if f['groups']:
+            f['groups'][-1].extend(f['pending'])
+        f['pending'] = []
 
     while i < len(s):
         f = stack[-1]
@@ -235,8 +272,9 @@ def contexts(s):
         if s.startswith(TOK, i):
             cf = cmdframe()
             owner = f.get('owner') if k in ('dq', 'sq') else cf['cmd']
-            out.append([i, k, owner, False])
-            cf.setdefault('pending', []).append(len(out) - 1)
+            out.append([i, k, owner, cf['k'] in ('cs', 'ps')])
+            cf['pending'].append(len(out) - 1)
+            cf['all'].append(len(out) - 1)
             if k not in ('dq', 'sq') and cf['want']:
                 cf['cmd'], cf['want'] = '<schema>', False
             i += len(TOK)
@@ -254,7 +292,7 @@ def contexts(s):
             if c == '"':
                 stack.pop()
             elif s.startswith('$(', i):
-                stack.append({'k': 'cs', 'cmd': None, 'want': True})
+                stack.append(frame('cs'))
                 i += 2
                 continue
             i += 1
@@ -267,13 +305,15 @@ def contexts(s):
             i += 1  # a redirection (`2>&1`, `>&2`), part of the word before it
             continue
         if c in ';|&\n':
-            # T-237 (O1): `|` and `|&` pipe this simple command's output into the next; `||`, `&&`, `;`,
-            # `&` and a newline only end it.
+            # T-237 (O1): `|` and `|&` pipe this command's output into the next; `||`, `&&`, `;`, `&` and a
+            # newline only end it.
             step = 2 if s.startswith(('||', '&&', '|&'), i) else 1
             if c == '|' and not s.startswith('||', i):
-                for j in f.get('pending', []):
+                for j in f['pending']:
                     out[j][3] = True
-            f['pending'] = []
+                f['pending'] = []
+            else:
+                end_command(f)
             f['cmd'], f['want'] = None, True
             i += step
             continue
@@ -295,16 +335,31 @@ def contexts(s):
         if s.startswith('$(', i):
             if f['want']:
                 f['cmd'], f['want'] = '?', False
-            stack.append({'k': 'cs', 'cmd': None, 'want': True})
+            stack.append(frame('cs'))
             i += 2
             continue
         if c == '(':
-            stack.append({'k': 'paren', 'cmd': None, 'want': True})
+            if i > 0 and s[i - 1] in '<>':
+                if s[i - 1] == '>':
+                    # rework 1 (QA-F1): output redirected into a process: this command's occurrences are read
+                    for j in f['pending']:
+                        out[j][3] = True
+                stack.append(frame('ps'))
+            else:
+                stack.append(frame('paren'))
             i += 1
             continue
         if c == ')':
             if len(stack) > 1:
-                stack.pop()
+                done_f = stack.pop()
+                if done_f['k'] == 'paren':
+                    # rework 1 (QA-F1): a ( ... ) subshell is one command of its parent; every occurrence in
+                    # it is pending there, so a `|` after the `)` marks them
+                    parent = cmdframe()
+                    parent['pending'].extend(done_f['all'])
+                    parent['all'].extend(done_f['all'])
+                elif done_f['k'] in CMD:
+                    cmdframe()['all'].extend(done_f['all'])
             i += 1
             continue
         # T-237 (TL-F1): a word stops AT the token, so a spelling glued to preceding characters in an
@@ -317,6 +372,11 @@ def contexts(s):
             continue
         w = m.group(0)
         if f['want']:
+            if w in ('{', 'do', 'then'):
+                f['groups'].append([])  # rework 1 (QA-F1): a compound command's body opens
+            elif w in ('}', 'done', 'fi') and f['groups']:
+                # ... and closes: everything in it is now this command's, for a `|` that follows
+                f['pending'] = f['groups'].pop() + f['pending']
             if w in KEYWORDS or w == '[[':
                 pass
             elif re.match(r'^[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?\+?=', w):
