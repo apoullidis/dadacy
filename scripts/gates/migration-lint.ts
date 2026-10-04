@@ -103,6 +103,15 @@
  *                        `DROP FUNCTION assert_sitter_bookable() CASCADE` takes
  *                        `trg_booking_sitter_bookable` with it, and OD-73's A5 removed the INT-10
  *                        event trigger that way. Write each drop out. No marker permits it.
+ *   [R-RULE]             (T-237, T-234 tech-lead TL-5 (c)) no `CREATE [OR REPLACE] RULE`, at any depth (a
+ *                        `DO` or function body, an `EXECUTE` string) and in a down file too. A rewrite rule
+ *                        changes what a write does without a trigger, a grant or a constraint, so a refusal
+ *                        test sees it only if it swallows that test's own write (T-196 QA2-F1). No marker
+ *                        permits it. The database-side half is db-testkit's `rewrite-rules` suite, which
+ *                        refuses any rule in the application schemas after every migration has run. A view's
+ *                        own `_RETURN` rule comes from `CREATE VIEW` and is not this rule's; `DROP RULE` and
+ *                        `ALTER RULE … RENAME` are not refused. Like every rule here, a statement assembled
+ *                        from pieces at run time (`format()`, concatenation) is not read as one.
  *   [R-APPEND-ONLY]      no UPDATE, DELETE, TRUNCATE or ALL is granted on `audit_log`,
  *                        `case_note` or `decision_record`, on a table named after one with an
  *                        underscore suffix (a partition), or on `ALL TABLES IN SCHEMA`
@@ -2208,6 +2217,17 @@ for (const m of migrations) {
         'R-CASCADE',
         m.rel,
         `DROP OWNED removes every object the role owns without naming one, protected ones included; drop each one explicitly: ${snippet(f)}`,
+      );
+    }
+  }
+
+  // R-RULE (T-237). No marker permits it.
+  for (const f of frags) {
+    if (/\bCREATE (?:OR REPLACE )?RULE\b/.test(f)) {
+      problem(
+        'R-RULE',
+        m.rel,
+        `CREATE RULE installs a rewrite rule, which changes what a write does without a trigger, a grant or a constraint, so a refusal test sees it only if it swallows that test's own write (T-196 QA2-F1); no marker permits one: ${snippet(f)}`,
       );
     }
   }
