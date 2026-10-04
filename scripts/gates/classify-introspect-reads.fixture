@@ -237,3 +237,34 @@ fact "O2f" "$(grep -c 't153Money' db/x/../schema.ts)" 1
 echo "== K999 regenerating db/schema.ts"
 # control: C9 an abort message naming the file after `||`, which is not a pipe (HARNESS)
 grep -q 'pgTable("t138_plant"' "$OUT.w" || { cat "$OUT.w"; abort "regeneration did not add t138_plant to $SCHEMA"; }
+
+# ---- T-237 rework 1 (QA-F1, QA-F2): qa-verification's QA-1 shapes that T-237's first classifier (393d5f3) filed
+# PLANT-LITERAL, byte for byte from .cache/t237-qa/attacks.sh (tasks/state/EP-2/T-237.md § QA-1).
+# attack: Q14 echo output consumed by command substitution as an argument
+fact "Q14" "$(grep -c t153Money "$(echo "./$SCHEMA")")" 1
+# attack: Q16 echo into a process substitution read by xargs -a
+fact "Q16" "$(xargs -a <(echo "./$SCHEMA") grep -c t153Money)" 1
+# attack: Q17 a { } group piped
+fact "Q17" "$({ echo "./$SCHEMA"; } | xargs grep -c t153Money)" 1
+# attack: Q18 a ( ) subshell piped
+fact "Q18" "$( (echo "./$SCHEMA") | xargs grep -c t153Money)" 1
+# attack: Q19 a for loop's echo, piped after done
+fact "Q19" "$(for s in x; do echo "./$SCHEMA"; done | xargs grep -c t153Money)" 1
+# attack: Q20 echo to a process substitution sink
+fact "Q20" "$(echo "./$SCHEMA" > >(xargs grep -c t153Money))" 1
+# attack: Q21 here-string of an echo substitution
+fact "Q21" "$(xargs grep -c t153Money <<<"$(echo "./$SCHEMA")")" 1
+# attack: Q23 a glob in the directory component
+fact "Q23" "$(grep -c t153Money d?/schema.ts)" 1
+# attack: Q24 a glob over the directory
+fact "Q24" "$(grep -c t153Money */schema.ts)" 1
+# attack: Q25 a bracket glob on db
+fact "Q25" "$(grep -c t153Money [d]b/schema.ts)" 1
+# attack: Q27 a backslash-escaped letter db/sch\ema.ts
+fact "Q27" "$(grep -c t153Money db/sch\ema.ts)" 1
+# attack: Q28 a brace list that splits the word schema
+fact "Q28" "$(grep -c t153Money db/s{c,}hema.ts)" 1
+# attack: Q29 a brace list that splits db
+fact "Q29" "$(grep -c t153Money d{b,}/schema.ts)" 1
+# control: C10 an escaped-dot regex naming the file, the quoted argument of a judging helper (prose)
+check K999 "C10 t153Money" PASS 'db/schema\.ts: byte-identical to a fresh introspection'
