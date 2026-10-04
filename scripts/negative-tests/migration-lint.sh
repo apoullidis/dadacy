@@ -621,6 +621,29 @@ check C57 "CONTROL: DROP … RESTRICT" PASS
 pair expand "DROP OWNED BY app_rw;"
 check C58 "DROP OWNED BY, which removes every object the role owns without naming one" R-CASCADE
 
+echo "== R-RULE (T-237): no rewrite rule in a migration"
+pair expand "CREATE RULE t237_rule AS ON UPDATE TO public.webauthn_credential WHERE false DO INSTEAD NOTHING;"
+check CW1 "T-234 QA-5's inert conditional INSTEAD rule" R-RULE
+pair expand "create or replace
+  rule t237_rule as on insert to public.account do also notify t237;"
+check CW2 "lower case, OR REPLACE, across two lines, an ALSO rule" R-RULE
+pair expand "CREATE /* a comment between the keywords */ RULE t237_rule AS ON DELETE TO public.account DO INSTEAD NOTHING;"
+check CW3 "a block comment between CREATE and RULE" R-RULE
+pair expand "DO \$do\$ BEGIN EXECUTE 'CREATE RULE t237_rule AS ON DELETE TO public.account DO INSTEAD NOTHING'; END \$do\$;"
+check CW4 "inside a DO block, as an EXECUTE string" R-RULE
+pair expand "SELECT 1;"
+plant "$DOWN" "CREATE RULE t237_rule AS ON DELETE TO public.account DO INSTEAD NOTHING;"
+check CW5 "in a DOWN file" R-RULE
+pair expand "-- CREATE RULE t237_rule AS ON DELETE TO public.account DO INSTEAD NOTHING;
+/* CREATE RULE t237_rule AS ON DELETE TO public.account DO INSTEAD NOTHING; */
+SELECT 1;"
+check CW6 "CONTROL: the same statement inside comments" PASS
+pair expand "DROP RULE IF EXISTS t237_rule ON public.account;"
+check CW7 "CONTROL: DROP RULE" PASS
+pair expand "CREATE VIEW public.t237_view AS SELECT 1 AS x;
+GRANT SELECT ON public.t237_view TO app_rw;"
+check CW8 "CONTROL: CREATE VIEW, whose _RETURN rule is the view itself" PASS
+
 echo "== R-ANSWERING-SERVICE (T-020 contract §6)"
 pair expand "GRANT SELECT ON out_of_hours_report TO answering_service;"
 check C60 "SELECT on out_of_hours_report" R-ANSWERING-SERVICE
