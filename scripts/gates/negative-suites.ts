@@ -124,9 +124,12 @@ const SUITES: readonly Suite[] = [
     // GRANT/REVOKE; its up moves no name). Two expectations re-classed in the same change before the
     // lint change (CQ9A/CQ9C also R-PHASE); no older case touched. Footer `ALL 374` at 9fcc45d, after this
     // gate refused 374 against 358 — T-241 § Rework 1.
-    cases: 374,
+    // 374 -> 382, 2026-10-04, T-237: eight cases CW1-CW8 for R-RULE (five CREATE RULE plants, three controls).
+    // No older case touched. CW1-CW5 were BAD against the previous lint (`!! 5 of 382` at e4d71c6); footer
+    // `ALL 382 CASES BEHAVED AS EXPECTED` at 4e8c507 — T-237.md, ML-REDFIRST / ML-GREEN.
+    cases: 382,
     state: 'GREEN',
-    why: 'gate:migration-lint: expand/contract, protected objects (the I-5 objects since T-186, 0011\'s since T-192), R-TRIGGER-BYPASS by name, R-PROTECTED-RENAME, R-ADMIN-MEMBERSHIP, R-PROTECTED-TABLE, R-PROTECTED-EXTENSION, U&"…" decoding, R-ROLE-SWITCH, R-RUN-AS, R-MERGED, R-TRAILER, R-VENDOR-SQL, R-RESTORE-PUBLIC (T-021, T-031, T-167, T-186, T-192, T-227, T-241)',
+    why: 'gate:migration-lint: expand/contract, protected objects (the I-5 objects since T-186, 0011\'s since T-192), R-TRIGGER-BYPASS by name, R-PROTECTED-RENAME, R-ADMIN-MEMBERSHIP, R-PROTECTED-TABLE, R-PROTECTED-EXTENSION, U&"…" decoding, R-ROLE-SWITCH, R-RUN-AS, R-MERGED, R-TRAILER, R-VENDOR-SQL, R-RESTORE-PUBLIC, R-RULE (T-021, T-031, T-167, T-186, T-192, T-227, T-241, T-237)',
   },
   {
     id: 'semgrep',
