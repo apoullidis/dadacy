@@ -267,7 +267,10 @@ const SUITES: readonly Suite[] = [
     // 36 -> 39, 2026-09-24, T-190 (OD-220): C1b (the BLOCKED fixture's control), C11 (the promoted
     // suite with one misbehaving case fails) and C12 (its anchor's floor of 141). Taken from the
     // suite's own footer at 8b881bc, `ALL 39 CASES BEHAVED AS EXPECTED` (tasks/state/EP-1/T-190.md B).
-    cases: 39,
+    // 39 -> 46, 2026-10-04, T-237 (OD-267): section D, D0-D6 (gate:db-introspect-suite's footer held
+    // against db-introspect's pin, and the suite's own undefined-command handler). Taken from the suite's
+    // own footer at 639fd31, `ALL 46 CASES BEHAVED AS EXPECTED` (tasks/state/EP-2/T-237.md, HG-639fd31).
+    cases: 46,
     state: 'GREEN',
     why: "gate:heavy: the roster held against SD §QD-4's heavy row, the cross-file anchor on the PR roster's SERVICE class, the evidence anchors, the receipt coverage rule, and gate:workflow's W8 (T-006)",
   },
@@ -386,7 +389,14 @@ const SUITES: readonly Suite[] = [
     // edited by hand:
     //   $ git cat-file blob d71a414:scripts/negative-tests/db-introspect.sh | sha256sum
     //   dba1b88f810b97859b4244bef360f30d128539297f7160b9382c0f5a63f7998d
-    digest: 'dba1b88f810b97859b4244bef360f30d128539297f7160b9382c0f5a63f7998d',
+    // RE-PINNED 2026-10-04 by T-237 (OD-267, and T-234's bounds (i)-(iv) closed): command_not_found_handle
+    // and the footer now count every call of an undefined command as one more case and a BAD one; the
+    // header states what the classifier now sees. No case added or removed, so `cases: 147` is unchanged.
+    // Red first at 0487840 with the old pin (T-237.md, NS-OLDPIN). Taken with the instrument, never edited
+    // by hand:
+    //   $ git cat-file blob 0487840:scripts/negative-tests/db-introspect.sh | sha256sum
+    //   5576f28190c7019d20ec138a7c5a5236a24bc17dbacef3797ca436b457336c98
+    digest: '5576f28190c7019d20ec138a7c5a5236a24bc17dbacef3797ca436b457336c98',
     // T-234 (T-232 QA-S-F1, NS1): every read of db/schema.ts or a generated artefact in the suite is
     // classified by this committed instrument on EVERY run of this gate, not only when the digest
     // moves, and the instrument is itself held against a fixture of the read shapes it must flag.
