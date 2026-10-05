@@ -205,10 +205,19 @@
  * it was; that is a list of measurements, not a rule, because a script that
  * BRANCHES on a status can be steered by them either way. Red-before (0) and
  * green-after (139) in the image: state/EP-1/T-185.md § E1/§ E3; in the suite:
- * entrypoint-lifecycle L19/L20. WHAT IT DOES NOT COVER: a script that HANDLES
- * or DISCARDS a status itself — `cmd || true` and `cmd & wait` (both measured
- * at 0 after the change), and by POSIX's errexit rules an `if`/`while`
- * condition, a `!`, or `set +e` (not measured). A shell with NO pipefail (the toolbox's dash, for one) gets
+ * entrypoint-lifecycle L19/L20. WHAT IT DOES NOT COVER, AS A RULE AND NOT A
+ * LIST (T-185 rework 1, QA-F1): -e does not fire where POSIX exempts the
+ * failing command — in an `if`/`while`/`until` condition, in any member of an
+ * AND-OR list (`&&`, `||`) but the LAST, after `!` — nor where `set +e` turns
+ * it off, nor where the application's status never becomes a command's
+ * status: a backgrounded job not collected by `wait $!`, or a `$(…)` command
+ * substitution used as an argument (the outer command's status wins). Each of
+ * those can still report 0 over a crash. Measured at 0 for SIGSEGV, SIGABRT,
+ * SIGKILL and exit 3 in the image (state/EP-1/T-185.md § QA-1): `cmd || true`,
+ * `cmd & wait`, `if cmd; then true; fi`, `! cmd`, `set +e; cmd ; true`,
+ * `echo "$(cmd)"` and `cmd && true ; true` — examples, not the boundary. The
+ * safe spelling for a backgrounded application is `cmd & wait $!`, which
+ * reports its real status (same table). A shell with NO pipefail (the toolbox's dash, for one) gets
  * `-e` alone, and a script containing `|` is then REFUSED at boot rather than
  * run with a pipe that could exit 0 over a crash (shellOptions below; L20).
  */
