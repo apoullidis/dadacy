@@ -126,6 +126,9 @@ test(
   '(iii) a handler that throws: the job ends failed after exactly the configured attempts (retryLimit 1 = 2 attempts)',
   { timeout: 60_000 },
   async () => {
+    // Discriminating only if the configured limit is not pg-boss's own default (2, types.d.ts
+    // QueueOptions.retryLimit): a worker that ignored the option would then show a third attempt.
+    assert.notEqual(SELFTEST_QUEUE_OPTIONS.retryLimit, 2);
     const id = await send({ op: 'throw', tag: `${RUN}.throw` });
     const failed = await waitFor('the throwing job to fail', 30_000, async () => {
       const row = await job(pool, id);

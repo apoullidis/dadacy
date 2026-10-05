@@ -5,8 +5,8 @@
  * reads `mode=real  running start (node src/main.ts) as a direct child`.
  *
  * THE LIFECYCLE
- *   1. connect as `app_rw` and preflight (src/preflight.ts) — refuse to start, exit 2, on any
- *      finding: no DDL happens on any path;
+ *   1. connect as `app_rw` and preflight (src/preflight.ts, SELECTs only) — refuse to start,
+ *      exit 2, on any finding, before pg-boss issues a statement;
  *   2. start pg-boss 12.26.4 with `migrate: false` (src/config.ts); its own `contractor.check()`
  *      then compares the schema version a second time;
  *   3. register the handlers (src/selftest.ts) — the scheduler runs in this process too
@@ -20,7 +20,8 @@
  * process alone and empties when it exits (OD-196; measured in the image, state/EP-2/T-148.md).
  *
  * EXIT CODES: 0 drained; 1 boot failure or second signal; 2 refused to start (REFUSED_EXIT).
- * Nothing logged here carries the connection string.
+ * Nothing here logs DATABASE_URL. Driver and server errors are logged with their code and message
+ * as given; the ones this ticket saw name a role, a database or a schema, never a password.
  */
 import pg from 'pg';
 import type { Pool, PoolClient } from 'pg';
@@ -135,6 +136,7 @@ async function boot(): Promise<void> {
   if (draining) return;
 
   await registerSelftest(instance, pool, inFlight, log);
+  if (draining) return;
   heartbeat = await startHeartbeat(pool, HEARTBEAT_PATH, log);
   log(`ready: consuming ${SELFTEST_QUEUE}; scheduler on; heartbeat -> ${HEARTBEAT_PATH}`);
 }
@@ -142,10 +144,15 @@ async function boot(): Promise<void> {
 try {
   await boot();
 } catch (thrown) {
-  if (thrown instanceof WorkerRefusal) {
+  // A stop signal during boot: drain() owns the exit, and a boot step failing because pg-boss was
+  // stopped under it is not a boot failure.
+  if (draining) {
+    log(`boot interrupted by a stop signal (${describe(thrown)}); the drain decides the exit`);
+  } else if (thrown instanceof WorkerRefusal) {
     log(`WORKER REFUSED (${thrown.reason}): ${thrown.message}; exiting ${String(REFUSED_EXIT)}`);
     process.exit(REFUSED_EXIT);
+  } else {
+    log(`WORKER BOOT FAILED (${describe(thrown)}), exiting 1`);
+    process.exit(1);
   }
-  log(`WORKER BOOT FAILED (${describe(thrown)}), exiting 1`);
-  process.exit(1);
 }

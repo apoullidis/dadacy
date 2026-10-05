@@ -24,6 +24,9 @@
 #   I2  pgboss.version planted to 38 (newer): refused, reason schema-version, names [38]. With
 #       pg-boss's default `migrate: true` this one would START: contractor.start() migrates only
 #       when its version is ABOVE the database's.
+#   I1s, I2s  the same two plants under the COMPOSE principal — login `app`, the bootstrap
+#       superuser (G9) — which is where pg-boss's default `migrate: true` would meet no privilege
+#       wall (T-146 TL-A3). The startup role keeps the session app_rw, so the refusal is the same.
 #   II-a0 a LOGIN with no membership at all: refused, reason database — `0001` gives CONNECT to
 #       the five roles and not to PUBLIC, so the session is refused before any role is set.
 #   II-a a LOGIN in app_admin_rw (CONNECT, and no pgboss grant: T-146 § contract §4 grants that
@@ -63,7 +66,12 @@ psql_su -c "DROP ROLE IF EXISTS t148_nomember" -c "DROP ROLE IF EXISTS t148_rwme
   -c "CREATE ROLE t148_rwmember LOGIN PASSWORD '${PW}' IN ROLE app_rw" >/dev/null || exit 1
 psql_su -c "SELECT r.rolname, r.rolsuper, coalesce((SELECT string_agg(g.rolname, ',' ORDER BY g.rolname) FROM pg_auth_members m JOIN pg_roles g ON g.oid = m.roleid WHERE m.member = r.oid), '-') FROM pg_roles r WHERE r.rolname IN ('t148_nomember','t148_rwmember','t148_adminmember') ORDER BY 1"
 
-url() { printf 'postgres://%s:%s@postgres:5432/kinvara' "$1" "${PW}"; }
+# `app` is the compose worker's own login (docker/compose.yml's DATABASE_URL default, a local
+# throwaway); every other login is this script's.
+url() {
+  if [[ "$1" == app ]]; then printf 'postgres://app:app_local_dev_only@postgres:5432/kinvara'
+  else printf 'postgres://%s:%s@postgres:5432/kinvara' "$1" "${PW}"; fi
+}
 
 # run_worker <case> <login> <seconds>: start the image, wait for exit (or <seconds>), report.
 run_worker() {
@@ -104,6 +112,7 @@ refusal_case() {
   local b a
   b="$(printf '%s\n' "${before}" | sha256sum | cut -c1-16)"; a="$(printf '%s\n' "${after}" | sha256sum | cut -c1-16)"
   echo "   catalogue before ${b} ($(printf '%s\n' "${before}" | wc -l) lines)  after ${a} ($(printf '%s\n' "${after}" | wc -l) lines)"
+  [[ "${before}" != "${after}" ]] && diff <(printf '%s\n' "${before}") <(printf '%s\n' "${after}") | head -40 | sed 's/^/   diff| /'
   local ok=1
   [[ "${RUN_STATUS}" == exited && "${RUN_CODE}" == 2 && "${RUN_HEALTHY}" == no ]] \
     && grep -qF "WORKER REFUSED (${reason})" <<<"${RUN_LOG}" \
@@ -132,6 +141,10 @@ verdict C0 "${ok}" "running_after_25s=${c0_running} healthy=${c0_healthy} exit_a
 refusal_case I1 t148_rwmember schema-version 'pgboss.version holds [36]' \
   "UPDATE pgboss.version SET version = 36" "UPDATE pgboss.version SET version = 37"
 refusal_case I2 t148_rwmember schema-version 'pgboss.version holds [38]' \
+  "UPDATE pgboss.version SET version = 38" "UPDATE pgboss.version SET version = 37"
+refusal_case I1s app schema-version 'pgboss.version holds [36]' \
+  "UPDATE pgboss.version SET version = 36" "UPDATE pgboss.version SET version = 37"
+refusal_case I2s app schema-version 'pgboss.version holds [38]' \
   "UPDATE pgboss.version SET version = 38" "UPDATE pgboss.version SET version = 37"
 refusal_case II-a0 t148_nomember database 'permission denied for database "kinvara"' "" ""
 refusal_case II-a t148_adminmember database 'permission denied to set role "app_rw"' "" ""
