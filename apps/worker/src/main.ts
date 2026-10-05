@@ -45,13 +45,25 @@ const log = (line: string): void => {
   process.stderr.write(`[worker] ${line}\n`);
 };
 
+/**
+ * `code=<sqlstate|none> <message>[ queue=<name>]`. pg-boss emits a worker's fetch error as a PLAIN
+ * OBJECT spread from the Error (`{ ...error, message, stack, queue, worker }`, dist/manager.js),
+ * so `instanceof Error` alone would print `[object Object]` — measured in the image before this
+ * read the `message` property (state/EP-2/T-148.md). The stack is never logged.
+ */
 function describe(thrown: unknown): string {
-  const code =
-    typeof thrown === 'object' && thrown !== null && 'code' in thrown
-      ? String(thrown.code)
-      : 'none';
-  const message = thrown instanceof Error ? thrown.message : String(thrown);
-  return `code=${code} ${message}`;
+  const field = (key: string): unknown =>
+    typeof thrown === 'object' && thrown !== null && key in thrown
+      ? (thrown as Record<string, unknown>)[key]
+      : undefined;
+  const code = field('code');
+  const message = field('message');
+  const queue = field('queue');
+  return (
+    `code=${typeof code === 'string' ? code : 'none'} ` +
+    `${typeof message === 'string' ? message : String(thrown)}` +
+    (typeof queue === 'string' ? ` queue=${queue}` : '')
+  );
 }
 
 const inFlight: InFlight = { count: 0 };
