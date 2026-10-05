@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 #
-# apps/worker/tools/drain-check.sh <ticket> — T-148 acceptance (d), on the containerised worker:
+# apps/worker/tools/drain-check.sh <ticket> [container] — T-148 acceptance (d), on the containerised worker:
 # SIGTERM with a job in flight -> the job completes and the worker exits 0 inside its grace.
 #
 #   scripts/svc up <ticket> db worker --verify --build      (on a migrated database)
 #   apps/worker/tools/drain-check.sh <ticket>
+#
+# [container] defaults to the compose service's own, <project>-worker-1. Any other container must be
+# a worker image on the same project's network (a mutant run, for instance).
 #
 # The shape of scripts/verify/sigterm-drain.sh (T-151 § contract §4) with a JOB as the in-flight
 # unit, because the worker has no port for that script's HTTP request (it REFUSES `worker`, exit 2).
@@ -21,7 +24,7 @@ cd "$(dirname "$0")/../../.."
 
 TICKET="${1:?usage: apps/worker/tools/drain-check.sh <ticket>}"
 PROJECT="kinvara-$(printf '%s' "${TICKET}" | tr '[:upper:]' '[:lower:]')"
-CONTAINER="${PROJECT}-worker-1"
+CONTAINER="${2:-${PROJECT}-worker-1}"
 DIR=".cache/worker-drain"
 
 docker inspect "${CONTAINER}" >/dev/null 2>&1 \
