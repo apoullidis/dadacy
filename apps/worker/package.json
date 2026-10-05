@@ -3,6 +3,21 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Same codebase as core, different entrypoint (pg-boss consumers)",
-  "//": "PLACEHOLDER (T-001). Topology only, per SD §DH-1 — no source, no dependencies, no scripts. The owning agent (tech-lead) adds src/, dependencies and the typecheck/lint/test/build scripts turbo.json already declares."
+  "description": "Same codebase as core, different entrypoint (pg-boss consumers) — SD §DH-1 line 4311. The pg-boss 12.26.4 consumer and scheduler against the migrated `pgboss` schema, self-migration off: T-148.",
+  "scripts": {
+    "start": "node src/main.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint . && prettier --check .",
+    "test:integration": "node tools/run-tests.ts"
+  },
+  "dependencies": {
+    "drizzle-orm": "0.45.2",
+    "pg": "8.23.0",
+    "pg-boss": "12.26.4"
+  },
+  "devDependencies": {
+    "typescript": "6.0.3",
+    "vite": "8.2.2",
+    "vitest": "5.0.0"
+  }
 }
