@@ -165,6 +165,7 @@ export async function preflight(client: PoolClient, requiredVersion: number): Pr
     sessionUser: identity.session_user,
     currentUser: identity.current_user,
     sessionIsSuperuser: identity.session_super === true,
-    schemaVersion: requiredVersion,
+    // The value READ, not the one required: the boot line reports what the database holds.
+    schemaVersion: versions[0] ?? -1,
   };
 }

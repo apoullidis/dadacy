@@ -94,7 +94,12 @@ async function drain(signal: string): Promise<void> {
     log(`drain: stop failed (${describe(thrown)}), exiting 1`);
     process.exit(1);
   }
-  log(`drained: ${String(inFlight.count)} in flight, exiting 0`);
+  log(
+    inFlight.count === 0
+      ? 'drained: 0 in flight, exiting 0'
+      : `stopped with ${String(inFlight.count)} job(s) still running at the stop deadline; pg-boss ` +
+          `failed them back to their queue's retry policy (failWip); exiting 0`,
+  );
   process.exit(0);
 }
 
@@ -123,13 +128,17 @@ async function boot(): Promise<void> {
       client.release();
     }
   })();
+  // Every value on this line is READ — from the session, the catalogue and the config object
+  // pg-boss is given — so a changed setting changes the line rather than leaving it to lie.
+  const config = bossConfig(settings);
   log(
     `mode=real  pg-boss ${pgBossVersion()} against schema pgboss v${String(found.schemaVersion)}; ` +
       `login ${found.sessionUser} (superuser=${String(found.sessionIsSuperuser)}), running as ` +
-      `${found.currentUser} (startup option -c role=${RUNTIME_ROLE}); migrate=false`,
+      `${found.currentUser} (startup option ${JSON.stringify(settings.options ?? null)}); ` +
+      `migrate=${String(config.migrate)}`,
   );
 
-  const instance = new PgBoss(bossConfig(settings));
+  const instance = new PgBoss(config);
   instance.on('error', (thrown) => log(`pg-boss error (${describe(thrown)})`));
   instance.on('warning', (warning) => log(`pg-boss warning: ${warning.message}`));
   try {
