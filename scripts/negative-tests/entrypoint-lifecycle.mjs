@@ -91,6 +91,10 @@
  *        (asserted) and its SIGSEGV is its own 139.
  *   L22  T-185: the control for L19 — the same shape, the app exits 0 on its
  *        own -> 0. -e must not make a clean completion a failure.
+ *   L23  T-185 rework 1 (R-1): the PIPEFAIL branch. `node app.js | cat`, app
+ *        SIGSEGVs, with /bin/sh standing in as bash (pipefail) through a shim
+ *        loaded into the entrypoint process only -> 139. Red with `-o pipefail`
+ *        removed. Busybox ash itself is measured in the image, not here.
  *   The shell-path boot line each case asserts carries the shell's options,
  *   and which options THIS /bin/sh gets is asked of /bin/sh by the suite itself
  *   (SH_PIPEFAIL), not read from entrypoint.mjs.
@@ -313,22 +317,26 @@ const SH_ARGV = SH_PIPEFAIL ? '/bin/sh -e -o pipefail -c' : '/bin/sh -e -c';
  *  anything judged: no signal has been sent when it expires. */
 const READY_LIMIT_MS = 15_000;
 
-function runCase(env, signals, kind = 'argv') {
+function runCase(env, signals, kind = 'argv', nodeArgs = []) {
   return new Promise((resolve) => {
     const t0 = Date.now();
     // T-238: `ulimit -c 0`, then exec — so the entrypoint keeps this pid (ep.pid
     // is still the entrypoint's, which L13/L14/L16's parent check needs) and it
     // and everything it starts run without a core dump. Asserted per case below
     // from the app's own /proc/self/limits, not assumed from this line.
-    const ep = spawn('/bin/sh', ['-c', 'ulimit -c 0 && exec "$@"', 'sh', process.execPath, IMPL], {
-      env: {
-        ...process.env,
-        KINVARA_APP: 'lc',
-        KINVARA_APP_DIR: fixtures[kind],
-        ...env,
+    const ep = spawn(
+      '/bin/sh',
+      ['-c', 'ulimit -c 0 && exec "$@"', 'sh', process.execPath, ...nodeArgs, IMPL],
+      {
+        env: {
+          ...process.env,
+          KINVARA_APP: 'lc',
+          KINVARA_APP_DIR: fixtures[kind],
+          ...env,
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
       },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    );
     const wantsHelper = env.LC_HELPER === 'stubborn' || env.LC_HELPER === 'draining';
     let log = '';
     let bootAt = null;
@@ -474,6 +482,33 @@ const OLD_SHELL_CLAIMS = [
   /cannot see the application's own exit status/,
   /if the shell exec'd, the start command itself/,
 ];
+/**
+ * L23's SHELL STAND-IN (T-185 rework 1, R-1). The toolbox's /bin/sh is dash, which
+ * has no pipefail, so without this nothing in the suite runs PID 1's PIPEFAIL
+ * branch: QA measured `-o pipefail` dropped from entrypoint.mjs with the suite
+ * green 22/22, while `node app.js | cat` then reported a SIGSEGV as ExitCode=0 in
+ * the image (state/EP-1/T-185.md § QA-5, M5). This shim is loaded into the
+ * ENTRYPOINT process only (`node --import <shim> entrypoint.mjs`), and maps the
+ * path '/bin/sh' to '/bin/bash' (5.2 in the toolbox, which has pipefail) in that
+ * process's child_process.spawn/spawnSync. Everything else is the file under
+ * test: its own probe decides the branch, its own argv is spawned, its own line
+ * is printed. What it does NOT show is busybox ash: that is the image, § E3/§ RW1.
+ */
+const SH_SHIM_TARGET = '/bin/bash';
+const shim = path.join(fixture, 'sh-shim.mjs');
+fs.writeFileSync(
+  shim,
+  `import cp from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
+const real = { spawn: cp.spawn, spawnSync: cp.spawnSync };
+const sub = (f) => (f === '/bin/sh' ? ${JSON.stringify(SH_SHIM_TARGET)} : f);
+cp.spawn = (f, ...rest) => real.spawn(sub(f), ...rest);
+cp.spawnSync = (f, ...rest) => real.spawnSync(sub(f), ...rest);
+syncBuiltinESMExports();
+console.error('sh-shim: /bin/sh -> ${SH_SHIM_TARGET} in the entrypoint process');
+`,
+);
+
 /** The refusal PID 1 prints for a pipe on a /bin/sh with no pipefail (T-185). */
 const PIPE_REFUSAL =
   /refusing start 'node app\.js \| cat': it contains '\|' and this \/bin\/sh has no pipefail/;
@@ -725,6 +760,24 @@ const cases = [
     directChild: true,
   },
   {
+    // L23 (T-185 rework 1, R-1): THE PIPEFAIL BRANCH, which nothing else here
+    // runs. With /bin/sh standing in as bash (the shim above), PID 1's own probe
+    // finds pipefail, so it must spawn `/bin/sh -e -o pipefail -c`, and
+    // `node app.js | cat` with the app SIGSEGVing must report 139. With
+    // `-o pipefail` dropped from the spawned argv the pipe reports `cat`'s 0, and
+    // with it dropped from the flags the boot line also changes: red both ways
+    // (state/EP-1/T-185.md § RW1).
+    ...selfSignalCase(['L23', 'SIGSEGV', 139, ' — pipefail branch, `| cat` (R-1)']),
+    fixture: 'pipe',
+    directChild: false,
+    shim: true,
+    shellArgv: '/bin/sh -e -o pipefail -c',
+    landed: [
+      /sh-shim: \/bin\/sh -> \/bin\/bash in the entrypoint process/,
+      /app: killing itself with SIGSEGV/,
+    ],
+  },
+  {
     // L22: the CONTROL for L19. -e must not turn a clean completion behind a
     // shell that stays into a failure: `node app.js ; true`, the app exits 0 on
     // its own -> 0.
@@ -740,7 +793,11 @@ const cases = [
   },
 ];
 
-const results = await Promise.all(cases.map((c) => runCase(c.env, c.signals, c.fixture ?? 'argv')));
+const results = await Promise.all(
+  cases.map((c) =>
+    runCase(c.env, c.signals, c.fixture ?? 'argv', c.shim ? ['--import', shim] : []),
+  ),
+);
 let bad = 0;
 cases.forEach((c, i) => {
   const r = results[i];
@@ -751,7 +808,7 @@ cases.forEach((c, i) => {
     kind === 'argv'
       ? /mode=real {2}running start \(node app\.js\) as a direct child/
       : new RegExp(
-          `mode=real {2}running start via ${reEscape(SH_ARGV)} \\(${reEscape(START[kind])}\\)` +
+          `mode=real {2}running start via ${reEscape(c.shellArgv ?? SH_ARGV)} \\(${reEscape(START[kind])}\\)` +
             // T-185, OD-211: a first word in SIMPLE_COMMAND's classes that is no
             // executable file is on this path for that reason, and says so.
             (kind === 'exec'
