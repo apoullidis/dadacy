@@ -231,9 +231,11 @@ const SUITES: readonly Suite[] = [
     file: 'scripts/negative-tests/entrypoint-lifecycle.sh',
     // 18 -> 22, T-185 (L19-L22). Red first: this gate with the row at 18 printed "the footer
     // reports 22 case(s); the pin is 18" (tasks/state/EP-1/T-185.md).
-    cases: 22,
+    // 22 -> 23, T-185 rework 1 (L23, the pipefail branch). Red first the same way: "the footer
+    // reports 23 case(s); the pin is 22".
+    cases: 23,
     state: 'GREEN',
-    why: "PID 1's group-drain deadline counts from the FIRST forwarded signal, a second signal does not move it, and with NO signal forwarded PID 1 exits at once with the app's exit code (T-180, TL-A1 on T-179); a signal death is reported as 128 + signo, including two signals outside the six first pinned so a literal table cannot pass, and the argv path's stderr line is held apart from the shell path's, which must not say whose death it was because PID 1 does not check whether the shell exec'd — asserted with the shell kept and with the shell exec'd; the deadline rule's one cost — a survived signal anchors a later stop — is pinned so a re-anchor cannot land in silence (T-181); behind a shell that stays a native crash is reported, not turned into 0 (errexit; on a /bin/sh without pipefail a pipe is refused at boot), a shell builtin as the first word goes to the shell instead of dying ENOENT, and the shell-path line no longer says the exec'd command is the start command (T-185)",
+    why: "PID 1's group-drain deadline counts from the FIRST forwarded signal, a second signal does not move it, and with NO signal forwarded PID 1 exits at once with the app's exit code (T-180, TL-A1 on T-179); a signal death is reported as 128 + signo, including two signals outside the six first pinned so a literal table cannot pass, and the argv path's stderr line is held apart from the shell path's, which must not say whose death it was because PID 1 does not check whether the shell exec'd — asserted with the shell kept and with the shell exec'd; the deadline rule's one cost — a survived signal anchors a later stop — is pinned so a re-anchor cannot land in silence (T-181); behind a shell that stays a native crash is reported, not turned into 0 (errexit and pipefail, the pipefail branch held through a bash stand-in for /bin/sh; on a /bin/sh without pipefail a pipe is refused at boot), a shell builtin as the first word goes to the shell instead of dying ENOENT, and the shell-path line no longer says the exec'd command is the start command (T-185)",
   },
   {
     id: 'otel-contract',
