@@ -16,7 +16,8 @@
  * names what it found.
  *
  * `has_table_privilege(t, 'SELECT, INSERT')` is true if ANY listed privilege is held, so each
- * privilege is asked separately.
+ * privilege is asked separately. The schema's USAGE is asked first; if it is missing, that is the
+ * whole finding (nothing inside the schema can be looked up without it).
  */
 import type { PoolClient } from 'pg';
 import { PGBOSS_SCHEMA, RUNTIME_ROLE } from './config.ts';
@@ -109,8 +110,13 @@ export async function preflight(client: PoolClient, requiredVersion: number): Pr
     );
   }
 
+  // USAGE on the schema first, and alone: without it PostgreSQL refuses even the NAME lookup of a
+  // relation in it (`to_regclass('pgboss.job')` raises 42501 "permission denied for schema
+  // pgboss"), so the per-object questions below would crash rather than answer. Measured by
+  // tools/refusals.sh case II-b before this branch existed (state/EP-2/T-148.md).
   const missing: string[] = [];
   for (const need of REQUIRED_PRIVILEGES) {
+    if (need.kind !== 'schema' && missing.length > 0) break;
     const row = (
       await client.query<{ held: boolean | null }>(heldSql(need), [need.object, need.privilege])
     ).rows[0];
