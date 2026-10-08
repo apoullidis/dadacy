@@ -26,8 +26,9 @@
  * is the deepest, and a drain in any hook here runs AFTER the teardown of the services handlers
  * inject (a pool `end()`ed in `onModuleDestroy` or `onApplicationShutdown`),
  * and the in-flight job fails mid-drain. Measured: QA's `depteardown`/`deptdestroy`, red at
- * `d2c9720`. No hook position is safe against every module graph, so the drain runs before
- * `close()` is called at all: when `close()` starts, pg-boss has already stopped.
+ * `d2c9720`. Which hook would be early enough depends on the module graph later tickets build
+ * (Nest orders the passes by module distance), so the drain is not placed in one: it runs before
+ * `close()` is called at all, and when `close()` starts pg-boss has already stopped.
  * apps/worker/tools/drain-check.sh holds the order (its check `O`) against the stand-in module's
  * real teardown (src/selftest-reporter.module.ts).
  *

@@ -13,8 +13,9 @@
 # container's processes hold. State 0A is TCP_LISTEN.
 #
 # WHY NOT "NO 0A AT ALL" (measured, state/EP-2/T-242.md progress log 17:36Z): on a user-defined
-# network Docker plants its embedded DNS resolver in every container's namespace — a LISTEN on
-# 127.0.0.11, uid 0, held by no process in the container (`postgres` has one too, and both
+# network Docker plants its embedded DNS resolver in the container's namespace (seen in `worker`
+# and in `postgres`) — a LISTEN on
+# 127.0.0.11, uid 0, held by no fd the reader (uid 10001) can see (`postgres` has one too, and both
 # containers' resolv.conf name 127.0.0.11). No container on kinvara-int can pass "no 0A at all",
 # so that check would only ever be red. The two checks below are what "the worker opens no port"
 # means, and a LOOPBACK LISTEN whose inode no fd the reader can see holds is PRINTED (with its uid)
