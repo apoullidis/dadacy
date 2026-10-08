@@ -69,7 +69,17 @@ async function drain(context: INestApplicationContext, signal: string): Promise<
   // running BEFORE the timeout (T-148 QA-A1: a non-graceful stop returned at 0.20 s), so "the
   // deadline was reached" is not something this line may assume. Whatever the cause, pg-boss
   // fails a job still active at stop back to its queue's retry policy (failWip).
-  const stillRunning = host.stopReport?.stillRunning ?? host.inFlight;
+  const report = host.stopReport;
+  if (report === undefined) {
+    // close() returned but BossHost's onApplicationShutdown never ran: pg-boss was not stopped,
+    // so nothing may be said about what happened to the jobs in flight.
+    log(
+      `drain: the context closed but BossHost's onApplicationShutdown did not run; pg-boss was ` +
+        `not stopped and ${String(host.inFlight)} job(s) were in flight; exiting 1`,
+    );
+    process.exit(1);
+  }
+  const stillRunning = report.stillRunning;
   const elapsedMs = Math.round(performance.now() - signalledAt);
   log(
     stillRunning === 0
@@ -125,8 +135,11 @@ if (pendingSignal !== undefined) {
   heartbeat = started;
   // A signal during the first beat found `heartbeat` unset and could not stop it.
   if (draining) started.stop();
+  // READ, not restated: an INestApplication (NestFactory.create) carries an HTTP adapter and
+  // answers getHttpAdapter; an application context does not have the method at all.
+  const adapter = 'getHttpAdapter' in app ? 'WITH an HTTP adapter' : 'no HTTP adapter';
   log(
-    `ready: NestJS application context (no HTTP adapter); consuming ` +
+    `ready: NestJS application context (${adapter}); consuming ` +
       `${app.get(BossHost).queues.join(', ')}; scheduler on; heartbeat -> ${HEARTBEAT_PATH}`,
   );
 }
