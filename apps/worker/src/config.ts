@@ -65,9 +65,11 @@ export function poolConfig(settings: ConnectionSettings): PoolConfig {
 
 /**
  * pg-boss's constructor options. `options` (the role) is not in pg-boss's `ConstructorOptions`
- * type, but pg-boss hands its whole config to `new pg.Pool(config)` and its LISTEN client
- * (`dist/db.js`), so it reaches every pg-boss connection. That it does is held by the refusal
- * evidence, not by this type: with it, `migrate: true` is refused `42501` under the superuser login.
+ * type, but pg-boss hands its whole config to `new pg.Pool(config)` (`dist/db.js`), so it reaches
+ * every connection of pg-boss's pool. That it does is held by the refusal evidence, not by this
+ * type: with it, `migrate: true` is refused `42501` under the superuser login. pg-boss opens a
+ * LISTEN client only under `useListenNotify` (`dist/index.js`), which is off below, so there is
+ * none; whether the option would reach one is not measured.
  */
 export function bossConfig(settings: ConnectionSettings): ConstructorOptions {
   const config: ConstructorOptions & { readonly options: string } = {

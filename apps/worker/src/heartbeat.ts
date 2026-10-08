@@ -9,7 +9,7 @@
  * A beat is written only after a round trip to the database AS THE WORKER'S ROLE reads
  * `pgboss.version`, so "healthy" means the event loop is turning AND the worker can still reach
  * its queue schema — not merely that a timer fires. It is first written after pg-boss has started
- * and every handler is registered (src/worker.ts), and stops on the first stop signal.
+ * and every handler is registered (src/main.ts `boot()`), and stops on the first stop signal.
  *
  * The file is written to a sibling and renamed, so the healthcheck never reads half a file.
  */

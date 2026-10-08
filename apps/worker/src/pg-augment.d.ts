@@ -9,7 +9,7 @@
  *   - `PoolConfig.options`: libpq's startup `options` (`-c role=app_rw`), src/config.ts; pg passes
  *     it in the startup packet (pg/lib/connection-parameters.js, client.js).
  *   - `PoolConfig.connectionTimeoutMillis`: src/config.ts.
- *   - `PoolClient.on('notification')`: test/fixtures/listen.ts (LISTEN).
+ *   - `PoolClient.on('notification')`: test/fixtures/db.ts (the suite's LISTEN on the selftest channel).
  */
 declare module 'pg' {
   interface PoolConfig {

@@ -78,6 +78,7 @@ async function drain(signal: string): Promise<void> {
     process.exit(1);
   }
   draining = true;
+  const signalledAt = performance.now();
   heartbeat?.stop();
   if (boss === undefined) {
     log(`${signal} before pg-boss started — nothing in flight, exiting 0`);
@@ -94,11 +95,17 @@ async function drain(signal: string): Promise<void> {
     log(`drain: stop failed (${describe(thrown)}), exiting 1`);
     process.exit(1);
   }
+  // The elapsed time is printed, not inferred: pg-boss's stop() can return with jobs still
+  // running BEFORE the timeout (QA-A1: a non-graceful stop returned at 0.20 s), so "the deadline
+  // was reached" is not something this line may assume. Whatever the cause, pg-boss fails a job
+  // still active at stop back to its queue's retry policy (failWip).
+  const elapsedMs = Math.round(performance.now() - signalledAt);
   log(
     inFlight.count === 0
       ? 'drained: 0 in flight, exiting 0'
-      : `stopped with ${String(inFlight.count)} job(s) still running at the stop deadline; pg-boss ` +
-          `failed them back to their queue's retry policy (failWip); exiting 0`,
+      : `stopped with ${String(inFlight.count)} job(s) still running when pg-boss's stop returned, ` +
+          `${String(elapsedMs)}ms after ${signal} (graceful timeout ${String(STOP_TIMEOUT_MS)}ms); ` +
+          `pg-boss failed them back to their queue's retry policy (failWip); exiting 0`,
   );
   process.exit(0);
 }
