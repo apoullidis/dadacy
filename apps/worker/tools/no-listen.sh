@@ -39,7 +39,8 @@
 #   H   the fd reading SEES a held socket: >= 1 of those ESTABLISHED inodes is found in a process's
 #       fds (so an empty L2 below is not an fd reader that finds nothing);
 #   L1  no LISTEN socket on a NON-LOOPBACK local address (one another container could reach);
-#   L2  no LISTEN socket, on any address, whose inode a process in the container holds;
+#   L2  no LISTEN socket, on any address, whose inode a process in the container holds — among
+#       the fds uid 10001 can read (see WHAT IT CANNOT SEE);
 #   K   CONTROL: the same socket reader on the project's `postgres` container reports a LISTEN on
 #       0.0.0.0:5432 — it can see a reachable listening socket when one exists.
 # OUTCOMES: NO-LISTEN PASS (exit 0) — every check held; NO-LISTEN FAIL (exit 1) — any did not;
@@ -99,7 +100,7 @@ printf 'L1  no LISTEN on a non-loopback address                             '
 [[ -z "${listen_ext}" ]]; mark $?; printf '  (%s)\n' "$(grep -c . <<<"${listen_ext}")"
 [[ -n "${listen_ext}" ]] && printf '%s\n' "${listen_ext}" | sed 's/^/    LISTEN (reachable): /'
 listen_held="$(awk 'NR == FNR { h[$1] = 1; next } $1 != "HEADER" && $2 == "0A" && ($5 in h)' <(printf '%s\n' "${held_inodes}") <(printf '%s\n' "${target}"))"
-printf 'L2  no LISTEN socket held by a process in the container             '
+printf 'L2  no LISTEN socket held by a process (fds readable by uid 10001)  '
 [[ -z "${listen_held}" ]]; mark $?; printf '  (%s)\n' "$(grep -c . <<<"${listen_held}")"
 [[ -n "${listen_held}" ]] && printf '%s\n' "${listen_held}" | sed 's/^/    LISTEN (held): /'
 # Only a LOOPBACK LISTEN is left unjudged; a non-loopback one is L1's, held or not (QA-A3).
