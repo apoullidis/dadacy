@@ -34,6 +34,19 @@
 #   II-b a LOGIN in app_rw, with app_rw's USAGE on schema pgboss revoked for the case: refused,
 #       reason privilege. The grant is restored and the catalogue (which includes the schema ACL)
 #       compared.
+#   II-c a LOGIN in app_rw, with CREATE on schema pgboss GRANTED to app_rw for the case: refused,
+#       reason privilege, `can CREATE in schema pgboss` (T-146 § contract §3: that privilege is
+#       what pg-boss's self-migration and partitioned queues need). Rework 1, QA-F1(a).
+#   II-d a LOGIN in app_rw, with DELETE on pgboss.job_common revoked: refused, reason privilege,
+#       naming that grant — one TABLE grant of T-146 § contract §2. Rework 1, QA-F1(b).
+#   II-e a LOGIN in app_rw, with EXECUTE on pgboss.create_queue(text,jsonb) revoked: refused,
+#       reason privilege, naming that grant — one FUNCTION grant. Rework 1, QA-F1(b).
+#   Every plant is ASSERTED LANDED (a has_*_privilege / version reading that must be true after
+#   it) before the worker runs; a plant that did not land fails the case, never passes it.
+#   LIST the worker's REQUIRED_PRIVILEGES, read from the IMAGE (src/preflight.ts), equals the set
+#       of privileges app_rw actually holds in schema pgboss (aclexplode over the catalogue, i.e.
+#       what 0006 granted) — exactly, both directions. II-b/II-d/II-e hold one plant per object
+#       kind; LIST is what ties the worker's list to the grants, read outside the worker's source.
 # Verdict: REFUSALS PASS (exit 0) only if every case holds; else REFUSALS FAIL (exit 1).
 set -uo pipefail
 cd "$(dirname "$0")/../../.."
@@ -52,6 +65,9 @@ cleanup() {
   docker ps -aq --filter label=io.kinvara.probe=T-148 --filter name=t148-refusal- | xargs -r docker rm -f >/dev/null
   psql_su -c "UPDATE pgboss.version SET version = 37 WHERE version <> 37" >/dev/null
   psql_su -c "GRANT USAGE ON SCHEMA pgboss TO app_rw" >/dev/null
+  psql_su -c "REVOKE CREATE ON SCHEMA pgboss FROM app_rw" >/dev/null
+  psql_su -c "GRANT DELETE ON pgboss.job_common TO app_rw" >/dev/null
+  psql_su -c "GRANT EXECUTE ON FUNCTION pgboss.create_queue(text, jsonb) TO app_rw" >/dev/null
   psql_su -c "DROP ROLE IF EXISTS t148_nomember" -c "DROP ROLE IF EXISTS t148_rwmember" -c "DROP ROLE IF EXISTS t148_adminmember" >/dev/null
 }
 trap cleanup EXIT
@@ -97,12 +113,19 @@ verdict() { # verdict <case> <ok 0|1> <detail>
   if [[ "$2" == 0 ]]; then printf '%-5s PASS  %s\n' "$1" "$3"; else printf '%-5s FAIL  %s\n' "$1" "$3"; fails=$((fails + 1)); fi
 }
 
-# refusal_case <case> <login> <reason> <fragment> <plant-sql> <restore-sql>
+# refusal_case <case> <login> <reason> <fragment> <plant-sql> <restore-sql> [<landed-sql>]
+#   <landed-sql> is a boolean SELECT expression that must read `t` after the plant, or the case
+#   FAILS without running the worker (PROTOCOL §5.1: assert the mutation landed).
 refusal_case() {
-  local case="$1" login="$2" reason="$3" fragment="$4" plant="$5" restore="$6"
+  local case="$1" login="$2" reason="$3" fragment="$4" plant="$5" restore="$6" landed="${7:-}"
   echo; echo "== ${case}: login ${login}; plant: ${plant:-none}"
   [[ -n "${plant}" ]] && { psql_su -c "${plant}" >/dev/null || { verdict "${case}" 1 "the plant did not apply"; return; }; }
-  [[ -n "${plant}" ]] && echo "   planted (asserted landed): $(psql_su -c "SELECT 'pgboss.version=' || (SELECT string_agg(version::text, ',') FROM pgboss.version) || ' app_rw_usage_on_pgboss=' || has_schema_privilege('app_rw', 'pgboss', 'USAGE')")"
+  if [[ -n "${landed}" ]]; then
+    local got; got="$(psql_su -c "SELECT (${landed})::text")"
+    echo "   planted, landed? ${landed} -> ${got}"
+    [[ "${got}" == true ]] || { [[ -n "${restore}" ]] && psql_su -c "${restore}" >/dev/null; verdict "${case}" 1 "the plant did not land"; return; }
+  fi
+  [[ -n "${plant}" ]] && echo "   state: $(psql_su -c "SELECT 'pgboss.version=' || (SELECT string_agg(version::text, ',') FROM pgboss.version) || ' usage=' || has_schema_privilege('app_rw', 'pgboss', 'USAGE') || ' create=' || has_schema_privilege('app_rw', 'pgboss', 'CREATE') || ' delete_job_common=' || has_table_privilege('app_rw', 'pgboss.job_common', 'DELETE') || ' execute_create_queue=' || has_function_privilege('app_rw', 'pgboss.create_queue(text, jsonb)', 'EXECUTE')")"
   local before after
   before="$(catalogue)"
   run_worker "${case}" "${login}" 40
@@ -138,18 +161,46 @@ ok=1
   && grep -qF 'login t148_rwmember (superuser=false), running as app_rw' <<<"${c0_log}" && ok=0
 verdict C0 "${ok}" "running_after_25s=${c0_running} healthy=${c0_healthy} exit_after_SIGTERM=${c0_code} catalogue_unchanged=$([[ "${before}" == "${after}" ]] && echo yes || echo NO)"
 
+V36="(SELECT array_agg(version) FROM pgboss.version) = ARRAY[36]"
+V38="(SELECT array_agg(version) FROM pgboss.version) = ARRAY[38]"
 refusal_case I1 t148_rwmember schema-version 'pgboss.version holds [36]' \
-  "UPDATE pgboss.version SET version = 36" "UPDATE pgboss.version SET version = 37"
+  "UPDATE pgboss.version SET version = 36" "UPDATE pgboss.version SET version = 37" "${V36}"
 refusal_case I2 t148_rwmember schema-version 'pgboss.version holds [38]' \
-  "UPDATE pgboss.version SET version = 38" "UPDATE pgboss.version SET version = 37"
+  "UPDATE pgboss.version SET version = 38" "UPDATE pgboss.version SET version = 37" "${V38}"
 refusal_case I1s app schema-version 'pgboss.version holds [36]' \
-  "UPDATE pgboss.version SET version = 36" "UPDATE pgboss.version SET version = 37"
+  "UPDATE pgboss.version SET version = 36" "UPDATE pgboss.version SET version = 37" "${V36}"
 refusal_case I2s app schema-version 'pgboss.version holds [38]' \
-  "UPDATE pgboss.version SET version = 38" "UPDATE pgboss.version SET version = 37"
+  "UPDATE pgboss.version SET version = 38" "UPDATE pgboss.version SET version = 37" "${V38}"
 refusal_case II-a0 t148_nomember database 'permission denied for database "kinvara"' "" ""
 refusal_case II-a t148_adminmember database 'permission denied to set role "app_rw"' "" ""
 refusal_case II-b t148_rwmember privilege 'USAGE on schema pgboss' \
-  "REVOKE USAGE ON SCHEMA pgboss FROM app_rw" "GRANT USAGE ON SCHEMA pgboss TO app_rw"
+  "REVOKE USAGE ON SCHEMA pgboss FROM app_rw" "GRANT USAGE ON SCHEMA pgboss TO app_rw" \
+  "NOT has_schema_privilege('app_rw', 'pgboss', 'USAGE')"
+refusal_case II-c t148_rwmember privilege 'can CREATE in schema pgboss' \
+  "GRANT CREATE ON SCHEMA pgboss TO app_rw" "REVOKE CREATE ON SCHEMA pgboss FROM app_rw" \
+  "has_schema_privilege('app_rw', 'pgboss', 'CREATE')"
+refusal_case II-d t148_rwmember privilege 'lacks 1 privilege(s) the worker needs (T-146 § contract §2): DELETE on table pgboss.job_common' \
+  "REVOKE DELETE ON pgboss.job_common FROM app_rw" "GRANT DELETE ON pgboss.job_common TO app_rw" \
+  "NOT has_table_privilege('app_rw', 'pgboss.job_common', 'DELETE') AND has_schema_privilege('app_rw', 'pgboss', 'USAGE')"
+refusal_case II-e t148_rwmember privilege 'lacks 1 privilege(s) the worker needs (T-146 § contract §2): EXECUTE on function pgboss.create_queue(text, jsonb)' \
+  "REVOKE EXECUTE ON FUNCTION pgboss.create_queue(text, jsonb) FROM app_rw" "GRANT EXECUTE ON FUNCTION pgboss.create_queue(text, jsonb) TO app_rw" \
+  "NOT has_function_privilege('app_rw', 'pgboss.create_queue(text, jsonb)', 'EXECUTE') AND has_schema_privilege('app_rw', 'pgboss', 'USAGE')"
+
+# --- LIST: the worker's list of needs == the grants app_rw holds in pgboss ----
+# Read from the image, not from this tree, and from the catalogue, not from the worker: two
+# sources, so a list that drifted from the grants (or grants that drifted from the list) shows.
+echo; echo "== LIST: REQUIRED_PRIVILEGES (image) vs app_rw's privileges in schema pgboss (catalogue)"
+need_list="$(docker run --rm --network none --label io.kinvara.probe=T-148 --entrypoint node "${IMAGE}" -e \
+  "import('/srv/kinvara/apps/worker/src/preflight.ts').then((m) => { for (const n of m.REQUIRED_PRIVILEGES) console.log([n.kind, n.object.replaceAll(' ', ''), n.privilege].join('|')); }, (e) => { console.error('IMPORT FAILED ' + e.message); process.exit(1); })" | sort)"
+held_list="$(psql_su -c "SELECT c.kind || '|' || replace(c.obj, ' ', '') || '|' || a.privilege_type FROM (
+    SELECT 'schema' AS kind, n.nspname::text AS obj, n.nspacl AS acl FROM pg_namespace n WHERE n.nspname = 'pgboss'
+    UNION ALL SELECT 'table', 'pgboss.' || r.relname, r.relacl FROM pg_class r WHERE r.relnamespace = 'pgboss'::regnamespace
+    UNION ALL SELECT 'function', p.oid::regprocedure::text, p.proacl FROM pg_proc p WHERE p.pronamespace = 'pgboss'::regnamespace
+  ) c, aclexplode(c.acl) a WHERE a.grantee = 'app_rw'::regrole" | sort)"
+echo "   worker needs $(printf '%s\n' "${need_list}" | grep -c .) privilege(s); app_rw holds $(printf '%s\n' "${held_list}" | grep -c .)"
+diff <(printf '%s\n' "${need_list}") <(printf '%s\n' "${held_list}") | sed 's/^/   diff| /'
+ok=1; [[ -n "${need_list}" && "${need_list}" == "${held_list}" ]] && ok=0
+verdict LIST "${ok}" "needs=$(printf '%s\n' "${need_list}" | grep -c .) held=$(printf '%s\n' "${held_list}" | grep -c .) identical=$([[ "${need_list}" == "${held_list}" ]] && echo yes || echo NO)"
 
 end_catalogue="$(catalogue)"
 ok=1; [[ -n "${START_CATALOGUE}" && "${START_CATALOGUE}" == "${end_catalogue}" ]] && ok=0
