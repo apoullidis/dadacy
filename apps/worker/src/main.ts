@@ -18,11 +18,15 @@
  *   2. Every handler provider registers in its `onApplicationBootstrap` (src/selftest.handler.ts).
  *   3. Here, once the context is up: beat the heartbeat the image's HEALTHCHECK reads
  *      (src/heartbeat.ts, OD-198) — so the first beat follows pg-boss's start and every handler.
- *   4. On the first SIGTERM/SIGINT: stop beating, then `app.close()`, whose
- *      `onApplicationShutdown` hook on `BossHost` IS the drain — stop fetching, let in-flight jobs
- *      finish (up to STOP_TIMEOUT_MS), close the pools; then exit 0. A second signal exits 1 at
- *      once. A signal that arrives while the context is still booting is held until it is up,
- *      and then drains the same way (nothing else stops pg-boss under a booting module).
+ *   4. On the first SIGTERM/SIGINT: stop beating; `BossHost.drain()` — stop fetching, let
+ *      in-flight jobs finish (up to STOP_TIMEOUT_MS), stop pg-boss; and only THEN `app.close()`,
+ *      which runs every module's teardown hooks (a handler's injected services release their
+ *      resources there) and closes the worker's pool; then exit 0. The drain is not a Nest hook
+ *      because Nest runs this app's teardown root-first and pg-boss's module is the deepest, so a
+ *      hook-borne drain ran after the services its handlers use were torn down (T-242 rework 1,
+ *      QA-F1 / OD-293; src/boss-host.ts). A second signal exits 1 at once. A signal that arrives
+ *      while the context is still booting is held until it is up, and then drains the same way
+ *      (nothing else stops pg-boss under a booting module).
  *      Nest's own `enableShutdownHooks` is NOT used: it re-raises the signal after the hooks
  *      (`process.kill(process.pid, signal)`, @nestjs/core nest-application-context.js), which
  *      would end the process as 143, not 0, and it ignores a second signal.
@@ -31,7 +35,11 @@
  * application context starts spawns one, so the process group PID 1 waits on holds this process
  * alone and empties when it exits (OD-196; re-measured in the image, state/EP-2/T-242.md).
  *
- * EXIT CODES: 0 drained; 1 boot failure or second signal; 2 refused to start (REFUSED_EXIT).
+ * EXIT CODES: 0 drained; 1 boot failure, second signal, a failed stop or a failed teardown;
+ * 2 refused to start (REFUSED_EXIT). Exit 0 does NOT say every job in flight completed: the
+ * verdict line does — it begins `drained:` only when nothing was still running at the stop, no
+ * handler failed and pg-boss reported no error after the signal; otherwise `drain finished with`
+ * and the three counts.
  * `abortOnError: false` is what makes a failed boot an exception here rather than Nest's default
  * `process.abort()` (SIGABRT, 134) with no banner.
  */
@@ -39,7 +47,7 @@ import 'reflect-metadata';
 import type { INestApplicationContext } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import type { Pool } from 'pg';
-import { BossHost } from './boss-host.ts';
+import { BossHost, type StopReport } from './boss-host.ts';
 import { HEARTBEAT_PATH, STOP_TIMEOUT_MS } from './config.ts';
 import { startHeartbeat, type Heartbeat } from './heartbeat.ts';
 import { describe, log, WorkerNestLogger } from './log.ts';
@@ -59,34 +67,44 @@ async function drain(context: INestApplicationContext, signal: string): Promise<
     `${signal}: fetching no new jobs; waiting up to ${String(STOP_TIMEOUT_MS)}ms for ` +
       `${String(host.inFlight)} in-flight job(s)`,
   );
+  let report: StopReport;
   try {
-    await context.close();
+    // FIRST, and awaited: pg-boss stops before close() runs any module's teardown hook.
+    report = await host.drain();
   } catch (thrown) {
     log(`drain: stop failed (${describe(thrown)}), exiting 1`);
     process.exit(1);
   }
   // The elapsed time is printed, not inferred: pg-boss's stop() can return with jobs still
-  // running BEFORE the timeout (T-148 QA-A1: a non-graceful stop returned at 0.20 s), so "the
-  // deadline was reached" is not something this line may assume. Whatever the cause, pg-boss
-  // fails a job still active at stop back to its queue's retry policy (failWip).
-  const report = host.stopReport;
-  if (report === undefined) {
-    // close() returned but BossHost's onApplicationShutdown never ran: pg-boss was not stopped,
-    // so nothing may be said about what happened to the jobs in flight.
-    log(
-      `drain: the context closed but BossHost's onApplicationShutdown did not run; pg-boss was ` +
-        `not stopped and ${String(host.inFlight)} job(s) were in flight; exiting 1`,
-    );
-    process.exit(1);
-  }
-  const stillRunning = report.stillRunning;
+  // running BEFORE the timeout (T-148 QA-A1: a non-graceful stop returned at 0.20 s).
   const elapsedMs = Math.round(performance.now() - signalledAt);
   log(
-    stillRunning === 0
-      ? 'drained: 0 in flight, exiting 0'
-      : `stopped with ${String(stillRunning)} job(s) still running when pg-boss's stop returned, ` +
-          `${String(elapsedMs)}ms after ${signal} (graceful timeout ${String(STOP_TIMEOUT_MS)}ms); ` +
-          `pg-boss failed them back to their queue's retry policy (failWip); exiting 0`,
+    `pg-boss stopped ${String(elapsedMs)}ms after ${signal} (graceful timeout ` +
+      `${String(STOP_TIMEOUT_MS)}ms): ${String(report.stillRunning)} ` +
+      `still running, ${String(report.handlerFailures)} handler failure(s), ` +
+      `${String(report.bossErrors)} pg-boss error(s) since the signal; closing the application ` +
+      `context (module teardown hooks run now)`,
+  );
+  try {
+    await context.close();
+  } catch (thrown) {
+    log(`drain: pg-boss stopped, then a module's teardown failed (${describe(thrown)}), exiting 1`);
+    process.exit(1);
+  }
+  const clean =
+    report.beforeClose &&
+    report.stillRunning === 0 &&
+    report.handlerFailures === 0 &&
+    report.bossErrors === 0;
+  log(
+    clean
+      ? 'drained: 0 in flight, 0 handler failures, 0 pg-boss errors since the signal; exiting 0'
+      : `drain finished with ${String(report.stillRunning)} job(s) still running when pg-boss's ` +
+          `stop returned (pg-boss fails those through their queue's retry policy, failWip), ` +
+          `${String(report.handlerFailures)} handler failure(s) and ` +
+          `${String(report.bossErrors)} pg-boss error(s) since the signal` +
+          (report.beforeClose ? '' : ', and pg-boss was stopped only after module teardown') +
+          `; exiting 0`,
   );
   process.exit(0);
 }

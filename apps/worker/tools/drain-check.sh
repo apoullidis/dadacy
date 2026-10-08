@@ -18,6 +18,15 @@
 # (the entrypoint's boot line and path; the placeholder banner asserted ABSENT — acceptance (c)),
 # ExitCode, OOMKilled and the wall time.
 #
+# Two checks read the worker's own log (T-242 rework 1, QA-F1 / OD-293):
+#   S  the verdict line is the clean one — `drained: 0 in flight, 0 handler failures, 0 pg-boss
+#      errors since the signal; exiting 0` — which src/main.ts prints only when no handler failed,
+#      nothing was still running at the stop and pg-boss reported no error after the signal;
+#   O  ORDER: `pg-boss stopped …` (printed after BossHost.drain() returned) comes BEFORE the stand-in
+#      module's teardown line (src/selftest-reporter.module.ts, `onModuleDestroy`, which ends that
+#      module's own pool) — and both are present. This is what pins "the drain completes before any
+#      module's teardown hook runs" on every run of the real worker; A is the behaviour it protects.
+#
 # Verdicts: DRAIN PASS (exit 0), DRAIN FAIL (exit 1). Nothing else exits 0.
 set -uo pipefail
 cd "$(dirname "$0")/../../.."
@@ -81,6 +90,12 @@ printf 'L  boot line: argv path, real mode; placeholder banner ABSENT   '
   && ! grep -qF 'PLACEHOLDER RUNTIME' <<<"${logs}"; }; mark $?; printf '\n'
 printf 'C  the container EXITED, and exited 0 (not 137/143)             '; [[ "${status}" == "exited" && "${code}" == 0 ]]; mark $?; printf '  (status=%s exit=%s oom=%s)\n' "${status}" "${code}" "${oom}"
 printf 'D  it exited well inside stop_grace_period=%ss                  ' "${GRACE}"; { [[ "${status}" == "exited" ]] && awk -v e="${elapsed}" -v g="${GRACE}" 'BEGIN{exit !(e < g-1)}'; }; mark $?; printf '  (%ss)\n' "${elapsed}"
+CLEAN='[worker] drained: 0 in flight, 0 handler failures, 0 pg-boss errors since the signal; exiting 0'
+verdict="$(grep -E '^\[worker\] (drained:|drain finished with|drain: )' <<<"${logs}" | tail -n 1)"
+printf 'S  the worker'"'"'s verdict line is the clean one                    '; [[ "${verdict}" == "${CLEAN}" ]]; mark $?; printf '  (%s)\n' "${verdict:-no verdict line}"
+stop_n="$(grep -nF '[worker] pg-boss stopped ' <<<"${logs}" | head -n 1 | cut -d: -f1)"
+tear_n="$(grep -nxF '[worker] SelftestReporter: onModuleDestroy, ending its own pool' <<<"${logs}" | head -n 1 | cut -d: -f1)"
+printf 'O  pg-boss stopped BEFORE a module teardown hook ran            '; [[ -n "${stop_n}" && -n "${tear_n}" && "${stop_n}" -lt "${tear_n}" ]]; mark $?; printf '  (log line of "pg-boss stopped": %s; of the teardown: %s)\n' "${stop_n:-absent}" "${tear_n:-absent}"
 [[ "${probe_exit}" != "0" ]] && fails=$((fails+1))
 
 echo

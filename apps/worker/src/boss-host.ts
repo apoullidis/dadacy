@@ -11,15 +11,28 @@
  *                          for it.
  *   (handlers)             each queue's handler provider calls `work()` from its own
  *                          `onApplicationBootstrap` (src/selftest.handler.ts is the pattern).
- *   onApplicationShutdown  THE DRAIN: no new fetch; in-flight handlers get up to STOP_TIMEOUT_MS;
- *                          then the pool is closed. src/main.ts calls `app.close()` on the
- *                          first SIGTERM/SIGINT (and prints the signal line), which is what runs this hook, and
- *                          decides the exit.
+ *   drain()                THE DRAIN, called by src/main.ts on the first SIGTERM/SIGINT BEFORE
+ *                          `app.close()`: no new fetch; in-flight handlers get up to
+ *                          STOP_TIMEOUT_MS; pg-boss stops. It counts what went wrong after it
+ *                          began (StopReport), so the verdict line cannot read as success over a
+ *                          job that failed during shutdown.
+ *   onApplicationShutdown  closes this pool, after `drain()` has returned.
  *
- * WHY THE POOL IS CLOSED HERE and not in a hook of its own: Nest runs the `onApplicationShutdown`
- * hooks of one module's providers concurrently (`Promise.all`, @nestjs/core
- * hooks/on-app-shutdown.hook.js), so a separate "close the pool" hook could close it under a
- * handler still draining. The pool is closed after pg-boss's stop has returned.
+ * WHY THE DRAIN IS NOT A NEST HOOK (T-242 rework 1, QA-F1 / OD-293). `close()` in @nestjs/core
+ * 11.2.3 (nest-application-context.js) runs every module's `onModuleDestroy`, then every
+ * `beforeApplicationShutdown`, then `dispose()`, then every `onApplicationShutdown`; each pass
+ * walks the modules in ascending distance from the root (`getModulesToTriggerHooksOn()` reversed),
+ * awaiting one module before the next. This module is imported by every handler's module, so it
+ * is the deepest, and a drain in any hook here runs AFTER the teardown of the services handlers
+ * inject (a pool `end()`ed in `onModuleDestroy` or `onApplicationShutdown`),
+ * and the in-flight job fails mid-drain. Measured: QA's `depteardown`/`deptdestroy`, red at
+ * `d2c9720`. No hook position is safe against every module graph, so the drain runs before
+ * `close()` is called at all: when `close()` starts, pg-boss has already stopped.
+ * apps/worker/tools/drain-check.sh holds the order (its check `O`) against the stand-in module's
+ * real teardown (src/selftest-reporter.module.ts).
+ *
+ * If `close()` is reached without `drain()` (nothing in main.ts does that), the hook below stops
+ * pg-boss itself and says it is late, rather than leave it running.
  */
 import type { OnApplicationShutdown, OnModuleInit } from '@nestjs/common';
 import type { Pool, PoolClient } from 'pg';
@@ -42,8 +55,14 @@ export interface InFlight {
 }
 
 export interface StopReport {
-  /** handlers still running when pg-boss's stop returned (pg-boss failed them back: failWip) */
+  /** handlers still running when pg-boss's stop returned (pg-boss failed them: failWip) */
   readonly stillRunning: number;
+  /** handlers that rejected (their job failed) after drain() began */
+  readonly handlerFailures: number;
+  /** pg-boss `error` events after drain() began */
+  readonly bossErrors: number;
+  /** whether the stop ran in drain() — false when the shutdown hook had to stop pg-boss late */
+  readonly beforeClose: boolean;
 }
 
 export class BossHost implements OnModuleInit, OnApplicationShutdown {
@@ -54,6 +73,9 @@ export class BossHost implements OnModuleInit, OnApplicationShutdown {
   readonly #queues: string[] = [];
   #boss: PgBoss | undefined;
   #stop: StopReport | undefined;
+  #draining = false;
+  #handlerFailures = 0;
+  #bossErrors = 0;
 
   constructor(settings: ConnectionSettings, pool: Pool, log: WorkerLog) {
     this.#settings = settings;
@@ -76,7 +98,7 @@ export class BossHost implements OnModuleInit, OnApplicationShutdown {
     return this.#queues;
   }
 
-  /** Set when the drain has run. */
+  /** Set when pg-boss has been stopped. */
   get stopReport(): StopReport | undefined {
     return this.#stop;
   }
@@ -110,7 +132,10 @@ export class BossHost implements OnModuleInit, OnApplicationShutdown {
     );
 
     const instance = new PgBoss(config);
-    instance.on('error', (thrown) => this.#log(`pg-boss error (${describe(thrown)})`));
+    instance.on('error', (thrown) => {
+      if (this.#draining) this.#bossErrors += 1;
+      this.#log(`pg-boss error (${describe(thrown)})`);
+    });
     instance.on('warning', (warning) => this.#log(`pg-boss warning: ${warning.message}`));
     try {
       await instance.start();
@@ -143,6 +168,9 @@ export class BossHost implements OnModuleInit, OnApplicationShutdown {
       this.#inFlight.count += 1;
       try {
         return await inner(arg);
+      } catch (thrown) {
+        if (this.#draining) this.#handlerFailures += 1;
+        throw thrown;
       } finally {
         this.#inFlight.count -= 1;
       }
@@ -156,14 +184,35 @@ export class BossHost implements OnModuleInit, OnApplicationShutdown {
     return id;
   }
 
+  /**
+   * Stop pg-boss gracefully: no new fetch, in-flight handlers get up to STOP_TIMEOUT_MS. Called by
+   * src/main.ts BEFORE `app.close()`, so no other module has torn anything down yet. Idempotent.
+   */
+  async drain(): Promise<StopReport> {
+    return this.#stopBoss(true);
+  }
+
+  async #stopBoss(beforeClose: boolean): Promise<StopReport> {
+    if (this.#stop !== undefined) return this.#stop;
+    this.#draining = true;
+    await this.#boss?.stop({ graceful: true, close: true, timeout: STOP_TIMEOUT_MS });
+    this.#stop = {
+      stillRunning: this.#inFlight.count,
+      handlerFailures: this.#handlerFailures,
+      bossErrors: this.#bossErrors,
+      beforeClose,
+    };
+    return this.#stop;
+  }
+
   async onApplicationShutdown(): Promise<void> {
-    if (this.#boss === undefined) {
-      await this.#pool.end();
-      this.#stop = { stillRunning: 0 };
-      return;
+    if (this.#stop === undefined) {
+      this.#log(
+        'BossHost: the application context is closing and drain() has not run; stopping pg-boss ' +
+          "now, AFTER other modules' teardown hooks",
+      );
+      await this.#stopBoss(false);
     }
-    await this.#boss.stop({ graceful: true, close: true, timeout: STOP_TIMEOUT_MS });
     await this.#pool.end();
-    this.#stop = { stillRunning: this.#inFlight.count };
   }
 }

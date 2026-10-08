@@ -20,7 +20,10 @@ import { BossHost } from './boss-host.ts';
 import { connectionSettings, poolConfig, type ConnectionSettings } from './config.ts';
 import { describe, log, type WorkerLog } from './log.ts';
 
-/** Injection tokens. A queue's handler injects `PG_POOL` for its own SQL and `WORKER_LOG` to log. */
+/**
+ * Injection tokens. A queue's handler injects `PG_POOL` for its own SQL and `WORKER_LOG` to log; a
+ * module that opens its own connections injects `CONNECTION_SETTINGS` (the `app_rw` role option).
+ */
 export const WORKER_LOG = Symbol('kinvara.worker.log');
 export const CONNECTION_SETTINGS = Symbol('kinvara.worker.connection-settings');
 export const PG_POOL = Symbol('kinvara.worker.pg-pool');
@@ -49,5 +52,5 @@ Module({
       inject: [CONNECTION_SETTINGS, PG_POOL, WORKER_LOG],
     },
   ],
-  exports: [WORKER_LOG, PG_POOL, BossHost],
+  exports: [WORKER_LOG, CONNECTION_SETTINGS, PG_POOL, BossHost],
 })(WorkerRuntimeModule);
