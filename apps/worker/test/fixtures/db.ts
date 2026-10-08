@@ -34,6 +34,8 @@ export interface Note {
   readonly host: string;
   readonly pid: number;
   readonly tag?: string;
+  /** the service that sent it (T-242: `SelftestReporter`, injected into the handler provider) */
+  readonly via?: string;
 }
 
 function isNote(value: unknown): value is Note {

@@ -16,16 +16,16 @@
  * pg-boss's own tables, so a test can tell "the handler ran, here, this many times" apart from
  * "pg-boss marked the row" (T-148 acceptance (a), refusal (iii)).
  *
+ * WHERE IT RUNS (T-242): this file is the queue's pure half — its name, options, payload reader
+ * and failure text, imported by the tests and the drain probe without loading NestJS. The handler
+ * itself is a Nest provider, src/selftest.handler.ts; its notifications are sent through
+ * `SelftestReporter` (src/selftest-reporter.module.ts) and carry `via: 'SelftestReporter'`.
+ *
  * RETRY POLICY, CONFIGURED HERE: `retryLimit: 1`, so a throwing job is attempted exactly TWICE and
  * then `failed`. pg-boss's own default is 2 (three attempts; `types.d.ts` QueueOptions), so a
  * deleted or ignored option is visible as a third attempt. NEVER `partition: true` (T-146 § contract
  * §3: it needs CREATE on schema pgboss, which no role holds).
  */
-import { hostname } from 'node:os';
-import { setTimeout as sleep } from 'node:timers/promises';
-import type { Pool } from 'pg';
-import type { JobWithMetadata, PgBoss } from 'pg-boss';
-
 export const SELFTEST_QUEUE = 'worker.selftest';
 export const SELFTEST_CHANNEL = 'kinvara_worker_selftest';
 export const SELFTEST_MAX_HOLD_MS = 15_000;
@@ -75,52 +75,4 @@ export function parseSelftest(data: unknown): SelftestData | string {
     return `holdMs is not an integer 0..${String(SELFTEST_MAX_HOLD_MS)}`;
   }
   return { op, tag, holdMs };
-}
-
-export interface InFlight {
-  count: number;
-}
-
-export async function registerSelftest(
-  boss: PgBoss,
-  pool: Pool,
-  inFlight: InFlight,
-  log: (line: string) => void,
-): Promise<void> {
-  await boss.createQueue(SELFTEST_QUEUE, { ...SELFTEST_QUEUE_OPTIONS });
-  // createQueue is a no-op on an existing queue (pgboss.create_queue); this converges its options.
-  await boss.updateQueue(SELFTEST_QUEUE, { ...SELFTEST_QUEUE_OPTIONS });
-
-  const notify = async (fields: Record<string, unknown>): Promise<void> => {
-    await pool.query('SELECT pg_notify($1, $2)', [SELFTEST_CHANNEL, JSON.stringify(fields)]);
-  };
-
-  const workOptions = { includeMetadata: true, batchSize: 1, pollingIntervalSeconds: 1 } as const;
-  await boss.work<unknown, SelftestOutput, typeof workOptions>(
-    SELFTEST_QUEUE,
-    workOptions,
-    async (jobs: JobWithMetadata<unknown>[]) => {
-      const job = jobs[0];
-      if (job === undefined) throw new Error('worker.selftest: called with no job');
-      inFlight.count += 1;
-      try {
-        const attempt = job.retryCount + 1;
-        const who = { id: job.id, attempt, host: hostname(), pid: process.pid };
-        const data = parseSelftest(job.data);
-        if (typeof data === 'string') {
-          await notify({ ...who, phase: 'refused' });
-          throw new Error(`worker.selftest: refused payload: ${data}`);
-        }
-        await notify({ ...who, tag: data.tag, op: data.op, phase: 'start' });
-        log(`selftest job ${job.id} op=${data.op} attempt=${String(attempt)} started`);
-        if (data.op === 'throw') throw new Error(SELFTEST_FAILURE);
-        if (data.op === 'hold') await sleep(data.holdMs ?? 0);
-        await notify({ ...who, tag: data.tag, op: data.op, phase: 'done' });
-        log(`selftest job ${job.id} op=${data.op} attempt=${String(attempt)} completed`);
-        return { op: data.op, tag: data.tag, attempt, host: who.host, pid: who.pid };
-      } finally {
-        inFlight.count -= 1;
-      }
-    },
-  );
 }

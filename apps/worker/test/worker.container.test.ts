@@ -93,7 +93,7 @@ test('(c) the worker created worker.selftest with the configured policy, and not
 });
 
 test(
-  '(a) a job sent to worker.selftest is completed by the containerised worker: pgboss state AND the handler side effect',
+  '(a) a job sent to worker.selftest is completed by the containerised worker: pgboss state AND the handler side effect, sent by an injected service',
   { timeout: 30_000 },
   async () => {
     const tag = `${RUN}.echo`;
@@ -112,11 +112,14 @@ test(
     assert.equal(output.attempt, 1);
     assert.ok(typeof output.host === 'string' && output.host !== hostname(), 'handled elsewhere');
     const notes = listener.notes.filter((n) => n.id === id);
+    // T-242: the handler is a Nest provider and sends its notifications through a service it
+    // INJECTED from another module (SelftestReporterModule, the stand-in for a core module). The
+    // name is a literal here, not read from src/, so the assertion is not derived from the code.
     assert.deepEqual(
-      notes.map((n) => [n.phase, n.attempt, n.host]),
+      notes.map((n) => [n.phase, n.attempt, n.host, n.via]),
       [
-        ['start', 1, output.host],
-        ['done', 1, output.host],
+        ['start', 1, output.host, 'SelftestReporter'],
+        ['done', 1, output.host, 'SelftestReporter'],
       ],
     );
   },

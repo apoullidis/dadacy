@@ -4,183 +4,129 @@
  * the ARGV path (T-185 § contract 1, 5) and this process is PID 1's direct child; the boot line
  * reads `mode=real  running start (node src/main.ts) as a direct child`.
  *
- * THE LIFECYCLE
- *   1. connect as `app_rw` and preflight (src/preflight.ts, SELECTs only) — refuse to start,
- *      exit 2, on any finding, before pg-boss issues a statement;
- *   2. start pg-boss 12.26.4 with `migrate: false` (src/config.ts); its own `contractor.check()`
- *      then compares the schema version a second time;
- *   3. register the handlers (src/selftest.ts) — the scheduler runs in this process too
- *      (`schedule: true`, pg-boss's timekeeper);
- *   4. beat the heartbeat the image's HEALTHCHECK reads (src/heartbeat.ts, OD-198);
- *   5. on the first SIGTERM/SIGINT: stop beating, stop fetching, let in-flight jobs finish (up to
- *      STOP_TIMEOUT_MS), close the pools, exit 0. A second signal exits 1 at once.
+ * A NESTJS 11 APPLICATION CONTEXT, NO HTTP ADAPTER (T-242, OE-79). `createApplicationContext`
+ * builds the module graph and runs its lifecycle hooks; unlike `NestFactory.create` it creates no
+ * HTTP adapter and opens no listening socket (`T-034`: a worker has no port). The no-socket
+ * property is asserted in the running container by `apps/worker/tools/no-listen.sh`.
  *
- * NO CHILD PROCESS. Nothing here, and nothing in pg-boss 12.26.4's `dist/`, spawns one (no
- * child_process, worker_threads or cluster), so the process group PID 1 waits on holds this
- * process alone and empties when it exits (OD-196; measured in the image, state/EP-2/T-148.md).
+ * THE LIFECYCLE
+ *   1. Nest builds `WorkerModule` (src/worker.module.ts). `BossHost.onModuleInit`
+ *      (src/boss-host.ts) connects as `app_rw`, preflights (src/preflight.ts, SELECTs only) and
+ *      refuses to start on any finding before pg-boss issues a statement; then starts pg-boss
+ *      12.26.4 with `migrate: false` (src/config.ts), whose own `contractor.check()` compares the
+ *      schema version a second time. The scheduler runs in this process (`schedule: true`).
+ *   2. Every handler provider registers in its `onApplicationBootstrap` (src/selftest.handler.ts).
+ *   3. Here, once the context is up: beat the heartbeat the image's HEALTHCHECK reads
+ *      (src/heartbeat.ts, OD-198) — so the first beat follows pg-boss's start and every handler.
+ *   4. On the first SIGTERM/SIGINT: stop beating, then `app.close()`, whose
+ *      `onApplicationShutdown` hook on `BossHost` IS the drain — stop fetching, let in-flight jobs
+ *      finish (up to STOP_TIMEOUT_MS), close the pools; then exit 0. A second signal exits 1 at
+ *      once. A signal that arrives while the context is still booting is held until it is up,
+ *      and then drains the same way (nothing else stops pg-boss under a booting module).
+ *      Nest's own `enableShutdownHooks` is NOT used: it re-raises the signal after the hooks
+ *      (`process.kill(process.pid, signal)`, @nestjs/core nest-application-context.js), which
+ *      would end the process as 143, not 0, and it ignores a second signal.
+ *
+ * NO CHILD PROCESS. Nothing here, nothing in pg-boss 12.26.4's `dist/`, and nothing NestJS's
+ * application context starts spawns one, so the process group PID 1 waits on holds this process
+ * alone and empties when it exits (OD-196; re-measured in the image, state/EP-2/T-242.md).
  *
  * EXIT CODES: 0 drained; 1 boot failure or second signal; 2 refused to start (REFUSED_EXIT).
- * Nothing here logs DATABASE_URL. Driver and server errors are logged with their code and message
- * as given; the ones this ticket saw name a role, a database or a schema, never a password.
+ * `abortOnError: false` is what makes a failed boot an exception here rather than Nest's default
+ * `process.abort()` (SIGABRT, 134) with no banner.
  */
-import pg from 'pg';
-import type { Pool, PoolClient } from 'pg';
-import { PgBoss } from 'pg-boss';
-import {
-  bossConfig,
-  connectionSettings,
-  HEARTBEAT_PATH,
-  pgBossVersion,
-  poolConfig,
-  requiredSchemaVersion,
-  RUNTIME_ROLE,
-  STOP_TIMEOUT_MS,
-} from './config.ts';
+import 'reflect-metadata';
+import type { INestApplicationContext } from '@nestjs/common';
+import { NestFactory } from '@nestjs/core';
+import type { Pool } from 'pg';
+import { BossHost } from './boss-host.ts';
+import { HEARTBEAT_PATH, STOP_TIMEOUT_MS } from './config.ts';
 import { startHeartbeat, type Heartbeat } from './heartbeat.ts';
-import { preflight } from './preflight.ts';
+import { describe, log, WorkerNestLogger } from './log.ts';
 import { REFUSED_EXIT, WorkerRefusal } from './refusal.ts';
-import { registerSelftest, SELFTEST_QUEUE, type InFlight } from './selftest.ts';
+import { PG_POOL } from './runtime.module.ts';
+import { WorkerModule } from './worker.module.ts';
 
-const log = (line: string): void => {
-  process.stderr.write(`[worker] ${line}\n`);
-};
-
-/**
- * `code=<sqlstate|none> <message>[ queue=<name>]`. pg-boss emits a worker's fetch error as a PLAIN
- * OBJECT spread from the Error (`{ ...error, message, stack, queue, worker }`, dist/manager.js),
- * so `instanceof Error` alone would print `[object Object]` — measured in the image before this
- * read the `message` property (state/EP-2/T-148.md). The stack is never logged.
- */
-function describe(thrown: unknown): string {
-  const field = (key: string): unknown =>
-    typeof thrown === 'object' && thrown !== null && key in thrown
-      ? (thrown as Record<string, unknown>)[key]
-      : undefined;
-  const code = field('code');
-  const message = field('message');
-  const queue = field('queue');
-  return (
-    `code=${typeof code === 'string' ? code : 'none'} ` +
-    `${typeof message === 'string' ? message : String(thrown)}` +
-    (typeof queue === 'string' ? ` queue=${queue}` : '')
-  );
-}
-
-const inFlight: InFlight = { count: 0 };
-let pool: Pool | undefined;
-let boss: PgBoss | undefined;
+let app: INestApplicationContext | undefined;
 let heartbeat: Heartbeat | undefined;
+let pendingSignal: string | undefined;
+let signalledAt = 0;
 let draining = false;
 
-async function drain(signal: string): Promise<void> {
-  if (draining) {
-    log(`second signal (${signal}) — abandoning the drain, exiting 1`);
-    process.exit(1);
-  }
-  draining = true;
-  const signalledAt = performance.now();
-  heartbeat?.stop();
-  if (boss === undefined) {
-    log(`${signal} before pg-boss started — nothing in flight, exiting 0`);
-    process.exit(0);
-  }
+async function drain(context: INestApplicationContext, signal: string): Promise<void> {
+  const host = context.get(BossHost);
   log(
     `${signal}: fetching no new jobs; waiting up to ${String(STOP_TIMEOUT_MS)}ms for ` +
-      `${String(inFlight.count)} in-flight job(s)`,
+      `${String(host.inFlight)} in-flight job(s)`,
   );
   try {
-    await boss.stop({ graceful: true, close: true, timeout: STOP_TIMEOUT_MS });
-    await pool?.end();
+    await context.close();
   } catch (thrown) {
     log(`drain: stop failed (${describe(thrown)}), exiting 1`);
     process.exit(1);
   }
   // The elapsed time is printed, not inferred: pg-boss's stop() can return with jobs still
-  // running BEFORE the timeout (QA-A1: a non-graceful stop returned at 0.20 s), so "the deadline
-  // was reached" is not something this line may assume. Whatever the cause, pg-boss fails a job
-  // still active at stop back to its queue's retry policy (failWip).
+  // running BEFORE the timeout (T-148 QA-A1: a non-graceful stop returned at 0.20 s), so "the
+  // deadline was reached" is not something this line may assume. Whatever the cause, pg-boss
+  // fails a job still active at stop back to its queue's retry policy (failWip).
+  const stillRunning = host.stopReport?.stillRunning ?? host.inFlight;
   const elapsedMs = Math.round(performance.now() - signalledAt);
   log(
-    inFlight.count === 0
+    stillRunning === 0
       ? 'drained: 0 in flight, exiting 0'
-      : `stopped with ${String(inFlight.count)} job(s) still running when pg-boss's stop returned, ` +
+      : `stopped with ${String(stillRunning)} job(s) still running when pg-boss's stop returned, ` +
           `${String(elapsedMs)}ms after ${signal} (graceful timeout ${String(STOP_TIMEOUT_MS)}ms); ` +
           `pg-boss failed them back to their queue's retry policy (failWip); exiting 0`,
   );
   process.exit(0);
 }
 
-process.on('SIGTERM', () => void drain('SIGTERM'));
-process.on('SIGINT', () => void drain('SIGINT'));
-
-async function boot(): Promise<void> {
-  const settings = connectionSettings();
-  const requiredVersion = requiredSchemaVersion();
-  pool = new pg.Pool(poolConfig(settings));
-  pool.on('error', (thrown) => log(`an idle database connection failed (${describe(thrown)})`));
-
-  let client: PoolClient;
-  try {
-    client = await pool.connect();
-  } catch (thrown) {
-    throw new WorkerRefusal(
-      'database',
-      `could not open a session as ${RUNTIME_ROLE} (${describe(thrown)})`,
-    );
-  }
-  const found = await (async () => {
-    try {
-      return await preflight(client, requiredVersion);
-    } finally {
-      client.release();
-    }
-  })();
-  // Every value on this line is READ — from the session, the catalogue and the config object
-  // pg-boss is given — so a changed setting changes the line rather than leaving it to lie.
-  const config = bossConfig(settings);
-  log(
-    `mode=real  pg-boss ${pgBossVersion()} against schema pgboss v${String(found.schemaVersion)}; ` +
-      `login ${found.sessionUser} (superuser=${String(found.sessionIsSuperuser)}), running as ` +
-      `${found.currentUser} (startup option ${JSON.stringify(settings.options ?? null)}); ` +
-      `migrate=${String(config.migrate)}`,
-  );
-
-  const instance = new PgBoss(config);
-  instance.on('error', (thrown) => log(`pg-boss error (${describe(thrown)})`));
-  instance.on('warning', (warning) => log(`pg-boss warning: ${warning.message}`));
-  try {
-    await instance.start();
-  } catch (thrown) {
-    const message = thrown instanceof Error ? thrown.message : '';
-    if (
-      message === 'pg-boss database requires migrations' ||
-      message === 'pg-boss is not installed'
-    ) {
-      throw new WorkerRefusal('schema-version', `pg-boss refused the schema: ${message}`);
-    }
-    throw thrown;
-  }
-  boss = instance;
-  if (draining) return;
-
-  await registerSelftest(instance, pool, inFlight, log);
-  if (draining) return;
-  heartbeat = await startHeartbeat(pool, HEARTBEAT_PATH, log);
-  log(`ready: consuming ${SELFTEST_QUEUE}; scheduler on; heartbeat -> ${HEARTBEAT_PATH}`);
-}
-
-try {
-  await boot();
-} catch (thrown) {
-  // A stop signal during boot: drain() owns the exit, and a boot step failing because pg-boss was
-  // stopped under it is not a boot failure.
-  if (draining) {
-    log(`boot interrupted by a stop signal (${describe(thrown)}); the drain decides the exit`);
-  } else if (thrown instanceof WorkerRefusal) {
-    log(`WORKER REFUSED (${thrown.reason}): ${thrown.message}; exiting ${String(REFUSED_EXIT)}`);
-    process.exit(REFUSED_EXIT);
-  } else {
-    log(`WORKER BOOT FAILED (${describe(thrown)}), exiting 1`);
+function onSignal(signal: string): void {
+  if (draining || pendingSignal !== undefined) {
+    log(`second signal (${signal}) — abandoning the drain, exiting 1`);
     process.exit(1);
   }
+  signalledAt = performance.now();
+  heartbeat?.stop();
+  if (app === undefined) {
+    pendingSignal = signal;
+    log(`${signal} while the application context is booting; it drains as soon as it is up`);
+    return;
+  }
+  draining = true;
+  void drain(app, signal);
+}
+
+process.on('SIGTERM', () => onSignal('SIGTERM'));
+process.on('SIGINT', () => onSignal('SIGINT'));
+
+try {
+  app = await NestFactory.createApplicationContext(WorkerModule, {
+    logger: new WorkerNestLogger(log),
+    abortOnError: false,
+  });
+} catch (thrown) {
+  const pending = pendingSignal === undefined ? '' : ` (${pendingSignal} was pending)`;
+  if (thrown instanceof WorkerRefusal) {
+    log(
+      `WORKER REFUSED (${thrown.reason}): ${thrown.message}; exiting ${String(REFUSED_EXIT)}${pending}`,
+    );
+    process.exit(REFUSED_EXIT);
+  }
+  log(`WORKER BOOT FAILED (${describe(thrown)})${pending}, exiting 1`);
+  process.exit(1);
+}
+
+if (pendingSignal !== undefined) {
+  draining = true;
+  await drain(app, pendingSignal);
+} else {
+  const started = await startHeartbeat(app.get<symbol, Pool>(PG_POOL), HEARTBEAT_PATH, log);
+  heartbeat = started;
+  // A signal during the first beat found `heartbeat` unset and could not stop it.
+  if (draining) started.stop();
+  log(
+    `ready: NestJS application context (no HTTP adapter); consuming ` +
+      `${app.get(BossHost).queues.join(', ')}; scheduler on; heartbeat -> ${HEARTBEAT_PATH}`,
+  );
 }
