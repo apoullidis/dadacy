@@ -17,7 +17,20 @@
 # 127.0.0.11, uid 0, held by no process in the container (`postgres` has one too, and both
 # containers' resolv.conf name 127.0.0.11). No container on kinvara-int can pass "no 0A at all",
 # so that check would only ever be red. The two checks below are what "the worker opens no port"
-# means, and the unheld loopback LISTEN is PRINTED (with its uid) for a reviewer, not judged.
+# means, and a LOOPBACK LISTEN whose inode no fd the reader can see holds is PRINTED (with its uid)
+# for a reviewer, not judged.
+#
+# WHAT IT CANNOT SEE — two gaps, both measured by qa-verification on T-242 (§ QA verification Q8),
+# so a PASS means less than "nothing in the container listens":
+#   - ANOTHER UID'S LOOPBACK TCP LISTENER. The fd reader runs as 10001 and reads only that uid's
+#     /proc/<pid>/fd; root in this container cannot read them either (Docker's default capability
+#     set has no CAP_SYS_PTRACE / CAP_DAC_READ_SEARCH, QA measured). A loopback LISTEN held by a
+#     uid-0 process therefore looks exactly like Docker's DNS socket and passes (QA A4). A
+#     NON-loopback one is still caught by L1, which needs no fd reading (QA A6).
+#   - EVERY NON-TCP SOCKET. UDP (/proc/net/udp*) and listening unix sockets are printed, never
+#     judged: a UDP socket bound on 0.0.0.0 passes (QA A5).
+# The worker image runs only uid 10001 and binds no UDP, so neither gap is a false PASS on the
+# worker as built; both are open to anything a later ticket adds.
 #
 # THE CHECKS, so that "read nothing" cannot pass as "nothing listens" (PROTOCOL §5.1):
 #   R   both tcp files were read and each starts with its `sl  local_address` header;
@@ -88,8 +101,9 @@ listen_held="$(awk 'NR == FNR { h[$1] = 1; next } $1 != "HEADER" && $2 == "0A" &
 printf 'L2  no LISTEN socket held by a process in the container             '
 [[ -z "${listen_held}" ]]; mark $?; printf '  (%s)\n' "$(grep -c . <<<"${listen_held}")"
 [[ -n "${listen_held}" ]] && printf '%s\n' "${listen_held}" | sed 's/^/    LISTEN (held): /'
-unjudged="$(awk 'NR == FNR { h[$1] = 1; next } $1 != "HEADER" && $2 == "0A" && !($5 in h)' <(printf '%s\n' "${held_inodes}") <(printf '%s\n' "${listen_all}"))"
-[[ -n "${unjudged}" ]] && printf '%s\n' "${unjudged}" | sed 's/^/    not judged — loopback LISTEN held by no process in the container: /'
+# Only a LOOPBACK LISTEN is left unjudged; a non-loopback one is L1's, held or not (QA-A3).
+unjudged="$(awk "NR == FNR { h[\$1] = 1; next } \$1 != \"HEADER\" && \$2 == \"0A\" && !(\$5 in h) && (${is_loopback})" <(printf '%s\n' "${held_inodes}") <(printf '%s\n' "${listen_all}"))"
+[[ -n "${unjudged}" ]] && printf '%s\n' "${unjudged}" | sed 's/^/    not judged — loopback LISTEN held by no fd uid 10001 can read (Docker DNS, or another uid'"'"'s socket): /'
 
 control="$(read_sockets "${CONTROL}")"
 clisten="$(awk '$1 != "HEADER" && $2 == "0A" && $3 ~ /^0+:5432$/' <<<"${control}")"
