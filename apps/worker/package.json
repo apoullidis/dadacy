@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Same codebase as core, different entrypoint (pg-boss consumers) — SD §DH-1 line 4311. The pg-boss 12.26.4 consumer and scheduler against the migrated `pgboss` schema, self-migration off: T-148.",
+  "description": "Same codebase as core, different entrypoint (pg-boss consumers) — SD §DH-1 line 4311. The pg-boss 12.26.4 consumer and scheduler against the migrated `pgboss` schema, self-migration off: T-148. Hosted in a NestJS 11 application context with no HTTP adapter (no port): T-242, OE-79.",
   "scripts": {
     "start": "node src/main.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
@@ -11,9 +11,13 @@
     "test:integration": "node tools/run-tests.ts"
   },
   "dependencies": {
+    "@nestjs/common": "11.2.3",
+    "@nestjs/core": "11.2.3",
     "drizzle-orm": "0.45.2",
     "pg": "8.23.0",
-    "pg-boss": "12.26.4"
+    "pg-boss": "12.26.4",
+    "reflect-metadata": "0.2.2",
+    "rxjs": "7.8.2"
   },
   "devDependencies": {
     "typescript": "6.0.3",
