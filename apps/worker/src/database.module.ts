@@ -11,6 +11,8 @@
  *
  * `Database.onApplicationShutdown` ends its pool in Nest's teardown, which src/main.ts runs only
  * after `BossHost.drain()` has returned (T-242 RW1-C §2 row 2), so an in-flight handler keeps it.
+ * After that hook `Database` refuses every use (`DatabaseShutDownError`, T-245 rework 1): a
+ * teardown before the drain fails the in-flight job instead of reconnecting unseen.
  */
 import { Module } from '@nestjs/common';
 import { DatabaseModule } from '@kinvara/core-modules/runtime';

@@ -10,7 +10,7 @@
  *
  * IT OWNS A RESOURCE AND RELEASES IT IN A NEST TEARDOWN HOOK, on purpose (T-242 rework 1, QA-F1 /
  * OD-293): its own `pg.Pool`, `end()`ed in `onModuleDestroy` — the shape apps/core's `Database`
- * has (`onApplicationShutdown`, apps/core/src/identity/database.ts), in the earliest of Nest's
+ * has (`onApplicationShutdown`, now packages/core-modules/src/runtime/database.ts), in the earliest of Nest's
  * teardown passes. So every stop of the real worker exercises the order src/main.ts promises:
  * pg-boss drains first, this pool closes after. If the order regressed, the in-flight job's last
  * notification would hit an ended pool and the job would fail; apps/worker/tools/drain-check.sh

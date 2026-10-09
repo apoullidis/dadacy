@@ -67,8 +67,10 @@ import { fileURLToPath } from 'node:url';
 
 const PKG = join(dirname(fileURLToPath(import.meta.url)), '..');
 // Each module directory's tests, listed: the reader is not recursive. A module added under src/
-// lists its directory here, or its tests are refused as undeclared (check 3) and gate:unit-tests
-// reports FILE-SET-DRIFT (its V5 counts every tracked *.test.ts in the package).
+// lists its directory here, or its tests are refused as undeclared (check 3: "vitest ran <file>,
+// which is not a declared test file"), this package's `test` exits 1, and gate:unit-tests is red
+// with "@kinvara/core-modules: `test` exited 1" — measured, T-245 QA-17 and rework 1 RW1-A4. In
+// those runs gate:unit-tests did NOT print FILE-SET-DRIFT.
 const TEST_DIRS = ['src/runtime'];
 const COUNTS = [
   'numTotalTests',

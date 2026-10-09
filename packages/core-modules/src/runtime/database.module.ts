@@ -21,7 +21,8 @@
  * Node's type stripping there is no `design:paramtypes` (./nest-decorate.ts). A token named in
  * `inject` that no module in `imports` provides is refused by Nest at boot.
  *
- * `Database.onApplicationShutdown` ends the pool when the app's context closes.
+ * `Database.onApplicationShutdown` ends the pool when the app's context closes, and from then on
+ * the `Database` refuses every `withAppRw` with `DatabaseShutDownError` (./database.ts).
  */
 import {
   Module,

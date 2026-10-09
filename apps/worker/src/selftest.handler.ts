@@ -19,9 +19,16 @@
  * transaction (after `SET LOCAL ROLE app_rw`), then `RESET ROLE` and `current_user` again — the
  * role the CONNECTION carries from its startup options, which is `app_rw` only if the worker's
  * binding passed `-c role=app_rw` (`role` is not readable from `pg_settings`). Both go into the
- * job's output as `db`; the transaction ends right after. A `hold` job does that read AFTER its hold, so a job in flight across SIGTERM needs the
- * package's pool after the signal: drain-check A fails if `Database` were torn down before the
- * drain.
+ * job's output as `db`; the transaction ends right after. A `hold` job does that read AFTER its
+ * hold, so a job in flight across SIGTERM needs the package's `Database` after the signal. Since
+ * T-245 rework 1 `Database` REFUSES use after its `onApplicationShutdown` (`DatabaseShutDownError`;
+ * before, it silently opened a new pool). So if `Database` were torn down before the drain, this
+ * job's `withAppRw` would reject and drain-check A (the job is not `completed`) and S (the verdict
+ * counts a handler failure) go red. Measured with QA's `dbfirst` mutant (`onApplicationShutdown`
+ * called before `host.drain()` in src/main.ts): DRAIN PASS at 1f288ee, before the refusal; DRAIN
+ * FAIL after it (state/EP-2/T-245.md § Rework 1, RW1-R1/RW1-R2). It pins the order for THIS
+ * handler's `Database` and only on a run where a `hold` job is in flight at the signal, as
+ * drain-check arranges.
  */
 import type { OnApplicationBootstrap } from '@nestjs/common';
 import { Module } from '@nestjs/common';
