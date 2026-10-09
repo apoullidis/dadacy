@@ -40,8 +40,45 @@ import type { Pool, PoolClient, PoolConfig } from 'pg';
 import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { errorClass } from './error-class.ts';
 
-/** A Drizzle handle bound to ONE pooled connection, inside an `app_rw` transaction. */
-export type Tx = NodePgDatabase;
+declare const TX_BRAND: unique symbol;
+
+/**
+ * A Drizzle handle bound to ONE pooled connection, inside an `app_rw` transaction.
+ *
+ * BRANDED (T-149). Only `withAppRw` mints one, so a function that takes a `Tx` cannot be handed a
+ * pool-bound `drizzle(pool)` handle, `undefined`, or nothing at all: each is a compile error. The
+ * enqueue (`@kinvara/core-modules/jobs`) relies on it — SD §BE-11 line 1313, a job is enqueued in
+ * the caller's transaction. Held by `type-tests/enqueue-refusals.ts` under `pnpm -w typecheck`.
+ * The brand is a type only; `as unknown as Tx` gets past it, which is why `assertOpenTx` exists.
+ */
+export type Tx = NodePgDatabase & { readonly [TX_BRAND]: 'app_rw transaction' };
+
+/**
+ * The `Tx` handles whose transaction is still open: added before `work` runs, removed before
+ * COMMIT or ROLLBACK. A handle kept past its transaction is no longer in it (T-149).
+ */
+const openTx = new WeakSet<object>();
+
+/** Fixed text of `TransactionClosedError`. */
+export const TRANSACTION_CLOSED =
+  'database: this Tx is not an open withAppRw transaction (it committed, rolled back, or was never one)';
+
+/**
+ * A `Tx` used outside its transaction: after `withAppRw` committed or rolled back, or a value that
+ * was never minted by `withAppRw`. Its connection has gone back to the pool, so a statement on it
+ * would run in autocommit — for an enqueue, a job after commit (SD §BE-11 line 1313).
+ */
+export class TransactionClosedError extends Error {
+  override readonly name = 'TransactionClosedError';
+  constructor() {
+    super(TRANSACTION_CLOSED);
+  }
+}
+
+/** Throws `TransactionClosedError` unless `tx` is an open `withAppRw` transaction. */
+export function assertOpenTx(tx: Tx): void {
+  if (!openTx.has(tx)) throw new TransactionClosedError();
+}
 
 export type LogLine = (line: string) => void;
 
@@ -129,13 +166,19 @@ export class Database {
   async withAppRw<T>(work: (tx: Tx) => Promise<T>): Promise<T> {
     const client: PoolClient = await this.#pool_().connect();
     let broken = false;
+    let tx: Tx | undefined;
     try {
       await client.query('BEGIN');
       await client.query('SET LOCAL ROLE app_rw');
-      const result = await work(drizzle({ client }));
+      // The one place a `Tx` is minted (the brand is a type; see `Tx`).
+      tx = drizzle({ client }) as unknown as Tx;
+      openTx.add(tx);
+      const result = await work(tx);
+      openTx.delete(tx);
       await client.query('COMMIT');
       return result;
     } catch (thrown) {
+      if (tx !== undefined) openTx.delete(tx);
       try {
         await client.query('ROLLBACK');
       } catch {

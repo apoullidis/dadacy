@@ -3,9 +3,10 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "EV-30 / OD-292a: the code of SA §SA-2's modules that SD §BE-1 loads in more than one deployable, in src/<module>/, plus the shared NestJS runtime in src/runtime/ (Database/Tx/withAppRw, DatabaseModule, errorClass, the decorator helpers) — T-245. Declared by apps/core and apps/worker. Never declares @nestjs/platform-*: that would put an HTTP adapter into the worker image.",
+  "description": "EV-30 / OD-292a: the code of SA §SA-2's modules that SD §BE-1 loads in more than one deployable, in src/<module>/, plus the shared NestJS runtime in src/runtime/ (Database/Tx/withAppRw, DatabaseModule, errorClass, the decorator helpers) — T-245; the transactional enqueue in src/jobs/ — T-149. Declared by apps/core and apps/worker. Never declares @nestjs/platform-*: that would put an HTTP adapter into the worker image.",
   "exports": {
     "./identity": "./src/identity/index.ts",
+    "./jobs": "./src/jobs/index.ts",
     "./runtime": "./src/runtime/index.ts"
   },
   "scripts": {
@@ -17,8 +18,10 @@
     "@nestjs/core": "11.2.3",
     "drizzle-orm": "0.45.2",
     "pg": "8.23.0",
+    "pg-boss": "12.26.4",
     "reflect-metadata": "0.2.2",
-    "rxjs": "7.8.2"
+    "rxjs": "7.8.2",
+    "zod": "4.5.4"
   },
   "devDependencies": {
     "typescript": "6.0.3",

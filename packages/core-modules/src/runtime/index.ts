@@ -13,6 +13,8 @@ export {
   DATABASE_SHUT_DOWN,
   DATABASE_URL_REFUSED,
   DatabaseShutDownError,
+  TRANSACTION_CLOSED,
+  TransactionClosedError,
   type DatabaseSource,
   type LogLine,
   type Tx,
