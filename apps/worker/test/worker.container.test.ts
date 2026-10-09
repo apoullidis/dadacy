@@ -142,15 +142,19 @@ function sha256(value: string): string {
 }
 
 test(
-  "(T-246) a job resolves a seeded account's email and phone through @kinvara/core-modules/identity in the container, and an absent AccountId fails with the named refusal AccountNotFoundError",
+  "(T-246) a contact job completes as app_rw with the SHA-256 of a seeded account's stored email and phone and neither value in its row, and a job for an absent AccountId fails with output.name AccountNotFoundError without echoing the id",
   { timeout: 60_000 },
   async () => {
     // Seeded here, as the superuser, with literal values; the expectation is their SHA-256 computed
     // in this process. Ids are fresh ULIDs from this run's clock; the absent one is never inserted.
+    // What this case CANNOT see: which code read `account`. A handler reading it by raw SQL outside
+    // identity's code passes it too (T-246 QA mutant `accountread`); nothing refuses such a read
+    // until T-002's module rules exist.
     const present = ulidFor('T246PRESENT');
     const absent = ulidFor('T246ABSENT');
     const email = `t246.${RUN}@example.test`;
-    const phone = `+3579${String(Date.now() % 10_000_000).padStart(7, '0')}`;
+    // A test number in ITU-T country code 991 (SQ-27), never a dialable +357 one; unique per run.
+    const phone = `+9919${String(Date.now() % 10_000_000).padStart(7, '0')}`;
     await pool.query(
       `INSERT INTO public.account (id, pseudonym, email_ci, phone_e164, tos_version)
        VALUES ($1, $2, $3, $4, 't246')`,

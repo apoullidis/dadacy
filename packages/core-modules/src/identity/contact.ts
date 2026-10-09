@@ -11,6 +11,16 @@
  * passwordless account with no phone; an erased account's `email_ci` is NULL, SD line 1766). It
  * judges neither: whether an unverified or absent channel may be used is the caller's rule.
  *
+ * IT IS NOT EVERY RECIPIENT (T-246 rework 1, QA-F1, OD-301). It is the recipient for a magic link
+ * (the account's email) and for a step-up OTP to the account's own verified phone. It is NOT the
+ * recipient of an OTP that verifies a first or changed phone: that number is the challenge's
+ * `otp_challenge.phone_e164`, stored in clear; in T-027's design (O1/O4) `account.phone_e164` is
+ * written by `/otp/verify`, after the code checks — until then NULL for a first phone and the OLD
+ * number for a change.
+ * Only the OTP code and the link token are digests (`code_hash`, `token_hash`). A read of a
+ * challenge's phone, if the job payload does not carry it, is `T-198`'s, written in this directory
+ * (BOARD T-198/T-200 addenda, 2026-10-09).
+ *
  * AN ABSENT ID IS A NAMED REFUSAL: `AccountNotFoundError` (./errors.ts), never `undefined`, so a
  * caller cannot read "no such account" as "no contact". Held without a database by
  * `contact.test.ts`, and against the real `account` table in the containerised worker

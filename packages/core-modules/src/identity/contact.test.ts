@@ -22,16 +22,25 @@ test('an absent account id is the named refusal AccountNotFoundError, never unde
       assert.ok(isErrorCode(e.code));
       assert.equal(e.message, 'not_found');
       assert.ok(!e.message.includes(ID) && !String(e.stack).includes(ID));
+      // QA-A2: not in ANY own property either, enumerable or not — pg-boss serialises a failed
+      // job's error by its enumerable properties into `output`, so an id attached there would
+      // reach the job row (T-246 § QA verification, mutant `echoprop`).
+      for (const key of Reflect.ownKeys(e)) {
+        const value: unknown = Reflect.get(e, key);
+        const text = typeof value === 'string' ? value : String(JSON.stringify(value));
+        assert.ok(!String(key).includes(ID) && !text.includes(ID), `own property ${String(key)}`);
+      }
+      assert.ok(!JSON.stringify(e).includes(ID), 'its JSON form');
       return true;
     },
   );
 });
 
 test('a present account returns its stored email and phone, NULLs as null', () => {
-  assert.deepEqual(contactFromRows(ID, [{ email: 'a@example.test', phoneE164: '+35799000001' }]), {
+  assert.deepEqual(contactFromRows(ID, [{ email: 'a@example.test', phoneE164: '+99199000001' }]), {
     accountId: ID,
     email: 'a@example.test',
-    phoneE164: '+35799000001',
+    phoneE164: '+99199000001',
   });
   assert.deepEqual(contactFromRows(ID, [{ email: null, phoneE164: null }]), {
     accountId: ID,
