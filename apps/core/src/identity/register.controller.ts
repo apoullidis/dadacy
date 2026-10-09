@@ -22,7 +22,7 @@
  *
  * `password` is passed on only when present: absence is the passwordless registration.
  *
- * DECORATORS are function calls (OE-27; `src/nest-decorate.ts`). Nest's parameter decorators are
+ * DECORATORS are function calls (OE-27; `@kinvara/core-modules/runtime`, `packages/core-modules/src/runtime/nest-decorate.ts`). Nest's parameter decorators are
  * called with the prototype, method name and index, exactly as `@Body()` would call them.
  */
 import { Body, Controller, HttpCode, Post, Res } from '@nestjs/common';
@@ -33,7 +33,7 @@ import {
   type RegisterResponseBody,
 } from '@kinvara/contracts';
 import { InvalidInputError } from '@kinvara/domain-types';
-import { decorateClass, decorateMethod, injectParams } from '../nest-decorate.ts';
+import { decorateClass, decorateMethod, injectParams } from '@kinvara/core-modules/runtime';
 import { RegisterService } from './register.service.ts';
 import { sessionSetCookie } from './session-token.ts';
 

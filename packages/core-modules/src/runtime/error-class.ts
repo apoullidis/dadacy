@@ -1,5 +1,10 @@
 /**
- * The ONLY description of a caught value this app writes to a log.
+ * The ONLY description of a caught value an app writes to a log (moved from `apps/core` by T-245;
+ * `core` and `worker` both load it from `@kinvara/core-modules/runtime`).
+ *
+ * `HttpException` is matched against the ONE `@nestjs/common` an app loads: the package and the
+ * app resolve the same physical copy (T-245 evidence), so an exception thrown by the app's Nest is
+ * an instance of the class imported here.
  *
  * A caught error's `message`, `stack`, `code`, `title`, `field` and `cause` can
  * each carry a request input (T-023 § contract §6 and §8, QR-R6: a Proxy that

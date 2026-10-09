@@ -51,6 +51,8 @@ export interface SelftestOutput {
   readonly attempt: number;
   readonly host: string;
   readonly pid: number;
+  /** T-245: read through `@kinvara/core-modules`' `Database.withAppRw` (src/selftest.handler.ts). */
+  readonly db: { readonly currentUser: string; readonly roleAtConnect: string };
 }
 
 export const SELFTEST_FAILURE = 'worker.selftest: deliberate failure (op=throw)';

@@ -5,7 +5,7 @@
  * `kinvara-int`).
  */
 import { AppModule } from './app.module.ts';
-import { errorClass } from './problem-json/error-class.ts';
+import { errorClass } from '@kinvara/core-modules/runtime';
 import { startServer } from './server.ts';
 
 const port = Number(process.env['PORT'] ?? '3000');

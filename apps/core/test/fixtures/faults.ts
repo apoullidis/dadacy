@@ -23,7 +23,7 @@ import {
 } from '@nestjs/common';
 import { ConflictError, NotFoundError, type ProblemExtensions } from '@kinvara/domain-types';
 import { AppModule } from '../../src/app.module.ts';
-import { decorateClass, decorateMethod } from '../../src/nest-decorate.ts';
+import { decorateClass, decorateMethod } from '@kinvara/core-modules/runtime';
 
 /** (i) A real DomainError whose extensions try every carve-out with the input. */
 export class SlotTakenProbe extends ConflictError {

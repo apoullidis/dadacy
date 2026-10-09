@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@kinvara/contracts": "workspace:*",
+    "@kinvara/core-modules": "workspace:*",
     "@kinvara/domain-types": "workspace:*",
     "@kinvara/integration-kit": "workspace:*",
     "@kinvara/observability": "workspace:*",

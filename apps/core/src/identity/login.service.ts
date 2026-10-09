@@ -38,7 +38,7 @@
  */
 import type { AccountId } from '@kinvara/domain-types';
 import { activeRoles, findLoginCandidate, insertSession } from './account.repository.ts';
-import type { Database } from './database.ts';
+import type { Database } from '@kinvara/core-modules/runtime';
 import { InvalidCredentialsError } from './errors.ts';
 import { newSessionId } from './ids.ts';
 import {

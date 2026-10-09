@@ -21,7 +21,7 @@
  * 1029's "purges SW cache via response header" is NOT built: no
  * header is named anywhere in SD or SA (decisions.md OD-129).
  *
- * DECORATORS are function calls (OE-27; `src/nest-decorate.ts`).
+ * DECORATORS are function calls (OE-27; `@kinvara/core-modules/runtime`, `packages/core-modules/src/runtime/nest-decorate.ts`).
  */
 import { Body, Controller, Headers as RequestHeader, HttpCode, Post, Res } from '@nestjs/common';
 import {
@@ -31,7 +31,7 @@ import {
   type LoginResponseBody,
 } from '@kinvara/contracts';
 import { InvalidInputError } from '@kinvara/domain-types';
-import { decorateClass, decorateMethod, injectParams } from '../nest-decorate.ts';
+import { decorateClass, decorateMethod, injectParams } from '@kinvara/core-modules/runtime';
 import { LoginService } from './login.service.ts';
 import { SessionService } from './session.service.ts';
 import { sessionClearCookie, sessionSetCookie } from './session-token.ts';

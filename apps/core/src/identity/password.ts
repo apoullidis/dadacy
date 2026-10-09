@@ -18,7 +18,7 @@
  * `hashPassword` writes, so every string login verifies costs SA §SEC-5's parameters.
  */
 import { hash, verify, type Algorithm } from '@node-rs/argon2';
-import type { LogLine } from './database.ts';
+import type { LogLine } from '@kinvara/core-modules/runtime';
 
 export const ARGON2ID_PARAMETERS = Object.freeze({
   memoryCost: 65536,

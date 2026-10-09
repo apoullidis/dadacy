@@ -18,7 +18,7 @@
  * QR-A2).
  */
 import { revokeSessions, touchLiveSession, type LiveSession } from './account.repository.ts';
-import type { Database } from './database.ts';
+import type { Database } from '@kinvara/core-modules/runtime';
 import { LOGIN_STATUSES } from './login.service.ts';
 import { digestSessionCookie, sessionCookieValues } from './session-token.ts';
 

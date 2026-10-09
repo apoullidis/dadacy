@@ -2,7 +2,7 @@
  * `pnpm --filter @kinvara/core build`.
  *
  * THERE IS NO EMIT STEP. `core` runs as TypeScript source under Node's type
- * stripping (see `src/nest-decorate.ts` for why, measured). So `build` does the
+ * stripping (see `packages/core-modules/src/runtime/nest-decorate.ts` for why, measured). So `build` does the
  * part of a build that can fail here: it loads the module graph under THIS
  * Node, applies every decorator, and has Nest resolve the dependency-injection
  * graph (controllers included), then closes. A non-erasable construct, an

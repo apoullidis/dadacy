@@ -1,6 +1,7 @@
 /**
  * T-026 IN-PROCESS, against the real Postgres of the ticket's project. `LoginService`,
- * `SessionService`, the repository and `Database` are `src/`'s own. The one thing injected is the
+ * `SessionService` and the repository are `src/`'s own; `Database` is `@kinvara/core-modules`'
+ * (T-245), bound as `src/identity/identity.module.ts` binds it. The one thing injected is the
  * password verifier, wrapped to COUNT its calls and record the PHC string each call verified.
  * Run under `scripts/svc run T-026 -- pnpm --filter @kinvara/core test:integration`, which injects
  * `DATABASE_URL`. Without it every test FAILS; none skips. No other service is needed.
@@ -18,7 +19,8 @@ import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import pg from 'pg';
 import { hash, verify, type Algorithm } from '@node-rs/argon2';
-import { Database } from '../src/identity/database.ts';
+import { Database } from '@kinvara/core-modules/runtime';
+import { CORE_APPLICATION_NAME } from '../src/identity/identity.module.ts';
 import { InvalidCredentialsError } from '../src/identity/errors.ts';
 import { newAccountId, newPseudonym, newSessionId } from '../src/identity/ids.ts';
 import { LoginService, type LoggedIn } from '../src/identity/login.service.ts';
@@ -50,7 +52,11 @@ function env(name: string): string {
   return value;
 }
 
-const db = new Database(process.env['DATABASE_URL']);
+// `core`'s own binding (src/identity/identity.module.ts): DATABASE_URL, application_name kinvara-core.
+const db = new Database(
+  { connectionString: process.env['DATABASE_URL'], application_name: CORE_APPLICATION_NAME },
+  (line) => process.stderr.write(`[core] ${line}\n`),
+);
 let superuserPool: InstanceType<typeof pg.Pool> | undefined;
 function superuser(): InstanceType<typeof pg.Pool> {
   superuserPool ??= new pg.Pool({ connectionString: env('DATABASE_URL'), max: 2 });

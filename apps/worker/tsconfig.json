@@ -1,6 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/tsconfig",
-  "//": "Inherits SD §DH-2's strict baseline unchanged. The repo-wide `pnpm -w typecheck` compiles the root tsconfig.json, which already globs this package; this file is what `pnpm --filter @kinvara/worker typecheck` compiles. There is no emit: the app runs as TypeScript source under Node's type stripping, like apps/core (T-135). `../core/src/pg.d.ts` is listed because it is THE declaration of module 'pg' in this repository (OD-121/OD-123: no @types/pg); the root program already sees it, and declaring 'pg' a second time here would collide with it there. src/pg-augment.d.ts only ADDS the members the worker calls.",
+  "//": "Inherits SD §DH-2's strict baseline unchanged. The repo-wide `pnpm -w typecheck` compiles the root tsconfig.json, which already globs this package; this file is what `pnpm --filter @kinvara/worker typecheck` compiles. There is no emit: the app runs as TypeScript source under Node's type stripping, like apps/core (T-135). `../../packages/core-modules/src/runtime/pg.d.ts` is listed because it is THE declaration of module 'pg' in this repository (OD-121/OD-123: no @types/pg; moved there from apps/core by T-245); the root program already sees it, and declaring 'pg' a second time here would collide with it there. src/pg-augment.d.ts only ADDS the members the worker calls.",
   "extends": "../../tsconfig.base.json",
-  "include": ["src/**/*", "test/**/*", "tools/**/*", "../core/src/pg.d.ts"]
+  "include": ["src/**/*", "test/**/*", "tools/**/*", "../../packages/core-modules/src/runtime/pg.d.ts"]
 }

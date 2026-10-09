@@ -83,8 +83,7 @@ import {
   UpstreamUnavailableError,
   toProblem,
 } from '@kinvara/domain-types';
-import { decorateClass } from '../nest-decorate.ts';
-import { errorClass } from './error-class.ts';
+import { decorateClass, errorClass } from '@kinvara/core-modules/runtime';
 
 /** The response when anything goes wrong while building the response. Carries nothing. */
 export const FIXED_500_BODY = Object.freeze({

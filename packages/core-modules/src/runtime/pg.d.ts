@@ -1,21 +1,24 @@
 /**
- * Type declarations for the members of `pg` 8.23.0 that `apps/core` calls. This is NOT `@types/pg`.
+ * Type declarations for the members of `pg` 8.23.0 that `Database` (./database.ts) and
+ * `apps/core`'s tests call. This is NOT `@types/pg`. Moved here from `apps/core/src/pg.d.ts` by
+ * T-245, with `Database`; `apps/core` and `apps/worker` list this file in their tsconfig `include`.
  *
  * WHY THIS FILE EXISTS (decisions.md OD-121, OD-123; docs/adr/0002 § OD-121). While `@types/pg`
  * is declared anywhere in the workspace, pnpm resolves it as `drizzle-orm`'s optional peer and
- * links it, with its dependency `@types/node`, into `core`'s production install. T-154's image
+ * links it, with its dependency `@types/node`, into an app's production install. T-154's image
  * guard refuses both. Declaring the two type packages as runtime `dependencies` would ship them,
- * and T-154 § contract §3 says not to declare a devtool there. So `apps/core` declares no
- * `@types/pg`, and types the members it uses here.
+ * and T-154 § contract §3 says not to declare a devtool there. So no workspace package declares
+ * `@types/pg`, and the members used are typed here.
  *
- * WHAT IT COVERS: exactly what `src/identity/database.ts` and the tests under `test/` call.
- *   - `new Pool({ connectionString, application_name?, max? })`;
+ * WHAT IT COVERS: exactly what `./database.ts` and `apps/core`'s tests under `test/` call.
+ *   - `new Pool({ connectionString, application_name?, options?, connectionTimeoutMillis?, max? })`;
  *   - `Pool#connect`, `Pool#query`, `Pool#on('error')`, `Pool#end`;
  *   - `PoolClient#query`, `PoolClient#release`;
  *   - `QueryResult#rows`.
- * It describes no other part of pg's API. Every member is called at run time by
- * `test/identity.inprocess.test.ts` and the container suite, so a member declared wrongly still
- * compiles, and fails there instead.
+ * `apps/worker/src/pg-augment.d.ts` adds the members only the worker calls. This file describes
+ * no other part of pg's API. Every member is called at run time by `apps/core`'s
+ * `test/identity.inprocess.test.ts` and container suite, or by the containerised worker, so a
+ * member declared wrongly still compiles, and fails there instead.
  *
  * WHAT IT DOES NOT CHECK. `skipLibCheck` (tsconfig.base.json) skips every declaration file,
  * this one included. `drizzle-orm/node-postgres`'s declarations import their `pg` types from this
@@ -29,6 +32,8 @@ declare module 'pg' {
   export interface PoolConfig {
     readonly connectionString?: string;
     readonly application_name?: string;
+    readonly options?: string;
+    readonly connectionTimeoutMillis?: number;
     readonly max?: number;
   }
 

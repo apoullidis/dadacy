@@ -3,7 +3,8 @@
  * Run under `scripts/svc run T-141 -- pnpm --filter @kinvara/core test:integration`, which
  * injects `DATABASE_URL` and `HIBP_API_BASE`. Without them every test FAILS; none skips.
  *
- * The service, checker, repository and database classes are `src/`'s own. The only things
+ * The service, checker and repository classes are `src/`'s own; the database class is
+ * `@kinvara/core-modules`' (T-245), bound as `src/identity/identity.module.ts` binds it. The only things
  * injected are the HIBP transport, caller or breaker. That is how these tests produce the failures
  * `hibp-fake` cannot: it has no fault mode (T-139 § contract §5). The containerised route is
  * `test/register.container.test.ts`.
@@ -28,7 +29,8 @@ import {
 import { sql } from 'drizzle-orm';
 import pg from 'pg';
 import { findAccountIdByEmail, insertSession } from '../src/identity/account.repository.ts';
-import { Database } from '../src/identity/database.ts';
+import { Database } from '@kinvara/core-modules/runtime';
+import { CORE_APPLICATION_NAME } from '../src/identity/identity.module.ts';
 import { EmailInUseError } from '../src/identity/errors.ts';
 import { HibpChecker } from '../src/identity/hibp.ts';
 import { newSessionId } from '../src/identity/ids.ts';
@@ -54,7 +56,11 @@ function env(name: string): string {
   return value;
 }
 
-const db = new Database(process.env['DATABASE_URL']);
+// `core`'s own binding (src/identity/identity.module.ts): DATABASE_URL, application_name kinvara-core.
+const db = new Database(
+  { connectionString: process.env['DATABASE_URL'], application_name: CORE_APPLICATION_NAME },
+  (line) => process.stderr.write(`[core] ${line}\n`),
+);
 let superuserPool: InstanceType<typeof pg.Pool> | undefined;
 function superuser(): InstanceType<typeof pg.Pool> {
   superuserPool ??= new pg.Pool({ connectionString: env('DATABASE_URL'), max: 2 });

@@ -27,7 +27,7 @@ import 'reflect-metadata';
 import type { Type } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
-import { errorClass } from './problem-json/error-class.ts';
+import { errorClass } from '@kinvara/core-modules/runtime';
 import { installObservability } from './observability/install.ts';
 import { ProblemJsonFilter } from './problem-json/problem-json.filter.ts';
 

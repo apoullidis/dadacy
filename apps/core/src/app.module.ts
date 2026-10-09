@@ -7,7 +7,7 @@ import { Module } from '@nestjs/common';
 import { IdentityModule } from './identity/identity.module.ts';
 import { MetaController } from './meta/meta.controller.ts';
 import { PLATFORM_FEE_SOURCE, SCAFFOLD_PLATFORM_FEE_SOURCE } from './meta/platform-fee.source.ts';
-import { decorateClass } from './nest-decorate.ts';
+import { decorateClass } from '@kinvara/core-modules/runtime';
 
 export class AppModule {}
 decorateClass(

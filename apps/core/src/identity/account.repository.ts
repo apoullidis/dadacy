@@ -28,7 +28,7 @@ import {
   type Ulid,
 } from '@kinvara/domain-types';
 import { account, accountRole, appSession } from '../../../../db/schema.ts';
-import type { Tx } from './database.ts';
+import type { Tx } from '@kinvara/core-modules/runtime';
 import { IDLE_TIMEOUT_SECONDS, assertSessionDigest } from './session-token.ts';
 
 /** `T-140` § contract §2: the unique index a second registration of an address hits. */

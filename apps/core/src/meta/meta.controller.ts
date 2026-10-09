@@ -17,7 +17,7 @@ import {
   encodeMinorUnits,
   type PlatformFeeBody,
 } from '@kinvara/contracts';
-import { decorateClass, decorateMethod, injectParams } from '../nest-decorate.ts';
+import { decorateClass, decorateMethod, injectParams } from '@kinvara/core-modules/runtime';
 import { PLATFORM_FEE_SOURCE, type PlatformFeeSource } from './platform-fee.source.ts';
 
 const operation = OPERATIONS.find((o) => o.operationId === 'getPlatformFee');

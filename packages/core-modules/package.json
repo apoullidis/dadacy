@@ -1,0 +1,27 @@
+{
+  "name": "@kinvara/core-modules",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "EV-30 / OD-292a: the code of SA §SA-2's modules that SD §BE-1 loads in more than one deployable, in src/<module>/, plus the shared NestJS runtime in src/runtime/ (Database/Tx/withAppRw, DatabaseModule, errorClass, the decorator helpers) — T-245. Declared by apps/core and apps/worker. Never declares @nestjs/platform-*: that would put an HTTP adapter into the worker image.",
+  "exports": {
+    "./runtime": "./src/runtime/index.ts"
+  },
+  "scripts": {
+    "test": "node tools/run-tests.ts"
+  },
+  "dependencies": {
+    "@kinvara/domain-types": "workspace:*",
+    "@nestjs/common": "11.2.3",
+    "@nestjs/core": "11.2.3",
+    "drizzle-orm": "0.45.2",
+    "pg": "8.23.0",
+    "reflect-metadata": "0.2.2",
+    "rxjs": "7.8.2"
+  },
+  "devDependencies": {
+    "typescript": "6.0.3",
+    "vite": "8.2.2",
+    "vitest": "5.0.0"
+  }
+}

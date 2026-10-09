@@ -64,6 +64,9 @@ importers:
       '@kinvara/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@kinvara/core-modules':
+        specifier: workspace:*
+        version: link:../../packages/core-modules
       '@kinvara/domain-types':
         specifier: workspace:*
         version: link:../../packages/domain-types
@@ -114,6 +117,9 @@ importers:
 
   apps/worker:
     dependencies:
+      '@kinvara/core-modules':
+        specifier: workspace:*
+        version: link:../../packages/core-modules
       '@nestjs/common':
         specifier: 11.2.3
         version: 11.2.3(reflect-metadata@0.2.2)(rxjs@7.8.2)(supports-color@7.2.0)
@@ -157,6 +163,40 @@ importers:
       zod:
         specifier: 4.5.4
         version: 4.5.4
+    devDependencies:
+      typescript:
+        specifier: 6.0.3
+        version: 6.0.3
+      vite:
+        specifier: 8.2.2
+        version: 8.2.2(@types/node@26.4.1)(esbuild@0.28.2)(tsx@4.23.13)(yaml@2.8.1)
+      vitest:
+        specifier: 5.0.0
+        version: 5.0.0(@types/node@26.4.1)(@vitest/coverage-v8@5.0.0)(vite@8.2.2(@types/node@26.4.1)(esbuild@0.28.2)(tsx@4.23.13)(yaml@2.8.1))
+
+  packages/core-modules:
+    dependencies:
+      '@kinvara/domain-types':
+        specifier: workspace:*
+        version: link:../domain-types
+      '@nestjs/common':
+        specifier: 11.2.3
+        version: 11.2.3(reflect-metadata@0.2.2)(rxjs@7.8.2)(supports-color@7.2.0)
+      '@nestjs/core':
+        specifier: 11.2.3
+        version: 11.2.3(@nestjs/common@11.2.3(reflect-metadata@0.2.2)(rxjs@7.8.2)(supports-color@7.2.0))(reflect-metadata@0.2.2)(rxjs@7.8.2)
+      drizzle-orm:
+        specifier: 0.45.2
+        version: 0.45.2(pg@8.23.0)
+      pg:
+        specifier: 8.23.0
+        version: 8.23.0
+      reflect-metadata:
+        specifier: 0.2.2
+        version: 0.2.2
+      rxjs:
+        specifier: 7.8.2
+        version: 7.8.2
     devDependencies:
       typescript:
         specifier: 6.0.3

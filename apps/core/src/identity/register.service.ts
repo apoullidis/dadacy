@@ -31,7 +31,7 @@ import {
   insertSession,
   isUniqueViolation,
 } from './account.repository.ts';
-import type { Database, LogLine } from './database.ts';
+import type { Database, LogLine } from '@kinvara/core-modules/runtime';
 import { EmailInUseError, PasswordBreachedError } from './errors.ts';
 import type { HibpChecker, HibpVerdict } from './hibp.ts';
 import { newAccountId, newPseudonym, newSessionId } from './ids.ts';

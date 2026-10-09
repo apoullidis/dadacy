@@ -1,5 +1,6 @@
 /**
- * NestJS's decorators, applied as FUNCTION CALLS instead of `@` syntax.
+ * NestJS's decorators, applied as FUNCTION CALLS instead of `@` syntax. Moved from
+ * `apps/core/src/nest-decorate.ts` by T-245; every app and every module in this package uses it.
  *
  * WHY, measured on this repository (T-135 evidence, M1–M4), not preferred:
  *   - The repo has ONE typecheck program (`tsconfig.base.json`, T-001), and it
