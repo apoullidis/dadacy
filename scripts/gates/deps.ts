@@ -139,6 +139,9 @@ for (const d of dirsOf('apps')) {
   apps.set(name, `apps/${d}`);
 }
 
+const aliasNames = (value: string, name: string): boolean =>
+  new RegExp(`:${name.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')}(?:@|/|$)`).test(value);
+
 const SECTIONS = ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies'];
 const KEY_ONLY_SECTIONS = ['peerDependenciesMeta', 'dependenciesMeta'];
 const LIST_SECTIONS = ['bundleDependencies', 'bundledDependencies'];
@@ -164,7 +167,11 @@ for (const dir of manifests) {
   const judge = (where: string, key: string, value: unknown): void => {
     for (const [name, appDir] of forbidden) {
       if (key === name) hit(where, `"${key}"`, appDir);
-      else if (typeof value === 'string' && value.includes(name))
+      // An alias (`workspace:@kinvara/core@*`, `npm:@kinvara/core`) names the package as a
+      // WHOLE name after a protocol colon, followed by `@`, `/` or the end. Not a substring:
+      // `@kinvara/core` is a prefix of `@kinvara/core-modules` (EV-30), which is not an app
+      // (case C3 in scripts/negative-tests/deps-cross-app.sh).
+      else if (typeof value === 'string' && aliasNames(value, name))
         hit(where, `"${key}": "${value}"`, appDir);
     }
     if (typeof value === 'string') {
