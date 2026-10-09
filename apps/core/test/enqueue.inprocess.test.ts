@@ -144,6 +144,21 @@ async function jobRow(id: string): Promise<{ name: string; data: unknown } | und
   );
   return rows[0];
 }
+/** The transaction id that wrote a row (`xmin`), read from OUTSIDE: one transaction, one value. */
+async function accountXmin(id: AccountId): Promise<string | undefined> {
+  const { rows } = await superuser().query<{ x: string }>(
+    'SELECT xmin::text AS x FROM account WHERE id = $1',
+    [id],
+  );
+  return rows[0]?.x;
+}
+async function jobXmins(owner: AccountId): Promise<string[]> {
+  const { rows } = await superuser().query<{ x: string }>(
+    "SELECT xmin::text AS x FROM pgboss.job WHERE name = $1 AND data->>'recipientAccountId' = $2",
+    [QUEUE, owner],
+  );
+  return rows.map((r) => r.x);
+}
 async function jobsFor(owner: AccountId): Promise<number> {
   const { rows } = await superuser().query<{ n: string }>(
     "SELECT count(*) AS n FROM pgboss.job WHERE name = $1 AND data->>'recipientAccountId' = $2",
@@ -296,4 +311,67 @@ test('(G11) pg-boss 12.26.4 installs no SQL-callable send: pgboss.send(...) is 4
     rw.release();
     await rwPool.end();
   }
+});
+
+test('(f) OD-303: an UN-AWAITED enqueue, then the caller rolls back: neither the state row nor the job exists', async () => {
+  let owner: AccountId | undefined;
+  let floating: Promise<string | null> | undefined;
+  const ROLLBACK = new Error('T-149 (f): the state change fails after the enqueue was started');
+  await assert.rejects(
+    database().withAppRw(async (tx) => {
+      owner = await newAccount(tx);
+      floating = jobs().enqueue(tx, NOTIFY, payloadFor(owner)); // NOT awaited
+      throw ROLLBACK;
+    }),
+    (e: unknown) => e === ROLLBACK,
+  );
+  assert.ok(owner !== undefined && floating !== undefined);
+  // Whatever the floating promise did, it has settled; then look from outside.
+  await floating.then(
+    () => undefined,
+    () => undefined,
+  );
+  assert.equal(await accountExists(owner), false, 'the state row is absent');
+  assert.equal(await jobsFor(owner), 0, 'no job exists: the late INSERT did not escape the ROLLBACK');
+});
+
+test("(g) OD-303: an UN-AWAITED enqueue, then the caller commits: the job commits IN the caller's transaction (the state row's xmin), not after it", async () => {
+  let owner: AccountId | undefined;
+  let floating: Promise<string | null> | undefined;
+  await database().withAppRw(async (tx) => {
+    owner = await newAccount(tx);
+    floating = jobs().enqueue(tx, NOTIFY, payloadFor(owner)); // NOT awaited
+  });
+  assert.ok(owner !== undefined && floating !== undefined);
+  const id = await floating;
+  assert.ok(typeof id === 'string', 'the floating enqueue resolved an id');
+  const stateXmin = await accountXmin(owner);
+  assert.ok(stateXmin !== undefined, 'the state row committed');
+  assert.deepEqual(await jobXmins(owner), [stateXmin], 'one job, written by the same transaction');
+});
+
+test("(h) OD-303: an UN-AWAITED enqueue whose payload is refused rolls the caller's transaction back: withAppRw rejects JobPayloadRefusedError, no state row, no job", async () => {
+  let owner: AccountId | undefined;
+  let floating: Promise<string | null> | undefined;
+  const outcome = await database()
+    .withAppRw(async (tx) => {
+      owner = await newAccount(tx);
+      const withoutLocale: Record<string, unknown> = { ...payloadFor(owner) };
+      delete withoutLocale['recipientLocale'];
+      const missing: unknown = withoutLocale;
+      floating = jobs().enqueue(tx, NOTIFY, missing as ReturnType<typeof payloadFor>); // NOT awaited
+    })
+    .then(
+      () => 'resolved',
+      (e: unknown) => e,
+    );
+  assert.ok(owner !== undefined && floating !== undefined);
+  const settled = await floating.then(
+    () => 'resolved',
+    (e: unknown) => e,
+  );
+  assert.ok(settled instanceof JobPayloadRefusedError, 'the floating enqueue was refused');
+  assert.equal(outcome, settled, 'withAppRw rejected with that refusal');
+  assert.equal(await accountExists(owner), false, 'the state row rolled back with it');
+  assert.equal(await jobsFor(owner), 0);
 });

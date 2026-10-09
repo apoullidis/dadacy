@@ -68,8 +68,12 @@ interface SendCall {
   readonly options: SendOptions | undefined;
 }
 
-/** A started-PgBoss stand-in: one statement on the `db` it is given, then the id it read. */
-function fakeSender(result: 'id' | 'null' = 'id') {
+/**
+ * A started-PgBoss stand-in: one statement on the `db` it is given, then the id it read. `lookupMs`
+ * stands in for pg-boss's own awaited queue lookup before its INSERT (`getQueueCache`,
+ * `manager.js` 494–505), which is what lets an un-awaited enqueue's statement arrive late (OD-303).
+ */
+function fakeSender(result: 'id' | 'null' = 'id', lookupMs = 0) {
   const calls: SendCall[] = [];
   return {
     calls,
@@ -77,6 +81,7 @@ function fakeSender(result: 'id' | 'null' = 'id') {
       async send(name: string, data?: object | null, options?: SendOptions) {
         calls.push({ name, data, options });
         assert.ok(options?.db !== undefined, 'the enqueue always hands the sender a db');
+        if (lookupMs > 0) await new Promise((resolve) => setTimeout(resolve, lookupMs));
         const { rows } = await options.db.executeSql('SEND $1 $2', [name, JSON.stringify(data)]);
         return result === 'null' ? null : String((rows[0] as { id: string }).id);
       },
@@ -265,4 +270,138 @@ test('defineJob refuses an empty queue name and freezes the definition', () => {
     (e: unknown) => e instanceof TypeError && e.message === JOB_QUEUE_REFUSED,
   );
   assert.ok(Object.isFrozen(Notify));
+});
+
+test('an UN-AWAITED enqueue still lands inside the transaction: withAppRw does not COMMIT until it settles (OD-303)', async () => {
+  recorded.length = 0;
+  const { sender } = fakeSender('id', 20);
+  const db = database();
+  let floating: Promise<string | null> | undefined;
+  await db.withAppRw(async (tx) => {
+    await tx.execute('STATE WRITE');
+    floating = new JobEnqueuer(sender).enqueue(tx, Notify, GOOD); // NOT awaited
+  });
+  assert.equal(await floating, 'job-from-fake');
+  assert.deepEqual(
+    recorded.map((r) => r.text),
+    ['BEGIN', 'SET LOCAL ROLE app_rw', 'STATE WRITE', 'SEND $1 $2', 'COMMIT'],
+  );
+  await db.onApplicationShutdown();
+});
+
+test('an UN-AWAITED enqueue, then the caller throws: its statement runs BEFORE the ROLLBACK, inside the transaction (OD-303)', async () => {
+  recorded.length = 0;
+  const { sender } = fakeSender('id', 20);
+  const db = database();
+  const FAIL = new Error('the state change fails after the enqueue was started');
+  let floating: Promise<string | null> | undefined;
+  await assert.rejects(
+    db.withAppRw(async (tx) => {
+      await tx.execute('STATE WRITE');
+      floating = new JobEnqueuer(sender).enqueue(tx, Notify, GOOD); // NOT awaited
+      throw FAIL;
+    }),
+    (e: unknown) => e === FAIL,
+  );
+  await floating;
+  assert.deepEqual(
+    recorded.map((r) => r.text),
+    ['BEGIN', 'SET LOCAL ROLE app_rw', 'STATE WRITE', 'SEND $1 $2', 'ROLLBACK'],
+  );
+  await db.onApplicationShutdown();
+});
+
+test('an UN-AWAITED enqueue that is refused rolls the transaction back: withAppRw rejects with its JobPayloadRefusedError', async () => {
+  recorded.length = 0;
+  const { calls, sender } = fakeSender();
+  const db = database();
+  const bad: unknown = { recipientAccountId: GOOD.recipientAccountId, enqueuedAt: GOOD.enqueuedAt };
+  let floating: Promise<string | null> | undefined;
+  const outcome = await db
+    .withAppRw(async (tx) => {
+      await tx.execute('STATE WRITE');
+      floating = new JobEnqueuer(sender).enqueue(
+        tx,
+        Notify,
+        bad as z.input<typeof Notify.payload>,
+      ); // NOT awaited
+      await tx.execute('LATER WRITE');
+    })
+    .then(
+      () => 'resolved',
+      (e: unknown) => e,
+    );
+  assert.ok(outcome instanceof JobPayloadRefusedError, 'withAppRw rejected with the refusal');
+  await assert.rejects(floating ?? Promise.resolve(), (e: unknown) => e === outcome);
+  assert.equal(calls.length, 0);
+  assert.deepEqual(
+    recorded.map((r) => r.text),
+    ['BEGIN', 'SET LOCAL ROLE app_rw', 'STATE WRITE', 'LATER WRITE', 'ROLLBACK'],
+  );
+  await db.onApplicationShutdown();
+});
+
+test('a statement a sender issues after its own send settled is refused at the connection, never run after COMMIT', async () => {
+  recorded.length = 0;
+  const db = database();
+  let late: Promise<unknown> | undefined;
+  const lateSender = {
+    send(_name: string, _data: object, options: SendOptions) {
+      // Resolves at once and issues its statement later: the shape that would put a job after
+      // COMMIT if the enqueue held only the sender's promise.
+      late = new Promise((resolve) => setTimeout(resolve, 20)).then(
+        async () => await options.db?.executeSql('LATE SEND', []),
+      );
+      return Promise.resolve('id-before-insert');
+    },
+  };
+  await db.withAppRw(async (tx) => await new JobEnqueuer(lateSender).enqueue(tx, Notify, GOOD));
+  await assert.rejects(late ?? Promise.resolve(), (e: unknown) => e instanceof TransactionClosedError);
+  assert.deepEqual(
+    recorded.map((r) => r.text),
+    ['BEGIN', 'SET LOCAL ROLE app_rw', 'COMMIT'],
+    'the late statement never reached the connection',
+  );
+  await db.onApplicationShutdown();
+});
+
+test('the refusal echoes no payload-supplied key: a z.record key is rendered *, schema-named keys and indexes are kept (QA-F3)', async () => {
+  const KEY = '+99112345678';
+  const job = defineJob(
+    't149.unit',
+    z.strictObject({
+      perPhone: z.record(z.string(), z.number()),
+      items: z.array(z.strictObject({ n: z.number() })),
+      nested: z.record(z.string(), z.strictObject({ deep: z.number() })).optional(),
+    }),
+  );
+  const { calls, sender } = fakeSender();
+  const db = database();
+  const bad: unknown = {
+    perPhone: { [KEY]: 'not a number' },
+    items: [{ n: 1 }, { n: 'two' }],
+    nested: { [SENTINEL]: { deep: 'x' } },
+  };
+  await assert.rejects(
+    db.withAppRw(
+      async (tx) =>
+        await new JobEnqueuer(sender).enqueue(tx, job, bad as z.input<typeof job.payload>),
+    ),
+    (e: unknown) => {
+      assert.ok(e instanceof JobPayloadRefusedError);
+      assert.deepEqual(e.issues, [
+        { path: 'perPhone.*', code: 'invalid_type' },
+        { path: 'items.1.n', code: 'invalid_type' },
+        { path: 'nested.*.deep', code: 'invalid_type' },
+      ]);
+      for (const leaked of [KEY, SENTINEL]) {
+        assert.ok(!e.message.includes(leaked), 'not in the message');
+        assert.ok(!JSON.stringify(e).includes(leaked), 'not in any field');
+        assert.ok(!JSON.stringify(e.issues).includes(leaked), 'not in issues[].path');
+      }
+      return true;
+    },
+  );
+  assert.equal(calls.length, 0);
+  await db.onApplicationShutdown();
 });
