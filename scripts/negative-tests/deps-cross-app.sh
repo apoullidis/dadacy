@@ -45,7 +45,7 @@ PLANTS=(
   "$W/qa-t244-r1.ts" "$W/qa-t244-r2.ts" "$W/qa-t244-r3.ts" "$W/qa-t244-r4.ts"
   apps/core/src/qa-t244-r5.ts packages/contracts/src/qa-t244-r6.ts "$W/qa-t244-r7.ts"
   apps/worker/test/qa-t244-r8.test.ts "$W/qa-t244-r9.ts" "$W/qa-t244-r10.ts"
-  "$W/qa-t244-corelink" "$W/qa-t244-dblink.ts" "$W/qa-t244-c1.ts" apps/core/src/qa-t244-c2.ts
+  "$W/qa-t244-corelink" "$W/qa-t244-srvlink.ts" "$W/qa-t244-c1.ts" apps/core/src/qa-t244-c2.ts
   "$NMK/core" "$NMK/contracts"
 )
 
@@ -139,7 +139,15 @@ E1='error no-cross-app-import:'
 E2='error no-package-to-app-import:'
 E3='error no-app-package-dependency:'
 EU='error not-to-unresolvable:'
-DB=apps/core/src/identity/database.ts
+# THE ANCHOR (T-248, OD-297). Every plant that reaches into apps/core targets DB, and R10/R10b
+# require the edge DB -> DB_DEP that depcruise reports from inside a symlinked copy of core's
+# src/. Both must stay in apps/core and DB must import DB_DEP, or the plants resolve nowhere and
+# the cases turn FAIL-OTHER (`not-to-unresolvable`) instead of naming their rule. T-245 (EV-30)
+# moved identity/database.ts and problem-json/error-class.ts, the previous anchor, into
+# packages/core-modules; server.ts -> ./observability/install.ts is present on main 288fd9b and
+# on T-245-core-modules 71a9689. If a later ticket moves either file, re-anchor here.
+DB=apps/core/src/server.ts
+DB_DEP=apps/core/src/observability/install.ts
 
 echo "=== baseline and anti-vacuity ==="
 run_case "00 unmodified tree" PASS
@@ -159,24 +167,25 @@ fi
 echo
 echo "=== rule (1) no-cross-app-import — every import form, both directions, tests too ==="
 
-# R1 is T-242 § QA Q10's probe file, verbatim.
-printf "import { Database } from '../../core/src/identity/database.ts';\nexport const qaProbe = Database;\n" > "$W/qa-t244-r1.ts"
-landed "R1 plant" has_line "$W/qa-t244-r1.ts" "from '../../core/src/identity/database.ts'" && {
+# R1 is T-242 § QA Q10's probe file in shape: the same relative static import worker -> core,
+# re-pointed from identity/database.ts (moved to packages/core-modules by T-245) at $DB (T-248).
+printf "import { startServer } from '../../core/src/server.ts';\nexport const qaProbe = startServer;\n" > "$W/qa-t244-r1.ts"
+landed "R1 plant" has_line "$W/qa-t244-r1.ts" "from '../../core/src/server.ts'" && {
   REQ=("$E1 $W/qa-t244-r1.ts → $DB")
-  run_case "R1 T-242 Q10 verbatim: static import worker -> core" FAIL; }
+  run_case "R1 T-242 Q10's shape: static import worker -> core" FAIL; }
 
-printf "import type { Database } from '../../core/src/identity/database.ts';\nexport type R2 = Database;\n" > "$W/qa-t244-r2.ts"
-landed "R2 plant" has_line "$W/qa-t244-r2.ts" "import type { Database }" && {
+printf "import type { ServerOptions } from '../../core/src/server.ts';\nexport type R2 = ServerOptions;\n" > "$W/qa-t244-r2.ts"
+landed "R2 plant" has_line "$W/qa-t244-r2.ts" "import type { ServerOptions }" && {
   REQ=("$E1 $W/qa-t244-r2.ts → $DB")
   run_case "R2 import type, same path" FAIL; }
 
-printf "export { Database } from '../../core/src/identity/database.ts';\n" > "$W/qa-t244-r3.ts"
-landed "R3 plant" has_line "$W/qa-t244-r3.ts" "export { Database } from" && {
+printf "export { startServer } from '../../core/src/server.ts';\n" > "$W/qa-t244-r3.ts"
+landed "R3 plant" has_line "$W/qa-t244-r3.ts" "export { startServer } from" && {
   REQ=("$E1 $W/qa-t244-r3.ts → $DB")
   run_case "R3 export { … } from '../../core/src/…'" FAIL; }
 
-printf "const m = await import('../../core/src/identity/database.ts');\nexport const r4 = m.Database;\n" > "$W/qa-t244-r4.ts"
-landed "R4 plant" has_line "$W/qa-t244-r4.ts" "await import('../../core/src/identity/database.ts')" && {
+printf "const m = await import('../../core/src/server.ts');\nexport const r4 = m.startServer;\n" > "$W/qa-t244-r4.ts"
+landed "R4 plant" has_line "$W/qa-t244-r4.ts" "await import('../../core/src/server.ts')" && {
   REQ=("$E1 $W/qa-t244-r4.ts → $DB")
   run_case "R4 await import('../../core/src/…'), literal specifier" FAIL; }
 
@@ -185,15 +194,15 @@ landed "R5 plant" has_line apps/core/src/qa-t244-r5.ts "from '../../worker/src/c
   REQ=("$E1 apps/core/src/qa-t244-r5.ts → apps/worker/src/config.ts")
   run_case "R5 core -> worker (the other direction)" FAIL; }
 
-printf "import { Database } from '../../core/src/identity/database.ts';\nexport const r8 = Database;\n" > apps/worker/test/qa-t244-r8.test.ts
-landed "R8 plant" has_line apps/worker/test/qa-t244-r8.test.ts "from '../../core/src/identity/database.ts'" && {
+printf "import { startServer } from '../../core/src/server.ts';\nexport const r8 = startServer;\n" > apps/worker/test/qa-t244-r8.test.ts
+landed "R8 plant" has_line apps/worker/test/qa-t244-r8.test.ts "from '../../core/src/server.ts'" && {
   REQ=("$E1 apps/worker/test/qa-t244-r8.test.ts → $DB")
   run_case "R8 a worker TEST file importing core (tests in scope)" FAIL; }
 
 echo
 echo "=== rule (2) no-package-to-app-import — laundering through a package ==="
-printf "import { Database } from '../../../apps/core/src/identity/database.ts';\nexport const r6 = Database;\n" > packages/contracts/src/qa-t244-r6.ts
-landed "R6 plant" has_line packages/contracts/src/qa-t244-r6.ts "from '../../../apps/core/src/identity/database.ts'" && {
+printf "import { startServer } from '../../../apps/core/src/server.ts';\nexport const r6 = startServer;\n" > packages/contracts/src/qa-t244-r6.ts
+landed "R6 plant" has_line packages/contracts/src/qa-t244-r6.ts "from '../../../apps/core/src/server.ts'" && {
   REQ=("$E2 packages/contracts/src/qa-t244-r6.ts → $DB")
   run_case "R6 packages/contracts/src -> apps/core/src" FAIL; }
 
@@ -205,10 +214,10 @@ echo "=== rule (3) no-app-package-dependency — the manifest, every section ===
 # T-244 rule, NOT merely as unresolvable (CUT-OD-292 §3.2).
 set_dep "$WPKG" dependencies @kinvara/core 'workspace:*'
 link_pkg core ../../../core
-printf "import { Database } from '@kinvara/core/src/identity/database.ts';\nexport const r7 = Database;\n" > "$W/qa-t244-r7.ts"
+printf "import { startServer } from '@kinvara/core/src/server.ts';\nexport const r7 = startServer;\n" > "$W/qa-t244-r7.ts"
 landed "R7 manifest+link+import" json_has "$WPKG" dependencies @kinvara/core \
   && landed "R7 link" is_link_to "$NMK/core" ../../../core \
-  && landed "R7 file" has_line "$W/qa-t244-r7.ts" "from '@kinvara/core/src/identity/database.ts'" && {
+  && landed "R7 file" has_line "$W/qa-t244-r7.ts" "from '@kinvara/core/src/server.ts'" && {
   REQ=("$E3 $WPKG dependencies \"@kinvara/core\" → apps/core" "$E1 $W/qa-t244-r7.ts → $DB")
   FORBID=("$EU")
   run_case "R7 \"@kinvara/core\": workspace:* + link + import by name" FAIL; }
@@ -252,10 +261,10 @@ echo "=== measured, not assumed: R9 (tsconfig paths) and R10 (committed symlinks
 # This case pins that: if it ever starts resolving, it must be refused by rule (1) instead.
 node scripts/negative-tests/mutate.mjs "$WTSC" '"extends": "../../tsconfig.base.json",' '"extends": "../../tsconfig.base.json",
   "compilerOptions": { "paths": { "@core/*": ["../core/src/*"] } },'
-printf "import { Database } from '@core/identity/database.ts';\nexport const r9 = Database;\n" > "$W/qa-t244-r9.ts"
+printf "import { startServer } from '@core/server.ts';\nexport const r9 = startServer;\n" > "$W/qa-t244-r9.ts"
 landed "R9 alias" has_line "$WTSC" '"@core/*": ["../core/src/*"]' \
-  && landed "R9 file" has_line "$W/qa-t244-r9.ts" "from '@core/identity/database.ts'" && {
-  REQ=("$EU $W/qa-t244-r9.ts → @core/identity/database.ts")
+  && landed "R9 file" has_line "$W/qa-t244-r9.ts" "from '@core/server.ts'" && {
+  REQ=("$EU $W/qa-t244-r9.ts → @core/server.ts")
   FORBID=("$E1")
   run_case "R9 paths alias in apps/worker/tsconfig.json (BOUND: by not-to-unresolvable)" FAIL; }
 
@@ -263,31 +272,31 @@ landed "R9 alias" has_line "$WTSC" '"@core/*": ["../core/src/*"]' \
 # apps/core and is refused by rule (1).
 node scripts/negative-tests/mutate.mjs "$RTSC" '"extends": "./tsconfig.base.json",' '"extends": "./tsconfig.base.json",
   "compilerOptions": { "paths": { "@core/*": ["./apps/core/src/*"] } },'
-printf "import { Database } from '@core/identity/database.ts';\nexport const r9 = Database;\n" > "$W/qa-t244-r9.ts"
+printf "import { startServer } from '@core/server.ts';\nexport const r9 = startServer;\n" > "$W/qa-t244-r9.ts"
 landed "R9b alias" has_line "$RTSC" '"@core/*": ["./apps/core/src/*"]' \
-  && landed "R9b file" has_line "$W/qa-t244-r9.ts" "from '@core/identity/database.ts'" && {
+  && landed "R9b file" has_line "$W/qa-t244-r9.ts" "from '@core/server.ts'" && {
   REQ=("$E1 $W/qa-t244-r9.ts → $DB")
   FORBID=("$EU")
   run_case "R9b the alias in the ROOT tsconfig.json resolves -> rule (1)" FAIL; }
 
 ln -s ../../core/src "$W/qa-t244-corelink"
-printf "import { Database } from './qa-t244-corelink/identity/database.ts';\nexport const r10 = Database;\n" > "$W/qa-t244-r10.ts"
+printf "import { startServer } from './qa-t244-corelink/server.ts';\nexport const r10 = startServer;\n" > "$W/qa-t244-r10.ts"
 landed "R10 link" is_link_to "$W/qa-t244-corelink" ../../core/src \
-  && landed "R10 file" has_line "$W/qa-t244-r10.ts" "from './qa-t244-corelink/identity/database.ts'" && {
-  REQ=("$E1 $W/qa-t244-r10.ts → $DB" "$E1 $W/qa-t244-corelink/identity/database.ts → apps/core/src/problem-json/error-class.ts")
+  && landed "R10 file" has_line "$W/qa-t244-r10.ts" "from './qa-t244-corelink/server.ts'" && {
+  REQ=("$E1 $W/qa-t244-r10.ts → $DB" "$E1 $W/qa-t244-corelink/server.ts → $DB_DEP")
   run_case "R10 a directory symlink apps/worker/src -> ../../core/src + import" FAIL; }
 
 ln -s ../../core/src "$W/qa-t244-corelink"
 landed "R10b link" is_link_to "$W/qa-t244-corelink" ../../core/src && {
-  REQ=("$E1 $W/qa-t244-corelink/identity/database.ts → apps/core/src/problem-json/error-class.ts")
+  REQ=("$E1 $W/qa-t244-corelink/server.ts → $DB_DEP")
   run_case "R10b the directory symlink alone, nothing imports it" FAIL; }
 
-ln -s ../../core/src/identity/database.ts "$W/qa-t244-dblink.ts"
-printf "import { Database } from './qa-t244-dblink.ts';\nexport const r10 = Database;\n" > "$W/qa-t244-r10.ts"
-landed "R10c link" is_link_to "$W/qa-t244-dblink.ts" ../../core/src/identity/database.ts \
-  && landed "R10c file" has_line "$W/qa-t244-r10.ts" "from './qa-t244-dblink.ts'" && {
+ln -s ../../core/src/server.ts "$W/qa-t244-srvlink.ts"
+printf "import { startServer } from './qa-t244-srvlink.ts';\nexport const r10 = startServer;\n" > "$W/qa-t244-r10.ts"
+landed "R10c link" is_link_to "$W/qa-t244-srvlink.ts" ../../core/src/server.ts \
+  && landed "R10c file" has_line "$W/qa-t244-r10.ts" "from './qa-t244-srvlink.ts'" && {
   REQ=("$E1 $W/qa-t244-r10.ts → $DB")
-  run_case "R10c a FILE symlink to core's database.ts + import" FAIL; }
+  run_case "R10c a FILE symlink to core's server.ts + import" FAIL; }
 
 echo
 echo "=== the gate's own self-checks: coverage, and a crash is not a pass ==="
@@ -318,10 +327,10 @@ landed "C1 manifest" json_has "$WPKG" dependencies @kinvara/contracts \
   && landed "C1 file" has_line "$W/qa-t244-c1.ts" "from '@kinvara/contracts'" && {
   run_case "C1 worker -> @kinvara/contracts (declared + linked)" PASS; }
 
-# C2: core -> its own ./identity. Green only if `$1` binds to the source's app directory.
-printf "import { Database } from './identity/database.ts';\nexport const c2 = Database;\n" > apps/core/src/qa-t244-c2.ts
-landed "C2 file" has_line apps/core/src/qa-t244-c2.ts "from './identity/database.ts'" && {
-  run_case "C2 core -> its own ./identity/… (\$1 binds)" PASS; }
+# C2: core -> its own ./server.ts. Green only if `$1` binds to the source's app directory.
+printf "import { startServer } from './server.ts';\nexport const c2 = startServer;\n" > apps/core/src/qa-t244-c2.ts
+landed "C2 file" has_line apps/core/src/qa-t244-c2.ts "from './server.ts'" && {
+  run_case "C2 core -> its own ./server.ts (\$1 binds)" PASS; }
 
 # C3: `@kinvara/core` is a PREFIX of `@kinvara/core-modules` (EV-30), which is a package, not an
 # app. Neither the key nor an alias to it may be read as naming apps/core.
@@ -336,18 +345,18 @@ echo
 echo "=== anti-vacuity: each rule deleted, its red case turns green ==="
 
 node -e 'const fs = require("fs"); const f = process.argv[1]; const s = fs.readFileSync(f, "utf8"); const t = s.replace(/\n    \{\n      name: .no-cross-app-import.,[\s\S]*?\n    \},/, ""); if (t === s) process.exit(1); fs.writeFileSync(f, t)' "$CFG"
-printf "import { Database } from '../../core/src/identity/database.ts';\nexport const qaProbe = Database;\n" > "$W/qa-t244-r1.ts"
+printf "import { startServer } from '../../core/src/server.ts';\nexport const qaProbe = startServer;\n" > "$W/qa-t244-r1.ts"
 landed "M1 rule (1) deleted" cfg_lacks_rule no-cross-app-import \
   && landed "M1 config changed" differs "$CFG" \
-  && landed "M1 R1 plant" has_line "$W/qa-t244-r1.ts" "from '../../core/src/identity/database.ts'" && {
+  && landed "M1 R1 plant" has_line "$W/qa-t244-r1.ts" "from '../../core/src/server.ts'" && {
   FORBID=("$E1")
   run_case "M1 rule (1) DELETED from the config: R1 now PASSES" PASS; }
 
 node -e 'const fs = require("fs"); const f = process.argv[1]; const s = fs.readFileSync(f, "utf8"); const t = s.replace(/\n    \{\n      name: .no-package-to-app-import.,[\s\S]*?\n    \},/, ""); if (t === s) process.exit(1); fs.writeFileSync(f, t)' "$CFG"
-printf "import { Database } from '../../../apps/core/src/identity/database.ts';\nexport const r6 = Database;\n" > packages/contracts/src/qa-t244-r6.ts
+printf "import { startServer } from '../../../apps/core/src/server.ts';\nexport const r6 = startServer;\n" > packages/contracts/src/qa-t244-r6.ts
 landed "M2 rule (2) deleted" cfg_lacks_rule no-package-to-app-import \
   && landed "M2 config changed" differs "$CFG" \
-  && landed "M2 R6 plant" has_line packages/contracts/src/qa-t244-r6.ts "apps/core/src/identity/database.ts" && {
+  && landed "M2 R6 plant" has_line packages/contracts/src/qa-t244-r6.ts "apps/core/src/server.ts" && {
   FORBID=("$E2")
   run_case "M2 rule (2) DELETED from the config: R6 now PASSES" PASS; }
 
