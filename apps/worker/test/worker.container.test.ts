@@ -107,12 +107,19 @@ test(
     const output = done.output as { tag?: unknown; db?: unknown };
     assert.equal(output.tag, tag);
     assert.deepEqual(output.db, { currentUser: 'app_rw', roleAtConnect: 'app_rw' });
-    // Control: this process's own superuser session neither is app_rw nor set a role at connect.
-    const plain = await pool.query<{ u: string; r: string }>(
-      "SELECT current_user::text AS u, (SELECT reset_val FROM pg_settings WHERE name = 'role') AS r",
-    );
-    assert.notEqual(plain.rows[0]?.u, 'app_rw');
-    assert.notEqual(plain.rows[0]?.r, 'app_rw');
+    // Control: the same RESET ROLE probe on this process's own session (same login, no role
+    // option) does not read app_rw, so roleAtConnect is not what any connection would report.
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('SET LOCAL ROLE app_rw');
+      await client.query('RESET ROLE');
+      const plain = await client.query<{ u: string }>('SELECT current_user::text AS u');
+      assert.notEqual(plain.rows[0]?.u, 'app_rw');
+    } finally {
+      await client.query('ROLLBACK');
+      client.release();
+    }
   },
 );
 

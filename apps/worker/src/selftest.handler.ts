@@ -16,9 +16,10 @@
  * T-245: THE FIRST HANDLER TO USE A SHARED MODULE'S PROVIDER. It injects `@kinvara/core-modules`'
  * `Database` (bound by src/database.module.ts) and, after the payload's work and before it
  * completes, reads its principal through `Database.withAppRw`: `current_user` inside the
- * transaction, and `role`'s `reset_val` — the value the session resets to, i.e. what the
- * connection's own startup options set, before `SET LOCAL ROLE`. Both go into the job's output as
- * `db`. A `hold` job does that read AFTER its hold, so a job in flight across SIGTERM needs the
+ * transaction (after `SET LOCAL ROLE app_rw`), then `RESET ROLE` and `current_user` again — the
+ * role the CONNECTION carries from its startup options, which is `app_rw` only if the worker's
+ * binding passed `-c role=app_rw` (`role` is not readable from `pg_settings`). Both go into the
+ * job's output as `db`; the transaction ends right after. A `hold` job does that read AFTER its hold, so a job in flight across SIGTERM needs the
  * package's pool after the signal: drain-check A fails if `Database` were torn down before the
  * drain.
  */
@@ -91,13 +92,15 @@ export class SelftestHandler implements OnApplicationBootstrap {
   /** Read through the package's `Database`, in one `withAppRw` transaction. */
   async #principal(): Promise<SelftestOutput['db']> {
     return this.#db.withAppRw(async (tx) => {
-      const result = await tx.execute<{ current_user: string; role_at_connect: string }>(
-        sql`SELECT current_user::text AS current_user,
-                   (SELECT reset_val FROM pg_settings WHERE name = 'role') AS role_at_connect`,
-      );
-      const row = result.rows[0];
-      if (row === undefined) throw new Error('worker.selftest: the principal read returned no row');
-      return { currentUser: row.current_user, roleAtConnect: row.role_at_connect };
+      const inTx = await tx.execute<{ u: string }>(sql`SELECT current_user::text AS u`);
+      await tx.execute(sql`RESET ROLE`);
+      const atConnect = await tx.execute<{ u: string }>(sql`SELECT current_user::text AS u`);
+      const currentUser = inTx.rows[0]?.u;
+      const roleAtConnect = atConnect.rows[0]?.u;
+      if (currentUser === undefined || roleAtConnect === undefined) {
+        throw new Error('worker.selftest: the principal read returned no row');
+      }
+      return { currentUser, roleAtConnect };
     });
   }
 }
