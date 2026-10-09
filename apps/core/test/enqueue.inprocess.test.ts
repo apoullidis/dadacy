@@ -332,7 +332,11 @@ test('(f) OD-303: an UN-AWAITED enqueue, then the caller rolls back: neither the
     () => undefined,
   );
   assert.equal(await accountExists(owner), false, 'the state row is absent');
-  assert.equal(await jobsFor(owner), 0, 'no job exists: the late INSERT did not escape the ROLLBACK');
+  assert.equal(
+    await jobsFor(owner),
+    0,
+    'no job exists: the late INSERT did not escape the ROLLBACK',
+  );
 });
 
 test("(g) OD-303: an UN-AWAITED enqueue, then the caller commits: the job commits IN the caller's transaction (the state row's xmin), not after it", async () => {
@@ -374,4 +378,46 @@ test("(h) OD-303: an UN-AWAITED enqueue whose payload is refused rolls the calle
   assert.equal(outcome, settled, 'withAppRw rejected with that refusal');
   assert.equal(await accountExists(owner), false, 'the state row rolled back with it');
   assert.equal(await jobsFor(owner), 0);
+});
+
+test('(d2) at run time: a Tx kept past its ROLLED-BACK transaction is refused TransactionClosedError, and no job is written', async () => {
+  let kept: Tx | undefined;
+  let owner: AccountId | undefined;
+  const ROLLBACK = new Error('T-149 (d2): the caller rolls back');
+  await assert.rejects(
+    database().withAppRw(async (tx) => {
+      kept = tx;
+      owner = await newAccount(tx);
+      throw ROLLBACK;
+    }),
+    (e: unknown) => e === ROLLBACK,
+  );
+  assert.ok(kept !== undefined && owner !== undefined);
+  await assert.rejects(
+    jobs().enqueue(kept, NOTIFY, payloadFor(owner)),
+    (e: unknown) => e instanceof TransactionClosedError,
+  );
+  assert.equal(await accountExists(owner), false);
+  assert.equal(await jobsFor(owner), 0, 'nothing was enqueued after the rollback');
+});
+
+test('(j) MEASURED, NOT REFUSED (QA-F2): the Tx of a NESTED withAppRw is accepted — its job commits with the inner transaction while the outer state change rolls back', async () => {
+  let owner: AccountId | undefined;
+  let jobId: string | null | undefined;
+  const OUTER = new Error('T-149 (j): the outer transaction rolls back');
+  await assert.rejects(
+    database().withAppRw(async (outer) => {
+      owner = await newAccount(outer);
+      const o = owner;
+      jobId = await database().withAppRw(
+        async (inner) => await jobs().enqueue(inner, NOTIFY, payloadFor(o)),
+      );
+      throw OUTER;
+    }),
+    (e: unknown) => e === OUTER,
+  );
+  assert.ok(owner !== undefined && typeof jobId === 'string');
+  assert.equal(await accountExists(owner), false, 'the outer state change rolled back');
+  assert.equal((await jobRow(jobId))?.name, QUEUE, 'the job committed with the inner transaction');
+  await superuser().query('DELETE FROM pgboss.job WHERE id = $1', [jobId]);
 });

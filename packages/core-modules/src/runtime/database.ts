@@ -49,24 +49,36 @@ declare const TX_BRAND: unique symbol;
  * pool-bound `drizzle(pool)` handle, `undefined`, or nothing at all: each is a compile error. The
  * enqueue (`@kinvara/core-modules/jobs`) relies on it — SD §BE-11 line 1313, a job is enqueued in
  * the caller's transaction. Held by `type-tests/enqueue-refusals.ts` under `pnpm -w typecheck`.
- * The brand is a type only; `as unknown as Tx` gets past it, which is why `assertOpenTx` exists.
+ * The brand is a type only. Measured (T-149 QA-3): `pooled as Tx` is TS2352 and `{ ...tx }` is
+ * TS2322, but `as unknown as Tx` and `Object.assign({}, tx)` compile — which is why the enqueue
+ * also checks at run time (`joinTx`), and why a forged `Tx` handed to any OTHER consumer is
+ * refused by nothing.
  */
 export type Tx = NodePgDatabase & { readonly [TX_BRAND]: 'app_rw transaction' };
 
 /**
- * The `Tx` handles whose transaction is still open: added before `work` runs, removed before
- * COMMIT or ROLLBACK. A handle kept past its transaction is no longer in it (T-149).
+ * The life of one `withAppRw` transaction, as the enqueue sees it (T-149 rework 1, OD-303):
+ *   - `open`     — `work` is running. `joinTx` accepts new operations.
+ *   - `settling` — `work` has returned or thrown. `joinTx` refuses new operations, but statements
+ *                  of operations already joined still run (`assertLiveTx` passes): `withAppRw` is
+ *                  waiting for them, BEFORE its COMMIT or ROLLBACK.
+ *   - `closed`   — every joined operation has settled; COMMIT or ROLLBACK is next. Nothing runs.
  */
-const openTx = new WeakSet<object>();
+interface TxState {
+  phase: 'open' | 'settling' | 'closed';
+  readonly joined: Promise<unknown>[];
+}
+const txStates = new WeakMap<object, TxState>();
 
 /** Fixed text of `TransactionClosedError`. */
 export const TRANSACTION_CLOSED =
   'database: this Tx is not an open withAppRw transaction (it committed, rolled back, or was never one)';
 
 /**
- * A `Tx` used outside its transaction: after `withAppRw` committed or rolled back, or a value that
- * was never minted by `withAppRw`. Its connection has gone back to the pool, so a statement on it
- * would run in autocommit — for an enqueue, a job after commit (SD §BE-11 line 1313).
+ * A `Tx` used outside its transaction: after `withAppRw`'s `work` returned (the transaction is
+ * committing, rolling back, or done), or a value that was never minted by `withAppRw`. A statement
+ * on it would run in autocommit on a released connection — for an enqueue, a job after commit
+ * (SD §BE-11 line 1313).
  */
 export class TransactionClosedError extends Error {
   override readonly name = 'TransactionClosedError';
@@ -75,9 +87,39 @@ export class TransactionClosedError extends Error {
   }
 }
 
-/** Throws `TransactionClosedError` unless `tx` is an open `withAppRw` transaction. */
-export function assertOpenTx(tx: Tx): void {
-  if (!openTx.has(tx)) throw new TransactionClosedError();
+/**
+ * PACKAGE-INTERNAL (not exported from `./runtime`). Run `operation` as part of `tx`'s transaction.
+ * Refused with `TransactionClosedError` (as a rejection; `operation` is not called) unless `tx` is
+ * an open `withAppRw` transaction whose `work` is still running. Once joined, `withAppRw` does not
+ * COMMIT or ROLLBACK until the operation has settled, so its statements run INSIDE the transaction
+ * even if the caller never awaited it (OD-303); and if it rejects, the transaction rolls back and
+ * `withAppRw` rejects with that error. The returned promise is marked handled here, so an
+ * un-awaited rejection surfaces through `withAppRw`, not as an unhandled rejection.
+ */
+export function joinTx<T>(tx: Tx, operation: () => Promise<T>): Promise<T> {
+  const state = txStates.get(tx);
+  if (state === undefined || state.phase !== 'open') {
+    return Promise.reject(new TransactionClosedError());
+  }
+  let joined: Promise<T>;
+  try {
+    joined = operation();
+  } catch (thrown) {
+    joined = Promise.reject(thrown as Error);
+  }
+  state.joined.push(joined);
+  joined.then(undefined, () => undefined);
+  return joined;
+}
+
+/**
+ * PACKAGE-INTERNAL. Throws `TransactionClosedError` unless a statement on `tx` would still run
+ * inside its transaction (phase `open` or `settling`). The enqueue calls it at the moment each
+ * statement is issued, not only when `enqueue` is called.
+ */
+export function assertLiveTx(tx: Tx): void {
+  const phase = txStates.get(tx)?.phase;
+  if (phase !== 'open' && phase !== 'settling') throw new TransactionClosedError();
 }
 
 export type LogLine = (line: string) => void;
@@ -160,25 +202,40 @@ export class Database {
   }
 
   /**
-   * One transaction as `app_rw`: BEGIN, SET LOCAL ROLE app_rw, `work`, COMMIT (or ROLLBACK).
+   * One transaction as `app_rw`: BEGIN, SET LOCAL ROLE app_rw, `work`, then — after every
+   * operation joined to the `Tx` (`joinTx`, i.e. every enqueue) has settled — COMMIT, or ROLLBACK
+   * and rethrow when `work` threw or a joined operation rejected (`work`'s error wins).
    * Rejects `DatabaseShutDownError` once `onApplicationShutdown` has run.
    */
   async withAppRw<T>(work: (tx: Tx) => Promise<T>): Promise<T> {
     const client: PoolClient = await this.#pool_().connect();
     let broken = false;
-    let tx: Tx | undefined;
+    let state: TxState | undefined;
     try {
       await client.query('BEGIN');
       await client.query('SET LOCAL ROLE app_rw');
       // The one place a `Tx` is minted (the brand is a type; see `Tx`).
-      tx = drizzle({ client }) as unknown as Tx;
-      openTx.add(tx);
-      const result = await work(tx);
-      openTx.delete(tx);
+      const tx = drizzle({ client }) as unknown as Tx;
+      state = { phase: 'open', joined: [] };
+      txStates.set(tx, state);
+      let outcome:
+        { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: unknown };
+      try {
+        outcome = { ok: true, value: await work(tx) };
+      } catch (thrown) {
+        outcome = { ok: false, error: thrown };
+      }
+      // No new operation may join from here; those already joined finish INSIDE the transaction.
+      state.phase = 'settling';
+      const settled = await Promise.allSettled(state.joined);
+      state.phase = 'closed';
+      if (!outcome.ok) throw outcome.error;
+      const refused = settled.find((s) => s.status === 'rejected');
+      if (refused !== undefined) throw refused.reason;
       await client.query('COMMIT');
-      return result;
+      return outcome.value;
     } catch (thrown) {
-      if (tx !== undefined) openTx.delete(tx);
+      if (state !== undefined) state.phase = 'closed';
       try {
         await client.query('ROLLBACK');
       } catch {

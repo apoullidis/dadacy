@@ -320,11 +320,7 @@ test('an UN-AWAITED enqueue that is refused rolls the transaction back: withAppR
   const outcome = await db
     .withAppRw(async (tx) => {
       await tx.execute('STATE WRITE');
-      floating = new JobEnqueuer(sender).enqueue(
-        tx,
-        Notify,
-        bad as z.input<typeof Notify.payload>,
-      ); // NOT awaited
+      floating = new JobEnqueuer(sender).enqueue(tx, Notify, bad as z.input<typeof Notify.payload>); // NOT awaited
       await tx.execute('LATER WRITE');
     })
     .then(
@@ -356,7 +352,10 @@ test('a statement a sender issues after its own send settled is refused at the c
     },
   };
   await db.withAppRw(async (tx) => await new JobEnqueuer(lateSender).enqueue(tx, Notify, GOOD));
-  await assert.rejects(late ?? Promise.resolve(), (e: unknown) => e instanceof TransactionClosedError);
+  await assert.rejects(
+    late ?? Promise.resolve(),
+    (e: unknown) => e instanceof TransactionClosedError,
+  );
   assert.deepEqual(
     recorded.map((r) => r.text),
     ['BEGIN', 'SET LOCAL ROLE app_rw', 'COMMIT'],
@@ -403,5 +402,35 @@ test('the refusal echoes no payload-supplied key: a z.record key is rendered *, 
     },
   );
   assert.equal(calls.length, 0);
+  await db.onApplicationShutdown();
+});
+
+test('a refused enqueue CAUGHT inside work still rolls the transaction back: withAppRw rejects with the refusal', async () => {
+  recorded.length = 0;
+  const { calls, sender } = fakeSender();
+  const db = database();
+  const bad: unknown = { recipientAccountId: GOOD.recipientAccountId, enqueuedAt: GOOD.enqueuedAt };
+  let caught: unknown;
+  const outcome = await db
+    .withAppRw(async (tx) => {
+      await tx.execute('STATE WRITE');
+      try {
+        await new JobEnqueuer(sender).enqueue(tx, Notify, bad as z.input<typeof Notify.payload>);
+      } catch (e) {
+        caught = e; // swallowed: the shape that used to commit the state change without its job
+      }
+      return 'work returned normally';
+    })
+    .then(
+      (v) => v,
+      (e: unknown) => e,
+    );
+  assert.ok(caught instanceof JobPayloadRefusedError);
+  assert.equal(outcome, caught, 'withAppRw rejected with the swallowed refusal');
+  assert.equal(calls.length, 0);
+  assert.deepEqual(
+    recorded.map((r) => r.text),
+    ['BEGIN', 'SET LOCAL ROLE app_rw', 'STATE WRITE', 'ROLLBACK'],
+  );
   await db.onApplicationShutdown();
 });
