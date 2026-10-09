@@ -7,7 +7,9 @@
 export {
   Database,
   DATABASE_LOG,
+  DATABASE_SHUT_DOWN,
   DATABASE_URL_REFUSED,
+  DatabaseShutDownError,
   type DatabaseSource,
   type LogLine,
   type Tx,

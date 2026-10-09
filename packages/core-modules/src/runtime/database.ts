@@ -6,6 +6,15 @@
  * ONE POOL PER `Database`, CREATED ON FIRST USE. `apps/core`'s `tools/build.ts` and T-135's fault
  * server load `AppModule` with no database, and they connect to nothing.
  *
+ * NO USE AFTER SHUTDOWN (T-245 rework 1, QA-F1 / OD-298). `onApplicationShutdown` ends the pool and
+ * marks the `Database` shut down for good: every later `withAppRw` rejects with
+ * `DatabaseShutDownError` (fixed text `DATABASE_SHUT_DOWN`) and opens nothing. Before this, a use
+ * after shutdown silently built a NEW pool that nothing ever ended, so a `Database` torn down too
+ * early was invisible: a job in flight simply reconnected. Now such a job FAILS — which is what lets
+ * the worker's `tools/drain-check.sh` (check A) see a `Database` torn down before the drain (QA's
+ * `dbfirst` mutant: DRAIN PASS before this change, DRAIN FAIL after; state/EP-2/T-245.md § Rework 1).
+ * Held without a database by `database.test.ts` › *use after shutdown is refused …*.
+ *
  * WHERE IT CONNECTS IS THE APP'S CHOICE, NOT THIS FILE'S. Each app binds `Database` to its own
  * `DatabaseSource` through `DatabaseModule.forRoot` (./database.module.ts): `apps/core` to
  * `DATABASE_URL` with `application_name = 'kinvara-core'`; `apps/worker` to `WorkerRuntimeModule`'s
@@ -53,6 +62,22 @@ export interface DatabaseSource {
 /** Fixed text: nothing from the connection string. */
 export const DATABASE_URL_REFUSED = 'database: DATABASE_URL is not set, so there is no database';
 
+/** Fixed text of `DatabaseShutDownError`. */
+export const DATABASE_SHUT_DOWN =
+  'database: this Database was shut down (onApplicationShutdown ran); it opens no new pool';
+
+/**
+ * A `withAppRw` after `onApplicationShutdown`. Refused, never served by a new pool: a module that
+ * still needs the database after its app's teardown began is an ordering defect, and it must fail
+ * where it happens rather than reconnect unseen.
+ */
+export class DatabaseShutDownError extends Error {
+  override readonly name = 'DatabaseShutDownError';
+  constructor() {
+    super(DATABASE_SHUT_DOWN);
+  }
+}
+
 export const DATABASE_LOG = Object.freeze({
   idleClientError: 'database: an idle database connection failed; the pool discarded it',
 });
@@ -74,6 +99,7 @@ export class Database {
   readonly #source: DatabaseSource;
   readonly #log: LogLine;
   #pool: Pool | undefined;
+  #shutDown = false;
 
   constructor(source: DatabaseSource, log: LogLine) {
     this.#source = source;
@@ -81,6 +107,7 @@ export class Database {
   }
 
   #pool_(): Pool {
+    if (this.#shutDown) throw new DatabaseShutDownError();
     if (this.#pool !== undefined) return this.#pool;
     const connectionString = this.#source.connectionString;
     if (connectionString === undefined || connectionString === '') {
@@ -95,7 +122,10 @@ export class Database {
     return pool;
   }
 
-  /** One transaction as `app_rw`: BEGIN, SET LOCAL ROLE app_rw, `work`, COMMIT (or ROLLBACK). */
+  /**
+   * One transaction as `app_rw`: BEGIN, SET LOCAL ROLE app_rw, `work`, COMMIT (or ROLLBACK).
+   * Rejects `DatabaseShutDownError` once `onApplicationShutdown` has run.
+   */
   async withAppRw<T>(work: (tx: Tx) => Promise<T>): Promise<T> {
     const client: PoolClient = await this.#pool_().connect();
     let broken = false;
@@ -119,9 +149,12 @@ export class Database {
 
   /**
    * Nest calls this from `app.close()`: in `apps/core`, the drain in `server.ts`; in `apps/worker`,
-   * after `BossHost.drain()` has returned (T-242 RW1-C §2), so no in-flight handler loses the pool.
+   * after `BossHost.drain()` has returned (T-242 RW1-C §2). Ends the pool (idempotent) and refuses
+   * every later `withAppRw` — so if this ever ran before the drain, the in-flight job's
+   * `withAppRw` would reject and drain-check A would go red (T-245 rework 1, RW1-R2).
    */
   async onApplicationShutdown(): Promise<void> {
+    this.#shutDown = true;
     const pool = this.#pool;
     this.#pool = undefined;
     if (pool !== undefined) await pool.end();
