@@ -13,9 +13,13 @@
  *                          `onApplicationBootstrap` (src/selftest.handler.ts is the pattern).
  *   drain()                THE DRAIN, called by src/main.ts on the first SIGTERM/SIGINT BEFORE
  *                          `app.close()`: no new fetch; in-flight handlers get up to
- *                          STOP_TIMEOUT_MS; pg-boss stops. It counts what went wrong after it
- *                          began (StopReport), so the verdict line cannot read as success over a
- *                          job that failed during shutdown.
+ *                          STOP_TIMEOUT_MS; pg-boss stops. It counts (StopReport) handlers that
+ *                          rejected and pg-boss `error` events after it began, and handlers
+ *                          still running when the stop returned. It does NOT see a job pg-boss
+ *                          fails inside its own race while the handler does not reject — a job
+ *                          past its queue's `expireInSeconds` (measured: QA mutant `expire6`,
+ *                          T-242 QA2-F1), or a `perJobResults` 'failed' disposition (read, not
+ *                          run) — so the `drained:` verdict line can be printed over such a job.
  *   onApplicationShutdown  closes this pool, after `drain()` has returned.
  *
  * WHY THE DRAIN IS NOT A NEST HOOK (T-242 rework 1, QA-F1 / OD-293). `close()` in @nestjs/core
@@ -56,7 +60,9 @@ export interface InFlight {
 }
 
 export interface StopReport {
-  /** handlers still running when pg-boss's stop returned (pg-boss failed them: failWip) */
+  /** handlers still running when pg-boss's stop returned. pg-boss fails their jobs through the
+   *  queue's retry policy — by `failWip` at the stop, or earlier by its own expiry race (QA mutant
+   *  `expire3`, T-242 QA2-A1); this count does not say which. */
   readonly stillRunning: number;
   /** handlers that rejected (their job failed) after drain() began */
   readonly handlerFailures: number;

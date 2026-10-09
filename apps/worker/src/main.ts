@@ -36,10 +36,14 @@
  * alone and empties when it exits (OD-196; re-measured in the image, state/EP-2/T-242.md).
  *
  * EXIT CODES: 0 drained; 1 boot failure, second signal, a failed stop or a failed teardown;
- * 2 refused to start (REFUSED_EXIT). Exit 0 does NOT say every job in flight completed: the
- * verdict line does — it begins `drained:` only when nothing was still running at the stop, no
- * handler failed and pg-boss reported no error after the signal; otherwise `drain finished with`
- * and the three counts.
+ * 2 refused to start (REFUSED_EXIT). Exit 0 does NOT say every job in flight completed, and
+ * neither does the verdict line: it begins `drained:` only when nothing was still running at the
+ * stop, no handler rejected and pg-boss emitted no `error` event after the signal, and pg-boss was
+ * stopped before `close()`; otherwise `drain finished with` and the three counts. A job pg-boss
+ * fails inside its own race while the handler does not reject — past its queue's
+ * `expireInSeconds` (measured: QA mutant `expire6`, T-242 QA2-F1), or a `perJobResults` 'failed'
+ * disposition (read, not run) — is in none of the counts, so `drained:` can be printed over it.
+ * Whether a job completed is its state in `pgboss.job` (tools/drain-check.sh, check A).
  * `abortOnError: false` is what makes a failed boot an exception here rather than Nest's default
  * `process.abort()` (SIGABRT, 134) with no banner.
  */

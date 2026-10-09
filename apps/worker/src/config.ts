@@ -28,7 +28,8 @@ export const APPLICATION_NAME = 'kinvara-worker';
 /** How long a graceful stop waits for in-flight jobs. Under PID 1's GROUP_DRAIN_MS (25 s,
  *  docker/app-runtime/entrypoint.mjs) and the 30 s `stop_grace_period` compose declares; a job
  *  still running at this point is failed by pg-boss (`failWip`: "pg-boss shut down while active")
- *  and retried by its queue's policy. */
+ *  through its queue's retry policy: retried while attempts remain, terminally `failed` on its
+ *  last attempt (T-148 § contract 3 row 3 as corrected; T-148 QA round 2 R9). */
 export const STOP_TIMEOUT_MS = 20_000;
 
 /** The heartbeat the image's HEALTHCHECK reads (docker/app-runtime/healthcheck.mjs: `{ "at" }`
