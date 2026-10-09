@@ -153,7 +153,7 @@ test(
     const present = ulidFor('T246PRESENT');
     const absent = ulidFor('T246ABSENT');
     const email = `t246.${RUN}@example.test`;
-    // A test number in ITU-T country code 991 (SQ-27), never a dialable +357 one; unique per run.
+    // A test number in ITU-T country code 991 (SQ-27), never a dialable Cyprus one; unique per run.
     const phone = `+9919${String(Date.now() % 10_000_000).padStart(7, '0')}`;
     await pool.query(
       `INSERT INTO public.account (id, pseudonym, email_ci, phone_e164, tos_version)
