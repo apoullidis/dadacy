@@ -4,8 +4,9 @@
  * WHY IT EXISTS. T-148's acceptance needs a job the containerised worker is seen completing, a
  * job held in flight across SIGTERM, and a handler that throws — and every SD §BE-11 queue's
  * handler belongs to that queue's own ticket ("Out" in T-148's brief). So the worker carries one
- * queue whose handler does nothing but report itself. It reads no application table and writes
- * none; what it can do is bounded by the payload checks below.
+ * queue whose handler does nothing but report itself. It writes no application table, and reads
+ * one only for op `contact` (`account`, by primary key, through identity's provider — T-246); what
+ * it can do is bounded by the payload checks below.
  *
  * WHAT THE HANDLER DOES, per payload `op`:
  *   echo   completes, returning who handled it;
