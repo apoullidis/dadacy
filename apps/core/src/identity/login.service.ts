@@ -2,7 +2,7 @@
  * Password login: SD §BE-4 line 1021 `POST /v1/auth/login`, as ruled by decisions.md OE-22 G4/G5.
  *
  * ENUMERATION RESISTANCE (SD §SEC-I7 line 3976; SA §SEC-5 line 2210). Every refusal throws the same
- * `InvalidCredentialsError`, which takes no options, so its body has one form (errors.ts). Refused:
+ * `InvalidCredentialsError`, which takes no options, so its body has one form (`@kinvara/core-modules/identity`, T-246). Refused:
  *   - no account holds the address (an erased account's `email_ci` is NULL, SD line 1766, so it
  *     lands here as well);
  *   - the account's `password_hash` is NULL: a passwordless registration (T-141);
@@ -39,7 +39,7 @@
 import type { AccountId } from '@kinvara/domain-types';
 import { activeRoles, findLoginCandidate, insertSession } from './account.repository.ts';
 import type { Database } from '@kinvara/core-modules/runtime';
-import { InvalidCredentialsError } from './errors.ts';
+import { InvalidCredentialsError } from '@kinvara/core-modules/identity';
 import { newSessionId } from './ids.ts';
 import {
   DUMMY_PASSWORD_HASH,

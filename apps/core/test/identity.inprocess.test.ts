@@ -31,7 +31,7 @@ import pg from 'pg';
 import { findAccountIdByEmail, insertSession } from '../src/identity/account.repository.ts';
 import { Database } from '@kinvara/core-modules/runtime';
 import { CORE_APPLICATION_NAME } from '../src/identity/identity.module.ts';
-import { EmailInUseError } from '../src/identity/errors.ts';
+import { EmailInUseError } from '@kinvara/core-modules/identity';
 import { HibpChecker } from '../src/identity/hibp.ts';
 import { newSessionId } from '../src/identity/ids.ts';
 import {

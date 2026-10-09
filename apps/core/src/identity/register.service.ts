@@ -32,7 +32,7 @@ import {
   isUniqueViolation,
 } from './account.repository.ts';
 import type { Database, LogLine } from '@kinvara/core-modules/runtime';
-import { EmailInUseError, PasswordBreachedError } from './errors.ts';
+import { EmailInUseError, PasswordBreachedError } from '@kinvara/core-modules/identity';
 import type { HibpChecker, HibpVerdict } from './hibp.ts';
 import { newAccountId, newPseudonym, newSessionId } from './ids.ts';
 import { hashPassword } from './password.ts';

@@ -21,7 +21,7 @@ import pg from 'pg';
 import { hash, verify, type Algorithm } from '@node-rs/argon2';
 import { Database } from '@kinvara/core-modules/runtime';
 import { CORE_APPLICATION_NAME } from '../src/identity/identity.module.ts';
-import { InvalidCredentialsError } from '../src/identity/errors.ts';
+import { InvalidCredentialsError } from '@kinvara/core-modules/identity';
 import { newAccountId, newPseudonym, newSessionId } from '../src/identity/ids.ts';
 import { LoginService, type LoggedIn } from '../src/identity/login.service.ts';
 import {

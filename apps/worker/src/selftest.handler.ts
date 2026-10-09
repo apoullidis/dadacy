@@ -29,14 +29,23 @@
  * FAIL after it (state/EP-2/T-245.md § Rework 1, RW1-R1/RW1-R2). It pins the order for THIS
  * handler's `Database` and only on a run where a `hold` job is in flight at the signal, as
  * drain-check arranges.
+ *
+ * T-246: THE FIRST HANDLER TO USE A SHARED MODULE'S DOMAIN PROVIDER. Op `contact` resolves the
+ * payload's `accountId` through `@kinvara/core-modules/identity`'s `AccountContacts`, imported by
+ * package name through `IdentitySharedModule.forRoot({ database: WorkerDatabaseModule })` — the
+ * worker's one `Database`, no second pool. The output carries only SHA-256 digests of what it
+ * resolved (src/selftest.ts); an absent id rejects with `AccountNotFoundError`, which fails the job.
  */
 import type { OnApplicationBootstrap } from '@nestjs/common';
 import { Module } from '@nestjs/common';
 import { hostname } from 'node:os';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { JobWithMetadata } from 'pg-boss';
+import { AccountContacts, IdentitySharedModule } from '@kinvara/core-modules/identity';
 import { Database } from '@kinvara/core-modules/runtime';
+import { accountId } from '@kinvara/domain-types';
 import { sql } from 'drizzle-orm';
+import { createHash } from 'node:crypto';
 import { BossHost } from './boss-host.ts';
 import { WorkerDatabaseModule } from './database.module.ts';
 import type { WorkerLog } from './log.ts';
@@ -54,12 +63,20 @@ export class SelftestHandler implements OnApplicationBootstrap {
   readonly #host: BossHost;
   readonly #reporter: SelftestReporter;
   readonly #db: Database;
+  readonly #contacts: AccountContacts;
   readonly #log: WorkerLog;
 
-  constructor(host: BossHost, reporter: SelftestReporter, db: Database, log: WorkerLog) {
+  constructor(
+    host: BossHost,
+    reporter: SelftestReporter,
+    db: Database,
+    contacts: AccountContacts,
+    log: WorkerLog,
+  ) {
     this.#host = host;
     this.#reporter = reporter;
     this.#db = db;
+    this.#contacts = contacts;
     this.#log = log;
   }
 
@@ -90,10 +107,20 @@ export class SelftestHandler implements OnApplicationBootstrap {
     this.#log(`selftest job ${job.id} op=${data.op} attempt=${String(attempt)} started`);
     if (data.op === 'throw') throw new Error(SELFTEST_FAILURE);
     if (data.op === 'hold') await sleep(data.holdMs ?? 0);
+    const contact = data.op === 'contact' ? await this.#contact(data.accountId) : undefined;
     const db = await this.#principal();
     await this.#reporter.notify({ ...who, tag: data.tag, op: data.op, phase: 'done' });
     this.#log(`selftest job ${job.id} op=${data.op} attempt=${String(attempt)} completed`);
-    return { op: data.op, tag: data.tag, attempt, host: who.host, pid: who.pid, db };
+    const output = { op: data.op, tag: data.tag, attempt, host: who.host, pid: who.pid, db };
+    return contact === undefined ? output : { ...output, contact };
+  }
+
+  /** T-246: through identity's provider; digests only. Rejects `AccountNotFoundError`. */
+  async #contact(id: string | undefined): Promise<NonNullable<SelftestOutput['contact']>> {
+    const found = await this.#contacts.contactOf(accountId(id, 'accountId'));
+    const digest = (value: string | null): string | null =>
+      value === null ? null : createHash('sha256').update(value, 'utf8').digest('hex');
+    return { emailSha256: digest(found.email), phoneSha256: digest(found.phoneE164) };
   }
 
   /** Read through the package's `Database`, in one `withAppRw` transaction. */
@@ -114,13 +141,23 @@ export class SelftestHandler implements OnApplicationBootstrap {
 
 export class SelftestModule {}
 Module({
-  imports: [WorkerRuntimeModule, SelftestReporterModule, WorkerDatabaseModule],
+  imports: [
+    WorkerRuntimeModule,
+    SelftestReporterModule,
+    WorkerDatabaseModule,
+    IdentitySharedModule.forRoot({ database: WorkerDatabaseModule }),
+  ],
   providers: [
     {
       provide: SelftestHandler,
-      useFactory: (host: BossHost, reporter: SelftestReporter, db: Database, log: WorkerLog) =>
-        new SelftestHandler(host, reporter, db, log),
-      inject: [BossHost, SelftestReporter, Database, WORKER_LOG],
+      useFactory: (
+        host: BossHost,
+        reporter: SelftestReporter,
+        db: Database,
+        contacts: AccountContacts,
+        log: WorkerLog,
+      ) => new SelftestHandler(host, reporter, db, contacts, log),
+      inject: [BossHost, SelftestReporter, Database, AccountContacts, WORKER_LOG],
     },
   ],
 })(SelftestModule);

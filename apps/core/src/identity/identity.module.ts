@@ -1,6 +1,13 @@
 /**
  * The identity module (`tech-lead`): account creation (T-141), login and logout (T-026).
  *
+ * T-246 (EV-30): identity's code that the worker also loads lives in `@kinvara/core-modules/identity`
+ * — the contact read path (`AccountContacts`) and identity's domain errors — behind
+ * `IdentitySharedModule`, which has no controllers. This module imports it, bound to `core`'s
+ * `Database` (`CORE_DATABASE`), and adds what is `core`'s alone: the controllers, the
+ * `ignoreRequestBody` middleware, and register/login/password/HIBP, which stay here because they
+ * load `@node-rs/argon2` and the HIBP caller.
+ *
  * Providers are factories, so nothing reads the environment or connects when the module loads.
  * `Database` is `@kinvara/core-modules/runtime`'s (T-245): this module binds it to `core`'s source,
  * `DATABASE_URL` with `application_name = 'kinvara-core'`, through `DatabaseModule.forRoot`, and
@@ -12,6 +19,7 @@
  */
 import { Module, RequestMethod, type MiddlewareConsumer, type NestModule } from '@nestjs/common';
 import { createUpstreamCaller } from '@kinvara/integration-kit';
+import { IdentitySharedModule } from '@kinvara/core-modules/identity';
 import {
   Database,
   DatabaseModule,
@@ -49,7 +57,7 @@ export class IdentityModule implements NestModule {
 decorateClass(
   IdentityModule,
   Module({
-    imports: [CORE_DATABASE],
+    imports: [CORE_DATABASE, IdentitySharedModule.forRoot({ database: CORE_DATABASE })],
     controllers: [RegisterController, AuthController],
     providers: [
       {

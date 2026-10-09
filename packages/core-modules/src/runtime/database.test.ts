@@ -127,3 +127,36 @@ test('use after shutdown is refused before anything else: no pool, no URL check,
     );
   }
 });
+
+test('a withAppRw started while onApplicationShutdown is still pending is refused, not served by a reopened pool (OD-300 A1)', async () => {
+  // T-246, from T-245 § QA round 2 QA2-A1: `#shutDown` must be set BEFORE `await pool.end()`. With
+  // the flag set only after `end()` resolves (QA's mutant U3), a call made in that window builds a
+  // NEW pool — here it would reject ECONNREFUSED from loopback port 1 instead of the refusal.
+  const db = new Database(
+    {
+      connectionString: CLOSED_PORT,
+      application_name: 'kinvara-test',
+      connectionTimeoutMillis: 2000,
+    },
+    () => {
+      throw new Error('nothing may be logged');
+    },
+  );
+  // The pool exists: a connect error from the source, not a refusal.
+  await assert.rejects(
+    db.withAppRw(async () => 'unreached'),
+    (e: unknown) => {
+      assert.equal((e as { code?: unknown }).code, 'ECONNREFUSED');
+      return true;
+    },
+  );
+  const shuttingDown = db.onApplicationShutdown(); // not awaited: the window is open
+  await assert.rejects(
+    db.withAppRw(async () => 'unreached'),
+    (e: unknown) => {
+      assert.ok(isShutDownRefusal(e), `expected DatabaseShutDownError, got ${String(e)}`);
+      return true;
+    },
+  );
+  await shuttingDown;
+});

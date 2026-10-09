@@ -19,6 +19,7 @@
  */
 import { afterAll, beforeAll, test } from 'vitest';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { hostname } from 'node:os';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { Pool } from 'pg';
@@ -119,6 +120,81 @@ test(
     } finally {
       await client.query('ROLLBACK');
       client.release();
+    }
+  },
+);
+
+/** A canonical ULID: 48-bit ms time in Crockford base32, then `label` (Crockford letters) padded. */
+function ulidFor(label: string): string {
+  const crockford = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+  let rest = BigInt(Date.now());
+  let time = '';
+  for (let i = 0; i < 10; i++) {
+    time = crockford.charAt(Number(rest % 32n)) + time;
+    rest /= 32n;
+  }
+  return time + label.padEnd(16, '0');
+}
+
+/** SHA-256 hex, computed here (node:crypto), not by the worker's code. */
+function sha256(value: string): string {
+  return createHash('sha256').update(value, 'utf8').digest('hex');
+}
+
+test(
+  "(T-246) a job resolves a seeded account's email and phone through @kinvara/core-modules/identity in the container, and an absent AccountId fails with the named refusal AccountNotFoundError",
+  { timeout: 60_000 },
+  async () => {
+    // Seeded here, as the superuser, with literal values; the expectation is their SHA-256 computed
+    // in this process. Ids are fresh ULIDs from this run's clock; the absent one is never inserted.
+    const present = ulidFor('T246PRESENT');
+    const absent = ulidFor('T246ABSENT');
+    const email = `t246.${RUN}@example.test`;
+    const phone = `+3579${String(Date.now() % 10_000_000).padStart(7, '0')}`;
+    await pool.query(
+      `INSERT INTO public.account (id, pseudonym, email_ci, phone_e164, tos_version)
+       VALUES ($1, $2, $3, $4, 't246')`,
+      [present, ulidFor('T246PSEVD'), email, phone],
+    );
+    try {
+      const id = await send({ op: 'contact', tag: `${RUN}.contact`, accountId: present });
+      const done = await waitFor('the contact job to complete', 20_000, async () => {
+        const row = await job(pool, id);
+        return row?.state === 'completed' ? row : undefined;
+      });
+      const output = done.output as { contact?: unknown; db?: unknown; host?: unknown };
+      assert.deepEqual(output.contact, { emailSha256: sha256(email), phoneSha256: sha256(phone) });
+      assert.deepEqual(output.db, { currentUser: 'app_rw', roleAtConnect: 'app_rw' });
+      assert.ok(typeof output.host === 'string' && output.host !== hostname(), 'handled elsewhere');
+      // The job row carries digests only: neither value appears anywhere in it.
+      const raw = (
+        await pool.query<{ t: string }>(
+          `SELECT to_jsonb(j)::text AS t FROM pgboss.job j WHERE id = $1`,
+          [id],
+        )
+      ).rows[0]?.t;
+      assert.ok(raw !== undefined && !raw.includes(email) && !raw.includes(phone));
+
+      const refusedId = await send({ op: 'contact', tag: `${RUN}.absent`, accountId: absent });
+      const failed = await waitFor('the absent-account job to fail', 30_000, async () => {
+        const row = await job(pool, refusedId);
+        return row?.state === 'failed' ? row : undefined;
+      });
+      const refusal = failed.output as { name?: unknown; message?: unknown; code?: unknown };
+      // Literals (T-023: NotFoundError's code; the class name this ticket publishes).
+      assert.equal(refusal.name, 'AccountNotFoundError');
+      assert.equal(refusal.message, 'not_found');
+      assert.ok(!JSON.stringify(failed.output).includes(absent), 'the refusal never echoes the id');
+      // Both attempts reached the handler: the refusal is the handler's, not a payload refusal.
+      assert.deepEqual(
+        listener.notes.filter((n) => n.id === refusedId).map((n) => [n.phase, n.attempt]),
+        [
+          ['start', 1],
+          ['start', 2],
+        ],
+      );
+    } finally {
+      await pool.query('DELETE FROM public.account WHERE id = $1', [present]);
     }
   },
 );
