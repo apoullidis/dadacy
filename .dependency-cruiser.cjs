@@ -46,6 +46,43 @@ module.exports = {
       from: {},
       to: { moreThanOneDependencyType: true, dependencyTypesNot: ['type-only'] },
     },
+    // T-244 (OD-292a, CUT-OD-292 §1). Each deployable image carries its OWN app directory and
+    // nothing of any other app (`docker/app.Dockerfile` runtime stage; T-242 E14: the worker image
+    // holds /srv/kinvara/apps/worker only). So an import from one app into another typechecks and
+    // lints in the toolbox and fails at import time in the image (T-242 § QA Q10). Shared code
+    // reaches a second app through a `packages/*` workspace package (OD-292a, EV-30), never
+    // through `../../<other-app>/…`. These two rules and the manifest rule in scripts/gates/deps.ts
+    // (`no-app-package-dependency`) are T-244's; they are NOT T-002's cross-MODULE rules (SA §SA-2),
+    // which T-002 adds beside them without restating them.
+    //
+    // `$1` is dependency-cruiser's group substitution: the first capture group of `from.path`
+    // (the source module's app directory) is substituted into `to.pathNot`, so a module may
+    // resolve into its OWN app and into no other. Measured to bind: T-244 evidence, and cases
+    // R1/R5 (red) against C2 (core -> its own ./identity, green) in
+    // scripts/negative-tests/deps-cross-app.sh.
+    //
+    // NOT SEEN by either rule, stated as bounds (T-244 § Published contract): an import whose
+    // specifier is not a literal (`import(x)`, `createRequire(...)(computed)`), and code loaded
+    // by a runtime flag (`node --import …` in a start script) rather than by an import.
+    {
+      name: 'no-cross-app-import',
+      severity: 'error',
+      comment:
+        'T-244 rule (1): a module under apps/<a>/ resolves to a path under apps/<b>/, b != a. ' +
+        'Each image carries only its own app, so this fails at import time in the image ' +
+        '(OD-292, T-242 Q10). Move the shared code to a packages/* workspace package (OD-292a).',
+      from: { path: '^apps/([^/]+)/' },
+      to: { path: '^apps/[^/]+/', pathNot: '^apps/$1/' },
+    },
+    {
+      name: 'no-package-to-app-import',
+      severity: 'error',
+      comment:
+        'T-244 rule (2): a module under packages/ resolves to a path under apps/. A package is ' +
+        'shared code; an app is a deployable, and no image but its own carries it (OD-292a).',
+      from: { path: '^packages/' },
+      to: { path: '^apps/' },
+    },
     {
       name: 'placeholder-module-boundaries',
       severity: 'info',
