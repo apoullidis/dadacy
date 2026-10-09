@@ -1,7 +1,9 @@
 /**
  * The shared Postgres access every module uses, in every deployable that loads it: Drizzle over
  * `pg` (SD §DB-1 line 1755, §SEC-I2 line 3893). Moved here from `apps/core/src/identity/` by
- * T-245 (OD-292a, EV-30); `withAppRw` is unchanged.
+ * T-245 (OD-292a, EV-30). T-149 added the branded `Tx` and the join (`joinTx`): `withAppRw` sends
+ * the same statements as before, and now waits for every enqueue joined to its `Tx` before COMMIT
+ * or ROLLBACK (OD-303).
  *
  * ONE POOL PER `Database`, CREATED ON FIRST USE. `apps/core`'s `tools/build.ts` and T-135's fault
  * server load `AppModule` with no database, and they connect to nothing.
