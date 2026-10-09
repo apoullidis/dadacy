@@ -434,3 +434,32 @@ test('a refused enqueue CAUGHT inside work still rolls the transaction back: wit
   );
   await db.onApplicationShutdown();
 });
+
+test('an enqueue CALLED after work returned — while an earlier one still holds the transaction open — is refused TransactionClosedError and sends nothing', async () => {
+  recorded.length = 0;
+  const { calls, sender } = fakeSender('id', 40);
+  const db = database();
+  const jobs = new JobEnqueuer(sender);
+  let first: Promise<string | null> | undefined;
+  let late: Promise<string | null> | undefined;
+  await db.withAppRw(async (tx) => {
+    first = jobs.enqueue(tx, Notify, GOOD); // NOT awaited: holds the transaction open ~40 ms
+    setTimeout(() => {
+      late = jobs.enqueue(tx, Notify, GOOD); // called after work returned, before COMMIT
+      // NOT joined, so nothing marks this rejection handled: an un-awaited late call would be an
+      // unhandled rejection. The test observes it below.
+      late.catch(() => undefined);
+    }, 10);
+  });
+  assert.equal(await first, 'job-from-fake');
+  await assert.rejects(
+    late ?? Promise.resolve(),
+    (e: unknown) => e instanceof TransactionClosedError,
+  );
+  assert.equal(calls.length, 1, 'only the first enqueue reached the sender');
+  assert.deepEqual(
+    recorded.map((r) => r.text),
+    ['BEGIN', 'SET LOCAL ROLE app_rw', 'SEND $1 $2', 'COMMIT'],
+  );
+  await db.onApplicationShutdown();
+});
