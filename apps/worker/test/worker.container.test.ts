@@ -93,6 +93,30 @@ test('(c) the worker created worker.selftest with the configured policy, and not
 });
 
 test(
+  "(T-245 a) the handler's injected @kinvara/core-modules Database runs withAppRw as app_rw, on a connection that set the role at connect, and the job is completed",
+  { timeout: 30_000 },
+  async () => {
+    const tag = `${RUN}.db`;
+    const id = await send({ op: 'echo', tag });
+    const done = await waitFor('the db job to complete', 20_000, async () => {
+      const row = await job(pool, id);
+      return row?.state === 'completed' ? row : undefined;
+    });
+    // Expected values are literals (T-020 § contract §3: the worker runs as app_rw; T-148 § contract
+    // 1 row 1: by the libpq option), not read from src/.
+    const output = done.output as { tag?: unknown; db?: unknown };
+    assert.equal(output.tag, tag);
+    assert.deepEqual(output.db, { currentUser: 'app_rw', roleAtConnect: 'app_rw' });
+    // Control: this process's own superuser session neither is app_rw nor set a role at connect.
+    const plain = await pool.query<{ u: string; r: string }>(
+      "SELECT current_user::text AS u, (SELECT reset_val FROM pg_settings WHERE name = 'role') AS r",
+    );
+    assert.notEqual(plain.rows[0]?.u, 'app_rw');
+    assert.notEqual(plain.rows[0]?.r, 'app_rw');
+  },
+);
+
+test(
   '(a) a job sent to worker.selftest is completed by the containerised worker: pgboss state AND the handler side effect, sent by an injected service',
   { timeout: 30_000 },
   async () => {

@@ -23,7 +23,12 @@
  *
  * `Database.onApplicationShutdown` ends the pool when the app's context closes.
  */
-import { Module, type DynamicModule, type InjectionToken, type ModuleMetadata } from '@nestjs/common';
+import {
+  Module,
+  type DynamicModule,
+  type InjectionToken,
+  type ModuleMetadata,
+} from '@nestjs/common';
 import { Database, type DatabaseSource, type LogLine } from './database.ts';
 
 /** What an app's factory returns: where to connect, and where `Database` writes its log lines. */

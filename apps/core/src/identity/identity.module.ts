@@ -12,7 +12,12 @@
  */
 import { Module, RequestMethod, type MiddlewareConsumer, type NestModule } from '@nestjs/common';
 import { createUpstreamCaller } from '@kinvara/integration-kit';
-import { Database, DatabaseModule, decorateClass, type LogLine } from '@kinvara/core-modules/runtime';
+import {
+  Database,
+  DatabaseModule,
+  decorateClass,
+  type LogLine,
+} from '@kinvara/core-modules/runtime';
 import { AuthController, LOGOUT_PATH } from './auth.controller.ts';
 import { HIBP_BREAKER, HibpChecker } from './hibp.ts';
 import { LoginService } from './login.service.ts';
