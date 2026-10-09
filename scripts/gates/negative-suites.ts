@@ -296,7 +296,11 @@ const SUITES: readonly Suite[] = [
     // (`@kinvara/core-modules` is not an app). C3 red against the substring matcher at d3c5adb
     // (`!! 1 of 29`), footer `ALL 29 CASES BEHAVED AS EXPECTED` at 2384599, after this gate
     // refused 29 against 27 — T-244.md § Evidence.
-    cases: 29,
+    // 29 -> 31, 2026-10-09, T-244: V1 (a tracked file excluded from the cruise -> `coverage:`)
+    // and V2 (an invalid config -> `produced no JSON verdict`). Both red against main's deps.ts
+    // (`!! 11 of 31` at TEMP b4a323e), footer `ALL 31 CASES BEHAVED AS EXPECTED` at 544af9b,
+    // after this gate refused 31 against 29 — T-244.md § Evidence.
+    cases: 31,
     state: 'GREEN',
     why: 'gate:deps: no-cross-app-import, no-package-to-app-import and no-app-package-dependency, each refusal judged by rule name and edge, two controls, each rule deleted turning its red case green (T-244, OD-292a)',
   },
