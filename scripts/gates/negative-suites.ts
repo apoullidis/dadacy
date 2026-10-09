@@ -292,7 +292,11 @@ const SUITES: readonly Suite[] = [
     file: 'scripts/negative-tests/deps-cross-app.sh',
     // 27, 2026-10-09, T-244: taken from the suite's own footer (`ALL 27 CASES BEHAVED AS
     // EXPECTED`) — tasks/state/EP-1/T-244.md § Evidence.
-    cases: 27,
+    // 27 -> 29, 2026-10-09, T-244: R7g (an `npm:` alias ending in the app name) and C3
+    // (`@kinvara/core-modules` is not an app). C3 red against the substring matcher at d3c5adb
+    // (`!! 1 of 29`), footer `ALL 29 CASES BEHAVED AS EXPECTED` at 2384599, after this gate
+    // refused 29 against 27 — T-244.md § Evidence.
+    cases: 29,
     state: 'GREEN',
     why: 'gate:deps: no-cross-app-import, no-package-to-app-import and no-app-package-dependency, each refusal judged by rule name and edge, two controls, each rule deleted turning its red case green (T-244, OD-292a)',
   },
