@@ -35,7 +35,7 @@ void q.enqueue(undefined, J, p);
 
 // A POOL-bound Drizzle handle is not a transaction: each statement would autocommit on its own
 // connection. The brand on `Tx` is what refuses it.
-// @ts-expect-error TS2345 the pool handle lacks the Tx brand
+// @ts-expect-error TS2379 the pool handle lacks the Tx brand (TS2345 under exactOptionalPropertyTypes)
 void q.enqueue(pooled, J, p);
 
 // The payload type is the schema's input: a wrong field type does not compile.
