@@ -75,11 +75,16 @@ ran=0
 harness=0
 
 # A plant must prove it LANDED before its effect is judged (PROTOCOL §5.1, T-039).
+# A plant that did not land is that case misbehaving: it is COUNTED (ran and bad), so
+# the footer keeps the full case count and gate:negative-suites reports a red suite
+# rather than a shrunken one.
 landed() {
   local what="$1"; shift
   if "$@"; then return 0; fi
-  echo "   HARNESS ERROR (mutation did not land: $what)"
+  echo "!! HARNESS ERROR (mutation did not land: $what)"
   harness=$((harness + 1))
+  ran=$((ran + 1))
+  bad=$((bad + 1))
   restore
   return 1
 }
