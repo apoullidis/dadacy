@@ -290,6 +290,23 @@ landed "R10c link" is_link_to "$W/qa-t244-dblink.ts" ../../core/src/identity/dat
   run_case "R10c a FILE symlink to core's database.ts + import" FAIL; }
 
 echo
+echo "=== the gate's own self-checks: coverage, and a crash is not a pass ==="
+
+# V1: a tracked source file the cruiser never reads is a file no rule judged. Exclude one
+# tracked worker file from the cruise; the coverage anchor (git ls-files) must name it.
+node scripts/negative-tests/mutate.mjs "$CFG" $'exclude: { path: \'' $'exclude: { path: \'^apps/worker/src/config\\\\.ts$|'
+landed "V1 exclude" node -e 'const c = require(require("path").resolve(process.argv[1])); process.exit(new RegExp(c.options.exclude.path).test("apps/worker/src/config.ts") ? 0 : 1)' "$CFG" && {
+  REQ=("coverage: 1 tracked source file(s) were NOT cruised, so no rule judged them: apps/worker/src/config.ts")
+  run_case "V1 a tracked worker file excluded from the cruise" FAIL; }
+
+# V2: an invalid rule (a regex that does not compile). depcruise prints no JSON; the gate must
+# say it got no verdict — never PASS, and never a bare non-zero.
+printf "module.exports.forbidden.push({ name: 'qa-t244-v2', severity: 'error', from: { path: '(' }, to: {} });\n" >> "$CFG"
+landed "V2 broken rule" has_line "$CFG" "name: 'qa-t244-v2'" && {
+  REQ=("dependency-cruiser produced no JSON verdict")
+  run_case "V2 an invalid config: no verdict is reported as a crash" FAIL; }
+
+echo
 echo "=== controls — must stay green ==="
 
 # C1: worker -> @kinvara/contracts, declared and linked exactly as pnpm install would.
