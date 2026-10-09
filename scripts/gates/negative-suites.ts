@@ -288,6 +288,15 @@ const SUITES: readonly Suite[] = [
     why: "gate:heavy: the roster held against SD §QD-4's heavy row, the cross-file anchor on the PR roster's SERVICE class, the evidence anchors, the receipt coverage rule, and gate:workflow's W8 (T-006)",
   },
   {
+    id: 'deps-cross-app',
+    file: 'scripts/negative-tests/deps-cross-app.sh',
+    // 27, 2026-10-09, T-244: taken from the suite's own footer (`ALL 27 CASES BEHAVED AS
+    // EXPECTED`) — tasks/state/EP-1/T-244.md § Evidence.
+    cases: 27,
+    state: 'GREEN',
+    why: 'gate:deps: no-cross-app-import, no-package-to-app-import and no-app-package-dependency, each refusal judged by rule name and edge, two controls, each rule deleted turning its red case green (T-244, OD-292a)',
+  },
+  {
     id: 'db-introspect',
     file: 'scripts/negative-tests/db-introspect.sh',
     // 65 -> 81, 2026-09-24, T-153 merging main 3385ede: T-153 added K50-K62r (sixteen cases). NOT a
