@@ -239,6 +239,11 @@ landed "R7f manifest" json_has "$CPKG" peerDependencies @kinvara/worker && {
   REQ=("$E3 $CPKG peerDependencies \"@kinvara/worker\" → apps/worker")
   run_case "R7f a PACKAGE manifest naming an app" FAIL; }
 
+set_dep "$WPKG" dependencies core-npm 'npm:@kinvara/core'
+landed "R7g manifest" json_has "$WPKG" dependencies core-npm && {
+  REQ=("$E3 $WPKG dependencies \"core-npm\": \"npm:@kinvara/core\" → apps/core")
+  run_case "R7g an alias ending in the app name: \"npm:@kinvara/core\"" FAIL; }
+
 echo
 echo "=== measured, not assumed: R9 (tsconfig paths) and R10 (committed symlinks) ==="
 
@@ -300,6 +305,15 @@ landed "C1 manifest" json_has "$WPKG" dependencies @kinvara/contracts \
 printf "import { Database } from './identity/database.ts';\nexport const c2 = Database;\n" > apps/core/src/qa-t244-c2.ts
 landed "C2 file" has_line apps/core/src/qa-t244-c2.ts "from './identity/database.ts'" && {
   run_case "C2 core -> its own ./identity/… (\$1 binds)" PASS; }
+
+# C3: `@kinvara/core` is a PREFIX of `@kinvara/core-modules` (EV-30), which is a package, not an
+# app. Neither the key nor an alias to it may be read as naming apps/core.
+set_dep "$WPKG" dependencies @kinvara/core-modules 'workspace:*'
+set_dep "$WPKG" dependencies modules-alias 'npm:@kinvara/core-modules@*'
+landed "C3 key" json_has "$WPKG" dependencies @kinvara/core-modules \
+  && landed "C3 alias" json_has "$WPKG" dependencies modules-alias && {
+  FORBID=("$E3")
+  run_case "C3 \"@kinvara/core-modules\" key + alias: not an app" PASS; }
 
 echo
 echo "=== anti-vacuity: each rule deleted, its red case turns green ==="
