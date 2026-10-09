@@ -15,23 +15,28 @@
  *      depcruise's own `err` reporter prints, so a refusal names its rule.
  *   2. `no-app-package-dependency` — a MANIFEST rule, which depcruise cannot express:
  *      no apps/<a>/package.json names another app's package, and no
- *      packages/<x>/package.json names any app's package, in any dependency section
- *      (key, or a `workspace:`/`npm:` alias in the value), and no `link:`/`file:`/
- *      `portal:` value points into such an app's directory. The app set is DERIVED
- *      from apps/<dir>/package.json `name`, never listed here.
+ *      packages/<x>/package.json names any app's package, in `dependencies`,
+ *      `devDependencies`, `peerDependencies` or `optionalDependencies` — as an exact
+ *      key, as an alias value `<protocol>:<name>` followed by `@`, `/` or the end, or
+ *      as a `link:` value into such an app's directory (cases R7-R7g; C3: a name that
+ *      only BEGINS with an app's name is not one). The code also reads `file:`/`portal:`
+ *      values, `peerDependenciesMeta`/`dependenciesMeta` keys and `bundle(d)Dependencies`;
+ *      no case plants those, so they are not claimed. The app set is DERIVED from
+ *      apps/<dir>/package.json `name`, never listed here.
  *   3. COVERAGE, anchored outside depcruise: every tracked file under apps/ and
  *      packages/ with an extension depcruise reads must be among the modules it
- *      cruised, and each app's src/ must contribute at least one module. A file the
- *      cruiser never read is a file no rule judged (PROTOCOL §5.1: if the check did
- *      nothing, it must say so). The per-app counts are printed on every run.
+ *      cruised (case V1), and an app whose src/ holds tracked files must have at least
+ *      one cruised module there. A file the cruiser never read is a file no rule judged
+ *      (PROTOCOL §5.1: if the check did nothing, it must say so). The per-app counts
+ *      are printed on every run (case A1).
  *
  * WHAT IT DOES NOT SEE (bounds; T-244 § Published contract): an import whose
  * specifier is not a literal (`import(x)`, `createRequire(...)(computed)`); code
  * loaded by a runtime flag (`node --import …` in a `start` script); a `paths` alias
  * in a per-package tsconfig.json (depcruise reads the ROOT tsconfig.json only; such
- * an alias resolves nowhere and is refused by `not-to-unresolvable`, not by a T-244
- * rule — measured, T-244 R9); the root package.json and pnpm-workspace.yaml
- * `overrides` (not read by rule 2 of this file).
+ * an alias resolves nowhere and is refused by `not-to-unresolvable` and by root
+ * gate:typecheck, not by a T-244 rule — measured, T-244 R9); the root package.json,
+ * nested manifests and pnpm-workspace.yaml `overrides` (not read by item 2 above).
  */
 import fs from 'node:fs';
 import path from 'node:path';
