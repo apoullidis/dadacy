@@ -159,6 +159,22 @@ async function jobXmins(owner: AccountId): Promise<string[]> {
   );
   return rows.map((r) => r.x);
 }
+/**
+ * The real started `PgBoss`, reached after a 50 ms pause. The pause stands for what pg-boss does
+ * itself before its INSERT on a COLD queue cache — a lookup on its own pool (`getQueueCache`,
+ * `manager.js` 494–505) — and makes "the INSERT arrives after `work` has returned" deterministic
+ * rather than a microtask race on a warm cache. The send itself is pg-boss's, on the caller's `Tx`.
+ */
+function slowJobs(): JobEnqueuer {
+  const started = boss;
+  assert.ok(started !== undefined, 'beforeAll started the sender');
+  return new JobEnqueuer({
+    async send(name, data, options) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      return await started.send(name, data, options);
+    },
+  });
+}
 async function jobsFor(owner: AccountId): Promise<number> {
   const { rows } = await superuser().query<{ n: string }>(
     "SELECT count(*) AS n FROM pgboss.job WHERE name = $1 AND data->>'recipientAccountId' = $2",
@@ -320,7 +336,7 @@ test('(f) OD-303: an UN-AWAITED enqueue, then the caller rolls back: neither the
   await assert.rejects(
     database().withAppRw(async (tx) => {
       owner = await newAccount(tx);
-      floating = jobs().enqueue(tx, NOTIFY, payloadFor(owner)); // NOT awaited
+      floating = slowJobs().enqueue(tx, NOTIFY, payloadFor(owner)); // NOT awaited
       throw ROLLBACK;
     }),
     (e: unknown) => e === ROLLBACK,
@@ -344,7 +360,7 @@ test("(g) OD-303: an UN-AWAITED enqueue, then the caller commits: the job commit
   let floating: Promise<string | null> | undefined;
   await database().withAppRw(async (tx) => {
     owner = await newAccount(tx);
-    floating = jobs().enqueue(tx, NOTIFY, payloadFor(owner)); // NOT awaited
+    floating = slowJobs().enqueue(tx, NOTIFY, payloadFor(owner)); // NOT awaited
   });
   assert.ok(owner !== undefined && floating !== undefined);
   const id = await floating;
