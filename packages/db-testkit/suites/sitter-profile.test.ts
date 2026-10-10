@@ -27,9 +27,9 @@
  * Privilege refusals run over REAL LOGIN principals, each a member of exactly one role (T-020 Evidence
  * §4). Constraint refusals run as the superuser, so no privilege is what refuses them. Every write runs
  * inside a transaction that is never committed (`inTransaction`), so the one committed fixture row is
- * the table's only row throughout, and the last test of the file re-reads it. The G-3 stand-in is the
- * one committed plant; it is created and dropped inside its own describe block, and the drop is
- * asserted.
+ * the table's only row throughout, and the last test of the file re-reads it. The G-3 stand-in and the
+ * OD-317 pg_temp-shadow definers are the two committed plants; each is created and dropped inside its
+ * own describe block, and each drop is asserted.
  *
  * NOT COVERED, by design (C17 (a), F-3 V1): the owner app_ddl (break-glass RB-2) and the superuser can
  * write the protected four. The grants bind app_rw only; the NOT HELD cases pin that.
@@ -542,8 +542,10 @@ describe('V1 — app_rw cannot write the protected four (bookable_state, tier, t
 });
 
 describe('V1 / G-3 option (c) — a planted stand-in for T-028: an INVOKER trigger fired by an app_rw write calls ONE SECURITY DEFINER function owned by app_ddl, which writes the protected four', () => {
+  // The required form for T-028 (OD-317): search_path = pg_catalog, pg_temp (pg_temp named LAST, the
+  // 0021 form) and every relation schema-qualified. Why both: the OD-317 describe block below.
   const PLANT = [
-    `CREATE FUNCTION public.t158_derive_standin(p_id char) RETURNS void LANGUAGE sql SET search_path = pg_catalog AS
+    `CREATE FUNCTION public.t158_derive_standin(p_id char) RETURNS void LANGUAGE sql SET search_path = pg_catalog, pg_temp AS
        $f$ UPDATE public.sitter_profile SET bookable_state = 'bookable', tier = 'sitter', tier_rank = 1,
              bookable_since = now() WHERE id = p_id $f$`,
     // SA §INT-10 check (8): a definer function PUBLIC may EXECUTE is refused (KV010), so EXECUTE is
@@ -552,7 +554,7 @@ describe('V1 / G-3 option (c) — a planted stand-in for T-028: an INVOKER trigg
     'ALTER FUNCTION public.t158_derive_standin(char) OWNER TO app_ddl',
     'ALTER FUNCTION public.t158_derive_standin(char) SECURITY DEFINER',
     'GRANT EXECUTE ON FUNCTION public.t158_derive_standin(char) TO app_rw',
-    `CREATE FUNCTION public.t158_credential_standin_trg() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog AS
+    `CREATE FUNCTION public.t158_credential_standin_trg() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS
        $f$ BEGIN PERFORM public.t158_derive_standin(NEW.sitter_id); RETURN NEW; END $f$`,
     'CREATE TABLE public.t158_credential_standin (sitter_id char(26) NOT NULL)',
     'GRANT INSERT ON public.t158_credential_standin TO app_rw',
@@ -577,6 +579,13 @@ describe('V1 / G-3 option (c) — a planted stand-in for T-028: an INVOKER trigg
       ),
       'true app_ddl {app_ddl=X/app_ddl,app_rw=X/app_ddl}',
     );
+    assert.equal(
+      await db.value(
+        `SELECT string_agg(proname || ':' || array_to_string(proconfig, ','), ' ' ORDER BY proname)
+           FROM pg_proc WHERE proname IN ('t158_derive_standin', 't158_credential_standin_trg')`,
+      ),
+      't158_credential_standin_trg:search_path=pg_catalog, pg_temp t158_derive_standin:search_path=pg_catalog, pg_temp',
+    );
   });
 
   test('an app_rw write that fires the trigger CHANGES bookable_state, tier, tier_rank and bookable_since through the definer, while the same login is refused writing them itself (42501)', async () => {
@@ -597,7 +606,7 @@ describe('V1 / G-3 option (c) — a planted stand-in for T-028: an INVOKER trigg
     );
   });
 
-  test("app_rw, holding EXECUTE, can also call the definer directly, and it writes: this plant writes constants, so this pins only that EXECUTE is the whole gate. Under (c) T-028's function must DERIVE its values so a direct call can only recompute (an obligation on T-028, not shown here)", async () => {
+  test("app_rw, holding EXECUTE, can also call the definer directly, and it writes: this plant writes constants, so this pins only that EXECUTE is the whole gate. Under (c) a direct call can only recompute ONLY IF T-028's function takes only the id, DERIVES every value from its inputs, pins search_path = pg_catalog, pg_temp (pg_temp last) AND schema-qualifies every relation it names: with an unqualified read an app_rw TEMP table chooses the value (OD-317, the next describe block). An obligation on T-028, not shown here", async () => {
     const r = await asLogin(
       LOGINS.app_rw,
       `SELECT public.t158_derive_standin('${SITTER}')`,
@@ -623,6 +632,156 @@ describe('V1 / G-3 option (c) — a planted stand-in for T-028: an INVOKER trigg
       'false',
     );
     assertRefusedBy('invoker derivation', await asLogin(LOGINS.app_rw, FIRE), DENIED);
+  });
+
+  test('unplant (committed): no t158_ function, table or trigger remains, and the profile row is unchanged', async () => {
+    assertPermitted(
+      'unplant',
+      await db.psql({ commands: UNPLANT, verbose: true, stopOnError: true }),
+    );
+    assert.equal(
+      await db.value(
+        `SELECT (SELECT count(*) FROM pg_proc WHERE proname LIKE 't158\\_%') + (SELECT count(*) FROM pg_class WHERE relname LIKE 't158\\_%')
+                + (SELECT count(*) FROM pg_trigger WHERE tgname LIKE 't158\\_%')`,
+      ),
+      '0',
+    );
+    assert.equal(await db.value(READ_SITTER), SITTER_BEFORE);
+  });
+});
+
+describe('OD-317 — the pg_temp shadow: app_rw holds TEMP, so a TEMP table can stand in for an input a SECURITY DEFINER derivation reads by an UNQUALIFIED name; a schema-qualified read is not shadowed (the required form for T-028: search_path = pg_catalog, pg_temp, every relation qualified)', () => {
+  // Five id-only definers owned by app_ddl, each DERIVING bookable_state from one committed input
+  // table (bookable iff the input has a row for the id). They differ ONLY in search_path and in
+  // whether the read is qualified. QA measured the first two shapes (T-158 QA-H, H03/H04).
+  const INPUT = 'public.t158_cred_input';
+  const body = (rel: string): string =>
+    `$f$ BEGIN IF EXISTS (SELECT 1 FROM ${rel} WHERE sitter_id = p_id) THEN
+       UPDATE public.sitter_profile SET bookable_state = 'bookable' WHERE id = p_id; END IF; END $f$`;
+  const FORMS = {
+    /** The required form: pg_temp named last, the read qualified. */
+    t158_shadow_required: { path: 'pg_catalog, pg_temp', rel: INPUT },
+    /** pg_temp unnamed, so searched FIRST for relations; unqualified read (QA H03). */
+    t158_shadow_public: { path: 'pg_catalog, public', rel: 't158_cred_input' },
+    /** The 0021 path, unqualified: pg_temp is the only schema on the path that can hold the name. */
+    t158_shadow_unqualified: { path: 'pg_catalog, pg_temp', rel: 't158_cred_input' },
+    /** pg_temp named last after public, unqualified (QA H04). */
+    t158_shadow_temp_last: { path: 'pg_catalog, public, pg_temp', rel: 't158_cred_input' },
+    /** pg_temp unnamed, the read qualified (the stand-in's pre-OD-317 path). */
+    t158_shadow_qualified: { path: 'pg_catalog', rel: INPUT },
+  } as const;
+  type Form = keyof typeof FORMS;
+  const NAMES = Object.keys(FORMS) as Form[];
+  const PLANT = [
+    `CREATE TABLE ${INPUT} (sitter_id char(26) NOT NULL)`,
+    `ALTER TABLE ${INPUT} OWNER TO app_ddl`,
+    ...NAMES.flatMap((f) => [
+      `CREATE FUNCTION public.${f}(p_id char) RETURNS void LANGUAGE plpgsql SET search_path = ${FORMS[f].path} AS
+         ${body(FORMS[f].rel)}`,
+      // SA §INT-10 check (8): EXECUTE revoked from PUBLIC before SECURITY DEFINER (the 0021 order).
+      `REVOKE ALL ON FUNCTION public.${f}(char) FROM PUBLIC`,
+      `ALTER FUNCTION public.${f}(char) OWNER TO app_ddl`,
+      `ALTER FUNCTION public.${f}(char) SECURITY DEFINER`,
+      `GRANT EXECUTE ON FUNCTION public.${f}(char) TO app_rw`,
+    ]),
+  ];
+  const UNPLANT = [...NAMES.map((f) => `DROP FUNCTION public.${f}(char)`), `DROP TABLE ${INPUT}`];
+  const STATE = `SELECT 'state:' || bookable_state FROM ${TABLE} WHERE id = '${SITTER}'`;
+  const call = (f: Form): string => `SELECT public.${f}('${SITTER}')`;
+  /** app_rw's own TEMP table under the input's name, holding a forged row, readable by the definer's owner. */
+  const SHADOW = [
+    'CREATE TEMP TABLE t158_cred_input (sitter_id char(26))',
+    `INSERT INTO t158_cred_input VALUES ('${SITTER}')`,
+    'GRANT SELECT ON t158_cred_input TO app_ddl',
+  ];
+  const shadowed = (f: Form): Promise<PsqlResult> =>
+    asLogin(
+      LOGINS.app_rw,
+      READ_SITTER,
+      `SELECT 'temp:' || has_database_privilege(current_database(), 'TEMP')`,
+      ...SHADOW,
+      call(f),
+      STATE,
+    );
+  const assertShadowRan = (what: string, r: PsqlResult): void => {
+    assertReadFirst(what, r);
+    assert.ok(r.output.includes('temp:true'), `${what}: app_rw holds no TEMP:\n${r.output}`);
+    assertTag(what, r, 'GRANT');
+    assert.ok(r.output.includes('INSERT 0 1'), `${what}: forged row not inserted:\n${r.output}`);
+  };
+
+  test('plant (committed, as the superuser): the input table owned by app_ddl and five id-only definers, each owned by app_ddl, EXECUTE to app_rw only, with its search_path pinned', async () => {
+    assertPermitted('plant', await db.psql({ commands: PLANT, verbose: true, stopOnError: true }));
+    assert.equal(
+      await db.value(
+        `SELECT string_agg(proname || '|' || prosecdef || '|' || pg_get_userbyid(proowner) || '|' || proacl::text || '|' ||
+                           array_to_string(proconfig, ','), E'\\n' ORDER BY proname)
+           FROM pg_proc WHERE proname LIKE 't158\\_shadow\\_%'`,
+      ),
+      [...NAMES]
+        .sort()
+        .map(
+          (f) =>
+            `${f}|true|app_ddl|{app_ddl=X/app_ddl,app_rw=X/app_ddl}|search_path=${FORMS[f].path}`,
+        )
+        .join('\n'),
+    );
+  });
+
+  test('CONTROL (as the superuser, so the definer runs as app_ddl): with a REAL input row, every form that can reach public derives bookable — each reads its input', async () => {
+    for (const f of NAMES.filter((n) => n !== 't158_shadow_unqualified')) {
+      const r = await asSuperuser(`INSERT INTO ${INPUT} VALUES ('${SITTER}')`, call(f), STATE);
+      assertPermitted(f, r);
+      assert.ok(
+        r.output.includes('state:bookable'),
+        `${f}: did not derive from its input:\n${r.output}`,
+      );
+    }
+  });
+
+  test('CONTROL (app_rw, no TEMP table, no input row): each of those four leaves the sitter onboarding; the UNQUALIFIED read under pg_catalog, pg_temp finds nothing and is REFUSED 42P01, so that slip fails every honest call', async () => {
+    for (const f of NAMES.filter((n) => n !== 't158_shadow_unqualified')) {
+      const r = await asLogin(LOGINS.app_rw, READ_SITTER, call(f), STATE);
+      assertReadFirst(f, r);
+      assert.ok(r.output.includes('state:onboarding'), `${f}:\n${r.output}`);
+    }
+    const r = await asLogin(LOGINS.app_rw, READ_SITTER, call('t158_shadow_unqualified'));
+    assertReadFirst('unqualified, no temp', r);
+    assertRefusedBy(
+      'unqualified, no temp',
+      r,
+      'ERROR:  42P01: relation "t158_cred_input" does not exist',
+    );
+  });
+
+  test('THE BYPASS (QA H03): search_path = pg_catalog, public (pg_temp unnamed, so searched first) and an unqualified read — an app_rw TEMP table with a forged row makes the uncredentialed sitter BOOKABLE', async () => {
+    const r = await shadowed('t158_shadow_public');
+    assertShadowRan('public', r);
+    assert.ok(r.output.includes('state:bookable'), `expected the shadow to be read:\n${r.output}`);
+  });
+
+  test('THE BYPASS, with the required path: search_path = pg_catalog, pg_temp and an UNQUALIFIED read — pg_temp is the only schema on the path holding the name, so the forged row is read and the sitter becomes BOOKABLE (pg_temp last is not enough on its own)', async () => {
+    const r = await shadowed('t158_shadow_unqualified');
+    assertShadowRan('unqualified', r);
+    assert.ok(r.output.includes('state:bookable'), `expected the shadow to be read:\n${r.output}`);
+  });
+
+  test('NOT SHADOWED (QA H04): search_path = pg_catalog, public, pg_temp (pg_temp named last) with an unqualified read — public.t158_cred_input is found first and the sitter stays onboarding', async () => {
+    const r = await shadowed('t158_shadow_temp_last');
+    assertShadowRan('temp last', r);
+    assert.ok(r.output.includes('state:onboarding'), `the shadow was read:\n${r.output}`);
+  });
+
+  test('NOT SHADOWED — THE REQUIRED FORM: search_path = pg_catalog, pg_temp and the read schema-qualified — the sitter stays onboarding', async () => {
+    const r = await shadowed('t158_shadow_required');
+    assertShadowRan('required', r);
+    assert.ok(r.output.includes('state:onboarding'), `the shadow was read:\n${r.output}`);
+  });
+
+  test('NOT SHADOWED — a qualified read with pg_temp UNNAMED (search_path = pg_catalog): the sitter stays onboarding, so for a relation read it is the qualification that closes the shadow', async () => {
+    const r = await shadowed('t158_shadow_qualified');
+    assertShadowRan('qualified', r);
+    assert.ok(r.output.includes('state:onboarding'), `the shadow was read:\n${r.output}`);
   });
 
   test('unplant (committed): no t158_ function, table or trigger remains, and the profile row is unchanged', async () => {
@@ -1055,6 +1214,64 @@ describe('what the database does NOT refuse (stated bounds; each pinned so a cha
     );
     assertReadFirst('version -7', r);
     assertTag('version -7', r, 'UPDATE 1');
+  });
+
+  test("NOT HELD — the _nonneg interval CHECKs (`>= interval '0'`) accept MIXED-SIGN intervals and infinity, as app_rw: '1 mon -30 days', '1 day -24:00:00', '-1 mons +30 days', 'infinity'. PostgreSQL compares intervals with 1 mon = 30 days and 1 day = 24 h, but date arithmetic does not: start - '1 mon -30 days' is 2 days AFTER a 2026-03-01 start (any TimeZone), and start - '1 day -24:00:00' is 1 hour AFTER a 2026-03-29 start across the spring-forward under TimeZone Europe/Nicosia (0 under UTC); 0 on a 2026-07-15 control", async () => {
+    const SHIFT = `SELECT 'shift:' || string_agg(k || '=' || ((s - b) - s)::text, '|' ORDER BY k)
+                     FROM ${TABLE} p, LATERAL (VALUES
+                       ('a 03-01 before', timestamptz '2026-03-01 18:00:00 Europe/Nicosia', p.travel_buffer_before),
+                       ('b 07-15 before', timestamptz '2026-07-15 18:00:00 Europe/Nicosia', p.travel_buffer_before),
+                       ('c 03-29 after', timestamptz '2026-03-29 18:00:00 Europe/Nicosia', p.travel_buffer_after),
+                       ('d 07-15 after', timestamptz '2026-07-15 18:00:00 Europe/Nicosia', p.travel_buffer_after)) v(k, s, b)
+                    WHERE p.id = '${SITTER}'`;
+    const r = await asLogin(
+      LOGINS.app_rw,
+      READ_SITTER,
+      `UPDATE ${TABLE} SET travel_buffer_before = '1 mon -30 days', travel_buffer_after = '1 day -24:00:00' WHERE id = '${SITTER}'`,
+      `SELECT 'buffers:' || travel_buffer_before || '|' || travel_buffer_after FROM ${TABLE} WHERE id = '${SITTER}'`,
+      `SET LOCAL TimeZone = 'Europe/Nicosia'`,
+      SHIFT,
+      `SET LOCAL TimeZone = 'UTC'`,
+      SHIFT,
+      `UPDATE ${TABLE} SET travel_buffer_before = '-1 mon +30 days', travel_buffer_after = 'infinity' WHERE id = '${SITTER}'`,
+      `SELECT 'buffers:' || travel_buffer_before || '|' || travel_buffer_after FROM ${TABLE} WHERE id = '${SITTER}'`,
+    );
+    assertReadFirst('mixed-sign intervals', r);
+    assertTag('mixed-sign intervals', r, 'UPDATE 1');
+    for (const line of [
+      'buffers:1 mon -30 days|1 day -24:00:00',
+      'shift:a 03-01 before=2 days|b 07-15 before=00:00:00|c 03-29 after=01:00:00|d 07-15 after=00:00:00',
+      'shift:a 03-01 before=2 days|b 07-15 before=00:00:00|c 03-29 after=00:00:00|d 07-15 after=00:00:00',
+      'buffers:-1 mons +30 days|infinity',
+    ]) {
+      assert.ok(r.output.includes(line), `expected ${JSON.stringify(line)}:\n${r.output}`);
+    }
+  });
+
+  test('NOT HELD — base_location (geography(Point,4326)) accepts POINT EMPTY and POINT(NaN NaN), and COERCES POINT(200 95) to POINT(-160 85) with a NOTICE only, as app_rw', async () => {
+    const LOC = `SELECT 'loc:' || ST_AsEWKT(base_location) FROM ${TABLE} WHERE id = '${SITTER}'`;
+    const set = (wkt: string): string =>
+      `UPDATE ${TABLE} SET base_location = 'SRID=4326;${wkt}' WHERE id = '${SITTER}'`;
+    const r = await asLogin(
+      LOGINS.app_rw,
+      READ_SITTER,
+      set('POINT EMPTY'),
+      LOC,
+      set('POINT(NaN NaN)'),
+      LOC,
+      set('POINT(200 95)'),
+      LOC,
+    );
+    assertReadFirst('point edges', r);
+    assertTag('point edges', r, 'UPDATE 1');
+    for (const line of [
+      'loc:SRID=4326;POINT EMPTY',
+      'loc:SRID=4326;POINT(NaN NaN)',
+      'Coordinate values were coerced into range [-180 -90, 180 90] for GEOGRAPHY',
+      'loc:SRID=4326;POINT(-160 85)',
+    ]) {
+      assert.ok(r.output.includes(line), `expected ${JSON.stringify(line)}:\n${r.output}`);
+    }
   });
 
   test("NOT HELD — a blank bio with a locale is accepted: the pairing CHECK tests NULL, not content (bio '' with 'el')", async () => {
