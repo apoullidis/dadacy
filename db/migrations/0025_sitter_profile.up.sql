@@ -51,11 +51,15 @@
 --   naming a protected column in an INSERT or UPDATE is refused 42501 at parse/plan time, whatever
 --   the code path.
 --   T-028's half under (c): ONE SECURITY DEFINER function, owned by a role holding UPDATE on the
---   protected four, with search_path pinned and EXECUTE revoked from PUBLIC (SA §INT-10 check 8),
+--   protected four, with EXECUTE revoked from PUBLIC (SA §INT-10 check 8), taking only the sitter id,
 --   that DERIVES the values from its inputs and writes them; the triggers on sitter_credential and
 --   on account (EV-39: the derivation re-runs on an account status change) are SECURITY INVOKER and
---   call it. The reconciler recomputes with the same derivation. app_rw calling the function can
---   cause a recompute only, never choose a value.
+--   call it. The reconciler recomputes with the same derivation. The function MUST pin
+--   SET search_path = pg_catalog, pg_temp (pg_temp named LAST, the 0021 form) AND schema-qualify
+--   every relation it names: app_rw holds TEMP, and an unqualified read is resolved to an app_rw
+--   TEMP table of the same name both when pg_temp is left off the path (searched first) and under
+--   pg_catalog, pg_temp itself (T-158 QA-H; OD-317; sitter-profile.test.ts, the OD-317 block). Only
+--   with both does an app_rw call cause a recompute only, never choose a value.
 --   Not refused by this file: the owner app_ddl (break-glass RB-2, C17 (2a)) and the superuser.
 --
 -- WHO RUNS THIS FILE. app_ddl (T-136 § contract §6), which then owns both types, the table and its
