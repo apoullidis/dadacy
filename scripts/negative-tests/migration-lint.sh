@@ -22,6 +22,9 @@
 # T-168: EXIT/INT/TERM traps call restore(), so an INTERRUPTED run puts the two tracked files C3K
 # and C87 delete back too — see the block beside the traps.
 #
+# T-229 adds one section (CZ*): the protected-object rules read through PostgreSQL's parser (QA-C3, QA-C4,
+# QA-C5, OD-240), the bound (format(), concatenation) pinned as PASS, and R-PARSE.
+#
 # T-227 adds three sections: R-PROTECTED-TABLE (CX*), R-PROTECTED-EXTENSION (CE*) and U&"…" decoding
 # (CU*); CNA is re-classed from a CONTROL to R-PROTECTED-TABLE.
 #
@@ -113,6 +116,24 @@ mutate() {
   }
   if git diff --quiet -- "$1"; then
     echo "ABORT: the mutation did not change $1"
+    exit 2
+  fi
+}
+
+# parser_into <worktree> (T-229): the gate imports libpg-query (PostgreSQL's parser) from THIS tree's
+# node_modules, and a detached worktree has none, so the gate there could not parse a single file
+# (measured: C99 and CT01-CT0A each exit 1 with no banner when the import was static). Link the one
+# package in, under a real node_modules/ DIRECTORY, which .gitignore's `node_modules/` ignores (a
+# symlink named node_modules would not match it and would join the worktree's change set as an untracked
+# path), and assert the worktree's status is still clean.
+parser_into() {
+  mkdir -p "$1/node_modules" && ln -s "$PWD/node_modules/libpg-query" "$1/node_modules/libpg-query" || {
+    echo "ABORT: could not link libpg-query into $1"
+    exit 2
+  }
+  if [ -n "$(git -C "$1" status --porcelain)" ]; then
+    echo "ABORT: the libpg-query link shows in $1's status"
+    git -C "$1" status --porcelain
     exit 2
   fi
 }
@@ -608,6 +629,92 @@ check CU6 "CONTROL: a U& name that decodes to an unprotected trigger" PASS
 pair contract 'ALTER TRIGGER U&"trg\\005fapproval_four_eyes" ON public.approval RENAME TO t227_other;'
 check CU7 "CONTROL: a doubled escape decodes to a literal backslash, so the name is not the protected one" PASS
 
+echo "== T-229 (OD-240): the protected-object rules read through PostgreSQL's parser (libpg_query 18); QA-C3, QA-C4, QA-C5"
+# QA-C3: a comment between a U&"…" identifier and UESCAPE (T-227 QA U13, U14, U13-drop, T22-full); the server
+# decodes it (T-229 block DB C3a-C3d). Also a comment between UESCAPE and its literal (DB C3c).
+pair expand "ALTER TABLE public.approval DISABLE TRIGGER U&\"trg!005fapproval_four_eyes\" /* x */ UESCAPE '!';"
+check CZ01 "QA-C3 (T-227 QA U13): U& with a block comment before UESCAPE, DISABLE by name, no marker" "R-PROTECTED R-TRIGGER-BYPASS"
+pair expand "ALTER TABLE public.approval DISABLE TRIGGER U&\"trg!005fapproval_four_eyes\" -- x
+ UESCAPE '!';"
+check CZ02 "QA-C3 (T-227 QA U14): a line comment and a newline before UESCAPE" "R-PROTECTED R-TRIGGER-BYPASS"
+pair expand "DROP TRIGGER U&\"trg!005faccount!005fts!005fsenior!005fstatus!005fadmin!005fonly\" /* x */ UESCAPE '!' ON public.account;"
+check CZ03 "QA-C3 (T-227 QA U13-drop): 0011's account guard dropped through the same spelling" R-PROTECTED
+pair expand "-- @compliance-review: trg_approval_four_eyes — T-229, OD-240
+ALTER TABLE public.approval DISABLE TRIGGER U&\"trg!005fapproval_four_eyes\" UESCAPE /* c */ '!';"
+check CZ04 "a comment between UESCAPE and its literal, with a marker: DISABLE by name" R-TRIGGER-BYPASS
+pair expand "CREATE TABLE U&\"account!005frole\" /* c */ UESCAPE '!' (account_id char(26), role text, revoked_at timestamptz);
+GRANT SELECT, INSERT, UPDATE ON U&\"account!005frole\" /* c */ UESCAPE '!' TO app_rw;"
+check CZ05 "QA-C3 (T-227 QA T22-full): a replacement account_role created through the same spelling (its grant decodes too)" R-PROTECTED-TABLE
+pair expand "GRANT U&\"app!005fadmin!005frw\" /* c */ UESCAPE '!' TO app_rw;"
+check CZ06 "QA-C3 for a rule the parser does not read: R-ADMIN-MEMBERSHIP through U&, a comment before UESCAPE" R-ADMIN-MEMBERSHIP
+# QA-C4: PostgreSQL renames whatever relation ALTER INDEX names, and reads a spaced dot (T-227 QA T18, T18-ext,
+# T19; DB C4a-C4c); SELECT … INTO creates the replacement (T21; DB C4d).
+pair contract "ALTER INDEX public.account_role RENAME TO account_role_v1;"
+check CZ10 "QA-C4 (T-227 QA T18): ALTER INDEX renames the TABLE account_role" R-PROTECTED-TABLE
+pair contract "ALTER INDEX IF EXISTS account RENAME TO account_v1;"
+check CZ11 "QA-C4 (T-227 QA T18-ext): ALTER INDEX IF EXISTS, unqualified" R-PROTECTED-TABLE
+pair contract "ALTER TABLE public . account_role RENAME TO account_role_v1;"
+check CZ12 "QA-C4 (T-227 QA T19): whitespace around the dot" R-PROTECTED-TABLE
+pair expand "SELECT * INTO public.account_role FROM public.account_role_v1;"
+check CZ13 "QA-C4 (T-227 QA T21, TL2-IDX step 2): SELECT … INTO creates a relation named account_role" R-PROTECTED-TABLE
+pair expand "ALTER TABLE public . approval SET SCHEMA archive;"
+check CZ14 "SET SCHEMA with whitespace around the dot (DB C4f)" R-PROTECTED-TABLE
+pair contract "ALTER SEQUENCE public.account_role RENAME TO account_role_v1;"
+check CZ15 "T-227 QA T23: ALTER SEQUENCE on the table (the database refuses it; refused here anyway, a false FAIL)" R-PROTECTED-TABLE
+pair contract "ALTER SCHEMA public RENAME TO public_v1;"
+check CZ16 "T-227 QA T20: the schema holding all three renamed (app_ddl is refused at the database; a superuser is not)" R-PROTECTED-TABLE
+pair expand "CREATE FOREIGN TABLE public.account_role (account_id char(26)) SERVER t229_srv;
+GRANT SELECT ON public.account_role TO app_rw;"
+check CZ1A "PARITY (refused before T-229 too): a FOREIGN TABLE created under the name account_role" R-PROTECTED-TABLE
+pair expand "CREATE MATERIALIZED VIEW public.approval AS SELECT 1 AS id;"
+check CZ1B "PARITY (refused before T-229 too): a MATERIALIZED VIEW created under the name approval" R-PROTECTED-TABLE
+pair contract "ALTER INDEX public.account_role_pkey RENAME TO account_role_pkey_v1;"
+check CZ17 "CONTROL: ALTER INDEX on an index of account_role" PASS
+pair expand "SELECT * INTO public.t229_account_role_copy FROM public.account_role;"
+check CZ18 "CONTROL: SELECT … INTO another name, reading account_role" PASS
+pair contract "ALTER SCHEMA t229_scratch RENAME TO t229_scratch_two;"
+check CZ19 "CONTROL: another schema renamed" PASS
+# QA-C5: a QUOTED protected trigger name inside an EXECUTE string (T-227 QA LINT2 X1, U11; DB C5a-C5c), and the
+# same SQL reached through a variable.
+pair expand "-- @compliance-review: trg_approval_four_eyes — T-229, OD-240
+DO \$do\$ BEGIN EXECUTE 'ALTER TABLE public.approval DISABLE TRIGGER \"trg_approval_four_eyes\"'; END \$do\$;"
+check CZ20 "QA-C5 (T-227 QA X1): a quoted protected name inside EXECUTE, with a marker" R-TRIGGER-BYPASS
+pair expand "DO \$do\$ BEGIN EXECUTE 'ALTER TABLE public.approval DISABLE TRIGGER U&\"trg\\005fapproval_four_eyes\"'; END \$do\$;"
+check CZ21 "QA-C5 (T-227 QA U11): U& inside an EXECUTE string, no marker" "R-PROTECTED R-TRIGGER-BYPASS"
+pair expand "-- @compliance-review: trg_approval_four_eyes — T-229, OD-240
+DO \$do\$ DECLARE q text := 'ALTER TABLE public.approval DISABLE TRIGGER \"trg_approval_four_eyes\"'; BEGIN EXECUTE q; END \$do\$;"
+check CZ22 "the quoted name held in a DECLARE default, then EXECUTE q (DB C5b), with a marker" R-TRIGGER-BYPASS
+pair expand "-- @compliance-review: trg_int10_answering_service — T-229, OD-240
+DO \$do\$ BEGIN EXECUTE 'ALTER EVENT TRIGGER \"trg_int10_answering_service\" DISABLE'; END \$do\$;"
+check CZ23 "a quoted protected EVENT trigger inside EXECUTE, DISABLE, with a marker" R-TRIGGER-BYPASS
+pair expand "-- @compliance-review: trg_approval_four_eyes — T-229, OD-240
+CREATE FUNCTION public.t229_off() RETURNS void LANGUAGE plpgsql AS \$f\$ BEGIN EXECUTE 'ALTER TABLE public.approval DISABLE TRIGGER \"trg_approval_four_eyes\"'; END \$f\$;"
+check CZ24 "the same EXECUTE inside a function body (read at any depth, T-031 § contract §4), with a marker" R-TRIGGER-BYPASS
+pair expand "SELECT set_config(U&'session\\005freplication_role', 'replica', true);"
+check CZ25 "T-227 QA U15: a U& STRING constant names session_replication_role (DB U15)" R-TRIGGER-BYPASS
+pair expand "ALTER ROLE app_rw SET session_replication_role = replica;"
+check CZ28 "PARITY (refused before T-229 too): a ROLE's SET session_replication_role (a bare setstmt in the parse)" R-TRIGGER-BYPASS
+pair expand "ALTER DATABASE kinvara SET session_replication_role = replica;"
+check CZ29 "PARITY (refused before T-229 too): a DATABASE's SET session_replication_role" R-TRIGGER-BYPASS
+pair expand "CREATE FUNCTION public.t229_f() RETURNS void LANGUAGE sql SET session_replication_role = replica AS 'SELECT 1';"
+check CZ2A "PARITY (refused before T-229 too): a function's SET clause" R-TRIGGER-BYPASS
+# The bound, pinned: SQL assembled at run time is not read as the statement it becomes.
+pair expand "-- @compliance-review: trg_approval_four_eyes — T-229, OD-240
+DO \$do\$ BEGIN EXECUTE format('ALTER TABLE public.approval DISABLE TRIGGER %I', 'trg_approval_four_eyes'); END \$do\$;"
+check CZ26 "THE BOUND (T-192 QA N10 shape): format() with the name as an argument, with a marker, is not read as a DISABLE" PASS
+pair expand "-- @compliance-review: trg_approval_four_eyes — T-229, OD-240
+DO \$do\$ BEGIN EXECUTE 'ALTER TABLE public.approval DISABLE TRIGGER trg_approval_' || 'four_eyes'; END \$do\$;"
+check CZ27 "THE BOUND (T-192 QA N11 shape): concatenation, with a marker, is not read as a DISABLE" PASS
+# R-PARSE: text PostgreSQL's grammar refuses fails closed.
+pair expand "SELEC 1;"
+check CZ30 "R-PARSE: a file PostgreSQL's grammar refuses" R-PARSE
+pair expand "DO \$do\$ BEGIN ALTER TABL public.approval DISABLE TRIGGER trg_x; END \$do\$;"
+check CZ31 "R-PARSE: a DO body PostgreSQL's PL/pgSQL parser refuses" R-PARSE
+pair expand "CREATE FUNCTION public.t229_f() RETURNS int LANGUAGE sql AS 'SELEC 1';"
+check CZ32 "R-PARSE: a LANGUAGE sql body that does not parse" R-PARSE
+pair expand "COMMENT ON TABLE public.t229_scratch IS 'not SQL: DROP the thing';"
+check CZ33 "CONTROL: a string constant that is not SQL is not a parse failure" PASS
+
 echo "== R-CASCADE"
 pair expand "DROP FUNCTION assert_sitter_bookable() CASCADE;"
 check C54 "DROP FUNCTION <a protected trigger's function> CASCADE, which names no protected object" R-CASCADE
@@ -1021,7 +1128,8 @@ GRANT EXECUTE ON FUNCTION public.T241_É() TO PUBLIC;"
 checkwhy CQ39 "PostgreSQL folds ASCII only: unquoted T241_É is t241_É, not the revoked \"t241_é\"" R-ANSWERING-SERVICE "public.t241_É() $NOTREV"
 rp "$R3" "$MK
 GRANT EXECUTE ON FUNCTION pg_catalog.pg_advisory/* x */_lock(bigint) TO PUBLIC;"
-checkwhy CQ3A "a comment splitting a name (a separator to PostgreSQL, not nothing)" R-ANSWERING-SERVICE "$NOTADMIT"
+# T-229: the plant is not valid SQL (PostgreSQL: syntax error at or near "_lock", T-229 block DB2), so R-PARSE too.
+checkwhy CQ3A "a comment splitting a name (a separator to PostgreSQL, not nothing)" "R-ANSWERING-SERVICE R-PARSE" "$NOTADMIT"
 rp "$R3" "$MK
 GRANT EXECUTE ON FUNCTION pg_catalog.pg_advisory_lock(big/**/int) TO PUBLIC;"
 checkwhy CQ3B "a comment splitting an argument type" R-ANSWERING-SERVICE "pg_catalog.pg_advisory_lock(big int) $NOTREV"
@@ -1101,7 +1209,8 @@ CREATE FUNCTION public.t241_regrant() RETURNS void LANGUAGE sql AS \$fn\$ GRANT 
 checkwhy CQ73 "the GRANT as the whole statement of a LANGUAGE sql body the down file defines" R-ANSWERING-SERVICE "not a plain top-level GRANT statement"
 rp "$R3" "$MK
 GRANT EXECUTE ON FUNCTION pg_catalog.pg_advisory_lock('x' bigint) TO PUBLIC;"
-checkwhy CQ72 "a top-level GRANT holding a string literal (skipping it would leave a matching signature)" R-ANSWERING-SERVICE "the statement holds a string literal"
+# T-229: the plant is not valid SQL (PostgreSQL: syntax error at or near "'x'", T-229 block DB2), so R-PARSE too.
+checkwhy CQ72 "a top-level GRANT holding a string literal (skipping it would leave a matching signature)" "R-ANSWERING-SERVICE R-PARSE" "the statement holds a string literal"
 
 echo "-- object classes: routines only"
 rp "REVOKE SELECT ON TABLE public.t241_t FROM PUBLIC;" "$MK
@@ -1265,6 +1374,7 @@ check C98 "an unknown argument" R-BASE --base=HEAD --no-such-flag
 echo "== R-BASELINE alone: a 0001 change committed ONTO the base, which R-MERGED cannot see"
 WT="$(mktemp -d)/wt"
 git worktree add -q --detach "$WT" HEAD || { echo "ABORT: git worktree add"; exit 2; }
+parser_into "$WT"
 node scripts/negative-tests/mutate.mjs "$WT/$UP1" "ALTER SCHEMA public OWNER TO app_ddl;" "ALTER SCHEMA public OWNER TO app_rw;" || { echo "ABORT: mutation"; exit 2; }
 git -C "$WT" -c user.name=t021-negative-test -c user.email=t021@kinvara.test commit -q -am "T-021 C99 plant, detached worktree, never merged" || { echo "ABORT: commit"; exit 2; }
 [ -z "$(git -C "$WT" status --porcelain)" ] || { echo "ABORT: worktree not committed"; exit 2; }
@@ -1426,6 +1536,7 @@ git worktree add -q --detach "$WT2" HEAD || {
   echo "ABORT: git worktree add"
   exit 2
 }
+parser_into "$WT2"
 T_UP=$M/9001_t031_trailer.up.sql
 T_DOWN=$M/9001_t031_trailer.down.sql
 GITID=(-c user.name=t031-negative-test -c user.email=t031@kinvara.test)

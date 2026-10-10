@@ -130,9 +130,14 @@ const SUITES: readonly Suite[] = [
     // 382 -> 387, 2026-10-04, T-237 rework 1 (QA-F3): CW9-CW13, escape-string spellings of CREATE RULE
     // (four refusals) and a standard-string control. CW9-CW12 BAD against the previous lint (`!! 4 of 387` at
     // dea2f2f); footer `ALL 387 CASES BEHAVED AS EXPECTED` at 49bedfa — T-237.md § Rework 1.
-    cases: 387,
+    // 387 -> 420, 2026-10-10, T-229 (OD-240): thirty-three cases CZ* (QA-C3, QA-C4, QA-C5 and the
+    // protected-object rules read through PostgreSQL's parser; R-PARSE; the format()/concatenation bound
+    // pinned as PASS; five parity cases). Two older expectations re-classed, plants unchanged: CQ3A and
+    // CQ72 also R-PARSE (their down files are not SQL; PostgreSQL refuses both). The red run against the
+    // previous lint and the green footer are T-229.md § Evidence, ML-RED and ML-GREEN.
+    cases: 420,
     state: 'GREEN',
-    why: 'gate:migration-lint: expand/contract, protected objects (the I-5 objects since T-186, 0011\'s since T-192), R-TRIGGER-BYPASS by name, R-PROTECTED-RENAME, R-ADMIN-MEMBERSHIP, R-PROTECTED-TABLE, R-PROTECTED-EXTENSION, U&"…" decoding, R-ROLE-SWITCH, R-RUN-AS, R-MERGED, R-TRAILER, R-VENDOR-SQL, R-RESTORE-PUBLIC, R-RULE (T-021, T-031, T-167, T-186, T-192, T-227, T-241, T-237)',
+    why: 'gate:migration-lint: expand/contract, protected objects (the I-5 objects since T-186, 0011\'s since T-192; read through PostgreSQL\'s parser since T-229), R-TRIGGER-BYPASS by name, R-PROTECTED-RENAME, R-ADMIN-MEMBERSHIP, R-PROTECTED-TABLE, R-PROTECTED-EXTENSION, R-PARSE, U&"…" decoding, R-ROLE-SWITCH, R-RUN-AS, R-MERGED, R-TRAILER, R-VENDOR-SQL, R-RESTORE-PUBLIC, R-RULE (T-021, T-031, T-167, T-186, T-192, T-227, T-241, T-237, T-229)',
   },
   {
     id: 'semgrep',
