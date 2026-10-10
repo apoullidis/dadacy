@@ -805,12 +805,15 @@ describe('V7 — only app_rw holds privileges, at the stated set; the SA §INT-1
     });
   }
 
-  test('app_admin_rw INSERT (id), UPDATE (bio), UPDATE (bookable_state) and DELETE are each REFUSED (42501): nothing is granted (U-9 (a))', async () => {
+  // No WHERE clause on the UPDATEs and the DELETE: a WHERE needs SELECT on the columns it reads, so a
+  // refusal of `… WHERE id = …` would hold even if the privilege under test were granted (found by E5 M09).
+  test('app_admin_rw INSERT (id), UPDATE (bio), UPDATE (bookable_state), UPDATE (tier_rank) and DELETE, each with no WHERE, are each REFUSED (42501): nothing is granted (U-9 (a))', async () => {
     for (const sql of [
       insertFresh(),
-      `UPDATE ${TABLE} SET bio = 'x', bio_authored_locale = 'el' WHERE id = '${SITTER}'`,
-      `UPDATE ${TABLE} SET bookable_state = 'suspended' WHERE id = '${SITTER}'`,
-      `DELETE FROM ${TABLE} WHERE id = '${SITTER}'`,
+      `UPDATE ${TABLE} SET bio = 'x', bio_authored_locale = 'el'`,
+      `UPDATE ${TABLE} SET bookable_state = 'suspended'`,
+      `UPDATE ${TABLE} SET tier_rank = 3`,
+      `DELETE FROM ${TABLE}`,
     ]) {
       assertRefusedBy(`app_admin_rw: ${sql}`, await asLogin(LOGINS.app_admin_rw, sql), DENIED);
     }
