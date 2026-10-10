@@ -95,7 +95,8 @@
 # round-tripped by value through pg and drizzle, a wrong subtype refused 22023 by the column, an importer
 # refusing a number and null. K194/K195 delete the Point / Polygon admission entry, K196 the text entry (each
 # asserted landed): the plant is I-MAP naming the column. K197/K197w LineString (check and write mode), K198
-# every other scalar shape (MultiPolygon, unconstrained, PointZ, SRID 4269), K199 domains (over LineString
+# every other scalar shape a migration can create (MultiPolygon, unconstrained, PointZ; SRID 4269 cannot be
+# planted, M3), K199 domains (over LineString
 # and over Point), K200 arrays: I-MAP. K201 RED BEFORE: the admission rule deleted, LineString passes typed
 # as a string. K202 the catalogue's geography read deleted: the converse refuses the rendered column.
 # T-232 (OD-246): no case assumes what the committed migration set contains. Every count a case pins
@@ -2537,14 +2538,14 @@ CREATE TABLE public.t159_geo (
   id integer PRIMARY KEY,
   mpoly geography(MultiPolygon,4326),
   plain geography,
-  ptz geography(PointZ,4326),
-  pt4269 geography(Point,4269));"
+  ptz geography(PointZ,4326));"
 plant "$DOWN" "DROP TABLE public.t159_geo;"
-check_facts K198 "(T-159) every other scalar shape — MultiPolygon, unconstrained, PointZ, Point at SRID 4269 — is refused, I-MAP, each column named" I-MAP \
+# Not planted: a geography column at an SRID other than 4326. app_ddl, which runs every migration, cannot
+# create one (42501 on spatial_ref_sys; tasks/state/EP-2/T-159.md M3), so no plant can reach it.
+check_facts K198 "(T-159) every other scalar shape a migration can create — MultiPolygon, unconstrained, PointZ — is refused, I-MAP, each column named" I-MAP \
   "column \"t159_geo\"\.\"mpoly\" has database type 'geography\(MultiPolygon,4326\)'" \
   "column \"t159_geo\"\.\"plain\" has database type 'geography'" \
-  "column \"t159_geo\"\.\"ptz\" has database type 'geography\(PointZ,4326\)'" \
-  "column \"t159_geo\"\.\"pt4269\" has database type 'geography\(Point,4269\)'"
+  "column \"t159_geo\"\.\"ptz\" has database type 'geography\(PointZ,4326\)'"
 
 plant "$UP" "-- @phase: expand
 CREATE DOMAIN public.t159_line_dom AS geography(LineString,4326);

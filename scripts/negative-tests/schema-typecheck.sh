@@ -550,6 +550,20 @@ pure P09m "(T-153 r1) RED BEFORE: with the per-relation COUNT restored, the text
 console.log(r.problems.length === 0 ? 'RESULT ok' : 'RESULT bad');"
 restore
 
+# T-159: a geography column at an SRID other than 4326 cannot be planted by a migration (app_ddl has no
+# SELECT on spatial_ref_sys: tasks/state/EP-2/T-159.md M3), so its refusal is shown here, on the shape M1
+# measured drizzle-kit write for it (the same TODO 'geography', mapped to geography("g")), beside a 4326 control.
+SRID_JS="$PRELUDE
+const text = 'import { pgTable, integer } from \"drizzle-orm/pg-core\"\\nexport const t = pgTable(\"t\", {\\n\\tid: integer(),\\n\\tg: geography(\"g\"),\\n});\\n';
+const geo = (type) => [{ relation: 't', column: 'g', type, attndims: 0, dims: 0, kind: 'geography' }];
+const ctl = checkCatalogueColumns(text, geo('geography(Point,4326)'));
+const off = checkCatalogueColumns(text, geo('geography(Point,4269)'));
+console.log('4326 control: problems', JSON.stringify(ctl.problems), 'admitted', ctl.geographies);
+console.log('4269: problems', JSON.stringify(off.problems), 'admitted', off.geographies);
+const named = off.problems.length === 1 && off.problems[0].includes('column \"t\".\"g\" has database type \'geography(Point,4269)\'');
+console.log(ctl.problems.length === 0 && ctl.geographies === 1 && named && off.geographies === 0 ? 'RESULT ok' : 'RESULT bad');"
+pure P10 "(T-159) geography(Point,4269), rendered as the mapped geography: refused per column, while the same rendering at geography(Point,4326) is admitted" "$SRID_JS"
+
 echo
 if [ "$bad" -eq 0 ]; then
   echo "ALL $total CASES BEHAVED AS EXPECTED"
