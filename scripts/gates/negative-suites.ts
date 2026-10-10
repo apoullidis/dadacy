@@ -445,7 +445,12 @@ const SUITES: readonly Suite[] = [
     // NS-OLDPIN). Taken with the instrument, never edited by hand:
     //   $ git cat-file blob dd7da4d:scripts/negative-tests/db-introspect.sh | sha256sum
     //   67d3c6ab26407a4f344d7bbe7ac4eab5634ddd820a8889541e65003225db55d8
-    digest: '67d3c6ab26407a4f344d7bbe7ac4eab5634ddd820a8889541e65003225db55d8',
+    // RE-PINNED 2026-10-10 by T-158 (OD-316): K199's description narrowed to what T-159 QA measured; no
+    // case added or removed, no check changed. Red first at 2adcc86 with the old pin (T-158.md, NS-OLDPIN).
+    // Taken with the instrument, never edited by hand:
+    //   $ git cat-file blob 2adcc86:scripts/negative-tests/db-introspect.sh | sha256sum
+    //   74033feb998ba6099385c2f75e2b165dd82dd6767c7fd549a4ef27142701437e
+    digest: '74033feb998ba6099385c2f75e2b165dd82dd6767c7fd549a4ef27142701437e',
     // T-234 (T-232 QA-S-F1, NS1): every read of db/schema.ts or a generated artefact in the suite is
     // classified by this committed instrument on EVERY run of this gate, not only when the digest
     // moves, and the instrument is itself held against a fixture of the read shapes it must flag.
