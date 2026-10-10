@@ -37,8 +37,8 @@ import ts from 'typescript';
 /**
  * The closed map: database type (exact, as drizzle-kit prints it in its TODO line) -> the
  * customType definition. The data types are T-140's second approver's measurement (TL-A7): pg
- * 8.23.0 returns citext as a string and bytea as a Buffer. `citext[]`, `bytea[]` and every other
- * type are NOT in the map and fail the run.
+ * 8.23.0 returns citext as a string and bytea as a Buffer. `citext[]`, `bytea[]` and every type
+ * not listed in this map are NOT in it and fail the run.
  *
  * T-206 (OE-31 IC-1 as amended): `tstzrange`, the first range column (0023's staffed_interval.span).
  * Measured through pg 8.23.0 (tasks/state/EP-8b/T-206.md): pg has no parser for oid 3910, so a

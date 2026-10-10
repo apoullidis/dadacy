@@ -48,7 +48,7 @@
  *      there through its parent, the relation that is rendered (T-165 rework 2; step 4b).
  *      T-159: also every PostGIS geography column, through domains and arrays, as kind 'geography'.
  *   4a. [I-MAP] (T-150, OD-97) each `unknown("col")` drizzle-kit writes for a type it cannot parse
- *      is rewritten from a CLOSED map (`citext`, `bytea` -> customType). Any other type fails the
+ *      is rewritten from a CLOSED map (`citext`, `bytea`, `tstzrange`, `geography` -> customType). Any other type fails the
  *      run: `unknown(...)` is never written (scripts/gates/lib/schema-render.ts).
  *      T-159: `geography` too, but drizzle-kit prints that one key for EVERY geography subtype, so
  *      the subtype is admitted only by step 5a: exactly geography(Point,4326) or
