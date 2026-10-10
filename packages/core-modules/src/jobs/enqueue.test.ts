@@ -463,3 +463,162 @@ test('an enqueue CALLED after work returned — while an earlier one still holds
   );
   await db.onApplicationShutdown();
 });
+
+/**
+ * OD-304 (T-149 QA2-F1): `withAppRw` waits for EVERY joined enqueue, not one of them. The senders
+ * settle in an order unrelated to the order they joined (delays below), so a `withAppRw` that
+ * waited only for the first joined operation (QA's `firstonly`), or only for the last, COMMITs
+ * while the others are still sending — their statements then meet the closed transaction and
+ * never reach the connection, and the recorded sequence is short of SENDs.
+ */
+async function unawaitedEnqueuesThenCommit(delaysMs: readonly number[]) {
+  recorded.length = 0;
+  const db = database();
+  const floating: Promise<string | null>[] = [];
+  await db.withAppRw(async (tx) => {
+    await tx.execute('STATE WRITE');
+    for (const ms of delaysMs) {
+      floating.push(new JobEnqueuer(fakeSender('id', ms).sender).enqueue(tx, Notify, GOOD)); // NOT awaited
+    }
+  });
+  const settled = await Promise.allSettled(floating);
+  assert.deepEqual(
+    settled.map((s) => (s.status === 'fulfilled' ? s.value : (s.reason as Error).name)),
+    delaysMs.map(() => 'job-from-fake'),
+    'every un-awaited enqueue resolved its id',
+  );
+  assert.deepEqual(
+    recorded.map((r) => r.text),
+    [
+      'BEGIN',
+      'SET LOCAL ROLE app_rw',
+      'STATE WRITE',
+      ...delaysMs.map(() => 'SEND $1 $2'),
+      'COMMIT',
+    ],
+    'every SEND ran before the COMMIT',
+  );
+  await db.onApplicationShutdown();
+}
+
+test('TWO un-awaited enqueues, the second settling last: both SENDs run before the COMMIT (OD-304)', async () => {
+  await unawaitedEnqueuesThenCommit([5, 40]);
+});
+
+test('FIVE un-awaited enqueues settling out of order: all five SENDs run before the COMMIT (OD-304)', async () => {
+  await unawaitedEnqueuesThenCommit([40, 5, 70, 20, 55]);
+});
+
+test('FIVE un-awaited enqueues, the fourth refused: withAppRw rejects with that refusal and ROLLS BACK after every SEND (OD-304)', async () => {
+  recorded.length = 0;
+  const db = database();
+  const bad: unknown = { recipientAccountId: GOOD.recipientAccountId, enqueuedAt: GOOD.enqueuedAt };
+  const delays = [40, 5, 70, 20, 55];
+  const floating: Promise<string | null>[] = [];
+  const outcome = await db
+    .withAppRw(async (tx) => {
+      await tx.execute('STATE WRITE');
+      delays.forEach((ms, i) => {
+        const payload = (i === 3 ? bad : GOOD) as z.input<typeof Notify.payload>;
+        floating.push(new JobEnqueuer(fakeSender('id', ms).sender).enqueue(tx, Notify, payload)); // NOT awaited
+      });
+    })
+    .then(
+      () => 'resolved',
+      (e: unknown) => e,
+    );
+  const settled = await Promise.allSettled(floating);
+  const refusal = settled[3];
+  assert.ok(refusal?.status === 'rejected' && refusal.reason instanceof JobPayloadRefusedError);
+  assert.equal(outcome, refusal.reason, 'withAppRw rejected with the refusal');
+  assert.deepEqual(
+    recorded.map((r) => r.text),
+    [
+      'BEGIN',
+      'SET LOCAL ROLE app_rw',
+      'STATE WRITE',
+      ...[1, 2, 3, 4].map(() => 'SEND $1 $2'),
+      'ROLLBACK',
+    ],
+    'the four good SENDs ran inside the transaction, and it rolled back',
+  );
+  await db.onApplicationShutdown();
+});
+
+test('a refused UN-AWAITED enqueue, then more awaited work across a timer, raises NO unhandledRejection: the joined promise is marked handled (OD-304)', async () => {
+  const before = process.listeners('unhandledRejection');
+  process.removeAllListeners('unhandledRejection');
+  const seen: unknown[] = [];
+  process.on('unhandledRejection', (reason: unknown) => {
+    seen.push(reason);
+  });
+  try {
+    recorded.length = 0;
+    const { calls, sender } = fakeSender();
+    const db = database();
+    const bad: unknown = {
+      recipientAccountId: GOOD.recipientAccountId,
+      enqueuedAt: GOOD.enqueuedAt,
+    };
+    const outcome = await db
+      .withAppRw(async (tx) => {
+        await tx.execute('STATE WRITE');
+        void new JobEnqueuer(sender).enqueue(tx, Notify, bad as z.input<typeof Notify.payload>); // NOT awaited, never handled by the caller
+        // More work, across macrotask boundaries: Node decides "unhandled" when a tick ends.
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        await tx.execute('LATER WRITE');
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      })
+      .then(
+        () => 'resolved',
+        (e: unknown) => e,
+      );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.ok(outcome instanceof JobPayloadRefusedError, 'withAppRw rejected with the refusal');
+    assert.equal(calls.length, 0);
+    assert.deepEqual(
+      recorded.map((r) => r.text),
+      ['BEGIN', 'SET LOCAL ROLE app_rw', 'STATE WRITE', 'LATER WRITE', 'ROLLBACK'],
+    );
+    assert.deepEqual(
+      seen.map((r) => (r instanceof Error ? r.name : String(r))),
+      [],
+      'no unhandledRejection was raised',
+    );
+    await db.onApplicationShutdown();
+  } finally {
+    process.removeAllListeners('unhandledRejection');
+    for (const listener of before) process.on('unhandledRejection', listener);
+  }
+});
+
+test("work's OWN error wins over a refused joined enqueue: withAppRw rejects with work's error and rolls back (QA2-A1)", async () => {
+  recorded.length = 0;
+  const { calls, sender } = fakeSender();
+  const db = database();
+  const WORK = new Error('work fails after a refused enqueue was started');
+  const bad: unknown = { recipientAccountId: GOOD.recipientAccountId, enqueuedAt: GOOD.enqueuedAt };
+  let floating: Promise<string | null> | undefined;
+  const outcome = await db
+    .withAppRw(async (tx) => {
+      await tx.execute('STATE WRITE');
+      floating = new JobEnqueuer(sender).enqueue(tx, Notify, bad as z.input<typeof Notify.payload>); // NOT awaited
+      await tx.execute('LATER WRITE');
+      throw WORK;
+    })
+    .then(
+      () => 'resolved',
+      (e: unknown) => e,
+    );
+  await assert.rejects(
+    floating ?? Promise.resolve(),
+    (e: unknown) => e instanceof JobPayloadRefusedError,
+  );
+  assert.equal(outcome, WORK, "withAppRw rejected with work's error, not the refusal");
+  assert.equal(calls.length, 0);
+  assert.deepEqual(
+    recorded.map((r) => r.text),
+    ['BEGIN', 'SET LOCAL ROLE app_rw', 'STATE WRITE', 'LATER WRITE', 'ROLLBACK'],
+  );
+  await db.onApplicationShutdown();
+});
