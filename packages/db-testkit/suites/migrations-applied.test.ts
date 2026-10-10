@@ -40,7 +40,7 @@ import {
 import { assertPermitted, assertRefused, INT10_RAISE } from '../src/expect.ts';
 
 const SUITE = 'migrations-applied';
-const HIGHEST_COMMITTED = '0023';
+const HIGHEST_COMMITTED = '0024';
 const COMMITTED_DIR = path.join(REPO_ROOT, MIGRATIONS_DIR);
 const RECORD_SQL = `SELECT coalesce(shobj_description(oid, 'pg_database'), '(no comment)')
                       FROM pg_database WHERE datname = current_database()`;
@@ -1003,6 +1003,25 @@ const CREATED_BY: Readonly<
           'staffed_schedule_version {app_ddl=arwdDxtm/app_ddl,app_rw=r/app_ddl} id={app_rw=a/app_ddl},jurisdiction={app_rw=a/app_ddl},' +
           'effective_from={app_rw=a/app_ddl},published_by={app_rw=a/app_ddl},approval_id={app_rw=a/app_ddl},pattern={app_rw=a/app_ddl},' +
           'note={app_rw=a/app_ddl},superseded_at={app_rw=w/app_ddl}',
+      },
+    ],
+  },
+  '0024': {
+    source: 'T-251',
+    // Each probe names the one table 0024 creates and returns a value rather than raising once it is
+    // gone: to_regclass returns NULL for a missing name, and the ACL read is coalesced. The seed rows
+    // are asserted by suites/credential-scheme.test.ts, not here (T-137 TV2-A1: a probe names an object).
+    probes: [
+      {
+        title: 'table public.credential_scheme exists (CUT-T-060 R-9)',
+        sql: `SELECT (to_regclass('public.credential_scheme') IS NOT NULL)::text`,
+        holds: 'true',
+      },
+      {
+        title: "credential_scheme is owned by app_ddl, and its ACL is app_rw SELECT only (R-9)",
+        sql: `SELECT coalesce((SELECT pg_get_userbyid(relowner) || ' ' || relacl::text FROM pg_class
+                               WHERE oid = to_regclass('public.credential_scheme')), '(absent)')`,
+        holds: 'app_ddl {app_ddl=arwdDxtm/app_ddl,app_rw=r/app_ddl}',
       },
     ],
   },
