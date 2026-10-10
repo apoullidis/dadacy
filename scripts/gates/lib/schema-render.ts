@@ -46,6 +46,18 @@ import ts from 'typescript';
  * in the SESSION's TimeZone (`+03` under Europe/Nicosia), and a string parameter is accepted in
  * either direction. So the data type is that string, unparsed: a reader that needs the bounds asks
  * SQL for lower(span)/upper(span). `tstzrange[]` and every other range type are NOT in the map.
+ *
+ * T-159 (OE-33 G-6): `geography`. MEASURED on a real table (tasks/state/EP-2/T-159.md M1): drizzle-kit
+ * 0.31.10 prints the SAME TODO key, 'geography', for every scalar geography column whatever its subtype
+ * or SRID (Point, Polygon, LineString, MultiPolygon, PointZ, unconstrained, SRID 4269), and for a
+ * DOMAIN over geography too (M2). So this text entry CANNOT choose the subtype, and on its own it would
+ * type a LineString column exactly like a Point one (OD-107's failure shape). It is never the
+ * safeguard: every catalogue geography column is held per column by checkCatalogueColumns against
+ * GEOGRAPHY_ADMITTED below, and a rendered `geography(` with no admitted catalogue column behind it is
+ * refused too. pg 8.23.0 has no parser for PostGIS's geography oid (assigned at CREATE EXTENSION), so a
+ * value arrives as a string of hex EWKB, and a string (hex EWKB, EWKT or WKT) is accepted on write; the
+ * column's typmod, not this type, refuses a wrong subtype or SRID (22023, measured, T-159 M2).
+ * `geography(…)[]` prints its full type and is NOT in the map.
  */
 export const COLUMN_TYPES: ReadonlyMap<string, string> = new Map([
   [
@@ -56,6 +68,10 @@ export const COLUMN_TYPES: ReadonlyMap<string, string> = new Map([
   [
     'tstzrange',
     'customType<{ data: string; driverData: string }>({ dataType() { return "tstzrange"; } })',
+  ],
+  [
+    'geography',
+    'customType<{ data: string; driverData: string }>({ dataType() { return "geography"; } })',
   ],
 ]);
 
@@ -163,6 +179,11 @@ export function mapBigintColumns(body: string): BigintResult {
  * VIEW column of an array type (measured, T-153 rework 1), which is exactly the case OD-147 is about.
  * So array-ness is decided by the type's own `typcategory = 'A'` and attndims only supplies the
  * dimension, floored at 1. Both are reported, so a disagreement is visible rather than assumed.
+ *
+ * T-159 (OE-33 G-6): also every column whose type is PostGIS's `geography` reached through any chain of
+ * DOMAINs and array element types (`gb`), as kind 'geography'. The domain walk is not optional: a domain
+ * over geography(LineString,4326) renders as the same TODO 'geography' as a Point column (measured,
+ * T-159 M2), and `format_type` then prints the domain's name, which GEOGRAPHY_ADMITTED never matches.
  */
 export const COLUMN_TYPES_SQL = `
     SELECT coalesce(json_agg(json_build_object(
@@ -171,13 +192,29 @@ export const COLUMN_TYPES_SQL = `
              'type', format_type(a.atttypid, a.atttypmod),
              'attndims', a.attndims,
              'dims', CASE WHEN t.typcategory = 'A' THEN greatest(a.attndims, 1) ELSE 0 END,
-             'kind', CASE WHEN et.oid = 'pg_catalog.int8'::regtype THEN 'int8' ELSE 'geometry' END)
+             'kind', CASE WHEN et.oid = 'pg_catalog.int8'::regtype THEN 'int8'
+                          WHEN gb.base IS NOT NULL THEN 'geography' ELSE 'geometry' END)
              ORDER BY c.relname, a.attnum), '[]'::json)
       FROM pg_attribute a
       JOIN pg_class c ON c.oid = a.attrelid
       JOIN pg_namespace n ON n.oid = c.relnamespace
       JOIN pg_type t ON t.oid = a.atttypid
       JOIN pg_type et ON et.oid = CASE WHEN t.typcategory = 'A' THEN t.typelem ELSE t.oid END
+      LEFT JOIN LATERAL (
+            WITH RECURSIVE chain(oid, depth) AS (
+                   SELECT t.oid, 0
+                    UNION ALL
+                   SELECT CASE WHEN s.typtype = 'd' THEN s.typbasetype ELSE s.typelem END, chain.depth + 1
+                     FROM chain JOIN pg_type s ON s.oid = chain.oid
+                    WHERE chain.depth < 16
+                      AND (s.typtype = 'd' OR (s.typcategory = 'A' AND s.typelem <> 0)))
+            SELECT g.oid AS base
+              FROM chain JOIN pg_type g ON g.oid = chain.oid
+             WHERE g.typname = 'geography' AND EXISTS (
+                   SELECT 1 FROM pg_depend d JOIN pg_extension x ON x.oid = d.refobjid
+                    WHERE d.classid = 'pg_type'::regclass AND d.objid = g.oid AND d.deptype = 'e'
+                      AND x.extname = 'postgis')
+             LIMIT 1) gb ON true
      WHERE n.nspname = 'public'
        AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
        AND a.attnum > 0 AND NOT a.attisdropped
@@ -187,7 +224,8 @@ export const COLUMN_TYPES_SQL = `
             OR (et.typname = 'geometry' AND EXISTS (
                   SELECT 1 FROM pg_depend d JOIN pg_extension x ON x.oid = d.refobjid
                    WHERE d.classid = 'pg_type'::regclass AND d.objid = et.oid AND d.deptype = 'e'
-                     AND x.extname = 'postgis')))`;
+                     AND x.extname = 'postgis'))
+            OR gb.base IS NOT NULL)`;
 
 export interface CatalogueColumn {
   readonly relation: string;
@@ -197,7 +235,7 @@ export interface CatalogueColumn {
   readonly attndims: number;
   /** Array dimensions the rendering must express with `.array()`: 0 for a scalar. */
   readonly dims: number;
-  readonly kind: 'int8' | 'geometry';
+  readonly kind: 'int8' | 'geometry' | 'geography';
 }
 
 export function parseCatalogueColumns(
@@ -220,7 +258,7 @@ export function parseCatalogueColumns(
       typeof type !== 'string' ||
       typeof attndims !== 'number' ||
       typeof dims !== 'number' ||
-      (kind !== 'int8' && kind !== 'geometry')
+      (kind !== 'int8' && kind !== 'geometry' && kind !== 'geography')
     ) {
       return {
         ok: false,
@@ -240,6 +278,20 @@ export function parseCatalogueColumns(
  * phase A), so it does not round-trip and is refused too. Matched exactly as `format_type` prints it.
  */
 export const GEOMETRY_ADMITTED = /^geometry\(Point(?:,[0-9]+)?\)$/;
+
+/**
+ * T-159 (OE-33 G-6): geography admitted, matched EXACTLY as `format_type` prints the column's own type,
+ * one entry per subtype SD declares: Point (sitter_profile.base_location SD 2017, address.geog SD 1897)
+ * and Polygon (cluster.boundary SD 2963), both SRID 4326. Each is rendered with COLUMN_TYPES' one
+ * `geography` customType, a string of hex EWKB (measured, T-159 M2). Every other catalogue geography
+ * column — another subtype (LineString, MultiPolygon, PointZ, …), unconstrained `geography`, another
+ * SRID, an array, or a DOMAIN over any of these (its `format_type` is the domain's name) — is I-MAP.
+ * `geography(Point)` with no SRID is stored as geography(Point,4326) and so is admitted (M1).
+ */
+export const GEOGRAPHY_ADMITTED: ReadonlySet<string> = new Set([
+  'geography(Point,4326)',
+  'geography(Polygon,4326)',
+]);
 
 /**
  * T-153 rework 1 (OD-147, OD-148): the rendering, PARSED. One rendered column builder call, as the
@@ -395,6 +447,8 @@ export interface CatalogueCheck {
   readonly matched: number;
   readonly relations: number;
   readonly points: number;
+  /** Catalogue geography columns admitted and matched to a rendered `geography(` column (T-159). */
+  readonly geographies: number;
 }
 
 const BIGINT_BUILDERS: ReadonlySet<string> = new Set(['bigint', 'bigserial']);
@@ -441,6 +495,9 @@ export function checkCatalogueColumns(
     }
   }
 
+  const geo = matchGeographyColumns(body, columns);
+  problems.push(...geo.problems);
+
   const int8 = matchInt8Columns(body, columns);
   problems.push(...int8.problems);
   return {
@@ -449,7 +506,54 @@ export function checkCatalogueColumns(
     matched: int8.matched,
     relations: int8.relations,
     points,
+    geographies: geo.admitted,
   };
+}
+
+/**
+ * T-159 (OE-33 G-6): every catalogue geography column, PER COLUMN, keyed by relation and column name,
+ * against the rendering parsed as TypeScript. A column is admitted only when its own type is exactly
+ * one of GEOGRAPHY_ADMITTED and it is rendered as a scalar `geography("<col>")` (no `.array()`).
+ * Conversely, every rendered `geography(` column must be one of those admitted catalogue columns, so
+ * the text entry in COLUMN_TYPES can never type a column the catalogue did not admit.
+ */
+export function matchGeographyColumns(
+  body: string,
+  columns: readonly CatalogueColumn[],
+): { readonly problems: readonly string[]; readonly admitted: number } {
+  const problems: string[] = [];
+  const geoColumns = columns.filter((c) => c.kind === 'geography');
+  const parsed = parseRendering(body);
+  const admittedKeys = new Set<string>();
+  const admittedList = [...GEOGRAPHY_ADMITTED].join(', ');
+  for (const c of geoColumns) {
+    const where = `${JSON.stringify(c.relation)}.${JSON.stringify(c.column)}`;
+    if (!GEOGRAPHY_ADMITTED.has(c.type)) {
+      problems.push(
+        `column ${where} has database type '${c.type}': drizzle-kit renders every geography column as the same TODO 'geography', so the subtype is decided from the catalogue, and only ${admittedList} are admitted (exactly, as format_type prints the column's own type; a domain or an array is not). Any other geography column needs a measured entry in GEOGRAPHY_ADMITTED in scripts/gates/lib/schema-render.ts in the same change set (T-159)`,
+      );
+      continue;
+    }
+    const got = parsed.relations.get(c.relation)?.columns.get(c.column);
+    if (got === undefined || got.builder !== 'geography' || got.arrayDepth !== 0) {
+      problems.push(
+        `geography column ${where} (${c.type}) is admitted but the rendering does not build it as a scalar geography("${c.column}"): got ${got === undefined ? 'no such rendered column' : JSON.stringify(got.text)} (T-159)`,
+      );
+      continue;
+    }
+    admittedKeys.add(JSON.stringify([c.relation, c.column]));
+  }
+  for (const rel of parsed.relations.values()) {
+    for (const col of rel.columns.values()) {
+      if (col.builder !== 'geography') continue;
+      if (admittedKeys.has(JSON.stringify([rel.name, col.name]))) continue;
+      if (geoColumns.some((c) => c.relation === rel.name && c.column === col.name)) continue;
+      problems.push(
+        `the rendering of ${JSON.stringify(rel.name)} builds column ${JSON.stringify(col.name)} on line ${String(col.line)} with the mapped geography type, but the catalogue lists no geography column ${JSON.stringify(rel.name)}.${JSON.stringify(col.name)}: ${JSON.stringify(col.text)} (T-159)`,
+      );
+    }
+  }
+  return { problems, admitted: admittedKeys.size };
 }
 
 export interface Int8Match {

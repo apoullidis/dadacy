@@ -46,9 +46,13 @@
  *      with `format_type` and its array dimensions, read as one JSON array (COLUMN_TYPES_SQL). An
  *      unreadable read fails. Step 5a holds the rendering against it. A partition's columns are held
  *      there through its parent, the relation that is rendered (T-165 rework 2; step 4b).
+ *      T-159: also every PostGIS geography column, through domains and arrays, as kind 'geography'.
  *   4a. [I-MAP] (T-150, OD-97) each `unknown("col")` drizzle-kit writes for a type it cannot parse
  *      is rewritten from a CLOSED map (`citext`, `bytea` -> customType). Any other type fails the
  *      run: `unknown(...)` is never written (scripts/gates/lib/schema-render.ts).
+ *      T-159: `geography` too, but drizzle-kit prints that one key for EVERY geography subtype, so
+ *      the subtype is admitted only by step 5a: exactly geography(Point,4326) or
+ *      geography(Polygon,4326), per column, from the catalogue; any other geography column is I-MAP.
  *      T-153 (OD-107): every `bigint(…{ mode: "number" })` drizzle-kit writes (a JS number, lossy above
  *      2^53) is rewritten to drizzle's `bigint` mode, with integer defaults as bigint literals. That is a
  *      REWRITE of drizzle-kit 0.31.10's spelling and judges only its own completeness (a hint comment it
@@ -122,6 +126,7 @@ import {
 import { POLICIES_SQL, canonicalPolicies, parsePolicies } from './gates/lib/schema-policy.ts';
 import {
   COLUMN_TYPES_SQL,
+  GEOGRAPHY_ADMITTED,
   TYPESCRIPT_VERSION,
   checkCatalogueColumns,
   mapColumnTypes,
@@ -579,7 +584,8 @@ function main(): void {
 
   // 5a. every catalogue int8 column MATCHED PER COLUMN against the rendering, parsed as TypeScript
   // (base type and array dimensions, keyed by relation and column name — T-153 rework 1, OD-147,
-  // OD-148); geometry admitted only as a scalar 2D point (T-153, OD-107). After anti-vacuity, so a
+  // OD-148); geometry admitted only as a scalar 2D point (T-153, OD-107); geography admitted only as
+  // exactly geography(Point,4326) or geography(Polygon,4326), per column, both ways (T-159). After anti-vacuity, so a
   // pull that lost a relation is I-VACUOUS, not I-MAP.
   // T-165 rework 2 (the merge with T-153): a partition in public is not rendered (step 4b), so its
   // columns are held here through its PARENT, which is rendered and whose own int8/geometry columns
@@ -589,7 +595,7 @@ function main(): void {
   const partitionNames = new Set(partitions.map((r) => r.name));
   const partitionColumns = catalogueColumns.filter((c) => partitionNames.has(c.relation));
   console.log(
-    `  int8/geometry column(s) of partitions held through their parent, not matched on their own: ${String(partitionColumns.length)}`,
+    `  int8/geometry/geography column(s) of partitions held through their parent, not matched on their own: ${String(partitionColumns.length)}`,
   );
   const typed = checkCatalogueColumns(
     body,
@@ -597,6 +603,9 @@ function main(): void {
   );
   console.log(
     `  bigint: ${String(mapping.ok ? mapping.bigints : 0)} column(s) rewritten to drizzle's bigint mode; ${String(typed.matched)} of the catalogue's ${String(typed.int8)} int8 column(s) matched per column against ${String(typed.relations)} parsed relation(s); geometry: ${String(typed.points)} point column(s) admitted`,
+  );
+  console.log(
+    `  geography: ${String(typed.geographies)} column(s) admitted (exactly ${[...GEOGRAPHY_ADMITTED].join(', ')}), matched per column`,
   );
   for (const p of typed.problems) problem('I-MAP', p);
   if (failures.length > 0) done();
