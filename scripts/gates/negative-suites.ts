@@ -252,7 +252,11 @@ const SUITES: readonly Suite[] = [
     // went RED on the count, as designed. Measured, not edited: `./scripts/dev bash
     // scripts/negative-tests/schema-typecheck.sh` at d1dedcb printed `ALL 24 CASES BEHAVED AS
     // EXPECTED`, exit 0 (tasks/state/EP-2/T-153.md § Rework 2, phase R2-5).
-    cases: 24,
+    // 24 -> 25, 2026-10-10, T-159: P10 (geography(Point,4269) refused by direct call; app_ddl cannot create
+    // that column, so no migration plant reaches it). Measured, not edited: `./scripts/dev bash
+    // scripts/negative-tests/schema-typecheck.sh` at fa9db12 printed `ALL 25 CASES BEHAVED AS EXPECTED`,
+    // exit 0 (tasks/state/EP-2/T-159.md E2). Red first on the old pin (T-159.md, NS-OLDPIN).
+    cases: 25,
     // PROMOTED BLOCKED -> GREEN, 2026-09-20, when T-005 rebased onto main
     // 6582596. T-168 merged (aa45209, 3c54c71, 9b35d3e) and fixed S09, so the
     // suite is green on the trunk: `ALL 16 CASES BEHAVED AS EXPECTED`, exit 0,
@@ -320,7 +324,11 @@ const SUITES: readonly Suite[] = [
     // I-MAP), K192 (tstzrange[]: I-MAP). A GREEN count: `ALL 147 CASES BEHAVED AS EXPECTED` on a fresh db
     // project at 6ef2382 (tasks/state/EP-8b/T-206.md, DBI3); d71a414 then removed one fact line from K190 (no
     // case added or removed) and is re-measured by gate:heavy at T-206's final head.
-    cases: 147,
+    // 147 -> 158, 2026-10-10, T-159 (OE-33 G-6): K193-K202 and K197w, geography admitted per column. A GREEN
+    // count: `ALL 158 CASES BEHAVED AS EXPECTED` on a fresh db project at fa9db12 (tasks/state/EP-2/T-159.md
+    // E1, run 2); dd7da4d then removed one fact line from K193 (no case added or removed) and the suite was
+    // re-run at T-159's head (T-159.md E1, run 3).
+    cases: 158,
     state: 'NEEDS-SERVICE',
     why: 'db:introspect:check: the closed type map, canonical order, RLS policies, the pgboss exclusion (T-138, T-150, T-152, T-145)',
     owner:
@@ -432,7 +440,12 @@ const SUITES: readonly Suite[] = [
     // by hand:
     //   $ git cat-file blob dc681f7:scripts/negative-tests/db-introspect.sh | sha256sum
     //   52ae6a83b1c9b6372121b918321387b9ee29f342907283a1d7ada8ffe8f2beb2
-    digest: '52ae6a83b1c9b6372121b918321387b9ee29f342907283a1d7ada8ffe8f2beb2',
+    // RE-PINNED 2026-10-10 by T-159: K193-K202 and K197w added, the bite file added to both restore paths, a
+    // base reading for the generator's new `geography:` line. Red first at fa9db12 with the old pin (T-159.md,
+    // NS-OLDPIN). Taken with the instrument, never edited by hand:
+    //   $ git cat-file blob dd7da4d:scripts/negative-tests/db-introspect.sh | sha256sum
+    //   67d3c6ab26407a4f344d7bbe7ac4eab5634ddd820a8889541e65003225db55d8
+    digest: '67d3c6ab26407a4f344d7bbe7ac4eab5634ddd820a8889541e65003225db55d8',
     // T-234 (T-232 QA-S-F1, NS1): every read of db/schema.ts or a generated artefact in the suite is
     // classified by this committed instrument on EVERY run of this gate, not only when the digest
     // moves, and the instrument is itself held against a fixture of the read shapes it must flag.
