@@ -437,3 +437,148 @@ test('(j) MEASURED, NOT REFUSED (QA-F2): the Tx of a NESTED withAppRw is accepte
   assert.equal((await jobRow(jobId))?.name, QUEUE, 'the job committed with the inner transaction');
   await superuser().query('DELETE FROM pgboss.job WHERE id = $1', [jobId]);
 });
+
+/**
+ * OD-304 (T-149 QA2-F1): `withAppRw` waits for EVERY joined enqueue. Each enqueue below reaches the
+ * real started `PgBoss` after its own pause, so the INSERTs arrive in an order unrelated to the
+ * order the enqueues joined. A `withAppRw` that waited for only the first (QA's `firstonly`), or
+ * only the last, joined operation would COMMIT the state row while the others were still pending:
+ * their INSERTs then meet the closed transaction and are refused, and the state row commits with
+ * fewer jobs than were enqueued — a state change without its jobs.
+ */
+function delayedJobs(ms: number): JobEnqueuer {
+  const started = boss;
+  assert.ok(started !== undefined, 'beforeAll started the sender');
+  return new JobEnqueuer({
+    async send(name, data, options) {
+      await new Promise((resolve) => setTimeout(resolve, ms));
+      return await started.send(name, data, options);
+    },
+  });
+}
+
+async function unawaitedEnqueuesThenCommit(delaysMs: readonly number[]): Promise<void> {
+  let owner: AccountId | undefined;
+  const floating: Promise<string | null>[] = [];
+  await database().withAppRw(async (tx) => {
+    owner = await newAccount(tx);
+    for (const ms of delaysMs) {
+      floating.push(delayedJobs(ms).enqueue(tx, NOTIFY, payloadFor(owner))); // NOT awaited
+    }
+  });
+  assert.ok(owner !== undefined);
+  const settled = await Promise.allSettled(floating);
+  assert.deepEqual(
+    settled.map((s) => (s.status === 'fulfilled' ? typeof s.value : (s.reason as Error).name)),
+    delaysMs.map(() => 'string'),
+    'every un-awaited enqueue resolved a job id',
+  );
+  const stateXmin = await accountXmin(owner);
+  assert.ok(stateXmin !== undefined, 'the state row committed');
+  assert.deepEqual(
+    await jobXmins(owner),
+    delaysMs.map(() => stateXmin),
+    'every job present, each written by the state row’s transaction',
+  );
+}
+
+test("(k) OD-304: TWO un-awaited enqueues, the second settling last, then the caller commits: both jobs commit in the state row's transaction", async () => {
+  await unawaitedEnqueuesThenCommit([10, 60]);
+});
+
+test("(l) OD-304: FIVE un-awaited enqueues settling out of order, then the caller commits: all five jobs commit in the state row's transaction", async () => {
+  await unawaitedEnqueuesThenCommit([60, 10, 110, 35, 85]);
+});
+
+/** A `NOTIFY` payload with no `recipientLocale`: refused by the schema (SD 1507–1509). */
+function withoutLocale(owner: AccountId): ReturnType<typeof payloadFor> {
+  const payload: Record<string, unknown> = { ...payloadFor(owner) };
+  delete payload['recipientLocale'];
+  const missing: unknown = payload;
+  return missing as ReturnType<typeof payloadFor>;
+}
+
+test('(m) OD-304: FIVE un-awaited enqueues, the fourth refused: withAppRw rejects JobPayloadRefusedError, and neither the state row nor any of the four good jobs exists', async () => {
+  let owner: AccountId | undefined;
+  const floating: Promise<string | null>[] = [];
+  const outcome = await database()
+    .withAppRw(async (tx) => {
+      owner = await newAccount(tx);
+      const o = owner;
+      [60, 10, 110, 35, 85].forEach((ms, i) => {
+        floating.push(
+          delayedJobs(ms).enqueue(tx, NOTIFY, i === 3 ? withoutLocale(o) : payloadFor(o)),
+        ); // NOT awaited
+      });
+    })
+    .then(
+      () => 'resolved',
+      (e: unknown) => e,
+    );
+  assert.ok(owner !== undefined);
+  const settled = await Promise.allSettled(floating);
+  const refusal = settled[3];
+  assert.ok(refusal?.status === 'rejected' && refusal.reason instanceof JobPayloadRefusedError);
+  assert.equal(outcome, refusal.reason, 'withAppRw rejected with the refusal');
+  assert.equal(await accountExists(owner), false, 'the state row rolled back');
+  assert.equal(await jobsFor(owner), 0, 'no job: the four good INSERTs rolled back with it');
+});
+
+test('(n) OD-304: a refused UN-AWAITED enqueue, then more awaited work on the database, raises NO unhandledRejection — the joined promise is marked handled — and withAppRw rejects with the refusal', async () => {
+  const before = process.listeners('unhandledRejection');
+  process.removeAllListeners('unhandledRejection');
+  const seen: unknown[] = [];
+  process.on('unhandledRejection', (reason: unknown) => {
+    seen.push(reason);
+  });
+  try {
+    let owner: AccountId | undefined;
+    const outcome = await database()
+      .withAppRw(async (tx) => {
+        owner = await newAccount(tx);
+        void jobs().enqueue(tx, NOTIFY, withoutLocale(owner)); // NOT awaited, never handled by the caller
+        // More work on the real connection, across macrotask boundaries: Node decides
+        // "unhandled" when a tick ends with the rejection still unobserved.
+        await tx.execute(sql`SELECT pg_sleep(0.05)`);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      })
+      .then(
+        () => 'resolved',
+        (e: unknown) => e,
+      );
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.ok(outcome instanceof JobPayloadRefusedError, 'withAppRw rejected with the refusal');
+    assert.ok(owner !== undefined);
+    assert.equal(await accountExists(owner), false, 'the state row rolled back');
+    assert.deepEqual(
+      seen.map((r) => (r instanceof Error ? r.name : String(r))),
+      [],
+      'no unhandledRejection was raised',
+    );
+  } finally {
+    process.removeAllListeners('unhandledRejection');
+    for (const listener of before) process.on('unhandledRejection', listener);
+  }
+});
+
+test("(o) QA2-A1: the caller throws AND an un-awaited enqueue is refused: withAppRw rejects with the caller's OWN error, and neither the state row nor a job exists", async () => {
+  let owner: AccountId | undefined;
+  let floating: Promise<string | null> | undefined;
+  const WORK = new Error('T-149 (o): the state change fails after a refused enqueue was started');
+  const outcome = await database()
+    .withAppRw(async (tx) => {
+      owner = await newAccount(tx);
+      floating = jobs().enqueue(tx, NOTIFY, withoutLocale(owner)); // NOT awaited
+      await tx.execute(sql`SELECT 1`);
+      throw WORK;
+    })
+    .then(
+      () => 'resolved',
+      (e: unknown) => e,
+    );
+  assert.ok(owner !== undefined && floating !== undefined);
+  await assert.rejects(floating, (e: unknown) => e instanceof JobPayloadRefusedError);
+  assert.equal(outcome, WORK, "withAppRw rejected with the caller's error, not the refusal");
+  assert.equal(await accountExists(owner), false);
+  assert.equal(await jobsFor(owner), 0);
+});
