@@ -46,26 +46,32 @@
  *                        `CREATE …` (other than `CREATE` as a privilege name), no
  *                        `ALTER … ADD …`, no `GRANT … TO`. Such a file also loses the
  *                        contract exemption from the down-file rule (T-021 rework 1, QA-F1).
+ *   THE PROTECTED-OBJECT RULES (R-PROTECTED, R-TRIGGER-BYPASS, R-PROTECTED-RENAME, R-PROTECTED-TABLE,
+ *   R-PROTECTED-EXTENSION) READ POSTGRESQL'S OWN PARSE OF EACH STATEMENT since T-229 (OD-240), not
+ *   the normalised text the other rules read: see "HOW THE SQL IS READ" and lib/sql-ast.ts. A name is
+ *   compared as PostgreSQL resolves its spelling (quotes, `U&"…"` with or without `UESCAPE`, comments
+ *   anywhere, whitespace around a `.`), case-insensitively (a false FAIL, never a false PASS).
  *   [R-PROTECTED]        a migration that names a protected object carries
  *                        `-- @compliance-review: <object> — <reference>`, where the reference
  *                        cites a ticket or a decision. SD §DB-13 rule 7 and §UC-4 part 1
  *                        protect the booking triggers; `T-020` contract §6 adds the INT-10
- *                        guard. THIS GATE CANNOT VERIFY THAT A REVIEW HAPPENED. The marker makes
- *                        the change declared, and PROTOCOL §3's two-approval review of
- *                        `db/migrations` is the control.
- *   [R-TRIGGER-BYPASS]   no `DISABLE TRIGGER ALL|USER` and no `session_replication_role`. Both
- *                        switch protected triggers off without naming them. There is no
- *                        marker that permits either. (T-186, OD-217) Also no statement that
- *                        switches off a protected trigger BY NAME: `DISABLE TRIGGER <name>` and
- *                        `ENABLE REPLICA TRIGGER <name>` (which fires it only under
- *                        session_replication_role = replica, i.e. never in normal operation), and
- *                        `ALTER EVENT TRIGGER <name> DISABLE | ENABLE REPLICA`, for every PROTECTED
- *                        entry marked `trigger`. R-PROTECTED's marker does not permit it either:
- *                        a reviewed change may replace a protected trigger, never switch it off.
- *   [R-PROTECTED-RENAME] (T-192, OD-224 A2) no statement containing RENAME names a protected object:
- *                        `ALTER TRIGGER <name> ON … RENAME TO`, `ALTER FUNCTION|ROUTINE|PROCEDURE <name>
- *                        RENAME TO`, `ALTER EVENT TRIGGER <name> RENAME TO`, and any other RENAME whose
- *                        text names one (as the old name or the new). A protected trigger or function
+ *                        guard. "Names" is: an identifier in any parsed statement equal to the
+ *                        object's name, or the name as a word inside any string constant (so a
+ *                        `format()` argument or a concatenated piece counts). THIS GATE CANNOT
+ *                        VERIFY THAT A REVIEW HAPPENED. The marker makes the change declared, and
+ *                        PROTOCOL §3's two-approval review of `db/migrations` is the control.
+ *   [R-TRIGGER-BYPASS]   no `ALTER TABLE … DISABLE TRIGGER ALL|USER`, no `session_replication_role`
+ *                        set (`SET`, a function's or role's `SET`) or named in any string constant
+ *                        (`set_config('session_replication_role', …)`, `U&'…'` decoded). Both switch
+ *                        protected triggers off without naming them. (T-186, OD-217) Also no
+ *                        `ALTER TABLE … DISABLE TRIGGER <name>` or `ENABLE REPLICA TRIGGER <name>`
+ *                        (fires only under session_replication_role = replica, i.e. never in normal
+ *                        operation), and no `ALTER EVENT TRIGGER <name> DISABLE | ENABLE REPLICA`, for
+ *                        every PROTECTED entry marked `trigger`. No marker permits any of these: a
+ *                        reviewed change may replace a protected trigger, never switch it off.
+ *   [R-PROTECTED-RENAME] (T-192, OD-224 A2) no RENAME statement (`ALTER TRIGGER|FUNCTION|ROUTINE|
+ *                        PROCEDURE|EVENT TRIGGER|TABLE|… RENAME [COLUMN|CONSTRAINT] … TO`) names a
+ *                        protected object, as the old name or the new. A protected trigger or function
  *                        renamed away can then be disabled or no-op-replaced under a name no rule
  *                        protects, in the same marked file or a later unmarked one (T-186 QA X5, X6 →
  *                        X8, X9). R-PROTECTED's marker does not permit it.
@@ -81,23 +87,34 @@
  *                        privileges), but not after `SET ROLE app_admin_rw` (T-192 QA-A1, P10f),
  *                        and this rule refuses the migration that would try. Login principals are created outside migrations
  *                        (T-020 § contract §3). Privileges granted TO app_admin_rw are not read here.
- *   [R-PROTECTED-TABLE]  (T-227, OD-237 TL-2) the three tables I-5's protected functions read by name —
- *                        `account`, `account_role`, `approval` — are never renamed away (`ALTER TABLE|VIEW|
- *                        MATERIALIZED VIEW|FOREIGN TABLE <name> RENAME TO`), moved (`… SET SCHEMA`), or
- *                        replaced: no other relation is renamed TO one of those names (`RENAME TO <name>`),
- *                        and no migration but the one that created it (`0005`, `0007`) creates a table,
- *                        view, materialized view or foreign table of that name in `public` (unqualified
- *                        included). Renamed away, the protected triggers stay on the old table while
- *                        `assert_second_actor_differs()` reads a replacement under the old name (T-192
- *                        tech-lead RT2: an app_rw countersignature by a no-role account was stored). No
- *                        marker permits it. A RENAME of a column, constraint or trigger ON those tables is
- *                        not this rule's.
+ *   [R-PROTECTED-TABLE]  (T-227, OD-237 TL-2; T-229, QA-C4) the three tables I-5's protected functions
+ *                        read by name — `account`, `account_role`, `approval`, unqualified or in `public`
+ *                        — are never renamed away (a RENAME of a relation, whatever kind the statement
+ *                        says: `ALTER TABLE|INDEX|SEQUENCE|VIEW|MATERIALIZED VIEW|FOREIGN TABLE <name>
+ *                        RENAME TO`, since PostgreSQL renames a TABLE through `ALTER INDEX`), moved (`…
+ *                        SET SCHEMA`, any kind), or replaced: no relation is renamed TO one of those
+ *                        names, the schema `public` is not renamed, and no migration but the one that
+ *                        created it (`0005`, `0007`) creates a relation of that name (`CREATE TABLE`,
+ *                        `… AS`, `… PARTITION OF`, `CREATE [MATERIALIZED] VIEW`, `CREATE FOREIGN TABLE`,
+ *                        `SELECT … INTO`), temporary or not. Renamed away, the protected triggers stay on
+ *                        the old table while `assert_second_actor_differs()` reads a replacement under
+ *                        the old name (T-192 tech-lead RT2: an app_rw countersignature by a no-role
+ *                        account was stored). No marker permits it. A RENAME of a column, constraint or
+ *                        trigger ON those tables is not this rule's. `DROP TABLE` of one is not refused
+ *                        (T-186 QA X2/X3, disclosed): it removes the table with its triggers.
  *   [R-PROTECTED-EXTENSION] (T-227, OD-235) no protected object is made removable by DROP EXTENSION:
- *                        `DEPENDS ON EXTENSION` (not `NO DEPENDS ON EXTENSION`) in a statement naming a
- *                        protected object, and `ALTER EXTENSION … ADD` naming a protected object or one
- *                        of the three tables above. Step 2, `DROP EXTENSION`, names nothing protected
- *                        (T-192 QA N17/N18r, DEP1: the two removed trg_approval_four_eyes). No marker
- *                        permits it.
+ *                        `… DEPENDS ON EXTENSION` (not `NO DEPENDS`) whose object is a protected object
+ *                        or one of the three tables, and `ALTER EXTENSION … ADD` of a protected object or
+ *                        one of the three tables. Step 2, `DROP EXTENSION`, names nothing protected
+ *                        (T-192 QA N17/N18r, DEP1: the two removed trg_approval_four_eyes). `ADD SCHEMA
+ *                        public` and `ADD TYPE` are not refused (T-227 QA E9: PostgreSQL refuses the
+ *                        first; E10: the later DROP EXTENSION fails closed). No marker permits it.
+ *   [R-PARSE]            (T-229) a migration file, a DO body or a `sql`/`plpgsql` function body that
+ *                        PostgreSQL's parser (libpg_query 18.1.5) refuses. PostgreSQL would refuse it
+ *                        too (T-229 block DB2), and the protected-object rules cannot read what does
+ *                        not parse, so it fails closed. psql meta-commands are blanked first (psql
+ *                        consumes them; R-ROLE-SWITCH refuses every one). A string constant that does
+ *                        not parse is not SQL, not a failure.
  *   [R-CASCADE]          no `DROP … CASCADE` and no `DROP OWNED`. Both remove objects the statement does not
  *                        name, and no rule that reads names can see what it removed:
  *                        `DROP FUNCTION assert_sitter_bookable() CASCADE` takes
@@ -220,24 +237,50 @@
  * decoded as PostgreSQL decodes it (T-237 rework 1, QA-F3, `decodeEscapeString`). Errors in either direction
  * produce a false FAIL, never a false PASS.
  *
- * (T-227, OD-235) A Unicode-escaped identifier, `U&"…"` with an optional `UESCAPE '<c>'`, is decoded
- * as PostgreSQL decodes it (`\XXXX`, `\+XXXXXX`, a doubled escape character) before any rule reads it,
- * at the top level, in a dollar body, and inside a string literal (dynamic SQL). A malformed escape is
- * left as written; PostgreSQL refuses it at apply time.
+ * (T-227, OD-235; T-229, QA-C3) A Unicode-escaped identifier, `U&"…"` with an optional `UESCAPE '<c>'`,
+ * is decoded for the other rules' text as PostgreSQL decodes it (`\XXXX`, `\+XXXXXX`, a doubled escape
+ * character), at the top level, in a dollar body and inside a string literal, with comments and
+ * whitespace allowed on either side of UESCAPE (in a string literal, a nested block comment there is not
+ * matched). A malformed escape is left as written; PostgreSQL refuses it at apply time.
  *
- * WHAT THIS GATE DOES NOT SEE. SQL assembled at run time from pieces (`format('GRANT %s ON
- * %I', …)`, concatenation) is not read as the statement it becomes. (T-227) R-PROTECTED-TABLE names three
- * tables and no others: `booking`, whose triggers SD §DB-13 rule 7 protects, does not exist yet and is
- * not on its list; `SELECT … INTO <name>` is not read as a CREATE (T-021 § contract §5); a `U&'…'`
- * STRING constant is still not decoded, only a `U&"…"` identifier. It is a static check
- * over source text and it proves nothing about a database. The database-side refusals are
- * `0001`'s guard and the constraint suites.
+ * (T-229, OD-240) THE PROTECTED-OBJECT RULES read PostgreSQL's parse instead (lib/sql-ast.ts, libpg_query
+ * 18.1.5, PostgreSQL 18's grammar compiled to WebAssembly): every statement of the file; every statement
+ * of a DO body and of a `plpgsql` or `sql` function body, at any nesting; every expression of a PL/pgSQL
+ * body (`EXECUTE`'s argument, an assignment, a `DECLARE` default, `PERFORM`, a condition); and every
+ * string constant anywhere (`'…'`, `E'…'`, `U&'…'`, `$q$…$q$`) that parses as SQL. Comments are blanked
+ * with PostgreSQL's own scanner before each parse, because libpg_query's scanner, unlike the server's,
+ * hands a comment to the grammar's lookahead and so refuses `U&"…" /* c *\/ UESCAPE '!'` (T-229 probe2).
+ * The rules are entries of AST_RULES (and R-PROTECTED's marker check); measured over the 387 cases this
+ * suite had and 128 QA plants of OD-217/224/235/240, this reading refuses everything the text reading did
+ * (T-229 § Evidence, the measurement).
+ *
+ * WHAT THIS GATE DOES NOT SEE. SQL assembled at run time from pieces (`format('GRANT %s ON %I', …)`,
+ * `EXECUTE 'DROP TRIGGER ' || name`) is not read as the statement it becomes, by the parser or the text
+ * rules: each constant is parsed on its own and a fragment is not a statement (cases CZ26, CZ27 pin it).
+ * R-PROTECTED still requires the marker when the protected name is one of the constants. A body in a
+ * language other than `plpgsql` or `sql` is not read. Names are resolved as spelt, never against a
+ * catalogue or a search_path. R-PROTECTED-TABLE names three tables and no others: `booking`, whose
+ * triggers SD §DB-13 rule 7 protects, does not exist yet and is not on its list. For the rules that are
+ * not protected-object rules a `U&'…'` STRING constant is still not decoded. It is a static check over
+ * source text and it proves nothing about a database. The database-side refusals are `0001`'s guard and
+ * the constraint suites.
  */
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { REPO_ROOT, capture, finish } from './lib/run.ts';
 import { SCHEMA_REL, verifySchemaFile } from './lib/schema-digest.ts';
+import {
+  type AstStmt,
+  identifiers,
+  isObj,
+  nameList,
+  rangeVar,
+  readSqlAst,
+  str,
+  stringConstants,
+  walkStmt,
+} from './lib/sql-ast.ts';
 
 const GATE = 'gate:migration-lint';
 const MIGRATIONS_REL = 'db/migrations';
@@ -344,15 +387,6 @@ const PROTECTED: readonly Protected[] = [
   },
 ];
 
-/** A protected object's name as it appears in a normalised fragment (R-PROTECTED, R-PROTECTED-RENAME). */
-const protectedNameRe = (p: Protected): RegExp =>
-  new RegExp(`(^|[^A-Z0-9_$])${p.id.toUpperCase()}([^A-Z0-9_$]|$)`);
-
-/** The protected triggers, upper-cased as the fragments are (R-TRIGGER-BYPASS, T-186). */
-const PROTECTED_TRIGGERS: readonly string[] = PROTECTED.filter((p) => p.trigger === true).map((p) =>
-  p.id.toUpperCase(),
-);
-
 /**
  * (T-227, OD-237 TL-2) The tables I-5's protected functions read by name, and the migration that
  * created each (R-PROTECTED-TABLE). `assert_second_actor_differs()` reads `public.account_role` and
@@ -363,9 +397,197 @@ const PROTECTED_TABLES: readonly { readonly name: string; readonly createdBy: st
   { name: 'ACCOUNT_ROLE', createdBy: '0005' },
   { name: 'APPROVAL', createdBy: '0007' },
 ];
-/** A relation name in a normalised fragment: optionally `public.`, optionally quoted (raw strings keep quotes). */
-const relName = (name: string): string => `(?:"?PUBLIC"?\\.)?"?${name}"?(?![A-Z0-9_$])`;
-const RELATION_KIND = '(?:TABLE|VIEW|MATERIALIZED VIEW|FOREIGN TABLE)';
+// ---------------------------------------------------------------------------
+// The protected-object rules, read through PostgreSQL's parser (T-229, OD-240)
+// ---------------------------------------------------------------------------
+
+const lc = (s: string): string => s.toLowerCase();
+const PROTECTED_IDS: ReadonlySet<string> = new Set(PROTECTED.map((p) => p.id));
+const PROTECTED_TRIGGER_IDS: ReadonlySet<string> = new Set(
+  PROTECTED.filter((p) => p.trigger === true).map((p) => p.id),
+);
+/** Relation kinds a RENAME, SET SCHEMA or DEPENDS ON EXTENSION can name: PostgreSQL renames whatever relation `ALTER INDEX|SEQUENCE|VIEW … RENAME` names (QA-C4). */
+const RELATION_OBJECTS: ReadonlySet<string> = new Set([
+  'OBJECT_TABLE',
+  'OBJECT_INDEX',
+  'OBJECT_SEQUENCE',
+  'OBJECT_VIEW',
+  'OBJECT_MATVIEW',
+  'OBJECT_FOREIGN_TABLE',
+]);
+/** Protected ids among names (compared case-insensitively: a false FAIL, never a false PASS). */
+const protectedAmong = (names: Iterable<string>): string[] =>
+  [...new Set([...names].map(lc))].filter((n) => PROTECTED_IDS.has(n)).sort();
+/** Protected ids written as a word inside a string constant: the reading the gate gives every literal. */
+const protectedInConstants = (node: unknown): string[] => {
+  const consts = stringConstants(node);
+  return PROTECTED.filter((p) =>
+    consts.some((c) => new RegExp(`(^|[^A-Za-z0-9_$])${p.id}([^A-Za-z0-9_$]|$)`, 'i').test(c)),
+  ).map((p) => p.id);
+};
+/** The protected table a relation names: `account`, `account_role` or `approval`, unqualified or in `public`. */
+const protectedTable = (x: unknown): string | null => {
+  const r = rangeVar(x);
+  if (r === null || (r.schema !== null && lc(r.schema) !== 'public')) return null;
+  const n = lc(r.name);
+  return PROTECTED_TABLES.some((t) => lc(t.name) === n) ? n : null;
+};
+/** A qualified name list (`[schema,] name`) that is a protected table. */
+const protectedTableList = (x: unknown): string | null => {
+  const parts = nameList(x).map(lc);
+  const n = parts[parts.length - 1] ?? '';
+  if (parts.length > 2 || (parts.length === 2 && parts[0] !== 'public')) return null;
+  return PROTECTED_TABLES.some((t) => lc(t.name) === n) ? n : null;
+};
+
+/**
+ * One rule over parsed statements. `check` returns one message per violation in `s`, a statement
+ * at any depth of migration `m` (top level, a DO or function body, an EXECUTE string or any other
+ * string constant that parses). A later R-tag that reads statements plugs in by adding an entry to
+ * AST_RULES (T-229 § Published contract §4).
+ */
+interface AstRule {
+  readonly tag: string;
+  readonly check: (s: AstStmt, m: Migration) => readonly string[];
+}
+
+const AST_RULES: readonly AstRule[] = [
+  {
+    tag: 'R-TRIGGER-BYPASS',
+    check: (s) => {
+      const out: string[] = [];
+      walkStmt(s, (kind, f) => {
+        if (kind === 'AlterTableCmd') {
+          const sub = str(f['subtype']);
+          const name = lc(str(f['name']) ?? '');
+          if (sub === 'AT_DisableTrigAll' || sub === 'AT_DisableTrigUser') {
+            out.push(
+              `switches off triggers without naming them (DISABLE TRIGGER ${sub === 'AT_DisableTrigAll' ? 'ALL' : 'USER'}), protected ones included`,
+            );
+          } else if (
+            (sub === 'AT_DisableTrig' || sub === 'AT_EnableReplicaTrig') &&
+            PROTECTED_TRIGGER_IDS.has(name)
+          ) {
+            out.push(
+              `switches off the protected trigger ${name} by name (${sub === 'AT_DisableTrig' ? 'DISABLE' : 'ENABLE REPLICA'} TRIGGER); a reviewed migration may replace a protected trigger (R-PROTECTED's marker), never switch it off`,
+            );
+          }
+        } else if (
+          kind === 'AlterEventTrigStmt' &&
+          PROTECTED_TRIGGER_IDS.has(lc(str(f['trigname']) ?? '')) &&
+          (f['tgenabled'] === 'D' || f['tgenabled'] === 'R')
+        ) {
+          out.push(
+            `switches off the protected event trigger ${lc(str(f['trigname']) ?? '')} by name (ALTER EVENT TRIGGER … ${f['tgenabled'] === 'D' ? 'DISABLE' : 'ENABLE REPLICA'})`,
+          );
+        }
+      });
+      // The setting named anywhere: SET, RESET, SHOW, and the bare `setstmt` of ALTER ROLE|DATABASE … SET
+      // and of a function's SET clause, which a match on the VariableSetStmt kind would miss (T-229 probe5).
+      if ([...identifiers(s.node)].some((n) => lc(n) === 'session_replication_role')) {
+        out.push(
+          'names the setting session_replication_role (SET, RESET, or a role, database or function SET clause), which switches off triggers without naming them',
+        );
+      }
+      if (
+        stringConstants(s.node).some((c) =>
+          /(^|[^a-z0-9_$])session_replication_role([^a-z0-9_$]|$)/i.test(c),
+        )
+      ) {
+        out.push(
+          'names session_replication_role in a string constant (set_config, dynamic SQL), which switches off triggers without naming them',
+        );
+      }
+      return out;
+    },
+  },
+  {
+    tag: 'R-PROTECTED-RENAME',
+    check: (s) =>
+      s.kind !== 'RenameStmt'
+        ? []
+        : protectedAmong(identifiers(s.node)).map(
+            (id) =>
+              `a RENAME that names the protected object ${id}; renamed away, it can be disabled or no-op-replaced under a name no rule protects (T-186 QA X5, X8), so no marker permits it`,
+          ),
+  },
+  {
+    tag: 'R-PROTECTED-TABLE',
+    check: (s, m) => {
+      const out: string[] = [];
+      const why = (t: string): string =>
+        `public.${t} is read by name by I-5's protected functions, and a table renamed or moved away keeps its protected triggers while a replacement under the old name has none (T-192 tech-lead RT2; OD-237 TL-2), so no marker permits it`;
+      const n = s.node;
+      if (s.kind === 'RenameStmt') {
+        const type = str(n['renameType']) ?? '';
+        if (RELATION_OBJECTS.has(type)) {
+          const away = protectedTable(n['relation']);
+          if (away !== null)
+            out.push(`renames it away (${type.slice(7)} … RENAME TO): ${why(away)}`);
+          const r = rangeVar(n['relation']);
+          const to = lc(str(n['newname']) ?? '');
+          if (
+            (r === null || r.schema === null || lc(r.schema) === 'public') &&
+            PROTECTED_TABLES.some((t) => lc(t.name) === to)
+          )
+            out.push(`renames another relation TO its name: ${why(to)}`);
+        } else if (type === 'OBJECT_SCHEMA' && lc(str(n['subname']) ?? '') === 'public') {
+          out.push(
+            `renames the schema public, which holds account, account_role and approval: ${why('account_role')}`,
+          );
+        }
+      }
+      if (s.kind === 'AlterObjectSchemaStmt') {
+        const t = protectedTable(n['relation']);
+        if (t !== null) out.push(`moves it to another schema (SET SCHEMA): ${why(t)}`);
+      }
+      walkStmt(s, (kind, f) => {
+        let rel: unknown = null;
+        if (kind === 'CreateStmt') rel = f['relation'];
+        else if (kind === 'ViewStmt') rel = f['view'];
+        // `SELECT … INTO` and `CREATE TABLE|MATERIALIZED VIEW … AS` carry a bare IntoClause field.
+        else if (kind === 'SelectStmt' && isObj(f['intoClause'])) rel = f['intoClause']['rel'];
+        else if (kind === 'CreateTableAsStmt' && isObj(f['into'])) rel = f['into']['rel'];
+        // `CREATE FOREIGN TABLE` carries its CreateStmt as a bare `base` field.
+        else if (kind === 'CreateForeignTableStmt' && isObj(f['base'])) rel = f['base']['relation'];
+        const t = protectedTable(rel);
+        if (t === null) return;
+        const owner = PROTECTED_TABLES.find((x) => lc(x.name) === t);
+        if (owner !== undefined && m.dir === 'up' && m.num === owner.createdBy) return;
+        out.push(
+          `creates a relation of its name (${kind === 'SelectStmt' ? 'SELECT … INTO' : kind === 'CreateTableAsStmt' ? 'CREATE TABLE … AS' : kind === 'ViewStmt' ? 'CREATE VIEW' : 'CREATE TABLE'}; only ${owner?.createdBy ?? '?'} creates it): ${why(t)}`,
+        );
+      });
+      return out;
+    },
+  },
+  {
+    tag: 'R-PROTECTED-EXTENSION',
+    check: (s) => {
+      const out: string[] = [];
+      const n = s.node;
+      const say = (what: string, name: string): string =>
+        `${what} names ${name}: a later DROP EXTENSION, which names nothing protected, would then remove it (T-192 QA N17/N18r, DEP1; OD-235), so no marker permits it`;
+      if (s.kind === 'AlterObjectDependsStmt' && n['remove'] !== true) {
+        for (const id of protectedAmong(identifiers(n['object'])))
+          out.push(say('DEPENDS ON EXTENSION', id));
+        const t = RELATION_OBJECTS.has(str(n['objectType']) ?? '')
+          ? protectedTable(n['relation'])
+          : null;
+        if (t !== null) out.push(say('DEPENDS ON EXTENSION', `public.${t}`));
+      }
+      if (s.kind === 'AlterExtensionContentsStmt' && n['action'] === 1) {
+        for (const id of protectedAmong(identifiers(n['object'])))
+          out.push(say('ALTER EXTENSION … ADD', id));
+        const t = RELATION_OBJECTS.has(str(n['objtype']) ?? '')
+          ? protectedTableList(n['object'])
+          : null;
+        if (t !== null) out.push(say('ALTER EXTENSION … ADD', `public.${t}`));
+      }
+      return out;
+    },
+  },
+];
 
 /**
  * (T-227, OD-235) PostgreSQL's Unicode-escape identifier, `U&"…"` [UESCAPE '<c>']: `<c>XXXX` (4 hex
@@ -403,7 +625,8 @@ export function decodeUnicodeIdent(body: string, esc = '\\'): string {
 /** `U&"…"` identifiers inside raw text (a string literal read as dynamic SQL), decoded in place. */
 function decodeUnicodeIdentsInText(text: string): string {
   return text.replace(
-    /(^|[^A-Za-z0-9_$])[Uu]&"((?:[^"]|"")*)"(\s*[Uu][Ee][Ss][Cc][Aa][Pp][Ee]\s*'(.)')?/g,
+    // (T-229, QA-C3) comments may sit on either side of UESCAPE, as PostgreSQL's scanner skips them.
+    /(^|[^A-Za-z0-9_$])[Uu]&"((?:[^"]|"")*)"((?:\s|\/\*[\s\S]*?\*\/|--[^\n]*\n)*[Uu][Ee][Ss][Cc][Aa][Pp][Ee](?:\s|\/\*[\s\S]*?\*\/|--[^\n]*\n)*'(.)')?/g,
     (_m, pre: string, body: string, _u: string | undefined, esc: string | undefined) =>
       `${pre}"${decodeUnicodeIdent(body.replace(/""/g, '"'), esc ?? '\\').replace(/"/g, '""')}"`,
   );
@@ -834,8 +1057,12 @@ export function readFragments(
       }
       cur = cur.slice(0, cur.length - 2);
       let esc = '\\';
-      const n1 = segments[k + 1];
-      const n2 = segments[k + 2];
+      // (T-229, QA-C3) PostgreSQL's scanner skips comments, so `U&"…" /* c */ UESCAPE -- c
+      // '!'` still applies the escape: step over comments and whitespace on both sides of UESCAPE.
+      const j1 = nextSolid(segments, k + 1);
+      const n1 = segments[j1];
+      const j2 = nextSolid(segments, j1 + 1);
+      const n2 = segments[j2];
       if (
         n1?.kind === 'code' &&
         /^\s*UESCAPE\s*$/i.test(n1.text) &&
@@ -843,9 +1070,12 @@ export function readFragments(
         n2.body.length === 1
       ) {
         esc = n2.body;
-        k += 2;
         cur += ' ';
-        stmtSegs.push(n1, n2);
+        for (let q = k + 1; q <= j2; q += 1) {
+          const sq = segments[q];
+          if (sq !== undefined) stmtSegs.push(sq);
+        }
+        k = j2;
       }
       cur += decodeUnicodeIdent(s.body, esc);
     } else if (s.kind === 'line-comment' || s.kind === 'block-comment') {
@@ -871,6 +1101,31 @@ export function readFragments(
   }
   push();
   return { texts, bodies, bodyList: ctx.bodyList, stmts };
+}
+
+/**
+ * The file as PostgreSQL receives it from psql, for the parser: each psql meta-command (a backslash in
+ * code, to the end of its line) blanked to spaces, so offsets and lines do not move. R-ROLE-SWITCH
+ * refuses every meta-command; this only stops the parser failing on text that is psql's, not SQL.
+ */
+function withoutPsqlMeta(segments: readonly Segment[]): string {
+  return segments
+    .map((s) =>
+      s.kind === 'code' ? s.text.replace(/\\[^\n]*/g, (x) => ' '.repeat(x.length)) : s.text,
+    )
+    .join('');
+}
+
+/** The index of the first segment at or after `from` that is neither a comment nor whitespace-only code. */
+function nextSolid(segments: readonly Segment[], from: number): number {
+  let j = from;
+  for (;;) {
+    const t = segments[j];
+    if (t === undefined) return j;
+    if (t.kind === 'line-comment' || t.kind === 'block-comment') j += 1;
+    else if (t.kind === 'code' && t.text.trim() === '') j += 1;
+    else return j;
+  }
 }
 
 /** The fragments alone. One reading: this is `readFragments().texts` and nothing else. */
@@ -1511,6 +1766,8 @@ let contractsReadForExpand = 0;
 let grantsRead = 0;
 let tablesRead = 0;
 let protectedMentions = 0;
+let statementsParsed = 0;
+let parseFailures = 0;
 let baselinePinned = 0;
 let runAsLinesRead = 0;
 let roleSwitchFilesRead = 0;
@@ -2102,10 +2359,47 @@ for (const m of migrations) {
     }
   }
 
+  // PostgreSQL's parser (T-229): every statement at every depth.
+  // psql consumes its meta-commands (R-ROLE-SWITCH refuses every one); PostgreSQL never sees them.
+  const ast = readSqlAst(withoutPsqlMeta(segs));
+  for (const e of ast.errors) {
+    problem(
+      'R-PARSE',
+      `${m.rel}:${String(e.line)}`,
+      `PostgreSQL's parser (libpg_query 18) cannot parse ${e.via.length === 0 ? 'this file' : e.via.join(' > ')}: ${e.message}. PostgreSQL would refuse it too, and this gate cannot say what it does, so it fails closed`,
+    );
+  }
+  const astNamed = new Map<string, AstStmt>();
+  for (const s of ast.stmts) {
+    for (const id of [...protectedAmong(identifiers(s.node)), ...protectedInConstants(s.node)]) {
+      if (!astNamed.has(id)) astNamed.set(id, s);
+    }
+  }
+  statementsParsed += ast.stmts.length;
+  parseFailures += ast.errors.length;
+  // The AST rules (R-TRIGGER-BYPASS, R-PROTECTED-RENAME, R-PROTECTED-TABLE, R-PROTECTED-EXTENSION, and
+  // any later entry in AST_RULES), each over every statement at every depth; a message repeated for
+  // the same file (a constant read at two depths) is reported once.
+  const astSaid = new Set<string>();
+  for (const s of ast.stmts) {
+    for (const rule of AST_RULES) {
+      for (const msg of rule.check(s, m)) {
+        const key = `${rule.tag}\u0000${msg}`;
+        if (astSaid.has(key)) continue;
+        astSaid.add(key);
+        const where = s.via.length === 0 ? '' : `, in ${s.via.join(' > ')}`;
+        problem(
+          rule.tag,
+          `${m.rel}:${String(s.line)}`,
+          `${msg} (PostgreSQL's parser${where}): ${snippet(s.text)}`,
+        );
+      }
+    }
+  }
+
   // R-PROTECTED.
   for (const p of PROTECTED) {
-    const re = protectedNameRe(p);
-    const hit = frags.find((f) => re.test(f));
+    const hit = astNamed.get(p.id)?.text;
     if (hit === undefined) continue;
     protectedMentions += 1;
     const markers = comments
@@ -2126,44 +2420,6 @@ for (const m of migrations) {
     }
   }
 
-  // R-TRIGGER-BYPASS.
-  for (const f of frags) {
-    if (/\bDISABLE TRIGGER (?:ALL|USER)\b/.test(f) || /\bSESSION_REPLICATION_ROLE\b/.test(f)) {
-      problem(
-        'R-TRIGGER-BYPASS',
-        m.rel,
-        `switches off triggers without naming them, protected ones included: ${snippet(f)}`,
-      );
-    }
-    // (T-186, OD-217) A protected trigger switched off by NAME. No marker permits it.
-    for (const t of PROTECTED_TRIGGERS) {
-      const name = `${t}(?![A-Z0-9_$])`;
-      if (
-        new RegExp(`\\b(?:DISABLE|ENABLE REPLICA) TRIGGER ${name}`).test(f) ||
-        new RegExp(`\\bALTER EVENT TRIGGER ${name} (?:DISABLE|ENABLE REPLICA)\\b`).test(f)
-      ) {
-        problem(
-          'R-TRIGGER-BYPASS',
-          m.rel,
-          `switches off the protected trigger ${t.toLowerCase()} by name; a reviewed migration may replace a protected trigger (R-PROTECTED's marker), never switch it off: ${snippet(f)}`,
-        );
-      }
-    }
-  }
-
-  // R-PROTECTED-RENAME (T-192, OD-224 A2). No marker permits it.
-  for (const f of frags) {
-    if (!/\bRENAME\b/.test(f)) continue;
-    for (const p of PROTECTED) {
-      if (!protectedNameRe(p).test(f)) continue;
-      problem(
-        'R-PROTECTED-RENAME',
-        m.rel,
-        `a RENAME that names the protected object ${p.id}; renamed away, it can be disabled or no-op-replaced under a name no rule protects (T-186 QA X5, X8), so no marker permits it: ${snippet(f)}`,
-      );
-    }
-  }
-
   // R-ADMIN-MEMBERSHIP (T-192, OD-224 A3), the routes that are not a GRANT.
   for (const f of frags) {
     if (
@@ -2174,64 +2430,6 @@ for (const m of migrations) {
         'R-ADMIN-MEMBERSHIP',
         m.rel,
         `confers membership in app_admin_rw without a GRANT (CREATE ROLE … IN ROLE, ALTER GROUP … ADD USER), or alters app_admin_rw; only app_admin_rw's privileges may write a ts_senior row, or activate a ts_senior holder's account or lift its suspension (OE-47, OE-48/OE-57/OE-58): ${snippet(f)}`,
-      );
-    }
-  }
-
-  // R-PROTECTED-TABLE (T-227, OD-237 TL-2). No marker permits it.
-  for (const f of frags) {
-    for (const t of PROTECTED_TABLES) {
-      const name = relName(t.name);
-      const hits: string[] = [];
-      if (
-        new RegExp(
-          `\\bALTER ${RELATION_KIND}(?: IF EXISTS)?(?: ONLY)? ?\\(? ?${name} ?\\)?(?: ?\\*)? RENAME TO\\b`,
-        ).test(f)
-      )
-        hits.push('renames it away');
-      if (
-        new RegExp(
-          `\\bALTER ${RELATION_KIND}(?: IF EXISTS)?(?: ONLY)? ?\\(? ?${name} ?\\)?(?: ?\\*)? SET SCHEMA\\b`,
-        ).test(f)
-      )
-        hits.push('moves it to another schema');
-      if (new RegExp(`\\bRENAME TO ${name}`).test(f))
-        hits.push('renames another relation TO its name');
-      if (
-        !(m.dir === 'up' && m.num === t.createdBy) &&
-        new RegExp(
-          `\\bCREATE (?:OR REPLACE )?(?:(?:GLOBAL |LOCAL )?(?:TEMP|TEMPORARY) |UNLOGGED |RECURSIVE )?${RELATION_KIND}(?: IF NOT EXISTS)? ${name}`,
-        ).test(f)
-      )
-        hits.push(`creates a relation of its name (only ${t.createdBy} creates it)`);
-      for (const h of hits) {
-        problem(
-          'R-PROTECTED-TABLE',
-          m.rel,
-          `${h}: public.${t.name.toLowerCase()} is read by name by I-5's protected functions, and a table renamed or moved away keeps its protected triggers while a replacement under the old name has none (T-192 tech-lead RT2; OD-237 TL-2), so no marker permits it: ${snippet(f)}`,
-        );
-      }
-    }
-  }
-
-  // R-PROTECTED-EXTENSION (T-227, OD-235). No marker permits it.
-  for (const f of frags) {
-    const depends = /\bDEPENDS ON EXTENSION\b/.test(f) && !/\bNO DEPENDS ON EXTENSION\b/.test(f);
-    const adds = /\bALTER EXTENSION \S+ ADD\b/.test(f);
-    if (!depends && !adds) continue;
-    const named = PROTECTED.filter((p) => protectedNameRe(p).test(f)).map((p) => p.id);
-    if (adds) {
-      for (const t of PROTECTED_TABLES) {
-        if (new RegExp(`\\bADD ${RELATION_KIND} ${relName(t.name)}`).test(f)) {
-          named.push(`public.${t.name.toLowerCase()}`);
-        }
-      }
-    }
-    for (const n of named) {
-      problem(
-        'R-PROTECTED-EXTENSION',
-        m.rel,
-        `${depends ? 'DEPENDS ON EXTENSION' : 'ALTER EXTENSION … ADD'} names ${n}: a later DROP EXTENSION, which names nothing protected, would then remove it (T-192 QA N17/N18r, DEP1; OD-235), so no marker permits it: ${snippet(f)}`,
       );
     }
   }
@@ -2587,6 +2785,9 @@ console.log(
 );
 console.log(
   `  GRANT clauses read: ${String(grantsRead)}; CREATE TABLEs read: ${String(tablesRead)}; protected-object mentions: ${String(protectedMentions)}`,
+);
+console.log(
+  `  statements PostgreSQL's parser read (every depth, the 0001 baseline excepted): ${String(statementsParsed)}; that it could not parse: ${String(parseFailures)}`,
 );
 console.log(
   `  merged migrations changed and compared outside comments: ${String(mergedCompared)}; contract migrations added: ${String(addedContracts.length)}; contract up files read for expand statements: ${String(contractsReadForExpand)}`,
