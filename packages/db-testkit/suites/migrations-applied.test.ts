@@ -1018,7 +1018,7 @@ const CREATED_BY: Readonly<
         holds: 'true',
       },
       {
-        title: "credential_scheme is owned by app_ddl, and its ACL is app_rw SELECT only (R-9)",
+        title: 'credential_scheme is owned by app_ddl, and its ACL is app_rw SELECT only (R-9)',
         sql: `SELECT coalesce((SELECT pg_get_userbyid(relowner) || ' ' || relacl::text FROM pg_class
                                WHERE oid = to_regclass('public.credential_scheme')), '(absent)')`,
         holds: 'app_ddl {app_ddl=arwdDxtm/app_ddl,app_rw=r/app_ddl}',

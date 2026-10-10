@@ -237,7 +237,7 @@ describe('0024 — the table, its owner, columns, constraints, indexes, sequence
     );
   });
 
-  test('0 non-internal triggers, 0 rewrite rules, no row-level security, 0 policies (credential_scheme is not on SD 1309/3906\'s RLS list; OD-223)', async () => {
+  test("0 non-internal triggers, 0 rewrite rules, no row-level security, 0 policies (credential_scheme is not on SD 1309/3906's RLS list; OD-223)", async () => {
     assert.equal(
       await db.value(
         `SELECT (SELECT count(*) FROM pg_trigger WHERE tgrelid = c.oid AND NOT tgisinternal) || ' triggers, ' ||
@@ -261,7 +261,7 @@ describe('0024 — the table, its owner, columns, constraints, indexes, sequence
     );
   });
 
-  test('no role but app_ddl (owner) and app_rw holds any privilege on the table or its sequence, PUBLIC included (superusers, predefined pg_* roles and this suite\'s own t251_* probe logins, each a member of one role, are not read)', async () => {
+  test("no role but app_ddl (owner) and app_rw holds any privilege on the table or its sequence, PUBLIC included (superusers, predefined pg_* roles and this suite's own t251_* probe logins, each a member of one role, are not read)", async () => {
     assert.equal(
       await db.value(
         `SELECT coalesce(string_agg(DISTINCT r.rolname, ',' ORDER BY r.rolname), '(none)')
@@ -278,7 +278,10 @@ describe('0024 — the table, its owner, columns, constraints, indexes, sequence
   });
 
   test('COMMENT ON TABLE and the two column comments are exactly these texts, and no other column carries one', async () => {
-    assert.equal(await db.value(`SELECT obj_description('${TABLE}'::regclass, 'pg_class')`), TABLE_COMMENT);
+    assert.equal(
+      await db.value(`SELECT obj_description('${TABLE}'::regclass, 'pg_class')`),
+      TABLE_COMMENT,
+    );
     assert.equal(
       await db.value(
         `SELECT string_agg(attname || '=' || col_description(attrelid, attnum), E'\\n' ORDER BY attnum)
@@ -309,7 +312,7 @@ describe('0024 — the seed: exactly the two CY schemes (SD 3103, 3622; PM §MVP
     );
   });
 
-  test('no row is continuously_monitored, and the ids are the identity\'s 1 and 2 (seeded with no id; R-4)', async () => {
+  test("no row is continuously_monitored, and the ids are the identity's 1 and 2 (seeded with no id; R-4)", async () => {
     assert.equal(
       await db.value(
         `SELECT count(*) FILTER (WHERE validity_model = 'continuously_monitored') || ' monitored; ids ' ||
@@ -366,7 +369,7 @@ describe('0024 — constraint refusals (as the superuser, in a transaction never
     );
   });
 
-  test("CONTROL — the same scheme_name under another jurisdiction is accepted", async () => {
+  test('CONTROL — the same scheme_name under another jurisdiction is accepted', async () => {
     assertInsertedOne(
       'White under GR',
       await asSuperuser(insertRow({ scheme_name: `'White Criminal Record Certificate'` })),
@@ -486,7 +489,14 @@ describe('0024 — constraint refusals (as the superuser, in a transaction never
     }
   });
 
-  const NULLED = ['jurisdiction', 'check_type', 'scheme_name', 'scheme_name_i18n', 'issuing_body', 'validity_model'];
+  const NULLED = [
+    'jurisdiction',
+    'check_type',
+    'scheme_name',
+    'scheme_name_i18n',
+    'issuing_body',
+    'validity_model',
+  ];
   for (const column of NULLED) {
     test(`${column} NULL is REFUSED by its NOT NULL (23502)`, async () => {
       assertRefusedBy(
@@ -502,7 +512,8 @@ describe('0024 — constraint refusals (as the superuser, in a transaction never
     assertRefusedBy(
       'explicit id',
       await asSuperuser(
-        insertRow({}).replace(`(${Object.keys(GOOD).join(', ')})`, `(id, ${Object.keys(GOOD).join(', ')})`)
+        insertRow({})
+          .replace(`(${Object.keys(GOOD).join(', ')})`, `(id, ${Object.keys(GOOD).join(', ')})`)
           .replace('VALUES (', 'VALUES (99, '),
       ),
       'ERROR:  428C9: cannot insert a non-DEFAULT value into column "id"',
@@ -524,7 +535,10 @@ describe('0024 — what the database does NOT refuse (stated bounds, each pinned
 
   test('NOT HELD — btrim strips spaces only: a scheme_name of a tab, or of a newline, is accepted (R-10 as ruled)', async () => {
     for (const value of [`E'\\t'`, `E'\\n'`]) {
-      assertInsertedOne(`scheme_name ${value}`, await asSuperuser(insertRow({ scheme_name: value })));
+      assertInsertedOne(
+        `scheme_name ${value}`,
+        await asSuperuser(insertRow({ scheme_name: value })),
+      );
     }
   });
 
@@ -537,12 +551,15 @@ describe('0024 — what the database does NOT refuse (stated bounds, each pinned
 
   test('NOT HELD — the integer columns carry no range: -1 months, 0 days are accepted', async () => {
     const sql = insertRow({})
-      .replace(') VALUES (', ', default_validity_months, max_age_at_submission_months, attestation_interval_days, attestation_grace_days) VALUES (')
+      .replace(
+        ') VALUES (',
+        ', default_validity_months, max_age_at_submission_months, attestation_interval_days, attestation_grace_days) VALUES (',
+      )
       .replace(/\)$/, ', -1, -1, 0, 0)');
     assertInsertedOne('negative months', await asSuperuser(sql));
   });
 
-  test("NOT HELD — mandatory_rules v1 with v written 1.0 is accepted (jsonb numeric equality: 1.0 = 1)", async () => {
+  test('NOT HELD — mandatory_rules v1 with v written 1.0 is accepted (jsonb numeric equality: 1.0 = 1)', async () => {
     assertInsertedOne(
       'v 1.0',
       await asSuperuser(insertRow({ mandatory_rules: `'{"v": 1.0, "mandatory": "all_tiers"}'` })),
@@ -569,7 +586,7 @@ describe('0024 — grants: app_rw reads, and nothing else is granted (R-9)', () 
     }
   });
 
-  test('app_rw SELECT is PERMITTED (Q-1\'s column list), and reads the two CY schemes', async () => {
+  test("app_rw SELECT is PERMITTED (Q-1's column list), and reads the two CY schemes", async () => {
     const r = await db.psql({
       user: LOGINS.app_rw,
       password: PROBE_PASSWORD,
