@@ -182,18 +182,23 @@ describe('0005 — constraint refusals (as the superuser, so no privilege is wha
     );
   });
 
-  test('account_locale_fkey is NO ACTION on update and delete, on a plain deterministic text column', async () => {
+  // T-158 (0025) added sitter_profile's two authored-locale FKs. The pin names every FK into
+  // locale_registry with its update/delete action codes, so a third FK, or an ON UPDATE CASCADE on any
+  // of them (T-144's second approval measured it rewriting rows), turns this red.
+  test('account_locale_fkey is NO ACTION on update and delete, on a plain deterministic text column; every FK into locale_registry is named here and is NO ACTION', async () => {
     assert.equal(
       await db.value(
         `SELECT c.confupdtype::text || c.confdeltype::text || '|' ||
                 (SELECT co.collname || ':' || co.collisdeterministic
                    FROM pg_attribute a JOIN pg_collation co ON co.oid = a.attcollation
                   WHERE a.attrelid = 'public.account'::regclass AND a.attname = 'locale') || '|' ||
-                (SELECT count(*) FROM pg_constraint
-                  WHERE contype = 'f' AND confrelid = 'public.locale_registry'::regclass)
+                (SELECT string_agg(f.conname || ':' || f.confupdtype::text || f.confdeltype::text, ',' ORDER BY f.conname)
+                   FROM pg_constraint f
+                  WHERE f.contype = 'f' AND f.confrelid = 'public.locale_registry'::regclass)
            FROM pg_constraint c WHERE c.conname = 'account_locale_fkey'`,
       ),
-      'aa|default:true|1',
+      'aa|default:true|account_locale_fkey:aa,sitter_profile_bio_authored_locale_fkey:aa,' +
+        'sitter_profile_headline_authored_locale_fkey:aa',
     );
   });
 
