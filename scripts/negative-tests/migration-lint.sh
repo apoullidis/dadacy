@@ -698,6 +698,8 @@ pair expand "ALTER DATABASE kinvara SET session_replication_role = replica;"
 check CZ29 "PARITY (refused before T-229 too): a DATABASE's SET session_replication_role" R-TRIGGER-BYPASS
 pair expand "CREATE FUNCTION public.t229_f() RETURNS void LANGUAGE sql SET session_replication_role = replica AS 'SELECT 1';"
 check CZ2A "PARITY (refused before T-229 too): a function's SET clause" R-TRIGGER-BYPASS
+pair expand "COMMENT ON TABLE public.t229_scratch IS 'the guard is trg_approval_four_eyes';"
+check CZ2B "PARITY (refused before T-229 too): a protected name inside a COMMENT ON string still needs the marker (the parse keeps it outside A_Const)" R-PROTECTED
 # The bound, pinned: SQL assembled at run time is not read as the statement it becomes.
 pair expand "-- @compliance-review: trg_approval_four_eyes — T-229, OD-240
 DO \$do\$ BEGIN EXECUTE format('ALTER TABLE public.approval DISABLE TRIGGER %I', 'trg_approval_four_eyes'); END \$do\$;"

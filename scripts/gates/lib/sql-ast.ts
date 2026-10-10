@@ -162,6 +162,23 @@ export function stringConstants(x: unknown): string[] {
 }
 
 /**
+ * EVERY string value in a subtree, whatever field holds it: `A_Const` constants, `String` nodes, and
+ * the plain string fields some statements keep their literal in (`COMMENT ON … IS '…'` holds it in
+ * `comment`, not in an `A_Const`: T-229, measured on 0002). The word-level reading the gate gives every
+ * literal (R-PROTECTED's "names", session_replication_role) uses this, never `stringConstants`.
+ */
+export function allStrings(x: unknown): string[] {
+  const out: string[] = [];
+  const go = (y: unknown): void => {
+    if (typeof y === 'string') out.push(y);
+    else if (Array.isArray(y)) for (const z of y) go(z);
+    else if (isObj(y)) for (const v of Object.values(y)) go(v);
+  };
+  go(x);
+  return out;
+}
+
+/**
  * Every identifier the statement names, as PostgreSQL resolves its spelling: every `String` node
  * (the parts of a qualified name, a function name, an object list) and every field that holds a name
  * directly (`relname`, `schemaname`, `trigname`, `newname`, `subname`, `name`, `extname`, `rolename`,

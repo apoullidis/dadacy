@@ -272,13 +272,13 @@ import { REPO_ROOT, capture, finish } from './lib/run.ts';
 import { SCHEMA_REL, verifySchemaFile } from './lib/schema-digest.ts';
 import {
   type AstStmt,
+  allStrings,
   identifiers,
   isObj,
   nameList,
   rangeVar,
   readSqlAst,
   str,
-  stringConstants,
   walkStmt,
 } from './lib/sql-ast.ts';
 
@@ -418,9 +418,9 @@ const RELATION_OBJECTS: ReadonlySet<string> = new Set([
 /** Protected ids among names (compared case-insensitively: a false FAIL, never a false PASS). */
 const protectedAmong = (names: Iterable<string>): string[] =>
   [...new Set([...names].map(lc))].filter((n) => PROTECTED_IDS.has(n)).sort();
-/** Protected ids written as a word inside a string constant: the reading the gate gives every literal. */
+/** Protected ids written as a word inside any string value of the parse (a constant, a COMMENT ON text): the reading the gate gives every literal. */
 const protectedInConstants = (node: unknown): string[] => {
-  const consts = stringConstants(node);
+  const consts = allStrings(node);
   return PROTECTED.filter((p) =>
     consts.some((c) => new RegExp(`(^|[^A-Za-z0-9_$])${p.id}([^A-Za-z0-9_$]|$)`, 'i').test(c)),
   ).map((p) => p.id);
@@ -490,7 +490,7 @@ const AST_RULES: readonly AstRule[] = [
         );
       }
       if (
-        stringConstants(s.node).some((c) =>
+        allStrings(s.node).some((c) =>
           /(^|[^a-z0-9_$])session_replication_role([^a-z0-9_$]|$)/i.test(c),
         )
       ) {
