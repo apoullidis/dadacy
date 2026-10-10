@@ -2399,10 +2399,8 @@ DROP TABLE public.t159_geo;"
 # plant_geo_one <column type>: one more geography column, \`g\`, of the given type.
 plant_geo_one() {
   plant "$UP" "-- @phase: expand
-$2
 CREATE TABLE public.t159_geo (id integer PRIMARY KEY, g $1);"
-  plant "$DOWN" "DROP TABLE public.t159_geo;${3:+
-$3}"
+  plant "$DOWN" "DROP TABLE public.t159_geo;"
 }
 
 # The driver round trip, through pg + drizzle-orm and the db/schema.ts just written. Values are inserted
