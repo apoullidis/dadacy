@@ -40,7 +40,7 @@ import {
 import { assertPermitted, assertRefused, INT10_RAISE } from '../src/expect.ts';
 
 const SUITE = 'migrations-applied';
-const HIGHEST_COMMITTED = '0024';
+const HIGHEST_COMMITTED = '0025';
 const COMMITTED_DIR = path.join(REPO_ROOT, MIGRATIONS_DIR);
 const RECORD_SQL = `SELECT coalesce(shobj_description(oid, 'pg_database'), '(no comment)')
                       FROM pg_database WHERE datname = current_database()`;
@@ -1022,6 +1022,33 @@ const CREATED_BY: Readonly<
         sql: `SELECT coalesce((SELECT pg_get_userbyid(relowner) || ' ' || relacl::text FROM pg_class
                                WHERE oid = to_regclass('public.credential_scheme')), '(absent)')`,
         holds: 'app_ddl {app_ddl=arwdDxtm/app_ddl,app_rw=r/app_ddl}',
+      },
+    ],
+  },
+  '0025': {
+    source: 'T-158',
+    // Each probe names an object 0025 creates and returns a value rather than raising once it is gone:
+    // to_regclass/to_regtype return NULL for a missing name, and the ACL read is coalesced. The
+    // refusals are asserted by suites/sitter-profile.test.ts, not here (T-137 TV2-A1).
+    probes: [
+      {
+        title:
+          'table public.sitter_profile, types bookable_state and sitter_tier, index idx_sitter_base_location exist (T-157 F-3)',
+        sql: `SELECT (to_regclass('public.sitter_profile') IS NOT NULL)::text || ' ' ||
+                     (to_regtype('public.bookable_state') IS NOT NULL)::text || ' ' ||
+                     (to_regtype('public.sitter_tier') IS NOT NULL)::text || ' ' ||
+                     (to_regclass('public.idx_sitter_base_location') IS NOT NULL)::text`,
+        holds: 'true true true true',
+      },
+      {
+        title:
+          'sitter_profile is owned by app_ddl, its table ACL is app_rw SELECT only, and app_rw may UPDATE none of the protected four (E.4 U-3)',
+        sql: `SELECT coalesce((SELECT pg_get_userbyid(relowner) || ' ' || relacl::text || ' ' ||
+                                      (SELECT count(*) FROM pg_attribute WHERE attrelid = c.oid
+                                         AND attname IN ('bookable_state', 'tier', 'tier_rank', 'bookable_since')
+                                         AND attacl IS NULL)::text
+                                 FROM pg_class c WHERE oid = to_regclass('public.sitter_profile')), '(absent)')`,
+        holds: 'app_ddl {app_ddl=arwdDxtm/app_ddl,app_rw=r/app_ddl} 4',
       },
     ],
   },
