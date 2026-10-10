@@ -135,7 +135,10 @@ const SUITES: readonly Suite[] = [
     // pinned as PASS; five parity cases). Two older expectations re-classed, plants unchanged: CQ3A and
     // CQ72 also R-PARSE (their down files are not SQL; PostgreSQL refuses both). The red run against the
     // previous lint and the green footer are T-229.md § Evidence, ML-RED and ML-GREEN.
-    cases: 420,
+    // 420 -> 421, 2026-10-10, T-229: CZ2B, parity for a protected name inside a COMMENT ON string (the
+    // parse keeps that text outside A_Const; a narrowing the mention counter showed, 35 against 37 on
+    // main's migrations). Red against 3d2b6e4 (T-229.md § Evidence, CZ2B-RED); green in ML-GREEN.
+    cases: 421,
     state: 'GREEN',
     why: 'gate:migration-lint: expand/contract, protected objects (the I-5 objects since T-186, 0011\'s since T-192; read through PostgreSQL\'s parser since T-229), R-TRIGGER-BYPASS by name, R-PROTECTED-RENAME, R-ADMIN-MEMBERSHIP, R-PROTECTED-TABLE, R-PROTECTED-EXTENSION, R-PARSE, U&"…" decoding, R-ROLE-SWITCH, R-RUN-AS, R-MERGED, R-TRAILER, R-VENDOR-SQL, R-RESTORE-PUBLIC, R-RULE (T-021, T-031, T-167, T-186, T-192, T-227, T-241, T-237, T-229)',
   },
