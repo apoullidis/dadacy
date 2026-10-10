@@ -542,8 +542,13 @@ describe('V1 — app_rw cannot write the protected four (bookable_state, tier, t
 });
 
 describe('V1 / G-3 option (c) — a planted stand-in for T-028: an INVOKER trigger fired by an app_rw write calls ONE SECURITY DEFINER function owned by app_ddl, which writes the protected four', () => {
-  // The required form for T-028 (OD-317): search_path = pg_catalog, pg_temp (pg_temp named LAST, the
-  // 0021 form) and every relation schema-qualified. Why both: the OD-317 describe block below.
+  // Part of the required form for T-028 (OD-317, OD-318): search_path = pg_catalog, pg_temp (pg_temp
+  // named LAST, the 0021 form), every relation AND every type schema-qualified (declared or in a ::
+  // cast), in everything that runs as the owner: the definer, every function it calls (a helper
+  // shared with the reconciler included) and any trigger its writes fire. Why: the OD-317 describe
+  // block below (relations), T-158 QA2-S A4, A4b, A4c-2 (a type) and A3 (a helper); the trigger case
+  // is not measured. Necessary, not sufficient: the guard is T-028's shadow suite against its real
+  // call graph.
   const PLANT = [
     `CREATE FUNCTION public.t158_derive_standin(p_id char) RETURNS void LANGUAGE sql SET search_path = pg_catalog, pg_temp AS
        $f$ UPDATE public.sitter_profile SET bookable_state = 'bookable', tier = 'sitter', tier_rank = 1,
@@ -606,7 +611,7 @@ describe('V1 / G-3 option (c) — a planted stand-in for T-028: an INVOKER trigg
     );
   });
 
-  test("app_rw, holding EXECUTE, can also call the definer directly, and it writes: this plant writes constants, so this pins only that EXECUTE is the whole gate. Under (c) a direct call can only recompute ONLY IF T-028's function takes only the id, DERIVES every value from its inputs, pins search_path = pg_catalog, pg_temp (pg_temp last) AND schema-qualifies every relation it names: with an unqualified read an app_rw TEMP table chooses the value (OD-317, the next describe block). An obligation on T-028, not shown here", async () => {
+  test("app_rw, holding EXECUTE, can also call the definer directly, and it writes: this plant writes constants, so this pins only that EXECUTE is the whole gate. Under (c) a direct call can choose a value unless T-028's function takes only the id, DERIVES every value from its inputs, and everything that runs as its owner (the definer, every function it calls including a helper shared with the reconciler, any trigger its writes fire) pins search_path = pg_catalog, pg_temp (pg_temp last) AND schema-qualifies every relation and every type it names, declared or in :: casts: with an unqualified read an app_rw TEMP table chooses the value (OD-317, the next describe block), and so does a pg_temp type or a self-pinned helper (T-158 QA2-S; OD-318). These are necessary, not sufficient; the guard is T-028's shadow suite against its real call graph. An obligation on T-028, not shown here", async () => {
     const r = await asLogin(
       LOGINS.app_rw,
       `SELECT public.t158_derive_standin('${SITTER}')`,
@@ -650,7 +655,7 @@ describe('V1 / G-3 option (c) — a planted stand-in for T-028: an INVOKER trigg
   });
 });
 
-describe('OD-317 — the pg_temp shadow: app_rw holds TEMP, so a TEMP table can stand in for an input a SECURITY DEFINER derivation reads by an UNQUALIFIED name; a schema-qualified read is not shadowed (the required form for T-028: search_path = pg_catalog, pg_temp, every relation qualified)', () => {
+describe('OD-317 — the pg_temp shadow: app_rw holds TEMP, so a TEMP table can stand in for an input a SECURITY DEFINER derivation reads by an UNQUALIFIED name; a schema-qualified read is not shadowed. This block exercises relations only, in the definer itself: an unqualified type and a self-pinned helper are routes too, measured outside this suite (T-158 QA2-S A4, A4b, A4c-2; A3; OD-318), and a fired trigger is not measured. The rule for T-028 (search_path = pg_catalog, pg_temp; every relation and type qualified in everything that runs as the owner) is necessary, not sufficient: its guard is the T-028 shadow suite against the real call graph', () => {
   // Five id-only definers owned by app_ddl, each DERIVING bookable_state from one committed input
   // table (bookable iff the input has a row for the id). They differ ONLY in search_path and in
   // whether the read is qualified. QA measured the first two shapes (T-158 QA-H, H03/H04).
