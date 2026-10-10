@@ -54,12 +54,21 @@
 --   protected four, with EXECUTE revoked from PUBLIC (SA §INT-10 check 8), taking only the sitter id,
 --   that DERIVES the values from its inputs and writes them; the triggers on sitter_credential and
 --   on account (EV-39: the derivation re-runs on an account status change) are SECURITY INVOKER and
---   call it. The reconciler recomputes with the same derivation. The function MUST pin
---   SET search_path = pg_catalog, pg_temp (pg_temp named LAST, the 0021 form) AND schema-qualify
---   every relation it names: app_rw holds TEMP, and an unqualified read is resolved to an app_rw
---   TEMP table of the same name both when pg_temp is left off the path (searched first) and under
---   pg_catalog, pg_temp itself (T-158 QA-H; OD-317; sitter-profile.test.ts, the OD-317 block). Only
---   with both does an app_rw call cause a recompute only, never choose a value.
+--   call it. The reconciler recomputes with the same derivation. app_rw holds TEMP, so any name
+--   resolved through search_path can be answered by an app_rw pg_temp object. EVERYTHING THAT RUNS
+--   AS THE OWNER (the definer itself, every function it calls, including a helper it shares with the
+--   reconciler, and any trigger its writes fire) MUST pin SET search_path = pg_catalog, pg_temp
+--   (pg_temp named LAST, the 0021 form) AND schema-qualify every relation AND every type it names,
+--   types both declared and in :: casts. A helper's own SET search_path replaces the definer's.
+--   Measured, each as an app_rw-only login: an unqualified relation read is shadowed by an app_rw
+--   TEMP table under pg_catalog, public and under pg_catalog, pg_temp (T-158 QA-H H03; OD-317;
+--   sitter-profile.test.ts, the OD-317 block); with every relation qualified, one unqualified type
+--   lets an app_rw pg_temp type choose the value and run app_rw code as the owner (QA2-S A4, A4b,
+--   A4c-2; OD-318); a definer meeting every rule itself, deriving through a helper that pins
+--   pg_catalog, public and reads unqualified, is shadowed while its honest call derives correctly
+--   (QA2-S A3, K1). The trigger case is not measured here. These conditions are NECESSARY, NOT
+--   SUFFICIENT: meeting them does not show that an app_rw call can only recompute. The guard is
+--   T-028's shadow suite, run against the real call graph (tech-lead.md T-028 row; OD-317, OD-318).
 --   Not refused by this file: the owner app_ddl (break-glass RB-2, C17 (2a)) and the superuser.
 --
 -- WHO RUNS THIS FILE. app_ddl (T-136 § contract §6), which then owns both types, the table and its
