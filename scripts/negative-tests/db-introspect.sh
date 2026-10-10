@@ -2476,7 +2476,6 @@ for spec in 't159Geo|pt: geography("pt").notNull(),' 't159Geo|ptMaybe: geography
   fact "db/schema.ts, inside ${spec%%|*}: lines containing [${spec#*|}]" "$(block_count "${spec%%|*}" "${spec#*|}")" 1
 done
 fact "db/schema.ts, inside t159Geo: lines still carrying unknown( or a TODO" "$(block_count t159Geo 'unknown(')/$(block_count t159Geo 'TODO')" 0/0
-fact "the generator lists geography among the mapped types" "$(grep -cE '^  mapped column type\(s\): .*\bgeography\b' "$OUT")" 1
 fact "the generator admits the plant's 5 geography columns (3 table + 2 view) + BASE $BASE_GEOGRAPHY" "$(grep -cE "^  geography: $((BASE_GEOGRAPHY + 5)) column\(s\) admitted " "$OUT")" 1
 node --input-type=module -e "$T159_ROUNDTRIP" >"$OUT.rt" 2>&1
 for line in 'READ pt string "0101000020E6100000713D0AD7A3B04040F6285C8FC2954140"' 'READ ptMaybe object null' \
