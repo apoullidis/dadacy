@@ -1125,6 +1125,14 @@ checkwhy CQ37 "an unquoted name folds to lower case, so it is not the quoted mix
 rp "$R3" "$MK
 GRANT EXECUTE ON FUNCTION pg_catalog.U&\"pg\\005fadvisory\\005flock\\005fshared\"(bigint) TO PUBLIC;"
 checkwhy CQ38 "a U&\"…\" name that decodes to a routine the up file did not revoke" R-ANSWERING-SERVICE "pg_catalog.pg_advisory_lock_shared(bigint) $NOTREV"
+# T-229 (QA-C3 in R-RESTORE-PUBLIC's name comparison): a comment before UESCAPE. The two raw spellings are
+# equal; the escapes differ, so PostgreSQL resolves two different routines.
+rp "REVOKE EXECUTE ON FUNCTION pg_catalog.U&\"pg!005fadvisory!005flock\" /* c */ UESCAPE '!'(bigint) FROM PUBLIC;" "$MK
+GRANT EXECUTE ON FUNCTION pg_catalog.U&\"pg!005fadvisory!005flock\" /* c */ UESCAPE '#'(bigint) TO PUBLIC;"
+checkwhy CZ35 "T-229: equal raw U& spellings, different escapes after a comment: a different routine, not restored" R-ANSWERING-SERVICE "$NOTREV"
+rp "REVOKE EXECUTE ON FUNCTION pg_catalog.U&\"pg!005fadvisory!005flock\" /* c */ UESCAPE '!'(bigint) FROM PUBLIC;" "$MK
+GRANT EXECUTE ON FUNCTION pg_catalog.pg_advisory_lock(bigint) TO PUBLIC;"
+checkwhy CZ36 "T-229 CONTROL: the comment spelling in the REVOKE decodes to the routine the GRANT names" PASS "$ADMIT 1 GRANT … TO PUBLIC statement(s) on 1 routine(s)"
 rp "REVOKE EXECUTE ON FUNCTION public.\"t241_é\"() FROM PUBLIC;" "$MK
 GRANT EXECUTE ON FUNCTION public.T241_É() TO PUBLIC;"
 checkwhy CQ39 "PostgreSQL folds ASCII only: unquoted T241_É is t241_É, not the revoked \"t241_é\"" R-ANSWERING-SERVICE "public.t241_É() $NOTREV"
