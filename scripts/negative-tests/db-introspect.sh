@@ -88,6 +88,16 @@
 # are NOT rendered, a range round-trips through pg/drizzle as its text in the session TimeZone, and an importer is
 # refused a number, a Date or null for the range. K191 deletes the tstzrange entry (asserted landed): the plant is
 # I-MAP again. K192 plants tstzrange[]: the map matches the exact type, so it is I-MAP.
+# T-159 — K193–K202 (OE-33 G-6): geography(Point,4326) and geography(Polygon,4326). drizzle-kit prints ONE
+# TODO key, 'geography', for every geography subtype (measured, tasks/state/EP-2/T-159.md M1), so the text
+# entry cannot choose the subtype; the catalogue admission set GEOGRAPHY_ADMITTED does, per column. K193 is
+# the control (Point NOT NULL and nullable, Polygon, and a view over them): rendered as the mapped geography,
+# round-tripped by value through pg and drizzle, a wrong subtype refused 22023 by the column, an importer
+# refusing a number and null. K194/K195 delete the Point / Polygon admission entry, K196 the text entry (each
+# asserted landed): the plant is I-MAP naming the column. K197/K197w LineString (check and write mode), K198
+# every other scalar shape (MultiPolygon, unconstrained, PointZ, SRID 4269), K199 domains (over LineString
+# and over Point), K200 arrays: I-MAP. K201 RED BEFORE: the admission rule deleted, LineString passes typed
+# as a string. K202 the catalogue's geography read deleted: the converse refuses the rendered column.
 # T-232 (OD-246): no case assumes what the committed migration set contains. Every count a case pins
 # (int8 and geometry columns, policies, partitioned tables and partitions, relations) is BASE + the
 # plant's own share, BASE read once from the catalogue at HIGHEST and held against the generator's
@@ -204,7 +214,7 @@ cleanup_after_abort() {
   if [ "$(record)" != "kinvara-migrate version=$HIGHEST" ]; then
     node scripts/db-migrate.ts down --to "$HIGHEST" >"$OUT.abort" 2>&1 || cat "$OUT.abort"
   fi
-  rm -f "$M/${NEXT}_t138_plant.up.sql" "$M/${NEXT}_t138_plant.down.sql" "${T153_BITE:-}" "${T206_BITE:-}"
+  rm -f "$M/${NEXT}_t138_plant.up.sql" "$M/${NEXT}_t138_plant.down.sql" "${T153_BITE:-}" "${T206_BITE:-}" "${T159_BITE:-}"
   git checkout -q -- "$SCHEMA" "$SCRIPT" "$RENDER" "$ORDER" "$POLICY" "$PARTITION"
   echo "   abort cleanup: record now '$(record)'; git status --porcelain:"
   git status --porcelain
@@ -236,6 +246,8 @@ stats_mark() {
 T153_BITE=packages/db-testkit/type-tests/t153-bite.ts
 # T-206: the importer K190 plants into the root program; restore_tree() removes it too.
 T206_BITE=packages/db-testkit/type-tests/t206-bite.ts
+# T-159: the importer K193 plants into the root program; restore_tree() removes it too.
+T159_BITE=packages/db-testkit/type-tests/t159-bite.ts
 
 # T-168 (OD-161). restore_tree is the working-tree half of restore(), split out UNCHANGED so the
 # traps below can call it on its own. It needs no database, which is the whole point: the tracked
@@ -246,7 +258,7 @@ T206_BITE=packages/db-testkit/type-tests/t206-bite.ts
 # (T-153 merge of main 3385ede: T-153's `rm -f "$T153_BITE"` is a working-tree action, so it moved
 # from the top of restore() into this half, where the traps reach it too.)
 restore_tree() {
-  rm -f "$T153_BITE" "$T206_BITE"
+  rm -f "$T153_BITE" "$T206_BITE" "$T159_BITE"
   rm -f "$M/${NEXT}_t138_plant.up.sql" "$M/${NEXT}_t138_plant.down.sql"
   git checkout -q -- "$SCHEMA" "$SCRIPT" "$RENDER" "$ORDER" "$POLICY" "$PARTITION"
   if [ -n "$(git status --porcelain)" ]; then
@@ -502,6 +514,8 @@ BASE_INT8=$(psql -X -A -t -q -c "$int8_cols AND c.relkind IN ('r','p','v','m','f
 # partition is pulled as a table and a partitioned parent is not.
 BASE_INT8_PULLED=$(psql -X -A -t -q -c "$int8_cols AND c.relkind IN ('r','v','m')")
 BASE_POINTS=$(psql -X -A -t -q -c "SELECT count(*) FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind IN ('r','p','v','m','f') AND NOT c.relispartition AND a.attnum > 0 AND NOT a.attisdropped AND format_type(a.atttypid, a.atttypmod) ~ '^geometry\(Point(,[0-9]+)?\)$' AND $ext_free")
+# T-159: geography columns GEOGRAPHY_ADMITTED admits (format_type of the column's own type, so a domain is not one).
+BASE_GEOGRAPHY=$(psql -X -A -t -q -c "SELECT count(*) FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind IN ('r','p','v','m','f') AND NOT c.relispartition AND a.attnum > 0 AND NOT a.attisdropped AND format_type(a.atttypid, a.atttypmod) IN ('geography(Point,4326)', 'geography(Polygon,4326)') AND $ext_free")
 BASE_POLICIES=$(psql -X -A -t -q -c "SELECT count(*) FROM pg_policy pol JOIN pg_class c ON c.oid = pol.polrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND NOT c.relispartition AND $ext_free")
 BASE_PARENTS=$(psql -X -A -t -q -c "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind = 'p' AND NOT c.relispartition AND $ext_free")
 BASE_PARENT_POLICIES=$(psql -X -A -t -q -c "SELECT count(*) FROM pg_policy pol JOIN pg_class c ON c.oid = pol.polrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind = 'p' AND NOT c.relispartition AND $ext_free")
@@ -534,12 +548,14 @@ b_line() { grep -E "^  $1: " "$OUT.base" | head -1; }
 b_num() { printf '%s\n' "$1" | sed -nE "s/.*$2.*/\\1/p"; }
 L_BIG=$(b_line bigint)
 L_POL=$(b_line policies)
+L_GEO=$(b_line geography)
 L_PART=$(b_line partitions)
 L_CAT=$(b_line catalogue)
 GEN_REWRITTEN=$(b_num "$L_BIG" '  bigint: ([0-9]+) column\(s\) rewritten')
 GEN_MATCHED=$(b_num "$L_BIG" '; ([0-9]+) of the catalogue.s [0-9]+ int8')
 GEN_INT8=$(b_num "$L_BIG" "of the catalogue.s ([0-9]+) int8")
 GEN_POINTS=$(b_num "$L_BIG" 'geometry: ([0-9]+) point column')
+GEN_GEOGRAPHY=$(b_num "$L_GEO" '  geography: ([0-9]+) column\(s\) admitted')
 GEN_POLICIES=$(b_num "$L_POL" '  policies: ([0-9]+) checked')
 BASE_RESTORED=$(b_num "$L_POL" '; ([0-9]+) expression\(s\) drizzle-kit dropped restored')
 BASE_REWRITTEN=$(b_num "$L_POL" '; ([0-9]+) entr\(ies\) rewritten from the catalogue')
@@ -552,6 +568,7 @@ GEN_OWNED=$(b_num "$L_CAT" '; ([0-9]+) relation\(s\) owned by no extension in pu
 # name psql's value : generator's value (both from the committed tree at $HIGHEST)
 for pair in "int8 columns the match holds:$BASE_INT8:$GEN_INT8" "int8 columns matched:$BASE_INT8:$GEN_MATCHED" \
   "int8 columns drizzle-kit pulls, rewritten:$BASE_INT8_PULLED:$GEN_REWRITTEN" "geometry point columns:$BASE_POINTS:$GEN_POINTS" \
+  "geography columns admitted:$BASE_GEOGRAPHY:$GEN_GEOGRAPHY" \
   "policies checked:$BASE_POLICIES:$GEN_POLICIES" "partitioned tables rendered:$BASE_PARENTS:$GEN_PARENTS" \
   "policy entries added to parents:$BASE_PARENT_POLICIES:$GEN_PARENT_POLICIES" "partitions excluded:$BASE_PARTITIONS:$GEN_PARTITIONS" \
   "partition declarations removed (partitions - parents):$((BASE_PARTITIONS - BASE_PARENTS)):$BASE_REMOVED" \
@@ -2364,6 +2381,211 @@ plant "$UP" "-- @phase: expand
 CREATE TABLE public.t206_range (id integer PRIMARY KEY, rs tstzrange[]);"
 plant "$DOWN" "DROP TABLE public.t206_range;"
 check K192 "(T-206) tstzrange[] is not tstzrange: the map matches the exact type, so an array of the mapped type fails" I-MAP "column \"rs\" has database type 'tstzrange\[\]'"
+
+echo "== T-159 (OE-33 G-6): geography(Point,4326) and geography(Polygon,4326), admitted per column from the catalogue"
+# The plant's columns, named from this SQL: id integer, pt geography(Point,4326) NOT NULL, pt_maybe
+# geography(Point,4326), poly geography(Polygon,4326); and a view t159_geo_v over id, pt, poly.
+plant_geo() {
+  plant "$UP" "-- @phase: expand
+CREATE TABLE public.t159_geo (
+  id integer PRIMARY KEY,
+  pt geography(Point,4326) NOT NULL,
+  pt_maybe geography(Point,4326),
+  poly geography(Polygon,4326));
+CREATE VIEW public.t159_geo_v AS SELECT id, pt, poly FROM public.t159_geo;"
+  plant "$DOWN" "DROP VIEW public.t159_geo_v;
+DROP TABLE public.t159_geo;"
+}
+# plant_geo_one <column type>: one more geography column, \`g\`, of the given type.
+plant_geo_one() {
+  plant "$UP" "-- @phase: expand
+$2
+CREATE TABLE public.t159_geo (id integer PRIMARY KEY, g $1);"
+  plant "$DOWN" "DROP TABLE public.t159_geo;${3:+
+$3}"
+}
+
+# The driver round trip, through pg + drizzle-orm and the db/schema.ts just written. Values are inserted
+# as EWKT by psql text, read through drizzle, and written back through drizzle; the database is then asked
+# for ST_AsText/ST_SRID, so the read value is judged by what PostGIS says it is, not by its own bytes.
+T159_ROUNDTRIP=$(
+  cat <<'EOF'
+import pg from "pg";
+import { drizzle } from "drizzle-orm/node-postgres";
+import { eq } from "drizzle-orm";
+import { t159Geo, t159GeoV } from "./db/schema.ts";
+const pool = new pg.Pool({ max: 1 });
+const db = drizzle(pool);
+const show = (v) => `${typeof v} ${JSON.stringify(v)}`;
+const asText = async (id) => (await pool.query("SELECT ST_AsText(pt) AS pt, ST_SRID(pt) AS spt, ST_AsText(pt_maybe) AS pm, ST_AsText(poly) AS poly, ST_SRID(poly) AS spoly FROM t159_geo WHERE id = $1", [id])).rows[0];
+try {
+  await pool.query("INSERT INTO t159_geo (id, pt, poly) VALUES (1, 'SRID=4326;POINT(33.38 35.17)', 'SRID=4326;POLYGON((33 35,34 35,34 36,33 35))')");
+  const [r] = await db.select().from(t159Geo).where(eq(t159Geo.id, 1));
+  console.log(`READ pt ${show(r.pt)}`);
+  console.log(`READ ptMaybe ${show(r.ptMaybe)}`);
+  console.log(`READ poly ${show(r.poly)}`);
+  const [v] = await db.select().from(t159GeoV).where(eq(t159GeoV.id, 1));
+  console.log(`VIEW pt equals table read ${v.pt === r.pt} poly equals table read ${v.poly === r.poly}`);
+  await db.insert(t159Geo).values({ id: 2, pt: r.pt, poly: r.poly });
+  console.log(`WRITE-BACK hex ${JSON.stringify(await asText(2))}`);
+  await db.insert(t159Geo).values({ id: 3, pt: "SRID=4326;POINT(1 2)", ptMaybe: "POINT(3 4)", poly: "SRID=4326;POLYGON((0 0,1 0,1 1,0 0))" });
+  console.log(`WRITE ewkt ${JSON.stringify(await asText(3))}`);
+  for (const [key, val] of [["pt", "SRID=4326;LINESTRING(0 0,1 1)"], ["poly", "SRID=4326;POINT(1 2)"], ["pt", "SRID=4269;POINT(1 2)"]]) {
+    try {
+      await db.insert(t159Geo).values({ id: 9, pt: "SRID=4326;POINT(0 0)", [key]: val });
+      console.log(`WRONG ${key} ${val} ACCEPTED`);
+      await pool.query("DELETE FROM t159_geo WHERE id = 9");
+    } catch (e) {
+      console.log(`WRONG ${key} ${val} refused ${e.cause?.code ?? e.code}`);
+    }
+  }
+} catch (e) {
+  console.log(`ROUNDTRIP THREW ${e.constructor.name}: ${e.message}; cause: ${e.cause?.message}`);
+}
+await pool.end();
+EOF
+)
+
+# The importer: lines 4-6 must be accepted; 7-11 refused.
+T159_BITE_TEXT="import type { t159Geo } from '../../../db/schema.ts';
+type Row = typeof t159Geo.\$inferSelect;
+type Ins = typeof t159Geo.\$inferInsert;
+export const okSelect: Row['pt'] = '0101000020E6100000713D0AD7A3B04040F6285C8FC2954140';
+export const okInsert: Ins['poly'] = 'SRID=4326;POLYGON((0 0,1 0,1 1,0 0))';
+export const okMaybe: Row['ptMaybe'] = null;
+export const numberPoint: Ins['pt'] = 5;
+export const numberPolygon: Row['poly'] = 5;
+export const pairPoint: Ins['pt'] = [33, 35];
+export const nullRequired: Row['pt'] = null;
+export const objectPolygon: Ins['poly'] = { type: 'Polygon' };"
+
+t159_tsc_errors() {
+  plant "$T159_BITE" "$T159_BITE_TEXT"
+  node_modules/.bin/tsc --noEmit -p tsconfig.json >"$OUT.tsc" 2>&1
+  grep -oE '^[^(: ]+\([0-9]+,[0-9]+\): error TS[0-9]+' "$OUT.tsc" | sed -E 's/^([^(]+)\(([0-9]+),[0-9]+\): error (TS[0-9]+)$/\1:\2 \3/' | sort -u | tr '\n' ' ' | sed 's/ $//'
+}
+
+plant_geo
+write_schema
+node scripts/db-introspect.ts --check >"$OUT" 2>&1
+code=$?
+: >"$OUT.f"
+nf=0
+nok=0
+for spec in 't159Geo|pt: geography("pt").notNull(),' 't159Geo|ptMaybe: geography("pt_maybe"),' \
+  't159Geo|poly: geography("poly"),' 't159GeoV|pt: geography("pt"),' 't159GeoV|poly: geography("poly"),'; do
+  fact "db/schema.ts, inside ${spec%%|*}: lines containing [${spec#*|}]" "$(block_count "${spec%%|*}" "${spec#*|}")" 1
+done
+fact "db/schema.ts, inside t159Geo: lines still carrying unknown( or a TODO" "$(block_count t159Geo 'unknown(')/$(block_count t159Geo 'TODO')" 0/0
+fact "the generator lists geography among the mapped types" "$(grep -cE '^  mapped column type\(s\): .*\bgeography\b' "$OUT")" 1
+fact "the generator admits the plant's 5 geography columns (3 table + 2 view) + BASE $BASE_GEOGRAPHY" "$(grep -cE "^  geography: $((BASE_GEOGRAPHY + 5)) column\(s\) admitted " "$OUT")" 1
+node --input-type=module -e "$T159_ROUNDTRIP" >"$OUT.rt" 2>&1
+for line in 'READ pt string "0101000020E6100000713D0AD7A3B04040F6285C8FC2954140"' 'READ ptMaybe object null' \
+  'READ poly string "0103000020E6100000010000000400000000000000008040400000000000804140000000000000414000000000008041400000000000004140000000000000424000000000008040400000000000804140"' \
+  'VIEW pt equals table read true poly equals table read true' \
+  'WRITE-BACK hex {"pt":"POINT(33.38 35.17)","spt":4326,"pm":null,"poly":"POLYGON((33 35,34 35,34 36,33 35))","spoly":4326}' \
+  'WRITE ewkt {"pt":"POINT(1 2)","spt":4326,"pm":"POINT(3 4)","poly":"POLYGON((0 0,1 0,1 1,0 0))","spoly":4326}' \
+  'WRONG pt SRID=4326;LINESTRING(0 0,1 1) refused 22023' 'WRONG poly SRID=4326;POINT(1 2) refused 22023' \
+  'WRONG pt SRID=4269;POINT(1 2) refused 22023'; do
+  fact "driver round trip prints [$line]" "$(grep -cxF -- "$line" "$OUT.rt")" 1
+done
+fact "importer: exactly TS2322 on lines 7-11 (a number for Point and Polygon, a [x, y] pair, null for the NOT NULL point, an object), listed in sort -u order" "$(t159_tsc_errors)" "$T159_BITE:10 TS2322 $T159_BITE:11 TS2322 $T159_BITE:7 TS2322 $T159_BITE:8 TS2322 $T159_BITE:9 TS2322"
+sed 's/^/driver: /' "$OUT.rt" >>"$OUT.f"
+[ "$nok" -eq "$nf" ] && echo "ALL $nf GEOGRAPHY FACTS HOLD" >>"$OUT.f"
+cat "$OUT.f" >>"$OUT"
+judge K193 "(T-159) CONTROL: geography(Point,4326) NOT NULL and nullable, geography(Polygon,4326), a view over them: each renders as the mapped geography and is admitted, round-trips by value through pg and drizzle as a hex-EWKB string, a wrong subtype or SRID is refused 22023 by the column, and an importer refuses a number, a pair, null and an object" PASS "$code" '^ALL [0-9]+ GEOGRAPHY FACTS HOLD$'
+grep -E '^fact |^driver: |^  geography: ' "$OUT" | cut -c1-240 | sed 's/^/       /'
+restore
+
+plant_geo
+mutate "$RENDER" "  'geography(Point,4326)'," "  't159_removed_point',"
+grep -qF "  't159_removed_point'," "$RENDER" || abort "the Point entry was not removed from $RENDER"
+git diff -U0 -- "$RENDER" | grep -E '^[-+][^-+]' | sed 's/^/   mutation:   /'
+check K194 "(T-159) the geography(Point,4326) entry deleted from GEOGRAPHY_ADMITTED (asserted above): the plant's Point column is refused, I-MAP" I-MAP \
+  "column \"t159_geo\"\.\"pt\" has database type 'geography\(Point,4326\)'"
+
+plant_geo
+mutate "$RENDER" "  'geography(Polygon,4326)'," "  't159_removed_polygon',"
+grep -qF "  't159_removed_polygon'," "$RENDER" || abort "the Polygon entry was not removed from $RENDER"
+git diff -U0 -- "$RENDER" | grep -E '^[-+][^-+]' | sed 's/^/   mutation:   /'
+check K195 "(T-159) the geography(Polygon,4326) entry deleted from GEOGRAPHY_ADMITTED (asserted above): the plant's Polygon column is refused, I-MAP" I-MAP \
+  "column \"t159_geo\"\.\"poly\" has database type 'geography\(Polygon,4326\)'"
+
+plant_geo
+mutate "$RENDER" "    'geography'," "    't159_removed_geography',"
+grep -qF "    't159_removed_geography'," "$RENDER" || abort "the geography text entry was not removed from $RENDER"
+git diff -U0 -- "$RENDER" | grep -E '^[-+][^-+]' | sed 's/^/   mutation:   /'
+check K196 "(T-159) the geography entry deleted from the text map COLUMN_TYPES (asserted above): drizzle-kit's TODO is no longer mapped, I-MAP" I-MAP \
+  "column \"pt\" has database type 'geography', which drizzle-kit cannot render"
+
+plant_geo_one 'geography(LineString,4326)'
+check K197 "(T-159) geography(LineString,4326): drizzle-kit prints the same TODO 'geography' and the text entry maps it, but the catalogue does not admit it, I-MAP" I-MAP \
+  "column \"t159_geo\"\.\"g\" has database type 'geography\(LineString,4326\)'"
+
+plant_geo_one 'geography(LineString,4326)'
+node scripts/db-introspect.ts --write >"$OUT" 2>&1
+code=$?
+total=$((total + 1))
+w_banners=$(grep -cE '^GATE (PASS|FAIL|CRASH)  db:introspect($| — |: )' "$OUT")
+w_tags=$(grep -oE '^  - \[I-[A-Z]+\]' "$OUT" | sed -E 's/^  - \[(.*)\]$/\1/' | sort -u | tr '\n' ' ' | sed 's/ $//')
+w_geo=$(grep -c "^  - \[I-MAP\] column \"t159_geo\"\.\"g\" has database type 'geography(LineString,4326)'" "$OUT")
+if [ "$code" -eq 1 ] && [ "$w_banners" -eq 1 ] && [ "$w_tags" = "I-MAP" ] && [ "$w_geo" -eq 1 ] && git diff --quiet -- "$SCHEMA"; then v=ok; else v=BAD; bad=$((bad + 1)); fi
+printf '%-4s %s  %s\n       exit %s; banners %s; expected I-MAP x1 and db/schema.ts unchanged; reported %s x%s; db/schema.ts %s\n' "$v" K197w "(T-159) the same LineString plant in WRITE mode: refused, and db/schema.ts is not written" "$code" "$w_banners" "${w_tags:-none}" "$w_geo" "$(git diff --quiet -- "$SCHEMA" && echo unchanged || echo CHANGED)"
+grep -E '^  - \[|^GATE ' "$OUT" | cut -c1-240 | sed 's/^/       /'
+restore
+
+plant "$UP" "-- @phase: expand
+CREATE TABLE public.t159_geo (
+  id integer PRIMARY KEY,
+  mpoly geography(MultiPolygon,4326),
+  plain geography,
+  ptz geography(PointZ,4326),
+  pt4269 geography(Point,4269));"
+plant "$DOWN" "DROP TABLE public.t159_geo;"
+check_facts K198 "(T-159) every other scalar shape — MultiPolygon, unconstrained, PointZ, Point at SRID 4269 — is refused, I-MAP, each column named" I-MAP \
+  "column \"t159_geo\"\.\"mpoly\" has database type 'geography\(MultiPolygon,4326\)'" \
+  "column \"t159_geo\"\.\"plain\" has database type 'geography'" \
+  "column \"t159_geo\"\.\"ptz\" has database type 'geography\(PointZ,4326\)'" \
+  "column \"t159_geo\"\.\"pt4269\" has database type 'geography\(Point,4269\)'"
+
+plant "$UP" "-- @phase: expand
+CREATE DOMAIN public.t159_line_dom AS geography(LineString,4326);
+CREATE DOMAIN public.t159_pt_dom AS geography(Point,4326);
+CREATE TABLE public.t159_geo (id integer PRIMARY KEY, l public.t159_line_dom, p public.t159_pt_dom);"
+plant "$DOWN" "DROP TABLE public.t159_geo;
+DROP DOMAIN public.t159_line_dom, public.t159_pt_dom;"
+check_facts K199 "(T-159) a DOMAIN over geography renders as the same TODO 'geography' (M2); the catalogue walks the domain, and a domain is not an admitted type even over Point, I-MAP" I-MAP \
+  "column \"t159_geo\"\.\"l\" has database type 't159_line_dom'" \
+  "column \"t159_geo\"\.\"p\" has database type 't159_pt_dom'"
+
+plant_geo_one 'geography(Point,4326)[]'
+check K200 "(T-159) geography(Point,4326)[]: drizzle-kit prints the full array type, which the text map does not hold, I-MAP" I-MAP \
+  "column \"g\" has database type 'geography\(Point,4326\)\[\]'"
+
+plant_geo_one 'geography(LineString,4326)'
+mutate "$RENDER" "    if (!GEOGRAPHY_ADMITTED.has(c.type)) {" "    if (c.type === 't159 rule deleted') {"
+git diff -U0 -- "$RENDER" | grep -E '^[-+][^-+]' | sed 's/^/   mutation:   /'
+node scripts/db-introspect.ts --write >"$OUT.w" 2>&1
+wcode=$?
+node scripts/db-introspect.ts --check >"$OUT" 2>&1
+code=$?
+: >"$OUT.f"
+nf=0
+nok=0
+fact "write with the admission rule deleted: exit" "$wcode" 0
+fact "db/schema.ts, inside t159Geo: the LineString column rendered as the mapped geography" "$(block_count t159Geo 'g: geography("g"),')" 1
+fact "the generator admits the LineString column (BASE $BASE_GEOGRAPHY + 1)" "$(grep -cE "^  geography: $((BASE_GEOGRAPHY + 1)) column\(s\) admitted " "$OUT")" 1
+[ "$nok" -eq "$nf" ] && echo "ALL $nf RED-BEFORE FACTS HOLD" >>"$OUT.f"
+cat "$OUT.f" >>"$OUT"
+judge K201 "(T-159) RED BEFORE: the admission rule deleted (asserted above): the text entry alone admits geography(LineString,4326), typed as a string like a Point, GATE PASS" PASS "$code" '^ALL [0-9]+ RED-BEFORE FACTS HOLD$'
+grep -E '^fact ' "$OUT" | cut -c1-240 | sed 's/^/       /'
+restore
+
+plant_geo
+mutate "$RENDER" "            OR gb.base IS NOT NULL)\`;" "            OR false)\`;"
+git diff -U0 -- "$RENDER" | grep -E '^[-+][^-+]' | sed 's/^/   mutation:   /'
+check K202 "(T-159) the catalogue's geography read deleted (asserted above): no catalogue column backs the rendered geography columns, so the converse refuses them, I-MAP" I-MAP \
+  "the rendering of \"t159_geo\" builds column \"pt\" on line [0-9]+ with the mapped geography type, but the catalogue lists no geography column"
 
 echo
 # T-237 (OD-267): every call of an undefined command is one more case, and a BAD one.
