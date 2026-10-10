@@ -1334,8 +1334,11 @@ function stmtTokens(segs: readonly Segment[]): { toks: Tok[]; plain: boolean } {
       if (prev?.kind === 'code' && U_AMP_TAIL.test(prev.text)) {
         toks.splice(toks.length - 2, 2); // the `U` and `&` just read from `prev`
         let esc = '\\';
-        const n1 = segs[k + 1];
-        const n2 = segs[k + 2];
+        // (T-229, QA-C3) comments and whitespace may sit on either side of UESCAPE (case CZ35).
+        const j1 = nextSolid(segs, k + 1);
+        const n1 = segs[j1];
+        const j2 = nextSolid(segs, j1 + 1);
+        const n2 = segs[j2];
         if (
           n1?.kind === 'code' &&
           /^\s*UESCAPE\s*$/i.test(n1.text) &&
@@ -1343,7 +1346,7 @@ function stmtTokens(segs: readonly Segment[]): { toks: Tok[]; plain: boolean } {
           n2.body.length === 1
         ) {
           esc = n2.body;
-          k += 2;
+          k = j2;
         }
         name = decodeUnicodeIdent(s.body, esc);
       }
