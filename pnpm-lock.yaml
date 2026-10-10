@@ -35,6 +35,9 @@ importers:
       eslint-config-prettier:
         specifier: 10.1.8
         version: 10.1.8(eslint@10.9.1(supports-color@7.2.0))
+      libpg-query:
+        specifier: 18.1.5
+        version: 18.1.5
       pg:
         specifier: 8.23.0
         version: 8.23.0
@@ -1069,6 +1072,9 @@ packages:
   '@oxc-project/types@0.149.0':
     resolution: {integrity: sha512-Efcc+iF0j3Bf67YjEqIqWXbX5XddXoK/Mw4K1/JuXwRCZ8N16VR7iT23nlCc9XrveFVh/E5Rqs2StT0V8v9LdA==}
 
+  '@pgsql/types@18.0.0':
+    resolution: {integrity: sha512-jtAY4JU7jdVYZ/Vv3zlZqVP+FRWZokyCLKPPCnAApiaJAElpyyiMC3HRiquBu29kSrVs+rkqZD50SUIb/zyEGw==}
+
   '@pinojs/redact@0.4.0':
     resolution: {integrity: sha512-k2ENnmBugE/rzQfEcdWHcCY+/FM3VLzH9cYEsbdsoqrvzAKRhUZeRNhAZvB8OitQJ1TBed3yqWtdjzS6wJKBwg==}
 
@@ -1828,6 +1834,9 @@ packages:
   levn@0.4.1:
     resolution: {integrity: sha512-+bT2uH4E5LGE7h/n3evcS/sQlJXCpIp6ym8OWJ5eV6+67Dsql/LaaT7qJBAt2rzfoa/5QBGBhxDix1dMt2kQKQ==}
     engines: {node: '>= 0.8.0'}
+
+  libpg-query@18.1.5:
+    resolution: {integrity: sha512-xsksgH106LyVUylIp2bJz1MPFmVVIGKbB8belGWmh+J8/i38w8eM1twDIBnd97tzeNQFctH9MWKMthl22+fWcQ==}
 
   light-my-request@6.6.0:
     resolution: {integrity: sha512-CHYbu8RtboSIoVsHZ6Ye4cj4Aw/yg2oAFimlF7mNvfDV192LR7nDiKtSIfCuLT7KokPSTn/9kfVLm5OGN0A28A==}
@@ -2899,6 +2908,8 @@ snapshots:
 
   '@oxc-project/types@0.149.0': {}
 
+  '@pgsql/types@18.0.0': {}
+
   '@pinojs/redact@0.4.0': {}
 
   '@rolldown/binding-android-arm-eabi@1.2.8':
@@ -3603,6 +3614,10 @@ snapshots:
     dependencies:
       prelude-ls: 1.2.1
       type-check: 0.4.0
+
+  libpg-query@18.1.5:
+    dependencies:
+      '@pgsql/types': 18.0.0
 
   light-my-request@6.6.0:
     dependencies:
