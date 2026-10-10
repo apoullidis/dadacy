@@ -48,9 +48,13 @@ import ts from 'typescript';
  * SQL for lower(span)/upper(span). `tstzrange[]` and every other range type are NOT in the map.
  *
  * T-159 (OE-33 G-6): `geography`. MEASURED on a real table (tasks/state/EP-2/T-159.md M1): drizzle-kit
- * 0.31.10 prints the SAME TODO key, 'geography', for every scalar geography column whatever its subtype
- * or SRID (Point, Polygon, LineString, MultiPolygon, PointZ, unconstrained, SRID 4269), and for a
- * DOMAIN over geography too (M2). So this text entry CANNOT choose the subtype, and on its own it would
+ * 0.31.10 prints the same TODO key, 'geography', for a scalar geography column of a TABLE or a plain
+ * VIEW whatever its subtype or SRID (measured: Point, Polygon, LineString, MultiPolygon, PointZ,
+ * unconstrained, SRID 4269), and for a column of a DOMAIN declared directly over geography (M2). NOT for
+ * every geography column (T-159 QA Q04b, Q07, Q07b; OD-316): a MATERIALIZED VIEW column prints its full
+ * type (e.g. 'geography(Point,4326)'), and a domain over a domain prints the inner domain's name. Neither
+ * is a key of this map, so both stop I-MAP here, a matview over an admitted subtype included (fails
+ * closed). Where the key is 'geography', this text entry CANNOT choose the subtype, and on its own it would
  * type a LineString column exactly like a Point one (OD-107's failure shape). It is never the
  * safeguard: every catalogue geography column is held per column by checkCatalogueColumns against
  * GEOGRAPHY_ADMITTED below, and a rendered `geography(` with no admitted catalogue column behind it is
@@ -530,7 +534,7 @@ export function matchGeographyColumns(
     const where = `${JSON.stringify(c.relation)}.${JSON.stringify(c.column)}`;
     if (!GEOGRAPHY_ADMITTED.has(c.type)) {
       problems.push(
-        `column ${where} has database type '${c.type}': drizzle-kit renders every geography column as the same TODO 'geography', so the subtype is decided from the catalogue, and only ${admittedList} are admitted (exactly, as format_type prints the column's own type; a domain or an array is not). Any other geography column needs a measured entry in GEOGRAPHY_ADMITTED in scripts/gates/lib/schema-render.ts in the same change set (T-159)`,
+        `column ${where} has database type '${c.type}': the subtype is decided from the catalogue, not from drizzle-kit's text (which, for a table or plain-view column, is the same TODO 'geography' whatever the subtype), and only ${admittedList} are admitted (exactly, as format_type prints the column's own type; a domain or an array is not). Any other geography column needs a measured entry in GEOGRAPHY_ADMITTED in scripts/gates/lib/schema-render.ts in the same change set (T-159)`,
       );
       continue;
     }

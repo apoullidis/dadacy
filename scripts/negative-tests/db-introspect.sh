@@ -2552,7 +2552,7 @@ CREATE DOMAIN public.t159_pt_dom AS geography(Point,4326);
 CREATE TABLE public.t159_geo (id integer PRIMARY KEY, l public.t159_line_dom, p public.t159_pt_dom);"
 plant "$DOWN" "DROP TABLE public.t159_geo;
 DROP DOMAIN public.t159_line_dom, public.t159_pt_dom;"
-check_facts K199 "(T-159) a DOMAIN over geography renders as the same TODO 'geography' (M2); the catalogue walks the domain, and a domain is not an admitted type even over Point, I-MAP" I-MAP \
+check_facts K199 "(T-159) a DOMAIN declared directly over geography renders as the same TODO 'geography' (M2; a domain over a domain prints the inner domain's name instead, T-159 QA Q04b); the catalogue walks the domain, and a domain is not an admitted type even over Point, I-MAP" I-MAP \
   "column \"t159_geo\"\.\"l\" has database type 't159_line_dom'" \
   "column \"t159_geo\"\.\"p\" has database type 't159_pt_dom'"
 
