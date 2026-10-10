@@ -33,8 +33,9 @@
 --    removed or erased, which is lifting a suspension and is app_admin_rw's decision, OE-58; out of
 --    removed other than to erased; out of erased), dob_verified_18 false -> true, and any id
 --    change (OE-45's read joins on it). A NULL status or dob_verified_18 is not refused by this
---    guard: the columns' NOT NULL refuses it, 23502 (T-192 QA-B2); since 0012 (T-227) the guard,
---    now AFTER UPDATE, refuses it too, after NOT NULL has.
+--    guard: the columns' NOT NULL refuses it, 23502 (T-192 QA-B2). Since 0012 (T-227) the guard is
+--    AFTER UPDATE: NOT NULL refuses a NULL first (23502), and with NOT NULL dropped the guard refuses
+--    it too (KV055).
 --    So an automated suspension by app_rw takes effect and cannot be undone by app_rw, and the
 --    suspended holder's next countersignature is refused KV054 (0008). The guard is row-scoped, as
 --    OE-48 rules: every other account, and every other column of a ts_senior holder, stays
@@ -87,8 +88,12 @@
 -- could change status after it approved the row (T-192 tech-lead ORD1); 0012 (T-227) makes it
 -- AFTER UPDATE. TL-2: renaming account, account_role or approval and creating a replacement under
 -- the old name leaves the protected triggers on the old table (T-192 tech-lead RT2);
--- gate:migration-lint refuses it since T-227 (R-PROTECTED-TABLE). [Corrected 2026-09-26 under
--- R-MERGED, comment lines only, T-227: §1's last sentence said the outcome was the permitted order.]
+-- gate:migration-lint refuses it since T-227 (R-PROTECTED-TABLE), and since T-229 reads each
+-- statement as PostgreSQL's parser does, so ALTER INDEX … RENAME TO, a spaced `.` and SELECT … INTO
+-- are refused too (QA-C4, OD-240); SQL assembled at run time (format(), concatenation) is not read.
+-- [Corrected 2026-09-26 under R-MERGED, comment lines only, T-227: §1's last sentence said the
+-- outcome was the permitted order. Corrected again under R-MERGED, comment lines only, T-229: §1's
+-- NULL sentence (QA-B2 under 0012's AFTER timing) and this paragraph's lint width.]
 --
 -- PRINCIPAL. app_ddl (T-136 § contract §6): it owns both functions' tables and 0008's function.
 -- No -- @run-as marker. Transactional; no -- @no-transaction marker.
