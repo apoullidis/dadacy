@@ -56,13 +56,15 @@
  *                        cites a ticket or a decision. SD §DB-13 rule 7 and §UC-4 part 1
  *                        protect the booking triggers; `T-020` contract §6 adds the INT-10
  *                        guard. "Names" is: an identifier in any parsed statement equal to the
- *                        object's name, or the name as a word inside any string constant (so a
- *                        `format()` argument or a concatenated piece counts). THIS GATE CANNOT
+ *                        object's name, or the name as a word inside any string in the parse (a
+ *                        constant, so a `format()` argument or a concatenated piece counts; a
+ *                        `COMMENT ON` text). THIS GATE CANNOT
  *                        VERIFY THAT A REVIEW HAPPENED. The marker makes the change declared, and
  *                        PROTOCOL §3's two-approval review of `db/migrations` is the control.
  *   [R-TRIGGER-BYPASS]   no `ALTER TABLE … DISABLE TRIGGER ALL|USER`, no `session_replication_role`
- *                        set (`SET`, a function's or role's `SET`) or named in any string constant
- *                        (`set_config('session_replication_role', …)`, `U&'…'` decoded). Both switch
+ *                        named anywhere in the parse (`SET`, `RESET`, a role's, database's or
+ *                        function's `SET`, any string: `set_config('session_replication_role', …)`,
+ *                        `U&'…'` decoded). Both switch
  *                        protected triggers off without naming them. (T-186, OD-217) Also no
  *                        `ALTER TABLE … DISABLE TRIGGER <name>` or `ENABLE REPLICA TRIGGER <name>`
  *                        (fires only under session_replication_role = replica, i.e. never in normal
