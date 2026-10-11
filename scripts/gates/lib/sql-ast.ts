@@ -166,14 +166,18 @@ export function nameList(x: unknown): string[] {
  * `['float8']` for a bare `float8`, `['pg_catalog', 'bpchar']` for `char(n)`/`character(n)`,
  * `['pg_catalog', 'varchar']` for `varchar(n)`/`character varying(n)`, `['text']` for `text`, and the
  * domain's own name for a domain-typed column (a domain is not resolved). `typmods`: the TypeName's raw
- * `typmods` (`[{ A_Const: { ival: { ival: 12 } } }]` for `char(12)`; a bare `char` carries an implicit 1).
- * `array`: the type carries `[]`. `how`: `define` for a ColumnDef with a name (`CREATE TABLE`, `ADD
- * COLUMN`, `CREATE TYPE … AS (…)`, `ALTER TYPE … ADD ATTRIBUTE`, `CREATE FOREIGN TABLE`), `retype` for
- * `ALTER COLUMN|ATTRIBUTE … [SET DATA] TYPE` (an `AT_AlterColumnType` command, whose ColumnDef has no name:
- * the name is the command's). NOT here: a column whose type is inferred (`CREATE TABLE … AS`: CY22), a
- * `RENAME COLUMN` (CY21), and a function's parameters and `RETURNS TABLE` columns, which are not
- * ColumnDefs (CY26). Falsified by migration-lint.sh CY01-CY0J, CY20-CY22 and CY26 (R-MONEY-TYPE is its
- * first reader).
+ * `typmods` (`[{ A_Const: { ival: { ival: 12 } } }]` for `char(12)`; a bare `char` carries an implicit 1,
+ * `location: -1`: measured, T-173.md § Rework 1, RW1-PROBE). `array`: the type carries `[]`. `how`:
+ * `define` for a ColumnDef with a name (`CREATE TABLE`, `ADD COLUMN`, `CREATE TYPE … AS (…)`, `ALTER TYPE
+ * … ADD ATTRIBUTE`, `CREATE FOREIGN TABLE`), `retype` for `ALTER COLUMN|ATTRIBUTE … [SET DATA] TYPE` (an
+ * `AT_AlterColumnType` command, whose ColumnDef has no name: the name is the command's; ATTRIBUTE: CY0L).
+ * NOT here: CHECK constraints (they are `Constraint` nodes, `contype: 'CONSTR_CHECK'`, inline in
+ * `ColumnDef.constraints` or under `AT_AddConstraint`'s `def`; walk them yourself), a column whose type is
+ * inferred (`CREATE TABLE … AS`: CY22; a view's columns: CY28), the columns `CREATE TABLE (LIKE …)` copies
+ * (CY27), a `RENAME COLUMN` (CY21), and a function's parameters and `RETURNS TABLE` columns, which are not
+ * ColumnDefs (CY26). Falsified by migration-lint.sh CY01-CY0L, CY20-CY22 and CY26-CY28 (R-MONEY-TYPE is
+ * its first reader). The CHECK exclusion is measured, not pinned: an inline CHECK, a table CHECK and an
+ * `ADD CONSTRAINT … CHECK` add no entry and change none (T-173.md § Rework 1, RW1-CHECK).
  */
 export interface ColumnType {
   readonly column: string;

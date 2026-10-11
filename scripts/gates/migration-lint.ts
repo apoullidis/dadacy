@@ -125,14 +125,19 @@
  *                        of one: CY01-CY08, CY0I): money is `bigint` minor units (SD SE-5, EUR cents; on
  *                        the wire a decimal-integer string, T-022 § contract §3). Read from PostgreSQL's
  *                        parse (AST_RULES): `CREATE TABLE`, `ADD COLUMN`, `ALTER COLUMN … [SET DATA] TYPE`,
- *                        `CREATE TYPE … AS (…)`, `ALTER TYPE … ADD ATTRIBUTE`, `CREATE FOREIGN TABLE`
- *                        (CY01-CY0B, CY0F-CY0H), in an up or a down file (CY0J), and in every string
- *                        constant the reader parses, an `EXECUTE`d one in a DO or function body (CY0C,
- *                        CY0D) and one that never runs (CY0E, a false FAIL). No marker permits it. NOT
+ *                        `CREATE TYPE … AS (…)`, `ALTER TYPE … ADD ATTRIBUTE`, `ALTER TYPE … ALTER
+ *                        ATTRIBUTE … TYPE`, `CREATE FOREIGN TABLE` (CY01-CY0B, CY0F-CY0H, CY0L), in an up
+ *                        or a down file (CY0J), and in every string constant the reader parses, an
+ *                        `EXECUTE`d one in a DO or function body (CY0C, CY0D) and one that never runs
+ *                        (CY0E, a false FAIL). No marker permits it: an accepted `-- @vendor-sql` marker
+ *                        on the DO body does not exempt it (CY0M). A quoted upper-case type name such as
+ *                        `"FLOAT8"` is refused too (CY0N; PostgreSQL has no such type, a false FAIL). NOT
  *                        READ: a domain over a refused type (CY20), a `RENAME COLUMN` to a money name
  *                        (CY21), a type inferred by `CREATE TABLE … AS` (CY22), a function's parameters
- *                        or `RETURNS TABLE` (CY26), a column assembled at run time (CY25). Not refused:
- *                        PostgreSQL's `money` type (CY23) and `integer` (CY24), which SD's list omits.
+ *                        or `RETURNS TABLE` (CY26), a column assembled at run time (CY25), the columns
+ *                        `CREATE TABLE (LIKE …)` copies (CY27), a view's columns (CY28). Not attacked, so
+ *                        no claim either way: `SELECT … INTO`, `%TYPE`. Not refused: PostgreSQL's `money`
+ *                        type (CY23) and `integer` (CY24), which SD's list omits.
  *   [R-PARSE]            (T-229) a migration file, a DO body or a `sql`/`plpgsql` function body that
  *                        PostgreSQL's parser (libpg_query 18.1.5) refuses. PostgreSQL would refuse it
  *                        too (T-229 block DB2), and the protected-object rules cannot read what does
@@ -486,7 +491,8 @@ const protectedTableList = (x: unknown): string | null => {
  * a substring, so `is_feedback` matches (CY0K) and `fee` alone does not (CY18). The types are keyed by the
  * last name the parser gives: `float` and `double precision` are `float8` (`float(p)` with p <= 24 is
  * `float4`), `real` is `float4`, and `numeric` and `decimal` are `numeric`; a bare `float4`/`float8` is
- * the same name unqualified (CY06, CY07).
+ * the same name unqualified (CY06, CY07). The name is lower-cased before the lookup, so a quoted
+ * `"FLOAT8"`, which PostgreSQL has no type for, is refused too (CY0N, a false FAIL).
  */
 const MONEY_NAMES: readonly (readonly [RegExp, string])[] = [
   [/_minor$/i, '*_minor'],
