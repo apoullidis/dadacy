@@ -156,7 +156,11 @@ const SUITES: readonly Suite[] = [
     // twenty refusals were BAD against b6d953f's lint (`!! 21 of 482` at 79848b4: the 21st was CY17, a
     // plant whose `--` comment swallowed its `);`, corrected before the rule; CY26 added after that run).
     // Green footer: T-173.md § Evidence, CY-GREEN.
-    cases: 483,
+    // 483 -> 488, 2026-10-11, T-173 rework 1 (QA Q-1, Q-7): CY0L (ALTER TYPE … ALTER ATTRIBUTE), CY0M
+    // (an accepted -- @vendor-sql marker does not exempt R-MONEY-TYPE; red under mutation M-VENDOR),
+    // CY0N (a quoted "FLOAT8", refused), CY27 (LIKE, PASS), CY28 (a view column, PASS). No older case
+    // touched. Red-first and green footers: T-173.md § Rework 1.
+    cases: 488,
     state: 'GREEN',
     why: 'gate:migration-lint: expand/contract, protected objects (the I-5 objects since T-186, 0011\'s since T-192; read through PostgreSQL\'s parser since T-229), R-TRIGGER-BYPASS by name, R-PROTECTED-RENAME, R-ADMIN-MEMBERSHIP, R-PROTECTED-TABLE, R-PROTECTED-EXTENSION, R-PARSE, U&"…" decoding, R-ROLE-SWITCH, R-RUN-AS, R-MERGED, R-TRAILER, R-VENDOR-SQL, R-RESTORE-PUBLIC, R-RULE, R-MONEY-TYPE (T-021, T-031, T-167, T-186, T-192, T-227, T-241, T-237, T-229, T-173)',
   },

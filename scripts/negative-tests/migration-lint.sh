@@ -31,8 +31,8 @@
 # T-173 adds one section (CY*): R-MONEY-TYPE, a money-named column typed float, double precision, real or
 # numeric (SD §DB-13 rule 7 bullet 5), a true-positive and a neighbour for each type, the TL2-1 EXECUTEd
 # string, and the bounds (a domain, a RENAME, CREATE TABLE … AS, the money type, integer, concatenation,
-# a function's parameters)
-# pinned as PASS.
+# a function's parameters, LIKE, a view column)
+# pinned as PASS; rework 1 adds CY0L-CY0N, CY27, CY28.
 #
 # T-227 adds three sections: R-PROTECTED-TABLE (CX*), R-PROTECTED-EXTENSION (CE*) and U&"…" decoding
 # (CU*); CNA is re-classed from a CONTROL to R-PROTECTED-TABLE.
@@ -800,7 +800,10 @@ echo "== R-MONEY-TYPE (T-173; SD §DB-13 rule 7 bullet 5, SD §QD-1's thirteenth
 # refused type has a true-positive (CY01-CY08) and a legitimate neighbour that passes (CY10-CY14). CY0C,
 # CY0D: TL2-1 (T-229 § contract §4), the column arrives in an EXECUTEd string. CY20-CY26 pin the bounds.
 # Red-first: every refusal here was BAD against b6d953f's lint (T-173.md § Evidence, CY-RED); CY26 and
-# CY17's corrected plant were added after that run (T-173.md § Progress log).
+# CY17's corrected plant were added after that run (T-173.md § Progress log). Rework 1 (QA Q-1, Q-7):
+# CY0L (ALTER TYPE … ALTER ATTRIBUTE), CY0M (no marker permits it; red under mutation M-VENDOR), CY0N
+# (a quoted "FLOAT8"), CY27 (LIKE) and CY28 (a view column), QA's plants QA09, QA40, QA31, QA30, QA32;
+# CY0L-CY0N red-first in T-173.md § Rework 1 (RW1-RED).
 money_tbl() {
   pair expand "CREATE TABLE public.t173_thing (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, $1);
 GRANT SELECT ON public.t173_thing TO app_rw;"
@@ -847,6 +850,17 @@ plant "$DOWN" "ALTER TABLE public.t173_thing ADD COLUMN amount_minor numeric;"
 check CY0J "in a DOWN file" R-MONEY-TYPE
 money_tbl "is_feedback real"
 check CY0K "SD's *_fee* glob is a substring: is_feedback real is refused (a false FAIL, the safe side)" R-MONEY-TYPE
+pair expand "CREATE TYPE public.t173_qct AS (price int);
+ALTER TYPE public.t173_qct ALTER ATTRIBUTE price TYPE numeric(12,2);"
+check CY0L "ALTER TYPE … ALTER ATTRIBUTE … TYPE numeric (QA09's plant)" R-MONEY-TYPE
+# CY0M: "No marker permits it" (contract §2, the gate header). The -- @vendor-sql marker is ACCEPTED (the
+# gate's review record "exempts body DO#1" must be in the output), and the DO body it exempts still has
+# its EXECUTEd numeric amount_minor refused. Red under mutation M-VENDOR (T-173.md § Rework 1).
+pair expand "-- @vendor-sql: DO#1 — T-173 QA probe
+DO \$d\$ BEGIN EXECUTE 'ALTER TABLE public.t173_qa ADD COLUMN amount_minor numeric'; END \$d\$;"
+checkwhy CY0M "no marker permits it: an accepted -- @vendor-sql marker on the DO body does not exempt R-MONEY-TYPE (QA40's plant)" R-MONEY-TYPE "exempts body DO#1"
+money_tbl 'amount_minor "FLOAT8"'
+check CY0N "a quoted upper-case type name \"FLOAT8\" is refused (PostgreSQL has no such type; a harmless false FAIL; QA31's shape)" R-MONEY-TYPE
 money_tbl "latitude float"
 check CY10 "NEIGHBOUR float: latitude float" PASS
 money_tbl "distance_km double precision"
@@ -884,6 +898,11 @@ pair expand "DO \$d\$ BEGIN EXECUTE 'ALTER TABLE public.t173_thing ADD COLUMN am
 check CY25 "THE BOUND: a column assembled at run time by concatenation is not read" PASS
 pair expand "CREATE FUNCTION public.t173_g(amount numeric) RETURNS TABLE (price float8) LANGUAGE sql AS 'SELECT 1.5::float8';"
 check CY26 "THE BOUND: a function's parameter and RETURNS TABLE column are not column definitions and are not read" PASS
+pair expand "CREATE TABLE public.t173_ql (LIKE public.t173_src INCLUDING ALL);
+GRANT SELECT ON public.t173_ql TO app_rw;"
+check CY27 "THE BOUND: CREATE TABLE (LIKE …) copies its types unread (QA30's plant)" PASS
+pair expand "CREATE VIEW public.t173_qv AS SELECT 1.5::numeric AS amount_minor;"
+check CY28 "THE BOUND: a view column, whose type is inferred, is not read (QA32's plant)" PASS
 
 echo "== R-CASCADE"
 pair expand "DROP FUNCTION assert_sitter_bookable() CASCADE;"
