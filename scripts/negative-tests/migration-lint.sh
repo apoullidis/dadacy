@@ -25,7 +25,8 @@
 # T-229 adds one section (CZ*): the protected-object rules read through PostgreSQL's parser (QA-C3, QA-C4,
 # QA-C5, OD-240), the bound (format(), concatenation) pinned as PASS, and R-PARSE.
 # Rework 1 (tech-lead review TL-1): CZ40-CZ43, nesting deeper than 8 fails closed (R-PARSE); CZ44, two
-# levels are still read.
+# levels are still read. Rework 2 (QA delta, OD-319): CZ40-CZ43 assert the R-PARSE PROBLEM LINE's depth
+# reason, not a phrase anywhere in the output; CZ45-CZ4I pin the 8/9 edge on each guarded path.
 #
 # T-227 adds three sections: R-PROTECTED-TABLE (CX*), R-PROTECTED-EXTENSION (CE*) and U&"…" decoding
 # (CU*); CNA is re-classed from a CONTROL to R-PROTECTED-TABLE.
@@ -722,17 +723,56 @@ check CZ33 "CONTROL: a string constant that is not SQL is not a parse failure" P
 # lib/sql-ast.ts; each DO/function body, PL/pgSQL expression and string constant is a level, so the
 # constant EXECUTEd inside a third nested DO/EXECUTE is at depth 9). Deeper fails closed (R-PARSE), for a
 # string constant as for a body. Plants: the review's TL-ATK D3, D3n, D4b, D3rc and D2rc, verbatim.
+# Rework 2 (QA delta QD-1, OD-319): the reason is asserted as the start of the R-PARSE problem line for
+# the plant ("[R-PARSE] <file>:<line>: this gate reads …"), which only the depth branch prints. The summary
+# line also says "nesting depth of 8" on every run, so that phrase alone could not fail.
+DEEP2="[R-PARSE] $UP:2: this gate reads PostgreSQL's parse to a nesting depth of 8"
+DEEP3="[R-PARSE] $UP:3: this gate reads PostgreSQL's parse to a nesting depth of 8"
 pair expand "DO \$a\$ BEGIN EXECUTE \$b\$ DO \$c\$ BEGIN EXECUTE \$d\$ DO \$e\$ BEGIN EXECUTE 'ALTER TABLE public.approval DISABLE TRIGGER ALL'; END \$e\$ \$d\$; END \$c\$ \$b\$; END \$a\$;"
-checkwhy CZ40 "TL-1 D3: DISABLE TRIGGER ALL in a constant three DO/EXECUTE levels down (depth 9) fails closed" R-PARSE "nesting depth of 8"
+checkwhy CZ40 "TL-1 D3: DISABLE TRIGGER ALL in a constant three DO/EXECUTE levels down (depth 9) fails closed" R-PARSE "$DEEP2"
 pair expand "-- @compliance-review: trg_approval_four_eyes — T-229 tech-lead review probe
 DO \$a\$ BEGIN EXECUTE \$b\$ DO \$c\$ BEGIN EXECUTE \$d\$ DO \$e\$ BEGIN EXECUTE 'ALTER TABLE public.approval DISABLE TRIGGER trg_approval_four_eyes'; END \$e\$ \$d\$; END \$c\$ \$b\$; END \$a\$;"
-checkwhy CZ41 "TL-1 D3n: the protected trigger disabled by name three levels down, WITH a marker, fails closed" R-PARSE "nesting depth of 8"
+checkwhy CZ41 "TL-1 D3n: the protected trigger disabled by name three levels down, WITH a marker, fails closed" R-PARSE "$DEEP3"
 pair expand "DO \$a\$ BEGIN EXECUTE \$b\$ DO \$c\$ BEGIN EXECUTE \$d\$ DO \$e\$ BEGIN EXECUTE \$f\$ DO \$g\$ BEGIN ALTER TABLE public.approval DISABLE TRIGGER ALL; END \$g\$ \$f\$; END \$e\$ \$d\$; END \$c\$ \$b\$; END \$a\$;"
-checkwhy CZ42 "TL-1 D4b: a DO body reachable only through a depth-9 constant fails closed" R-PARSE "nesting depth of 8"
+checkwhy CZ42 "TL-1 D4b: a DO body reachable only through a depth-9 constant fails closed" R-PARSE "$DEEP2"
 pair contract "DO \$a\$ BEGIN EXECUTE \$b\$ DO \$c\$ BEGIN EXECUTE \$d\$ DO \$e\$ BEGIN EXECUTE 'ALTER TABLE public.account_role RENAME TO account_role_v1'; END \$e\$ \$d\$; END \$c\$ \$b\$; END \$a\$;"
-checkwhy CZ43 "TL-1 D3rc: account_role renamed away three levels down, contract phase, fails closed" R-PARSE "nesting depth of 8"
+checkwhy CZ43 "TL-1 D3rc: account_role renamed away three levels down, contract phase, fails closed" R-PARSE "$DEEP2"
 pair contract "DO \$a\$ BEGIN EXECUTE \$b\$ DO \$c\$ BEGIN EXECUTE 'ALTER TABLE public.account_role RENAME TO account_role_v1'; END \$c\$ \$b\$; END \$a\$;"
 check CZ44 "TL-1 CONTROL D2rc: two levels (depth 6) is read, not cut off: the rename is refused by its rule, no R-PARSE" R-PROTECTED-TABLE
+# Rework 2 (QA delta QD-2/QD-3, OD-319): the edge, 8 read and 9 refused, on each path that checks the depth
+# (lib/sql-ast.ts readText, readPlpgsql, readExpression, readConstant). Depth notation: P = a PL/pgSQL body,
+# T = SQL text (a statement list, a sql body, a constant), E = a PL/pgSQL expression, each with its depth.
+# Red-first against 9f52469: CZ4G and CZ4I (no depth check on those paths there). The others pin behaviour
+# 9f52469 already had; which mutation of lib/sql-ast.ts turns which of them red is measured in T-229.md
+# § Rework 2 (RW2-MUT), not asserted here.
+pair expand "DO \$a\$ BEGIN DO \$b\$ BEGIN EXECUTE \$c\$ DO \$d\$ BEGIN EXECUTE 'ALTER TABLE public.approval DISABLE TRIGGER ALL'; END \$d\$ \$c\$; END \$b\$; END \$a\$;"
+check CZ45 "EDGE readText, a constant at exactly 8 (P1 T2 P3 E4 T5 P6 E7 T8) is read: its rule fires, no R-PARSE" R-TRIGGER-BYPASS
+pair expand "DO \$a\$ BEGIN DO \$b\$ BEGIN DO \$c\$ BEGIN DO \$d\$ BEGIN ALTER TABLE public.approval DISABLE TRIGGER ALL; END \$d\$; END \$c\$; END \$b\$; END \$a\$;"
+check CZ46 "EDGE readText, a statement at exactly 8 (four plain DOs, P7 T8) is read: its rule fires, no R-PARSE" R-TRIGGER-BYPASS
+pair expand "DO \$a\$ BEGIN DO \$b\$ BEGIN DO \$c\$ BEGIN EXECUTE \$x\$ DO \$e\$ BEGIN ALTER TABLE public.approval DISABLE TRIGGER ALL; END \$e\$ \$x\$; END \$c\$; END \$b\$; END \$a\$;"
+checkwhy CZ47 "EDGE readText, a statement at 9 in a body at 8 (P8 T9) fails closed" R-PARSE "$DEEP2"
+pair expand "DO \$a\$ BEGIN DO \$b\$ BEGIN DO \$c\$ BEGIN EXECUTE \$x\$ CREATE FUNCTION public.t229_f() RETURNS void LANGUAGE sql AS 'ALTER TABLE public.approval DISABLE TRIGGER ALL' \$x\$; END \$c\$; END \$b\$; END \$a\$;"
+check CZ48 "EDGE readText, a sql function body at exactly 8 (CREATE FUNCTION at T7, body T8) is read: its rule fires" R-TRIGGER-BYPASS
+pair expand "DO \$a\$ BEGIN DO \$b\$ BEGIN DO \$c\$ BEGIN DO \$d\$ BEGIN CREATE FUNCTION public.t229_f() RETURNS void LANGUAGE sql AS 'ALTER TABLE public.approval DISABLE TRIGGER ALL'; END \$d\$; END \$c\$; END \$b\$; END \$a\$;"
+checkwhy CZ49 "EDGE readText, a sql function body at 9 (CREATE FUNCTION at T8, body T9) fails closed" R-PARSE "$DEEP2"
+pair expand "DO \$a\$ BEGIN DO \$b\$ BEGIN DO \$c\$ BEGIN EXECUTE \$x\$ DO \$e\$ BEGIN NULL; END \$e\$ \$x\$; END \$c\$; END \$b\$; END \$a\$;"
+check CZ4A "EDGE readPlpgsql, a DO body at exactly 8 (P8) holding only NULL is read: PASS" PASS
+pair expand "DO \$a\$ BEGIN DO \$b\$ BEGIN DO \$c\$ BEGIN EXECUTE \$x\$ DO \$e\$ BEGIN IF true THEN NULL; END \$e\$ \$x\$; END \$c\$; END \$b\$; END \$a\$;"
+checkwhy CZ4B "EDGE readPlpgsql, a DO body at exactly 8 (P8) that the PL/pgSQL parser refuses is read: R-PARSE as a parse failure, not as depth" R-PARSE "[R-PARSE] $UP:2: PostgreSQL's parser (libpg_query 18) cannot parse DO body (plpgsql) >"
+pair expand "DO \$a\$ BEGIN DO \$b\$ BEGIN DO \$c\$ BEGIN DO \$d\$ BEGIN DO \$e\$ BEGIN ALTER TABLE public.approval DISABLE TRIGGER ALL; END \$e\$; END \$d\$; END \$c\$; END \$b\$; END \$a\$;"
+checkwhy CZ4C "EDGE readPlpgsql (QA Q4): five plain DOs, DISABLE TRIGGER ALL in a body at 9 (P9) fails closed" R-PARSE "$DEEP2"
+pair expand "DO \$a\$ BEGIN DO \$b\$ BEGIN DO \$c\$ BEGIN DO \$d\$ BEGIN CREATE FUNCTION public.t229_f() RETURNS void LANGUAGE plpgsql AS \$f\$ BEGIN ALTER TABLE public.approval DISABLE TRIGGER ALL; END \$f\$; END \$d\$; END \$c\$; END \$b\$; END \$a\$;"
+checkwhy CZ4D "EDGE readPlpgsql (QA Q6): a plpgsql function body at 9 (P9) fails closed" R-PARSE "$DEEP2"
+pair expand "DO \$a\$ BEGIN DO \$b\$ BEGIN DO \$c\$ BEGIN DO \$d\$ BEGIN DO \$e\$ BEGIN NULL; END \$e\$; END \$d\$; END \$c\$; END \$b\$; END \$a\$;"
+checkwhy CZ4E "EDGE readPlpgsql: five plain DOs, the innermost body at 9 (P9) holding only NULL fails closed" R-PARSE "$DEEP2"
+pair expand "DO \$a\$ BEGIN DO \$b\$ BEGIN DO \$c\$ BEGIN DO \$d\$ BEGIN IF true THEN NULL; END IF; END \$d\$; END \$c\$; END \$b\$; END \$a\$;"
+check CZ4F "EDGE readExpression, an IF condition at exactly 8 (P7 E8) is read: PASS" PASS
+pair expand "DO \$a\$ BEGIN DO \$b\$ BEGIN DO \$c\$ BEGIN EXECUTE \$x\$ DO \$e\$ BEGIN IF true THEN NULL; END IF; END \$e\$ \$x\$; END \$c\$; END \$b\$; END \$a\$;"
+checkwhy CZ4G "EDGE readExpression (QA Q9): an IF condition at 9 (P8 E9) fails closed" R-PARSE "$DEEP2"
+pair expand "DO \$a\$ BEGIN DO \$b\$ BEGIN DO \$c\$ BEGIN EXECUTE \$x\$ SELECT '1' \$x\$; END \$c\$; END \$b\$; END \$a\$;"
+check CZ4H "EDGE readConstant, a constant with no letter at exactly 8 (a statement at T7, its constant T8): PASS" PASS
+pair expand "DO \$a\$ BEGIN DO \$b\$ BEGIN DO \$c\$ BEGIN DO \$d\$ BEGIN PERFORM '1'; END \$d\$; END \$c\$; END \$b\$; END \$a\$;"
+checkwhy CZ4I "EDGE readConstant (QA Q11 shape): a constant with no letter at 9 (PERFORM at T8, its constant T9) fails closed" R-PARSE "$DEEP2"
 
 echo "== R-CASCADE"
 pair expand "DROP FUNCTION assert_sitter_bookable() CASCADE;"
