@@ -94,8 +94,9 @@
  *                        read by name — `account`, `account_role`, `approval`, unqualified or in `public`
  *                        — are never renamed away (a RENAME of a relation, whatever kind the statement
  *                        says: `ALTER TABLE|INDEX|SEQUENCE|VIEW|MATERIALIZED VIEW|FOREIGN TABLE <name>
- *                        RENAME TO`, since PostgreSQL renames a TABLE through `ALTER INDEX`), moved (`…
- *                        SET SCHEMA`, any kind), or replaced: no relation is renamed TO one of those
+ *                        RENAME TO`, since PostgreSQL renames a TABLE through `ALTER INDEX`), moved
+ *                        out of `public` (`… SET SCHEMA`, any kind), or replaced by a relation renamed
+ *                        or created under the name: no relation is renamed TO one of those
  *                        names, the schema `public` is not renamed, and no migration but the one that
  *                        created it (`0005`, `0007`) creates a relation of that name (`CREATE TABLE`,
  *                        `… AS`, `… PARTITION OF`, `CREATE [MATERIALIZED] VIEW`, `CREATE FOREIGN TABLE`,
@@ -104,7 +105,12 @@
  *                        the old name (T-192 tech-lead RT2: an app_rw countersignature by a no-role
  *                        account was stored). No marker permits it. A RENAME of a column, constraint or
  *                        trigger ON those tables is not this rule's. `DROP TABLE` of one is not refused
- *                        (T-186 QA X2/X3, disclosed): it removes the table with its triggers.
+ *                        (T-186 QA X2/X3, disclosed): it removes the table with its triggers. NOT READ
+ *                        (T-229 tech-lead review TL-2): a relation of one of the names moved INTO
+ *                        `public` from another schema (`ALTER TABLE <s>.account_role SET SCHEMA public`,
+ *                        after that DROP) is refused by no rule (CZ4N pins it as PASS); an app_ddl login
+ *                        cannot stage it, since `public` is the only schema it may create in (T-229
+ *                        TL-DB2), so it needs a `-- @run-as` migration, which two-approval review reads.
  *   [R-PROTECTED-EXTENSION] (T-227, OD-235) no protected object is made removable by DROP EXTENSION:
  *                        `… DEPENDS ON EXTENSION` (not `NO DEPENDS`) whose object is a protected object
  *                        or one of the three tables, and `ALTER EXTENSION … ADD` of a protected object or
@@ -275,10 +281,11 @@
  * R-PROTECTED still requires the marker when the protected name is one of the constants. A body in a
  * language other than `plpgsql` or `sql` is not read. Names are resolved as spelt, never against a
  * catalogue or a search_path. R-PROTECTED-TABLE names three tables and no others: `booking`, whose
- * triggers SD §DB-13 rule 7 protects, does not exist yet and is not on its list. For the rules that are
- * not protected-object rules a `U&'…'` STRING constant is still not decoded. It is a static check over
- * source text and it proves nothing about a database. The database-side refusals are `0001`'s guard and
- * the constraint suites.
+ * triggers SD §DB-13 rule 7 protects, does not exist yet and is not on its list. R-PROTECTED-TABLE does
+ * not refuse a relation of a protected name moved INTO `public` by `SET SCHEMA` (T-229 TL-2; CZ4N). For
+ * the rules that are not protected-object rules a `U&'…'` STRING constant is still not decoded. It is a
+ * static check over source text and it proves nothing about a database. The database-side refusals are
+ * `0001`'s guard and the constraint suites.
  */
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
@@ -463,6 +470,11 @@ const protectedTableList = (x: unknown): string | null => {
  * and reaches no rule, whether it is a statement of a body, a PL/pgSQL expression or a string constant
  * (QA delta QD-3: until rework 2 an expression at 9 reached every rule; CZ4G, CZ4I). A later R-tag that
  * reads statements plugs in by adding an entry to AST_RULES (T-229 § Published contract §4).
+ * A statement parsed out of a string constant reaches every rule whether or not that string is ever
+ * executed (T-229 tech-lead review TL-4): `SELECT '<statement>'` hands `check` the statement, with
+ * `s.via` ending in `string constant` (CZ4J: a DISABLE TRIGGER ALL that is only a SELECTed string is
+ * refused). For the protected-object rules that is the safe side, a false FAIL. A rule over column
+ * types (T-173, T-253) must read `s.via`, or it will false-FAIL on a string that is only data.
  */
 interface AstRule {
   readonly tag: string;
@@ -1125,6 +1137,11 @@ export function readFragments(
  * The file as PostgreSQL receives it from psql, for the parser: each psql meta-command (a backslash in
  * code, to the end of its line) blanked to spaces, so offsets and lines do not move. R-ROLE-SWITCH
  * refuses every meta-command; this only stops the parser failing on text that is psql's, not SQL.
+ * COUPLING (T-229 tech-lead review TL-3): blanking to the end of the line also hides any SQL after psql's
+ * `\\` separator on that line (`\echo x \\ ALTER TABLE …`), which psql would send to the server. That
+ * is safe ONLY while R-ROLE-SWITCH refuses every backslash in code (CZ4M: such a line is refused by
+ * R-ROLE-SWITCH alone, its ALTER unread). Do not relax R-ROLE-SWITCH's refusal of backslashes without
+ * first making this function keep what follows `\\`.
  */
 function withoutPsqlMeta(segments: readonly Segment[]): string {
   return segments
