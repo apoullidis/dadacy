@@ -24,6 +24,8 @@
 #
 # T-229 adds one section (CZ*): the protected-object rules read through PostgreSQL's parser (QA-C3, QA-C4,
 # QA-C5, OD-240), the bound (format(), concatenation) pinned as PASS, and R-PARSE.
+# Rework 1 (tech-lead review TL-1): CZ40-CZ43, nesting deeper than 8 fails closed (R-PARSE); CZ44, two
+# levels are still read.
 #
 # T-227 adds three sections: R-PROTECTED-TABLE (CX*), R-PROTECTED-EXTENSION (CE*) and U&"…" decoding
 # (CU*); CNA is re-classed from a CONTROL to R-PROTECTED-TABLE.
@@ -716,6 +718,21 @@ pair expand "CREATE FUNCTION public.t229_f() RETURNS int LANGUAGE sql AS 'SELEC 
 check CZ32 "R-PARSE: a LANGUAGE sql body that does not parse" R-PARSE
 pair expand "COMMENT ON TABLE public.t229_scratch IS 'not SQL: DROP the thing';"
 check CZ33 "CONTROL: a string constant that is not SQL is not a parse failure" PASS
+# T-229 rework 1 (tech-lead review TL-1): the reader goes to a nesting depth of 8 (MAX_DEPTH in
+# lib/sql-ast.ts; each DO/function body, PL/pgSQL expression and string constant is a level, so the
+# constant EXECUTEd inside a third nested DO/EXECUTE is at depth 9). Deeper fails closed (R-PARSE), for a
+# string constant as for a body. Plants: the review's TL-ATK D3, D3n, D4b, D3rc and D2rc, verbatim.
+pair expand "DO \$a\$ BEGIN EXECUTE \$b\$ DO \$c\$ BEGIN EXECUTE \$d\$ DO \$e\$ BEGIN EXECUTE 'ALTER TABLE public.approval DISABLE TRIGGER ALL'; END \$e\$ \$d\$; END \$c\$ \$b\$; END \$a\$;"
+checkwhy CZ40 "TL-1 D3: DISABLE TRIGGER ALL in a constant three DO/EXECUTE levels down (depth 9) fails closed" R-PARSE "nesting depth of 8"
+pair expand "-- @compliance-review: trg_approval_four_eyes — T-229 tech-lead review probe
+DO \$a\$ BEGIN EXECUTE \$b\$ DO \$c\$ BEGIN EXECUTE \$d\$ DO \$e\$ BEGIN EXECUTE 'ALTER TABLE public.approval DISABLE TRIGGER trg_approval_four_eyes'; END \$e\$ \$d\$; END \$c\$ \$b\$; END \$a\$;"
+checkwhy CZ41 "TL-1 D3n: the protected trigger disabled by name three levels down, WITH a marker, fails closed" R-PARSE "nesting depth of 8"
+pair expand "DO \$a\$ BEGIN EXECUTE \$b\$ DO \$c\$ BEGIN EXECUTE \$d\$ DO \$e\$ BEGIN EXECUTE \$f\$ DO \$g\$ BEGIN ALTER TABLE public.approval DISABLE TRIGGER ALL; END \$g\$ \$f\$; END \$e\$ \$d\$; END \$c\$ \$b\$; END \$a\$;"
+checkwhy CZ42 "TL-1 D4b: a DO body reachable only through a depth-9 constant fails closed" R-PARSE "nesting depth of 8"
+pair contract "DO \$a\$ BEGIN EXECUTE \$b\$ DO \$c\$ BEGIN EXECUTE \$d\$ DO \$e\$ BEGIN EXECUTE 'ALTER TABLE public.account_role RENAME TO account_role_v1'; END \$e\$ \$d\$; END \$c\$ \$b\$; END \$a\$;"
+checkwhy CZ43 "TL-1 D3rc: account_role renamed away three levels down, contract phase, fails closed" R-PARSE "nesting depth of 8"
+pair contract "DO \$a\$ BEGIN EXECUTE \$b\$ DO \$c\$ BEGIN EXECUTE 'ALTER TABLE public.account_role RENAME TO account_role_v1'; END \$c\$ \$b\$; END \$a\$;"
+check CZ44 "TL-1 CONTROL D2rc: two levels (depth 6) is read, not cut off: the rename is refused by its rule, no R-PARSE" R-PROTECTED-TABLE
 
 echo "== R-CASCADE"
 pair expand "DROP FUNCTION assert_sitter_bookable() CASCADE;"
