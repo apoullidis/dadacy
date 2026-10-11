@@ -28,6 +28,11 @@
 # levels are still read. Rework 2 (QA delta, OD-319): CZ40-CZ43 assert the R-PARSE PROBLEM LINE's depth
 # reason, not a phrase anywhere in the output; CZ45-CZ4I pin the 8/9 edge on each guarded path.
 #
+# T-173 adds one section (CY*): R-MONEY-TYPE, a money-named column typed float, double precision, real or
+# numeric (SD §DB-13 rule 7 bullet 5), a true-positive and a neighbour for each type, the TL2-1 EXECUTEd
+# string, and the bounds (a domain, a RENAME, CREATE TABLE … AS, the money type, integer, concatenation)
+# pinned as PASS.
+#
 # T-227 adds three sections: R-PROTECTED-TABLE (CX*), R-PROTECTED-EXTENSION (CE*) and U&"…" decoding
 # (CU*); CNA is re-classed from a CONTROL to R-PROTECTED-TABLE.
 #
@@ -786,6 +791,93 @@ pair expand "\\echo t229 \\\\ ALTER TABLE public.approval DISABLE TRIGGER ALL;"
 check CZ4M "TL-3: SQL after psql's \\\\ separator is blanked from the parse (its DISABLE is unread); the line is refused by R-ROLE-SWITCH alone" R-ROLE-SWITCH
 pair expand "ALTER TABLE t229_s.account_role SET SCHEMA public;"
 check CZ4N "THE BOUND (tech-lead review TL-2, TL-ATK SS2): a relation named account_role moved INTO public is refused by no rule" PASS
+
+echo "== R-MONEY-TYPE (T-173; SD §DB-13 rule 7 bullet 5, SD §QD-1's thirteenth subject): no float, double precision, real or numeric column whose name matches *_minor, *amount*, *_fee*, *price*"
+# SD 3088: "money is bigint minor units" (SE-5: EUR cents). A money column is identified by NAME, by SD's
+# four globs; the refused types are SD's four, as PostgreSQL's parser spells them (float -> float8 or
+# float4, double precision -> float8, real -> float4, numeric and its alias decimal -> numeric). Each
+# refused type has a true-positive (CY01-CY08) and a legitimate neighbour that passes (CY10-CY14). CY0C,
+# CY0D: TL2-1 (T-229 § contract §4), the column arrives in an EXECUTEd string. CY20-CY25 pin the bounds.
+# Red-first: every refusal here was BAD against b6d953f's lint (T-173.md § Evidence, CY-RED).
+money_tbl() {
+  pair expand "CREATE TABLE public.t173_thing (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, $1);
+GRANT SELECT ON public.t173_thing TO app_rw;"
+}
+money_tbl "amount_minor float"
+check CY01 "float (float8) on a *_minor column" R-MONEY-TYPE
+money_tbl "total_amount double precision"
+check CY02 "double precision on an *amount* column" R-MONEY-TYPE
+money_tbl "platform_fee real"
+check CY03 "real (float4) on a *_fee* column" R-MONEY-TYPE
+money_tbl "unit_price numeric(12,2)"
+check CY04 "numeric(12,2) on a *price* column" R-MONEY-TYPE
+money_tbl "price decimal(12,2)"
+check CY05 "decimal (the parser's numeric) on a *price* column" R-MONEY-TYPE
+money_tbl "fee_minor float4"
+check CY06 "float4 spelled by its internal name" R-MONEY-TYPE
+money_tbl "amount float8"
+check CY07 "float8 spelled by its internal name" R-MONEY-TYPE
+money_tbl '"Refund_AMOUNT" NUMERIC'
+check CY08 "a quoted mixed-case name and an upper-case type (names matched case-insensitively)" R-MONEY-TYPE
+pair expand "ALTER TABLE public.t173_thing ADD COLUMN refund_amount numeric;"
+check CY09 "ALTER TABLE … ADD COLUMN" R-MONEY-TYPE
+pair contract "ALTER TABLE public.t173_thing ALTER COLUMN price_minor TYPE numeric(12,2) USING price_minor::numeric;"
+check CY0A "ALTER COLUMN … TYPE numeric, in a contract migration" R-MONEY-TYPE
+pair contract "ALTER TABLE public.t173_thing ALTER price_minor SET DATA TYPE double precision;"
+check CY0B "ALTER … SET DATA TYPE double precision, COLUMN omitted" R-MONEY-TYPE
+pair expand "DO \$d\$ BEGIN EXECUTE 'ALTER TABLE public.t173_thing ADD COLUMN platform_fee real'; END \$d\$;"
+check CY0C "TL2-1: the column arrives in an EXECUTEd string inside a DO body (s.via ends in string constant)" R-MONEY-TYPE
+pair expand "CREATE FUNCTION public.t173_f() RETURNS void LANGUAGE plpgsql AS \$f\$ BEGIN EXECUTE 'ALTER TABLE public.t173_thing ADD COLUMN unit_price float8'; END \$f\$;"
+check CY0D "TL2-1: the column arrives in an EXECUTEd string inside a plpgsql function body" R-MONEY-TYPE
+pair expand "SELECT 'ALTER TABLE public.t173_thing ADD COLUMN amount float8';"
+check CY0E "TL2-1's safe side: a string that is only SELECTed, never executed, is refused too (s.via is not read)" R-MONEY-TYPE
+pair expand "CREATE TYPE public.t173_ct AS (amount numeric);"
+check CY0F "an attribute of a composite type, CREATE TYPE … AS (…)" R-MONEY-TYPE
+pair expand "ALTER TYPE public.t173_ct ADD ATTRIBUTE price real;"
+check CY0G "ALTER TYPE … ADD ATTRIBUTE" R-MONEY-TYPE
+pair expand "CREATE FOREIGN TABLE public.t173_ft (fee_amount float8) SERVER t173_srv;
+GRANT SELECT ON public.t173_ft TO app_rw;"
+check CY0H "CREATE FOREIGN TABLE (libpg_query's bare base field)" R-MONEY-TYPE
+money_tbl "price numeric[]"
+check CY0I "an array of numeric" R-MONEY-TYPE
+pair expand "SELECT 1;"
+plant "$DOWN" "ALTER TABLE public.t173_thing ADD COLUMN amount_minor numeric;"
+check CY0J "in a DOWN file" R-MONEY-TYPE
+money_tbl "is_feedback real"
+check CY0K "SD's *_fee* glob is a substring: is_feedback real is refused (a false FAIL, the safe side)" R-MONEY-TYPE
+money_tbl "latitude float"
+check CY10 "NEIGHBOUR float: latitude float" PASS
+money_tbl "distance_km double precision"
+check CY11 "NEIGHBOUR double precision: distance_km" PASS
+money_tbl "rating real"
+check CY12 "NEIGHBOUR real: rating" PASS
+money_tbl "weekend_uplift_pct numeric(4,1)"
+check CY13 "NEIGHBOUR numeric: weekend_uplift_pct numeric(4,1), 0025's shape" PASS
+money_tbl "vat_rate decimal(5,4)"
+check CY14 "NEIGHBOUR decimal: vat_rate decimal(5,4)" PASS
+money_tbl "amount_minor bigint, platform_fee_minor bigint, unit_price_minor bigint, vat_rate_ppm integer, currency char(3) NOT NULL DEFAULT 'EUR'"
+check CY15 "THE MONEY TYPE: bigint minor units on every money name, with a rate and a currency beside them" PASS
+pair contract "ALTER TABLE public.t173_thing ALTER COLUMN price_minor TYPE bigint;"
+check CY16 "ALTER COLUMN … TYPE bigint on a money column" PASS
+money_tbl "amount_minor bigint -- was amount_minor float8"
+check CY17 "a money column's float type in a -- comment" PASS
+money_tbl "fee real"
+check CY18 "SD's *_fee* glob needs the underscore: a column named fee alone is not money-named" PASS
+pair expand "CREATE DOMAIN public.t173_amt AS numeric(12,2);
+CREATE TABLE public.t173_thing (id bigint PRIMARY KEY, amount public.t173_amt);
+GRANT SELECT ON public.t173_thing TO app_rw;"
+check CY20 "THE BOUND: a domain over numeric on an amount column is not read through the domain" PASS
+pair contract "ALTER TABLE public.t173_thing RENAME COLUMN total TO total_amount;"
+check CY21 "THE BOUND: a RENAME of a column to a money name carries no type and is not read" PASS
+pair expand "CREATE TABLE public.t173_thing AS SELECT 1.5::float8 AS amount;
+GRANT SELECT ON public.t173_thing TO app_rw;"
+check CY22 "THE BOUND: CREATE TABLE … AS, whose column type is inferred, is not read" PASS
+money_tbl "amount money"
+check CY23 "THE BOUND: PostgreSQL's money type is not one of SD's four" PASS
+money_tbl "amount_minor integer"
+check CY24 "THE BOUND: SD refuses four types and does not require bigint; integer passes" PASS
+pair expand "DO \$d\$ BEGIN EXECUTE 'ALTER TABLE public.t173_thing ADD COLUMN amount ' || 'float8'; END \$d\$;"
+check CY25 "THE BOUND: a column assembled at run time by concatenation is not read" PASS
 
 echo "== R-CASCADE"
 pair expand "DROP FUNCTION assert_sitter_bookable() CASCADE;"
