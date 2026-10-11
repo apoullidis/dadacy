@@ -8,11 +8,16 @@
  *   - the file's own statements;
  *   - a `DO` block's body and a `CREATE FUNCTION|PROCEDURE` body, in `plpgsql` (through libpg_query's
  *     PL/pgSQL parser) or `sql` (a quoted body parsed as SQL; a `BEGIN ATOMIC` body is already in the
- *     tree), at any nesting;
+ *     tree), nested within one another;
  *   - inside a PL/pgSQL body, every SQL statement and every expression it evaluates (`EXECUTE`'s
  *     argument, an assignment, `PERFORM`, a condition);
- *   - every string constant anywhere in any of the above (`'…'`, `E'…'`, `U&'…'`, `$q$…$q$`), parsed as
- *     SQL when it parses: dynamic SQL passed to `EXECUTE`, or held in a variable that is.
+ *   - every string constant in any of the above (`'…'`, `E'…'`, `U&'…'`, `$q$…$q$`), parsed as SQL when
+ *     it parses: dynamic SQL passed to `EXECUTE`, or held in a variable that is;
+ *
+ * all of it to a nesting depth of 8; deeper fails closed (R-PARSE). `MAX_DEPTH` = 8: each DO/function
+ * body, PL/pgSQL expression and string constant is a level, so the constant `EXECUTE`d inside a third
+ * nested `DO`/`EXECUTE` is at depth 9, past it; a text past it (body, expression or string constant
+ * alike) is not read and is an `errors` entry (T-229 tech-lead review TL-1, rework 1).
  *
  * Every text has its comments blanked before it is parsed: PostgreSQL's own scanner (`scanSync`) finds
  * them, and each byte of a comment that is not a newline becomes a space, so offsets and lines do not
@@ -22,7 +27,8 @@
  *
  * A text that does not parse is reported in `errors` when it is the file itself or a function / DO body,
  * because PostgreSQL would refuse to run it too and the gate cannot say what it does: the gate fails
- * closed on it. A string constant that does not parse is not an error: most constants are not SQL.
+ * closed on it. A string constant that does not parse is not an error: most constants are not SQL. A
+ * text of ANY kind nested deeper than 8 is an error (`tooDeep`), parsed or not.
  *
  * WHAT THIS DOES NOT SEE: SQL assembled at run time. `EXECUTE format('… %I …', 'name')` and
  * `EXECUTE 'DROP TRIGGER ' || 'name' || …` reach PostgreSQL as one statement only when they run; here
@@ -72,6 +78,8 @@ export interface AstError {
   readonly line: number;
   readonly via: readonly string[];
   readonly message: string;
+  /** True when the text was not read because it is nested deeper than `MAX_DEPTH` (not a parse error). */
+  readonly tooDeep?: true;
 }
 
 export interface AstRead {
@@ -79,7 +87,14 @@ export interface AstRead {
   readonly errors: readonly AstError[];
 }
 
-const MAX_DEPTH = 8;
+/**
+ * How deep the reader goes. Each DO/function body, PL/pgSQL expression and string constant is a level, so
+ * the constant `EXECUTE`d inside a third nested `DO`/`EXECUTE` is at depth 9. A text past it, of any kind
+ * (a body, an expression's statement, or a string constant that might or might not be SQL), is NOT read
+ * and is an `errors` entry: the gate fails closed on it (R-PARSE). T-229 tech-lead review TL-1: until
+ * rework 1 a string constant past the cap was skipped silently, with every body reached through it.
+ */
+export const MAX_DEPTH = 8;
 
 export const isObj = (x: unknown): x is Record<string, unknown> =>
   typeof x === 'object' && x !== null && !Array.isArray(x);
@@ -295,9 +310,21 @@ interface Ctx {
   readonly seen: Set<string>;
 }
 
+/** The text at `via` is nested deeper than `MAX_DEPTH`: not read, so it is an error (fail closed). */
+function tooDeep(ctx: Ctx, line: number, via: readonly string[]): void {
+  ctx.errors.push({
+    line,
+    via,
+    message: `nested deeper than the nesting depth of ${String(MAX_DEPTH)} this reader goes to`,
+    tooDeep: true,
+  });
+}
+
 /**
- * Parses `sql` as a list of statements and reads each one, recursively. `required`: a parse failure is
- * an error (the file, a body); otherwise it is silently not SQL (a string constant).
+ * Parses `sql` as a list of statements and reads each one, recursively, to a nesting depth of 8
+ * (`MAX_DEPTH`); deeper fails closed (an `errors` entry, R-PARSE), whether or not the text is
+ * `required`. `required`: a parse failure is an error (the file, a body); otherwise it is silently not
+ * SQL (a string constant).
  */
 function readText(
   ctx: Ctx,
@@ -308,8 +335,7 @@ function readText(
   depth: number,
 ): void {
   if (depth > MAX_DEPTH) {
-    if (required)
-      ctx.errors.push({ line, via, message: `nested deeper than ${String(MAX_DEPTH)}` });
+    tooDeep(ctx, line, via);
     return;
   }
   const clean = blankComments(sql);
@@ -432,7 +458,7 @@ function readPlpgsql(
   depth: number,
 ): void {
   if (depth > MAX_DEPTH) {
-    ctx.errors.push({ line, via, message: `nested deeper than ${String(MAX_DEPTH)}` });
+    tooDeep(ctx, line, via);
     return;
   }
   const clean = blankComments(stmtText);
@@ -527,7 +553,10 @@ function afterAssignment(q: string): string | null {
   return null;
 }
 
-/** Reads a migration file: every statement at every depth, and what could not be parsed. */
+/**
+ * Reads a migration file: every statement to a nesting depth of 8, what could not be parsed, and what
+ * is nested deeper (an error: deeper fails closed, R-PARSE).
+ */
 export function readSqlAst(sql: string): AstRead {
   if (pg === null) {
     return {

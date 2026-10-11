@@ -48,7 +48,8 @@
  *                        contract exemption from the down-file rule (T-021 rework 1, QA-F1).
  *   THE PROTECTED-OBJECT RULES (R-PROTECTED, R-TRIGGER-BYPASS, R-PROTECTED-RENAME, R-PROTECTED-TABLE,
  *   R-PROTECTED-EXTENSION) READ POSTGRESQL'S OWN PARSE OF EACH STATEMENT since T-229 (OD-240), not
- *   the normalised text the other rules read: see "HOW THE SQL IS READ" and lib/sql-ast.ts. A name is
+ *   the normalised text the other rules read, to a nesting depth of 8; deeper fails closed (R-PARSE):
+ *   see "HOW THE SQL IS READ" and lib/sql-ast.ts. A name is
  *   compared as PostgreSQL resolves its spelling (quotes, `U&"…"` with or without `UESCAPE`, comments
  *   anywhere, whitespace around a `.`), case-insensitively (a false FAIL, never a false PASS).
  *   [R-PROTECTED]        a migration that names a protected object carries
@@ -116,7 +117,11 @@
  *                        too (T-229 block DB2), and the protected-object rules cannot read what does
  *                        not parse, so it fails closed. psql meta-commands are blanked first (psql
  *                        consumes them; R-ROLE-SWITCH refuses every one). A string constant that does
- *                        not parse is not SQL, not a failure.
+ *                        not parse is not SQL, not a failure. And (T-229 rework 1, tech-lead TL-1) any
+ *                        text nested deeper than 8 (MAX_DEPTH: each DO/function body, PL/pgSQL
+ *                        expression and string constant is a level, so the constant EXECUTEd inside a
+ *                        third nested DO/EXECUTE): the parse is read to a nesting depth of 8; deeper
+ *                        fails closed (R-PARSE), a string constant as much as a body (CZ40-CZ43).
  *   [R-CASCADE]          no `DROP … CASCADE` and no `DROP OWNED`. Both remove objects the statement does not
  *                        name, and no rule that reads names can see what it removed:
  *                        `DROP FUNCTION assert_sitter_bookable() CASCADE` takes
@@ -247,14 +252,18 @@
  *
  * (T-229, OD-240) THE PROTECTED-OBJECT RULES read PostgreSQL's parse instead (lib/sql-ast.ts, libpg_query
  * 18.1.5, PostgreSQL 18's grammar compiled to WebAssembly): every statement of the file; every statement
- * of a DO body and of a `plpgsql` or `sql` function body, at any nesting; every expression of a PL/pgSQL
- * body (`EXECUTE`'s argument, an assignment, a `DECLARE` default, `PERFORM`, a condition); and every
- * string constant anywhere (`'…'`, `E'…'`, `U&'…'`, `$q$…$q$`) that parses as SQL. Comments are blanked
+ * of a DO body and of a `plpgsql` or `sql` function body, nested within one another; every expression of
+ * a PL/pgSQL body (`EXECUTE`'s argument, an assignment, a `DECLARE` default, `PERFORM`, a condition); and
+ * every string constant in those (`'…'`, `E'…'`, `U&'…'`, `$q$…$q$`) that parses as SQL; all of it to a
+ * nesting depth of 8; deeper fails closed (R-PARSE). Each DO/function body, PL/pgSQL expression and string
+ * constant is a level (MAX_DEPTH), so the constant EXECUTEd inside a third nested DO/EXECUTE is past it
+ * (T-229 tech-lead review TL-1: until rework 1 such a constant was skipped silently). Comments are blanked
  * with PostgreSQL's own scanner before each parse, because libpg_query's scanner, unlike the server's,
  * hands a comment to the grammar's lookahead and so refuses `U&"…" /* c *\/ UESCAPE '!'` (T-229 probe2).
  * The rules are entries of AST_RULES (and R-PROTECTED's marker check); measured over the 387 cases this
  * suite had and 128 QA plants of OD-217/224/235/240, this reading refuses everything the text reading did
- * (T-229 § Evidence, the measurement).
+ * (T-229 § Evidence, the measurement), over those corpora; the tech-lead review's D3/D3n/D4b/D3rc, outside
+ * them, were refused by the text reading and passed until rework 1 made nesting deeper than 8 fail closed.
  *
  * WHAT THIS GATE DOES NOT SEE. SQL assembled at run time from pieces (`format('GRANT %s ON %I', …)`,
  * `EXECUTE 'DROP TRIGGER ' || name`) is not read as the statement it becomes, by the parser or the text
@@ -274,6 +283,7 @@ import { REPO_ROOT, capture, finish } from './lib/run.ts';
 import { SCHEMA_REL, verifySchemaFile } from './lib/schema-digest.ts';
 import {
   type AstStmt,
+  MAX_DEPTH,
   allStrings,
   identifiers,
   isObj,
@@ -444,8 +454,9 @@ const protectedTableList = (x: unknown): string | null => {
 
 /**
  * One rule over parsed statements. `check` returns one message per violation in `s`, a statement
- * at any depth of migration `m` (top level, a DO or function body, an EXECUTE string or any other
- * string constant that parses). A later R-tag that reads statements plugs in by adding an entry to
+ * of migration `m` at any depth the reader goes to (top level, a DO or function body, an EXECUTE string
+ * or any other string constant that parses), to a nesting depth of 8; deeper fails closed (R-PARSE)
+ * and reaches no rule. A later R-tag that reads statements plugs in by adding an entry to
  * AST_RULES (T-229 § Published contract §4).
  */
 interface AstRule {
@@ -2364,14 +2375,17 @@ for (const m of migrations) {
     }
   }
 
-  // PostgreSQL's parser (T-229): every statement at every depth.
+  // PostgreSQL's parser (T-229): every statement to a nesting depth of 8; deeper is an error (R-PARSE).
   // psql consumes its meta-commands (R-ROLE-SWITCH refuses every one); PostgreSQL never sees them.
   const ast = readSqlAst(withoutPsqlMeta(segs));
   for (const e of ast.errors) {
+    const where = e.via.length === 0 ? 'this file' : e.via.join(' > ');
     problem(
       'R-PARSE',
       `${m.rel}:${String(e.line)}`,
-      `PostgreSQL's parser (libpg_query 18) cannot parse ${e.via.length === 0 ? 'this file' : e.via.join(' > ')}: ${e.message}. PostgreSQL would refuse it too, and this gate cannot say what it does, so it fails closed`,
+      e.tooDeep === true
+        ? `this gate reads PostgreSQL's parse to a nesting depth of ${String(MAX_DEPTH)} (lib/sql-ast.ts MAX_DEPTH; each DO/function body, PL/pgSQL expression and string constant is a level), and ${where} is deeper. It is not read, so this gate cannot say what it does and fails closed. Flatten the nesting`
+        : `PostgreSQL's parser (libpg_query 18) cannot parse ${where}: ${e.message}. PostgreSQL would refuse it too, and this gate cannot say what it does, so it fails closed`,
     );
   }
   const astNamed = new Map<string, AstStmt>();
@@ -2383,7 +2397,7 @@ for (const m of migrations) {
   statementsParsed += ast.stmts.length;
   parseFailures += ast.errors.length;
   // The AST rules (R-TRIGGER-BYPASS, R-PROTECTED-RENAME, R-PROTECTED-TABLE, R-PROTECTED-EXTENSION, and
-  // any later entry in AST_RULES), each over every statement at every depth; a message repeated for
+  // any later entry in AST_RULES), each over every statement the reader reached; a message repeated for
   // the same file (a constant read at two depths) is reported once.
   const astSaid = new Set<string>();
   for (const s of ast.stmts) {
@@ -2792,7 +2806,7 @@ console.log(
   `  GRANT clauses read: ${String(grantsRead)}; CREATE TABLEs read: ${String(tablesRead)}; protected-object mentions: ${String(protectedMentions)}`,
 );
 console.log(
-  `  statements PostgreSQL's parser read (every depth, the 0001 baseline excepted): ${String(statementsParsed)}; that it could not parse: ${String(parseFailures)}`,
+  `  statements PostgreSQL's parser read (to a nesting depth of 8, the 0001 baseline excepted): ${String(statementsParsed)}; that it could not parse: ${String(parseFailures)}`,
 );
 console.log(
   `  merged migrations changed and compared outside comments: ${String(mergedCompared)}; contract migrations added: ${String(addedContracts.length)}; contract up files read for expand statements: ${String(contractsReadForExpand)}`,
