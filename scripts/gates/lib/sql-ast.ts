@@ -16,8 +16,12 @@
  *
  * all of it to a nesting depth of 8; deeper fails closed (R-PARSE). `MAX_DEPTH` = 8: each DO/function
  * body, PL/pgSQL expression and string constant is a level, so the constant `EXECUTE`d inside a third
- * nested `DO`/`EXECUTE` is at depth 9, past it; a text past it (body, expression or string constant
- * alike) is not read and is an `errors` entry (T-229 tech-lead review TL-1, rework 1).
+ * nested `DO`/`EXECUTE` is at depth 9, past it. Every text past it is not read and is an `errors` entry:
+ * a DO or function body, a statement of a body, a PL/pgSQL expression, and a string constant whether or
+ * not it holds a letter. Each of `readText`, `readPlpgsql` and `readExpression` checks the depth on entry,
+ * and `readConstant` hands a constant past it to `readText` (T-229 tech-lead review TL-1, rework 1; QA
+ * delta QD-3, rework 2: until rework 2 an expression past it was read, and a constant with no ASCII
+ * letter was skipped before the depth was checked).
  *
  * Every text has its comments blanked before it is parsed: PostgreSQL's own scanner (`scanSync`) finds
  * them, and each byte of a comment that is not a newline becomes a space, so offsets and lines do not
@@ -28,7 +32,8 @@
  * A text that does not parse is reported in `errors` when it is the file itself or a function / DO body,
  * because PostgreSQL would refuse to run it too and the gate cannot say what it does: the gate fails
  * closed on it. A string constant that does not parse is not an error: most constants are not SQL. A
- * text of ANY kind nested deeper than 8 is an error (`tooDeep`), parsed or not.
+ * text of ANY kind nested deeper than 8 (body, statement, expression, constant) is an error (`tooDeep`),
+ * parsed or not; nothing past 8 reaches `stmts`.
  *
  * WHAT THIS DOES NOT SEE: SQL assembled at run time. `EXECUTE format('… %I …', 'name')` and
  * `EXECUTE 'DROP TRIGGER ' || 'name' || …` reach PostgreSQL as one statement only when they run; here
@@ -90,9 +95,13 @@ export interface AstRead {
 /**
  * How deep the reader goes. Each DO/function body, PL/pgSQL expression and string constant is a level, so
  * the constant `EXECUTE`d inside a third nested `DO`/`EXECUTE` is at depth 9. A text past it, of any kind
- * (a body, an expression's statement, or a string constant that might or might not be SQL), is NOT read
- * and is an `errors` entry: the gate fails closed on it (R-PARSE). T-229 tech-lead review TL-1: until
- * rework 1 a string constant past the cap was skipped silently, with every body reached through it.
+ * (a body, a statement of a body, a PL/pgSQL expression, or a string constant, with a letter or without),
+ * is NOT read and is an `errors` entry: the gate fails closed on it (R-PARSE). `readText`, `readPlpgsql`
+ * and `readExpression` each check it on entry; `readConstant` sends a constant past it to `readText`.
+ * T-229 tech-lead review TL-1: until rework 1 a string constant past the cap was skipped silently, with
+ * every body reached through it. QA delta QD-3: until rework 2 `readExpression` had no check (an
+ * expression at 9 was read and reached every rule) and a constant with no ASCII letter was skipped before
+ * the check. Pinned at the edge (8 read, 9 refused) on each path by migration-lint.sh CZ45-CZ4I.
  */
 export const MAX_DEPTH = 8;
 
@@ -397,7 +406,10 @@ function readConstant(
   via: readonly string[],
   depth: number,
 ): void {
-  if (!/[A-Za-z]/.test(s)) return;
+  // A constant with no ASCII letter holds no statement (every statement begins with a keyword, and the
+  // scanner forms keywords from ASCII letters only), so it is not parsed. Past MAX_DEPTH it still goes to
+  // readText, which refuses it: nothing past the cap is skipped silently (QA delta QD-3, CZ4I).
+  if (depth < MAX_DEPTH && !/[A-Za-z]/.test(s)) return;
   const key = `${String(depth)}\u0000${s}`;
   if (ctx.seen.has(key)) return;
   ctx.seen.add(key);
@@ -499,7 +511,10 @@ function readPlpgsql(
   }
 }
 
-/** `SELECT <expr>`: its string constants are what can carry SQL. */
+/**
+ * `SELECT <expr>`: its string constants are what can carry SQL, and the SELECT itself reaches the rules.
+ * Past `MAX_DEPTH` it is not read and is an error (QA delta QD-3: until rework 2 it had no check).
+ */
 function readExpression(
   ctx: Ctx,
   expr: string,
@@ -507,6 +522,10 @@ function readExpression(
   via: readonly string[],
   depth: number,
 ): void {
+  if (depth > MAX_DEPTH) {
+    tooDeep(ctx, line, via);
+    return;
+  }
   const clean = blankComments(expr);
   if (clean === null) {
     ctx.errors.push({ line, via, message: 'an expression does not lex' });

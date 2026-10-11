@@ -117,11 +117,15 @@
  *                        too (T-229 block DB2), and the protected-object rules cannot read what does
  *                        not parse, so it fails closed. psql meta-commands are blanked first (psql
  *                        consumes them; R-ROLE-SWITCH refuses every one). A string constant that does
- *                        not parse is not SQL, not a failure. And (T-229 rework 1, tech-lead TL-1) any
- *                        text nested deeper than 8 (MAX_DEPTH: each DO/function body, PL/pgSQL
- *                        expression and string constant is a level, so the constant EXECUTEd inside a
- *                        third nested DO/EXECUTE): the parse is read to a nesting depth of 8; deeper
- *                        fails closed (R-PARSE), a string constant as much as a body (CZ40-CZ43).
+ *                        not parse is not SQL, not a failure. And (T-229 rework 1, tech-lead TL-1;
+ *                        rework 2, QA delta QD-3) any text nested deeper than 8 (MAX_DEPTH: each
+ *                        DO/function body, PL/pgSQL expression and string constant is a level, so the
+ *                        constant EXECUTEd inside a third nested DO/EXECUTE is at 9): a body, a
+ *                        statement, a PL/pgSQL expression, or a string constant with or without a
+ *                        letter, past 8 is not read and fails closed, with the reason "this gate reads
+ *                        PostgreSQL's parse to a nesting depth of 8" (CZ40-CZ43, CZ47, CZ49, CZ4C-CZ4E,
+ *                        CZ4G, CZ4I); at exactly 8 it is read (CZ45, CZ46, CZ48, CZ4A, CZ4F, CZ4H). The
+ *                        summary counts these apart from parse failures (CZ4K, CZ4L).
  *   [R-CASCADE]          no `DROP … CASCADE` and no `DROP OWNED`. Both remove objects the statement does not
  *                        name, and no rule that reads names can see what it removed:
  *                        `DROP FUNCTION assert_sitter_bookable() CASCADE` takes
@@ -456,8 +460,9 @@ const protectedTableList = (x: unknown): string | null => {
  * One rule over parsed statements. `check` returns one message per violation in `s`, a statement
  * of migration `m` at any depth the reader goes to (top level, a DO or function body, an EXECUTE string
  * or any other string constant that parses), to a nesting depth of 8; deeper fails closed (R-PARSE)
- * and reaches no rule. A later R-tag that reads statements plugs in by adding an entry to
- * AST_RULES (T-229 § Published contract §4).
+ * and reaches no rule, whether it is a statement of a body, a PL/pgSQL expression or a string constant
+ * (QA delta QD-3: until rework 2 an expression at 9 reached every rule; CZ4G, CZ4I). A later R-tag that
+ * reads statements plugs in by adding an entry to AST_RULES (T-229 § Published contract §4).
  */
 interface AstRule {
   readonly tag: string;
@@ -1784,6 +1789,8 @@ let tablesRead = 0;
 let protectedMentions = 0;
 let statementsParsed = 0;
 let parseFailures = 0;
+/** Texts past MAX_DEPTH, not read (R-PARSE, but not parse failures: counted apart, QA delta INFO-1). */
+let nestedTooDeep = 0;
 let baselinePinned = 0;
 let runAsLinesRead = 0;
 let roleSwitchFilesRead = 0;
@@ -2395,7 +2402,10 @@ for (const m of migrations) {
     }
   }
   statementsParsed += ast.stmts.length;
-  parseFailures += ast.errors.length;
+  for (const e of ast.errors) {
+    if (e.tooDeep === true) nestedTooDeep += 1;
+    else parseFailures += 1;
+  }
   // The AST rules (R-TRIGGER-BYPASS, R-PROTECTED-RENAME, R-PROTECTED-TABLE, R-PROTECTED-EXTENSION, and
   // any later entry in AST_RULES), each over every statement the reader reached; a message repeated for
   // the same file (a constant read at two depths) is reported once.
@@ -2806,7 +2816,7 @@ console.log(
   `  GRANT clauses read: ${String(grantsRead)}; CREATE TABLEs read: ${String(tablesRead)}; protected-object mentions: ${String(protectedMentions)}`,
 );
 console.log(
-  `  statements PostgreSQL's parser read (to a nesting depth of 8, the 0001 baseline excepted): ${String(statementsParsed)}; that it could not parse: ${String(parseFailures)}`,
+  `  statements PostgreSQL's parser read (to a nesting depth of 8, the 0001 baseline excepted): ${String(statementsParsed)}; that it could not parse: ${String(parseFailures)}; texts nested deeper than ${String(MAX_DEPTH)}, not read: ${String(nestedTooDeep)}`,
 );
 console.log(
   `  merged migrations changed and compared outside comments: ${String(mergedCompared)}; contract migrations added: ${String(addedContracts.length)}; contract up files read for expand statements: ${String(contractsReadForExpand)}`,
