@@ -151,9 +151,14 @@ const SUITES: readonly Suite[] = [
     // reaches the AST rules, TL-4), CZ4K/CZ4L (the summary counts depth apart from parse failures),
     // CZ4M (SQL after psql's \\ is unread, R-ROLE-SWITCH refuses the line, TL-3), CZ4N (TL-2's bound,
     // PASS). Red against 9f52469: CZ4K, CZ4L (RW2-SEC-RED); green in RW2-GREEN.
-    cases: 447,
+    // 447 -> 483, 2026-10-11, T-173: thirty-six cases CY* for R-MONEY-TYPE (SD §DB-13 rule 7 bullet 5):
+    // twenty refusals, nine neighbours/controls, seven bounds pinned as PASS. No older case touched. The
+    // twenty refusals were BAD against b6d953f's lint (`!! 21 of 482` at 79848b4: the 21st was CY17, a
+    // plant whose `--` comment swallowed its `);`, corrected before the rule; CY26 added after that run).
+    // Green footer: T-173.md § Evidence, CY-GREEN.
+    cases: 483,
     state: 'GREEN',
-    why: 'gate:migration-lint: expand/contract, protected objects (the I-5 objects since T-186, 0011\'s since T-192; read through PostgreSQL\'s parser since T-229), R-TRIGGER-BYPASS by name, R-PROTECTED-RENAME, R-ADMIN-MEMBERSHIP, R-PROTECTED-TABLE, R-PROTECTED-EXTENSION, R-PARSE, U&"…" decoding, R-ROLE-SWITCH, R-RUN-AS, R-MERGED, R-TRAILER, R-VENDOR-SQL, R-RESTORE-PUBLIC, R-RULE (T-021, T-031, T-167, T-186, T-192, T-227, T-241, T-237, T-229)',
+    why: 'gate:migration-lint: expand/contract, protected objects (the I-5 objects since T-186, 0011\'s since T-192; read through PostgreSQL\'s parser since T-229), R-TRIGGER-BYPASS by name, R-PROTECTED-RENAME, R-ADMIN-MEMBERSHIP, R-PROTECTED-TABLE, R-PROTECTED-EXTENSION, R-PARSE, U&"…" decoding, R-ROLE-SWITCH, R-RUN-AS, R-MERGED, R-TRAILER, R-VENDOR-SQL, R-RESTORE-PUBLIC, R-RULE, R-MONEY-TYPE (T-021, T-031, T-167, T-186, T-192, T-227, T-241, T-237, T-229, T-173)',
   },
   {
     id: 'semgrep',

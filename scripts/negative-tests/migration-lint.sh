@@ -30,7 +30,8 @@
 #
 # T-173 adds one section (CY*): R-MONEY-TYPE, a money-named column typed float, double precision, real or
 # numeric (SD §DB-13 rule 7 bullet 5), a true-positive and a neighbour for each type, the TL2-1 EXECUTEd
-# string, and the bounds (a domain, a RENAME, CREATE TABLE … AS, the money type, integer, concatenation)
+# string, and the bounds (a domain, a RENAME, CREATE TABLE … AS, the money type, integer, concatenation,
+# a function's parameters)
 # pinned as PASS.
 #
 # T-227 adds three sections: R-PROTECTED-TABLE (CX*), R-PROTECTED-EXTENSION (CE*) and U&"…" decoding
@@ -797,8 +798,9 @@ echo "== R-MONEY-TYPE (T-173; SD §DB-13 rule 7 bullet 5, SD §QD-1's thirteenth
 # four globs; the refused types are SD's four, as PostgreSQL's parser spells them (float -> float8 or
 # float4, double precision -> float8, real -> float4, numeric and its alias decimal -> numeric). Each
 # refused type has a true-positive (CY01-CY08) and a legitimate neighbour that passes (CY10-CY14). CY0C,
-# CY0D: TL2-1 (T-229 § contract §4), the column arrives in an EXECUTEd string. CY20-CY25 pin the bounds.
-# Red-first: every refusal here was BAD against b6d953f's lint (T-173.md § Evidence, CY-RED).
+# CY0D: TL2-1 (T-229 § contract §4), the column arrives in an EXECUTEd string. CY20-CY26 pin the bounds.
+# Red-first: every refusal here was BAD against b6d953f's lint (T-173.md § Evidence, CY-RED); CY26 and
+# CY17's corrected plant were added after that run (T-173.md § Progress log).
 money_tbl() {
   pair expand "CREATE TABLE public.t173_thing (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, $1);
 GRANT SELECT ON public.t173_thing TO app_rw;"
@@ -859,7 +861,9 @@ money_tbl "amount_minor bigint, platform_fee_minor bigint, unit_price_minor bigi
 check CY15 "THE MONEY TYPE: bigint minor units on every money name, with a rate and a currency beside them" PASS
 pair contract "ALTER TABLE public.t173_thing ALTER COLUMN price_minor TYPE bigint;"
 check CY16 "ALTER COLUMN … TYPE bigint on a money column" PASS
-money_tbl "amount_minor bigint -- was amount_minor float8"
+money_tbl "amount_minor bigint
+  -- was: amount_minor float8
+"
 check CY17 "a money column's float type in a -- comment" PASS
 money_tbl "fee real"
 check CY18 "SD's *_fee* glob needs the underscore: a column named fee alone is not money-named" PASS
@@ -878,6 +882,8 @@ money_tbl "amount_minor integer"
 check CY24 "THE BOUND: SD refuses four types and does not require bigint; integer passes" PASS
 pair expand "DO \$d\$ BEGIN EXECUTE 'ALTER TABLE public.t173_thing ADD COLUMN amount ' || 'float8'; END \$d\$;"
 check CY25 "THE BOUND: a column assembled at run time by concatenation is not read" PASS
+pair expand "CREATE FUNCTION public.t173_g(amount numeric) RETURNS TABLE (price float8) LANGUAGE sql AS 'SELECT 1.5::float8';"
+check CY26 "THE BOUND: a function's parameter and RETURNS TABLE column are not column definitions and are not read" PASS
 
 echo "== R-CASCADE"
 pair expand "DROP FUNCTION assert_sitter_bookable() CASCADE;"

@@ -118,6 +118,21 @@
  *                        (T-192 QA N17/N18r, DEP1: the two removed trg_approval_four_eyes). `ADD SCHEMA
  *                        public` and `ADD TYPE` are not refused (T-227 QA E9: PostgreSQL refuses the
  *                        first; E10: the later DROP EXTENSION fails closed). No marker permits it.
+ *   [R-MONEY-TYPE]       (T-173; SD §DB-13 rule 7 bullet 5, SD §QD-1's thirteenth subject) no column whose
+ *                        name matches `*_minor`, `*amount*`, `*_fee*` or `*price*` (case-insensitive; a
+ *                        glob is a substring test, so `is_feedback` matches: CY0K) is declared `float`,
+ *                        `double precision`, `real` or `numeric` (`decimal`, `float4`, `float8`, an array
+ *                        of one: CY01-CY08, CY0I): money is `bigint` minor units (SD SE-5, EUR cents; on
+ *                        the wire a decimal-integer string, T-022 § contract §3). Read from PostgreSQL's
+ *                        parse (AST_RULES): `CREATE TABLE`, `ADD COLUMN`, `ALTER COLUMN … [SET DATA] TYPE`,
+ *                        `CREATE TYPE … AS (…)`, `ALTER TYPE … ADD ATTRIBUTE`, `CREATE FOREIGN TABLE`
+ *                        (CY01-CY0B, CY0F-CY0H), in an up or a down file (CY0J), and in every string
+ *                        constant the reader parses, an `EXECUTE`d one in a DO or function body (CY0C,
+ *                        CY0D) and one that never runs (CY0E, a false FAIL). No marker permits it. NOT
+ *                        READ: a domain over a refused type (CY20), a `RENAME COLUMN` to a money name
+ *                        (CY21), a type inferred by `CREATE TABLE … AS` (CY22), a function's parameters
+ *                        or `RETURNS TABLE` (CY26), a column assembled at run time (CY25). Not refused:
+ *                        PostgreSQL's `money` type (CY23) and `integer` (CY24), which SD's list omits.
  *   [R-PARSE]            (T-229) a migration file, a DO body or a `sql`/`plpgsql` function body that
  *                        PostgreSQL's parser (libpg_query 18.1.5) refuses. PostgreSQL would refuse it
  *                        too (T-229 block DB2), and the protected-object rules cannot read what does
@@ -296,6 +311,7 @@ import {
   type AstStmt,
   MAX_DEPTH,
   allStrings,
+  columnTypes,
   identifiers,
   isObj,
   nameList,
@@ -464,6 +480,29 @@ const protectedTableList = (x: unknown): string | null => {
 };
 
 /**
+ * (T-173) R-MONEY-TYPE's two lists, SD §DB-13 rule 7 bullet 5 verbatim (`software-design.md:3088`): "No
+ * `float`, `double precision`, `real` or `numeric` column whose name matches `*_minor`, `*amount*`,
+ * `*_fee*`, `*price*`". A glob is matched against the column name case-insensitively (CY08); `*_fee*` is
+ * a substring, so `is_feedback` matches (CY0K) and `fee` alone does not (CY18). The types are keyed by the
+ * last name the parser gives: `float` and `double precision` are `float8` (`float(p)` with p <= 24 is
+ * `float4`), `real` is `float4`, and `numeric` and `decimal` are `numeric`; a bare `float4`/`float8` is
+ * the same name unqualified (CY06, CY07).
+ */
+const MONEY_NAMES: readonly (readonly [RegExp, string])[] = [
+  [/_minor$/i, '*_minor'],
+  [/amount/i, '*amount*'],
+  [/_fee/i, '*_fee*'],
+  [/price/i, '*price*'],
+];
+const MONEY_REFUSED_TYPES: ReadonlyMap<string, string> = new Map([
+  ['float4', 'real (float4)'],
+  ['float8', 'double precision (float8)'],
+  ['numeric', 'numeric'],
+]);
+/** Column types R-MONEY-TYPE was handed, and of them money-named (printed in the summary). */
+const moneyColumns = { read: 0, named: 0 };
+
+/**
  * One rule over parsed statements. `check` returns one message per violation in `s`, a statement
  * of migration `m` at any depth the reader goes to (top level, a DO or function body, an EXECUTE string
  * or any other string constant that parses), to a nesting depth of 8; deeper fails closed (R-PARSE)
@@ -473,8 +512,10 @@ const protectedTableList = (x: unknown): string | null => {
  * A statement parsed out of a string constant reaches every rule whether or not that string is ever
  * executed (T-229 tech-lead review TL-4): `SELECT '<statement>'` hands `check` the statement, with
  * `s.via` ending in `string constant` (CZ4J: a DISABLE TRIGGER ALL that is only a SELECTed string is
- * refused). For the protected-object rules that is the safe side, a false FAIL. A rule over column
- * types (T-173, T-253) must read `s.via`, or it will false-FAIL on a string that is only data.
+ * refused). For the protected-object rules that is the safe side, a false FAIL.
+ * `s.via` says where a statement was found, not whether it runs (an `EXECUTE`d string and an assigned
+ * one carry the same `s.via`), so a rule must not skip statements found in a string constant: that would
+ * also skip `EXECUTE`d DDL (`T-229` tech-lead delta 2, TL2-1).
  */
 interface AstRule {
   readonly tag: string;
@@ -613,6 +654,26 @@ const AST_RULES: readonly AstRule[] = [
           ? protectedTableList(n['object'])
           : null;
         if (t !== null) out.push(say('ALTER EXTENSION … ADD', `public.${t}`));
+      }
+      return out;
+    },
+  },
+  {
+    // (T-173) SD §DB-13 rule 7 bullet 5, SD §QD-1's thirteenth subject. Every column type the statement
+    // declares (lib/sql-ast.ts columnTypes), wherever the reader found it: s.via is not read (TL2-1).
+    tag: 'R-MONEY-TYPE',
+    check: (s) => {
+      const out: string[] = [];
+      for (const c of columnTypes(s)) {
+        moneyColumns.read += 1;
+        const glob = MONEY_NAMES.find(([re]) => re.test(c.column))?.[1];
+        if (glob === undefined) continue;
+        moneyColumns.named += 1;
+        const label = MONEY_REFUSED_TYPES.get(lc(c.type[c.type.length - 1] ?? ''));
+        if (label === undefined) continue;
+        out.push(
+          `the money column ${c.column} (its name matches SD's ${glob}) is ${c.how === 'retype' ? 'retyped to' : 'typed'} ${label}${c.array ? '[]' : ''}; money is bigint minor units, EUR cents (SD §DB-13 rule 7; SE-5; T-022 § contract §3 MinorUnits), so declare it bigint`,
+        );
       }
       return out;
     },
@@ -2834,6 +2895,9 @@ console.log(
 );
 console.log(
   `  statements PostgreSQL's parser read (to a nesting depth of 8, the 0001 baseline excepted): ${String(statementsParsed)}; that it could not parse: ${String(parseFailures)}; texts nested deeper than ${String(MAX_DEPTH)}, not read: ${String(nestedTooDeep)}`,
+);
+console.log(
+  `  R-MONEY-TYPE: column types read: ${String(moneyColumns.read)}; of them money-named (SD §DB-13 rule 7 globs): ${String(moneyColumns.named)}`,
 );
 console.log(
   `  merged migrations changed and compared outside comments: ${String(mergedCompared)}; contract migrations added: ${String(addedContracts.length)}; contract up files read for expand statements: ${String(contractsReadForExpand)}`,

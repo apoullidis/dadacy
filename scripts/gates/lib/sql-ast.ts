@@ -159,6 +159,54 @@ export function nameList(x: unknown): string[] {
   return out;
 }
 
+/**
+ * (T-173) One column type a statement declares, as PostgreSQL's parser gives it.
+ * `column`: the column's name as the parser emits it (unquoted folded to lower case, quoted exact).
+ * `type`: the type's name list, e.g. `['pg_catalog', 'float8']` for `float`/`double precision`,
+ * `['float8']` for a bare `float8`, `['pg_catalog', 'bpchar']` for `char(n)`/`character(n)`,
+ * `['pg_catalog', 'varchar']` for `varchar(n)`/`character varying(n)`, `['text']` for `text`, and the
+ * domain's own name for a domain-typed column (a domain is not resolved). `typmods`: the TypeName's raw
+ * `typmods` (`[{ A_Const: { ival: { ival: 12 } } }]` for `char(12)`; a bare `char` carries an implicit 1).
+ * `array`: the type carries `[]`. `how`: `define` for a ColumnDef with a name (`CREATE TABLE`, `ADD
+ * COLUMN`, `CREATE TYPE … AS (…)`, `ALTER TYPE … ADD ATTRIBUTE`, `CREATE FOREIGN TABLE`), `retype` for
+ * `ALTER COLUMN|ATTRIBUTE … [SET DATA] TYPE` (an `AT_AlterColumnType` command, whose ColumnDef has no name:
+ * the name is the command's). NOT here: a column whose type is inferred (`CREATE TABLE … AS`: CY22), a
+ * `RENAME COLUMN` (CY21), and a function's parameters and `RETURNS TABLE` columns, which are not
+ * ColumnDefs (CY26). Falsified by migration-lint.sh CY01-CY0J, CY20-CY22 and CY26 (R-MONEY-TYPE is its
+ * first reader).
+ */
+export interface ColumnType {
+  readonly column: string;
+  readonly type: readonly string[];
+  readonly typmods: readonly unknown[];
+  readonly array: boolean;
+  readonly how: 'define' | 'retype';
+}
+export function columnTypes(s: AstStmt): ColumnType[] {
+  const out: ColumnType[] = [];
+  const typeOf = (tn: unknown): Omit<ColumnType, 'column' | 'how'> | null => {
+    if (!isObj(tn)) return null;
+    const type = nameList(tn['names']);
+    if (type.length === 0) return null;
+    const typmods = Array.isArray(tn['typmods']) ? (tn['typmods'] as unknown[]) : [];
+    const bounds = tn['arrayBounds'];
+    return { type, typmods, array: Array.isArray(bounds) && bounds.length > 0 };
+  };
+  walkStmt(s, (kind, f) => {
+    if (kind === 'ColumnDef') {
+      const column = str(f['colname']);
+      const t = typeOf(f['typeName']);
+      if (column !== null && t !== null) out.push({ column, ...t, how: 'define' });
+    } else if (kind === 'AlterTableCmd' && str(f['subtype']) === 'AT_AlterColumnType') {
+      const column = str(f['name']);
+      const def = asNode(f['def']);
+      const t = def !== null && def[0] === 'ColumnDef' ? typeOf(def[1]['typeName']) : null;
+      if (column !== null && t !== null) out.push({ column, ...t, how: 'retype' });
+    }
+  });
+  return out;
+}
+
 /** A `RangeVar` (a relation as written): schema (or null when unqualified), name, persistence. */
 export interface Rel {
   readonly schema: string | null;
