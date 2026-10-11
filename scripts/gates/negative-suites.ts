@@ -145,8 +145,13 @@ const SUITES: readonly Suite[] = [
     // RW-RED); green in RW-GREEN.
     // 428 -> 443, 2026-10-11, T-229 rework 2 (QA delta, OD-319): CZ45-CZ4I, the depth edge (8 read, 9
     // refused) on each guarded path of lib/sql-ast.ts. Red against 9f52469: CZ4G, CZ4I (T-229.md
-    // § Rework 2, RW2-RED); green in RW2-GREEN.
-    cases: 443,
+    // § Rework 2, RW2-RED); green in RW2-GREEN. [The 443 above was a miscount: CZ45-CZ4I is 14 cases,
+    // and RW2-RED counted 442 (T-229.md § Rework 2).]
+    // 442 -> 447, 2026-10-11, T-229 rework 2 (QA delta QD-4, INFO-1): CZ4J (a never-executed string
+    // reaches the AST rules, TL-4), CZ4K/CZ4L (the summary counts depth apart from parse failures),
+    // CZ4M (SQL after psql's \\ is unread, R-ROLE-SWITCH refuses the line, TL-3), CZ4N (TL-2's bound,
+    // PASS). Red against 9f52469: CZ4K, CZ4L (RW2-SEC-RED); green in RW2-GREEN.
+    cases: 447,
     state: 'GREEN',
     why: 'gate:migration-lint: expand/contract, protected objects (the I-5 objects since T-186, 0011\'s since T-192; read through PostgreSQL\'s parser since T-229), R-TRIGGER-BYPASS by name, R-PROTECTED-RENAME, R-ADMIN-MEMBERSHIP, R-PROTECTED-TABLE, R-PROTECTED-EXTENSION, R-PARSE, U&"…" decoding, R-ROLE-SWITCH, R-RUN-AS, R-MERGED, R-TRAILER, R-VENDOR-SQL, R-RESTORE-PUBLIC, R-RULE (T-021, T-031, T-167, T-186, T-192, T-227, T-241, T-237, T-229)',
   },

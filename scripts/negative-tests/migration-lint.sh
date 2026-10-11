@@ -773,6 +773,19 @@ pair expand "DO \$a\$ BEGIN DO \$b\$ BEGIN DO \$c\$ BEGIN EXECUTE \$x\$ SELECT '
 check CZ4H "EDGE readConstant, a constant with no letter at exactly 8 (a statement at T7, its constant T8): PASS" PASS
 pair expand "DO \$a\$ BEGIN DO \$b\$ BEGIN DO \$c\$ BEGIN DO \$d\$ BEGIN PERFORM '1'; END \$d\$; END \$c\$; END \$b\$; END \$a\$;"
 checkwhy CZ4I "EDGE readConstant (QA Q11 shape): a constant with no letter at 9 (PERFORM at T8, its constant T9) fails closed" R-PARSE "$DEEP2"
+# Rework 2 (QA delta QD-4, INFO-1; OD-319): cases that pin the sentences rework 2 adds at the points of use
+# (migration-lint.ts R-PARSE entry, AstRule doc, withoutPsqlMeta, R-PROTECTED-TABLE). CZ4K/CZ4L are
+# red-first against 9f52469 (its summary has one counter); CZ4J, CZ4M, CZ4N pin behaviour it already had.
+pair expand "SELECT 'ALTER TABLE public.approval DISABLE TRIGGER ALL';"
+check CZ4J "TL-4: a statement inside a string that is only SELECTed, never executed, still reaches the AST rules (a false FAIL, the safe side)" R-TRIGGER-BYPASS
+pair expand "DO \$a\$ BEGIN DO \$b\$ BEGIN DO \$c\$ BEGIN DO \$d\$ BEGIN DO \$e\$ BEGIN NULL; END \$e\$; END \$d\$; END \$c\$; END \$b\$; END \$a\$;"
+checkwhy CZ4K "INFO-1: a text past 8 and no parse failure (CZ4E's plant) counts in the summary as nested too deep, not as unparsed" R-PARSE "that it could not parse: 0; texts nested deeper than 8, not read: 1"
+pair expand "DO \$a\$ BEGIN DO \$b\$ BEGIN DO \$c\$ BEGIN EXECUTE \$x\$ DO \$e\$ BEGIN IF true THEN NULL; END \$e\$ \$x\$; END \$c\$; END \$b\$; END \$a\$;"
+checkwhy CZ4L "INFO-1: a parse failure at 8 and nothing past it (CZ4B's plant) counts in the summary as unparsed, not as nested too deep" R-PARSE "that it could not parse: 1; texts nested deeper than 8, not read: 0"
+pair expand "\\echo t229 \\\\ ALTER TABLE public.approval DISABLE TRIGGER ALL;"
+check CZ4M "TL-3: SQL after psql's \\\\ separator is blanked from the parse (its DISABLE is unread); the line is refused by R-ROLE-SWITCH alone" R-ROLE-SWITCH
+pair expand "ALTER TABLE t229_s.account_role SET SCHEMA public;"
+check CZ4N "THE BOUND (tech-lead review TL-2, TL-ATK SS2): a relation named account_role moved INTO public is refused by no rule" PASS
 
 echo "== R-CASCADE"
 pair expand "DROP FUNCTION assert_sitter_bookable() CASCADE;"
