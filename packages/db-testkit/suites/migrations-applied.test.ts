@@ -40,7 +40,7 @@ import {
 import { assertPermitted, assertRefused, INT10_RAISE } from '../src/expect.ts';
 
 const SUITE = 'migrations-applied';
-const HIGHEST_COMMITTED = '0025';
+const HIGHEST_COMMITTED = '0026';
 const COMMITTED_DIR = path.join(REPO_ROOT, MIGRATIONS_DIR);
 const RECORD_SQL = `SELECT coalesce(shobj_description(oid, 'pg_database'), '(no comment)')
                       FROM pg_database WHERE datname = current_database()`;
@@ -1049,6 +1049,28 @@ const CREATED_BY: Readonly<
                                          AND attacl IS NULL)::text
                                  FROM pg_class c WHERE oid = to_regclass('public.sitter_profile')), '(absent)')`,
         holds: 'app_ddl {app_ddl=arwdDxtm/app_ddl,app_rw=r/app_ddl} 4',
+      },
+    ],
+  },
+  '0026': {
+    source: 'T-252',
+    // Each probe names the one table 0026 creates and returns a value rather than raising once it is
+    // gone: to_regclass returns NULL for a missing name, and the reads are coalesced. The refusals, the
+    // policies and the C6 catalogue probe are asserted by suites/sitter-credential.test.ts, not here
+    // (T-137 TV2-A1: a probe names an object).
+    probes: [
+      {
+        title: 'table public.sitter_credential exists (CUT-T-060 R-9)',
+        sql: `SELECT (to_regclass('public.sitter_credential') IS NOT NULL)::text`,
+        holds: 'true',
+      },
+      {
+        title:
+          'sitter_credential is owned by app_ddl, its table ACL is app_rw SELECT + INSERT, and row-level security is enabled and forced (R-2, R-9)',
+        sql: `SELECT coalesce((SELECT pg_get_userbyid(relowner) || ' ' || relacl::text || ' ' ||
+                                      relrowsecurity::text || ' ' || relforcerowsecurity::text
+                                 FROM pg_class WHERE oid = to_regclass('public.sitter_credential')), '(absent)')`,
+        holds: 'app_ddl {app_ddl=arwdDxtm/app_ddl,app_rw=ar/app_ddl} true true',
       },
     ],
   },

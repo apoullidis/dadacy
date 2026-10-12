@@ -533,7 +533,7 @@ describe('0024 — what the database does NOT refuse (stated bounds, each pinned
     );
   });
 
-  test('NOT HELD — btrim strips spaces only: a scheme_name of a tab, or of a newline, is accepted (R-10 as ruled)', async () => {
+  test('NOT HELD — btrim strips U+0020 only: a scheme_name of a tab, or of a newline, is accepted; two examples, not the list (T-251 § Published contract §4 lists the blank characters accepted on scheme_name and issuing_body; R-10 as ruled)', async () => {
     for (const value of [`E'\\t'`, `E'\\n'`]) {
       assertInsertedOne(
         `scheme_name ${value}`,
