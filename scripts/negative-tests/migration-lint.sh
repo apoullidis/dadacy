@@ -34,6 +34,11 @@
 # a function's parameters, LIKE, a view column)
 # pinned as PASS; rework 1 adds CY0L-CY0N, CY27, CY28.
 #
+# T-253 adds one section (CK*): R-CRED-REF, no certificate-reference format in DDL on a column named
+# reference_number (OD-310, SD 2126, C6): a refusal and a neighbour for each shape, S-1 (b)(ii)'s one admitted
+# constraint with one-token changes to it refused, the TL2-1 EXECUTEd plant, the record-definition list, and
+# the bounds (format() with a placeholder, concatenation, a trigger function, another name, LIKE) pinned as PASS.
+#
 # T-227 adds three sections: R-PROTECTED-TABLE (CX*), R-PROTECTED-EXTENSION (CE*) and U&"…" decoding
 # (CU*); CNA is re-classed from a CONTROL to R-PROTECTED-TABLE.
 #
@@ -906,6 +911,164 @@ GRANT SELECT ON public.t173_ql TO app_rw;"
 check CY27 "THE BOUND: CREATE TABLE (LIKE …) copies its types unread (QA30's plant)" PASS
 pair expand "CREATE VIEW public.t173_qv AS SELECT 1.5::numeric AS amount_minor;"
 check CY28 "THE BOUND: a view column, whose type is inferred, is not read (QA32's plant)" PASS
+
+echo "== R-CRED-REF (T-253; OD-310, SD 2126 and SD §Revision Log C6; CUT-T-060 R-7, S-1 (b)(ii)): no certificate-reference format in DDL on a column named reference_number"
+# SD 2126: reference_number is text, "format validated in the APP against credential_scheme.reference_format_regex,
+# not in DDL"; SD 2065-2070 names the leak this rule exists for (char(12) with CHECK (~ '^[0-9]{12}$')). The rule
+# keys on the column NAME (case-insensitive) and reads PostgreSQL's parse (AST_RULES, T-229 § contract §4):
+# CK01-CK0T refusals (a CHECK naming the column; a type other than text; a domain; a RENAME onto the name);
+# CK10-CK1D the one admission S-1 (b)(ii) rules, sitter_credential_reference_number_bounds on sitter_credential,
+# compared as PostgreSQL parses it, and one-token changes to it refused; CK20-CK2C neighbours and controls that
+# pass; CK30-CK36 the bounds, pinned as PASS. Red-first: every refusal and every admission was run against
+# ba0f33a's lint (T-253.md § Evidence, CK-RED).
+cred_tbl() {
+  pair expand "CREATE TABLE public.t253_cred (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, scheme_id uuid, status text, $1);
+GRANT SELECT ON public.t253_cred TO app_rw;"
+}
+S1_EXPR="CHECK (char_length(reference_number) BETWEEN 1 AND 64 AND reference_number !~ '[[:cntrl:]]')"
+S1_NAME=sitter_credential_reference_number_bounds
+cred_tbl "reference_number text CHECK (reference_number ~ '^[0-9]{12}\$')"
+check CK01 "SD 2066's exact leak, an inline column CHECK (reference_number ~ '^[0-9]{12}\$')" R-CRED-REF
+pair expand "ALTER TABLE public.t253_cred ADD CONSTRAINT cred_ref_format CHECK (reference_number ~ '^[0-9]{12}\$');"
+check CK02 "SD 2066's exact leak as ALTER TABLE … ADD CONSTRAINT cred_ref_format" R-CRED-REF
+cred_tbl "reference_number text, CONSTRAINT cred_ref_format CHECK (reference_number ~ '^[0-9]{12}\$')"
+check CK03 "SD 2066's leak as a table constraint in CREATE TABLE" R-CRED-REF
+pair expand "ALTER TABLE public.t253_cred ADD CONSTRAINT cred_ref_format CHECK (\"reference_number\" ~ '^[0-9]{12}\$');"
+check CK04 "the CHECK names the column quoted, \"reference_number\"" R-CRED-REF
+cred_tbl "reference_number char(12)"
+check CK05 "char(12) at CREATE TABLE" R-CRED-REF
+cred_tbl "reference_number character(12)"
+check CK06 "character(12) at CREATE TABLE" R-CRED-REF
+cred_tbl "reference_number varchar(12)"
+check CK07 "varchar(12) at CREATE TABLE" R-CRED-REF
+cred_tbl "reference_number character varying(12)"
+check CK08 "character varying(12) at CREATE TABLE" R-CRED-REF
+pair contract "ALTER TABLE public.t253_cred ALTER COLUMN reference_number TYPE char(12);"
+check CK09 "ALTER COLUMN reference_number TYPE char(12)" R-CRED-REF
+pair contract "ALTER TABLE public.t253_cred ALTER reference_number SET DATA TYPE character varying(12);"
+check CK0A "ALTER … SET DATA TYPE character varying(12), COLUMN omitted" R-CRED-REF
+pair expand "CREATE DOMAIN public.t253_ref AS text CHECK (VALUE ~ '^[0-9]{12}\$');
+CREATE TABLE public.t253_cred (id bigint PRIMARY KEY, reference_number public.t253_ref);
+GRANT SELECT ON public.t253_cred TO app_rw;"
+check CK0B "a domain carrying the format CHECK, applied to the column" R-CRED-REF
+pair expand "ALTER TABLE public.t253_cred ADD COLUMN reference_number t253_ref;"
+check CK0C "a domain created elsewhere (an earlier migration), only its use here" R-CRED-REF
+pair expand "ALTER TABLE public.t253_cred ADD COLUMN reference_number varchar(12);"
+check CK0D "ALTER TABLE … ADD COLUMN reference_number varchar(12)" R-CRED-REF
+cred_tbl '"reference_number" char(12)'
+check CK0E "the column name quoted, \"reference_number\" char(12)" R-CRED-REF
+pair expand "DO \$d\$ BEGIN EXECUTE 'ALTER TABLE public.t253_cred ADD CONSTRAINT cred_ref_format CHECK (reference_number ~ ''^[0-9]{12}\$'')'; END \$d\$;"
+check CK0F "TL2-1 (TL2-VIA V6): the CHECK arrives in an EXECUTEd string inside a DO body" R-CRED-REF
+pair expand "DO \$d\$ BEGIN EXECUTE 'ALTER TABLE public.t253_cred ALTER COLUMN reference_number TYPE varchar(12)'; END \$d\$;"
+check CK0G "TL2-1: the type arrives in an EXECUTEd string inside a DO body" R-CRED-REF
+pair expand "SELECT 'ALTER TABLE public.t253_cred ADD COLUMN reference_number char(12)';"
+check CK0H "TL2-1's safe side: a string only SELECTed, never executed, is refused too (s.via is not read)" R-CRED-REF
+pair expand "SELECT 1;"
+plant "$DOWN" "ALTER TABLE public.t253_cred ADD CONSTRAINT cred_ref_format CHECK (reference_number ~ '^[0-9]{12}\$');"
+check CK0I "in a DOWN file" R-CRED-REF
+cred_tbl '"Reference_Number" varchar(12)'
+check CK0J "the name is matched case-insensitively: a quoted \"Reference_Number\" (a distinct column to PostgreSQL) is refused" R-CRED-REF
+cred_tbl "reference_number varchar"
+check CK0K "bare varchar (no length) is refused: the column's only accepted type is text" R-CRED-REF
+cred_tbl "reference_number text[]"
+check CK0L "an array of text is refused" R-CRED-REF
+pair expand "ALTER TABLE public.t253_cred ADD CONSTRAINT cred_ref_format CHECK (reference_number ~ '^[0-9]{12}\$') NOT VALID;"
+check CK0M "ADD CONSTRAINT … CHECK … NOT VALID" R-CRED-REF
+pair expand "ALTER TABLE public.t253_cred ADD CONSTRAINT cred_ref_ok CHECK (public.t253_ref_ok(scheme_id, reference_number));"
+check CK0N "a CHECK calling a function with the column (the scheme-regex check SD 2126 puts in the APP)" R-CRED-REF
+cred_tbl "reference_number text, issued_on date CHECK (reference_number <> '')"
+check CK0O "a column CHECK on ANOTHER column's definition that names reference_number" R-CRED-REF
+pair contract "ALTER TABLE public.t253_cred RENAME COLUMN legacy_ref TO reference_number;"
+check CK0P "RENAME COLUMN … TO reference_number (the rename carries no type, so the old column's type is unseen)" R-CRED-REF
+pair expand "CREATE TYPE public.t253_ct AS (reference_number char(12));"
+check CK0Q "an attribute of a composite type, CREATE TYPE … AS (reference_number char(12))" R-CRED-REF
+pair expand "ALTER TABLE public.t253_cred ADD CONSTRAINT cred_ref_len CHECK (char_length(reference_number) = 12);"
+check CK0S "a length-only CHECK, char_length(reference_number) = 12" R-CRED-REF
+cred_tbl "reference_number bigint"
+check CK0T "an integer type (drops leading zeros) is refused: every type but text is" R-CRED-REF
+pair expand "ALTER TABLE sitter_credential ADD CONSTRAINT $S1_NAME $S1_EXPR;"
+checkwhy CK10 "S-1 (b)(ii) ADMITTED: the ruled constraint, byte-exact, as ALTER TABLE sitter_credential ADD CONSTRAINT" PASS "R-CRED-REF admits 9001_t021_plant.up.sql:2 $S1_NAME on sitter_credential (S-1 (b)(ii))"
+pair expand "CREATE TABLE public.sitter_credential (id uuid PRIMARY KEY, reference_number text NOT NULL,
+  CONSTRAINT $S1_NAME $S1_EXPR);
+GRANT SELECT ON public.sitter_credential TO app_rw;"
+checkwhy CK11 "S-1 (b)(ii) ADMITTED: the ruled constraint as a table constraint of CREATE TABLE public.sitter_credential" PASS "R-CRED-REF admits 9001_t021_plant.up.sql:2 $S1_NAME on sitter_credential (S-1 (b)(ii))"
+pair expand "CREATE TABLE sitter_credential (id uuid PRIMARY KEY, reference_number text NOT NULL CONSTRAINT $S1_NAME $S1_EXPR);
+GRANT SELECT ON sitter_credential TO app_rw;"
+checkwhy CK12 "S-1 (b)(ii) ADMITTED: the ruled constraint as a column constraint" PASS "R-CRED-REF admits 9001_t021_plant.up.sql:2 $S1_NAME on sitter_credential (S-1 (b)(ii))"
+pair expand "alter table PUBLIC.sitter_credential
+  add constraint \"$S1_NAME\"
+  check ( CHAR_LENGTH(\"reference_number\") between 1 and 64 -- capacity, not a format
+          and reference_number !~ '[[:cntrl:]]' );"
+checkwhy CK13 "the comparison is PostgreSQL's parse: line breaks, a comment, keyword case and identifier quoting change nothing" PASS "R-CRED-REF admits 9001_t021_plant.up.sql:2 $S1_NAME on sitter_credential (S-1 (b)(ii))"
+pair expand "ALTER TABLE sitter_credential ADD CONSTRAINT sitter_credential_reference_number_bound $S1_EXPR;"
+check CK14 "one character of the NAME changed (bounds -> bound): refused" R-CRED-REF
+pair expand "ALTER TABLE sitter_credential ADD CONSTRAINT \"Sitter_credential_reference_number_bounds\" $S1_EXPR;"
+check CK15 "one character of the NAME changed, quoted upper-case S (a different constraint name to PostgreSQL): refused" R-CRED-REF
+pair expand "ALTER TABLE sitter_credential ADD CONSTRAINT $S1_NAME CHECK (char_length(reference_number) BETWEEN 1 AND 65 AND reference_number !~ '[[:cntrl:]]');"
+check CK16 "one character of the EXPRESSION changed (64 -> 65): refused" R-CRED-REF
+pair expand "ALTER TABLE sitter_credential ADD CONSTRAINT $S1_NAME CHECK (char_length(reference_number) BETWEEN 0 AND 64 AND reference_number !~ '[[:cntrl:]]');"
+check CK17 "one character of the EXPRESSION changed (1 -> 0): refused" R-CRED-REF
+pair expand "ALTER TABLE sitter_credential ADD CONSTRAINT $S1_NAME CHECK (char_length(reference_number) BETWEEN 1 AND 64 AND reference_number ~ '[[:cntrl:]]');"
+check CK18 "one character of the EXPRESSION removed (!~ -> ~): refused" R-CRED-REF
+pair expand "ALTER TABLE sitter_credential ADD CONSTRAINT $S1_NAME CHECK (char_length(reference_number) BETWEEN 1 AND 64 AND reference_number !~ '[^[:cntrl:]]');"
+check CK19 "one character added inside the pattern ([[:cntrl:]] -> [^[:cntrl:]]): refused" R-CRED-REF
+pair expand "ALTER TABLE sitter_credential ADD CONSTRAINT $S1_NAME CHECK (pg_catalog.char_length(reference_number) BETWEEN 1 AND 64 AND reference_number !~ '[[:cntrl:]]');"
+check CK1A "the function schema-qualified (pg_catalog.char_length): a different parse, refused (the strict side)" R-CRED-REF
+pair expand "ALTER TABLE public.t253_cred ADD CONSTRAINT $S1_NAME $S1_EXPR;"
+check CK1B "the ruled name and expression on ANOTHER table: refused (admitted on sitter_credential only)" R-CRED-REF
+pair expand "ALTER TABLE sitter_credential ADD CONSTRAINT $S1_NAME $S1_EXPR NOT VALID;"
+check CK1C "the ruled constraint NOT VALID: refused" R-CRED-REF
+pair expand "ALTER TABLE sitter_credential ADD CONSTRAINT $S1_NAME $S1_EXPR;
+ALTER TABLE sitter_credential ADD CONSTRAINT cred_ref_format CHECK (reference_number ~ '^[0-9]{12}\$');"
+checkwhy CK1D "the admission admits itself only: a second CHECK beside it is refused" R-CRED-REF "R-CRED-REF admits 9001_t021_plant.up.sql:2 $S1_NAME on sitter_credential (S-1 (b)(ii))"
+cred_tbl "reference_number text"
+check CK20 "NEIGHBOUR: reference_number text (SD 2126)" PASS
+pair expand "ALTER TABLE public.t253_cred ADD COLUMN reference_number pg_catalog.text COLLATE \"C\";"
+check CK21 "NEIGHBOUR: pg_catalog.text with a collation" PASS
+cred_tbl "reference_number text NOT NULL, CONSTRAINT t253_status CHECK (status IN ('submitted','valid'))"
+check CK22 "NEIGHBOUR: a CHECK on another column of the same table" PASS
+cred_tbl "reference_number text, currency char(3), scheme_code varchar(12) CHECK (scheme_code ~ '^[A-Z]+\$')"
+check CK23 "NEIGHBOUR: char(n), varchar(n) and a pattern CHECK on columns of other names" PASS
+pair data "UPDATE public.credential_scheme SET reference_format_regex = '^[0-9]{12}\$' WHERE scheme_name = 't253';"
+check CK24 "CONTROL: a data migration setting credential_scheme.reference_format_regex (the SQ-25 path)" PASS
+cred_tbl "reference_number text
+  -- was: reference_number char(12) CHECK (reference_number ~ '^[0-9]{12}\$')
+"
+check CK25 "CONTROL: the column with char(12) and a CHECK in a -- comment" PASS
+pair contract "ALTER TABLE public.t253_cred ALTER COLUMN reference_number TYPE text;"
+check CK26 "NEIGHBOUR: ALTER COLUMN reference_number TYPE text (SD 3104's direction)" PASS
+pair data "INSERT INTO public.t253_cred (reference_number) VALUES ('0');
+UPDATE public.t253_cred SET status = 'in_review' WHERE reference_number ~ '^[0-9]{12}\$';"
+check CK27 "CONTROL: DML naming the column, with a regex in a WHERE" PASS
+pair data "INSERT INTO public.t253_cred (reference_number) SELECT r.reference_number FROM jsonb_to_recordset('[]'::jsonb) AS r(reference_number varchar(20));"
+check CK28 "(d) a record-definition list in a data migration (AS r(reference_number varchar(20))) declares no column: not refused" PASS
+pair data "INSERT INTO public.t253_cred (reference_number) SELECT x.reference_number FROM ROWS FROM (jsonb_to_recordset('[]'::jsonb) AS (reference_number char(12))) AS x;"
+check CK29 "(d) the ROWS FROM form of a record-definition list: not refused" PASS
+pair expand "CREATE DOMAIN public.t253_code AS text CHECK (VALUE ~ '^[A-Z]{2}\$');
+CREATE TABLE public.t253_cred (id bigint PRIMARY KEY, jurisdiction public.t253_code, reference_number text);
+GRANT SELECT ON public.t253_cred TO app_rw;"
+check CK2A "NEIGHBOUR: a pattern domain on a column of another name" PASS
+pair contract "ALTER TABLE public.t253_cred RENAME COLUMN reference_number TO legacy_ref;"
+check CK2B "NEIGHBOUR: RENAME COLUMN away from reference_number" PASS
+cred_tbl "reference_number text, note text CHECK (note <> 'reference_number')"
+check CK2C "NEIGHBOUR: the name only inside a string constant of another column's CHECK" PASS
+pair expand "DO \$d\$ BEGIN EXECUTE format('ALTER TABLE %I ADD CONSTRAINT cred_ref_format CHECK (reference_number ~ ''^[0-9]{12}\$'')', 't253_cred'); END \$d\$;"
+check CK30 "THE BOUND (c): EXECUTE format(…) with a placeholder does not parse alone and is not read, column and CHECK literal (T-229 §2)" PASS
+pair expand "DO \$d\$ BEGIN EXECUTE 'ALTER TABLE public.t253_cred ADD COLUMN reference_number ' || 'char(12)'; END \$d\$;"
+check CK31 "THE BOUND: a type assembled at run time by concatenation is not read" PASS
+pair expand "CREATE FUNCTION public.t253_ref_fmt() RETURNS trigger LANGUAGE plpgsql AS \$f\$ BEGIN
+  IF NEW.reference_number !~ '^[0-9]{12}\$' THEN RAISE EXCEPTION 'bad reference'; END IF; RETURN NEW; END \$f\$;
+CREATE TRIGGER t253_ref_fmt BEFORE INSERT ON public.t253_cred FOR EACH ROW EXECUTE FUNCTION public.t253_ref_fmt();"
+check CK32 "THE BOUND (attack): a trigger function enforcing the format is not refused by this rule (T-252's catalogue probe reads trigger functions on sitter_credential)" PASS
+cred_tbl "certificate_ref char(12) CHECK (certificate_ref ~ '^[0-9]{12}\$')"
+check CK33 "THE BOUND: a column of the same meaning under another name is not seen (the rule keys on the name)" PASS
+pair expand "CREATE TABLE public.t253_copy (LIKE public.t253_cred INCLUDING ALL);
+GRANT SELECT ON public.t253_copy TO app_rw;"
+check CK34 "THE BOUND: CREATE TABLE (LIKE …) copies a column and its CHECKs unread" PASS
+pair expand "ALTER TABLE public.t253_cred ADD CONSTRAINT cred_ref_row CHECK (public.t253_row_ok(t253_cred.*));"
+check CK35 "THE BOUND: a CHECK that passes the whole row to a function names no column and is not refused" PASS
+pair expand "CREATE UNIQUE INDEX t253_ref_idx ON public.t253_cred (reference_number) WHERE reference_number ~ '^[0-9]{12}\$';"
+check CK36 "THE BOUND: a partial index predicate on the column is not a CHECK and is not refused (it refuses no write)" PASS
 
 echo "== R-CASCADE"
 pair expand "DROP FUNCTION assert_sitter_bookable() CASCADE;"
