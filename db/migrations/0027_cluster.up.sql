@@ -25,7 +25,8 @@
 --                          the int[] consumers (SD 1909, 2259); never bigint (OD-107).
 --   EV-45 (C14 (a))        name_i18n jsonb NOT NULL with no default, and CHECK
 --                          cluster_name_i18n_three_locales: a JSON object holding en, el and ru, each
---                          a non-blank string. name stays as the operator's label.
+--                          a string not empty after trimming spaces (U+0020 only). name stays as the
+--                          operator's label.
 --   EV-46 (OE-53)          russian_speaking_share_pct integer (CHECK 0-100) and
 --                          has_hotel_or_holiday_let_inventory boolean, both nullable: NULL = unknown,
 --                          which the density job never reads as a pass.
@@ -40,10 +41,18 @@
 -- against locale_registry (the 0024 bound). btrim strips U+0020 only.
 --
 -- GRANTS (E.4 T-160 U-4, U-10). No default privileges exist (T-020 § contract §4).
---   app_rw             SELECT, INSERT, UPDATE at table level. core (search, gating, the admin route
---                      T-209) and worker (T-210, T-216) both connect as app_rw. No DELETE: a
---                      cluster is retired by state = 'closed', so no int[] id dangles by deletion.
---                      INSERT or UPDATE of id is refused by the identity (428C9), not by a grant.
+--   app_rw             SELECT and INSERT at table level; UPDATE on every column but id (E.4 U-4's
+--                      UPDATE, narrowed by a column list; T-161 rework 1, QA Q-1). core (search,
+--                      gating, the admin route T-209) and worker (T-210, T-216) both connect as
+--                      app_rw. No DELETE, and no UPDATE of id: a cluster is retired by
+--                      state = 'closed', and app_rw can neither delete nor renumber one, so no
+--                      int[] id (address.cluster_ids, availability_slot.cluster_ids) dangles that
+--                      way through app_rw (E.4 U-10). The owner and the superuser are not bound.
+--                      INSERT of an id is refused by the identity (428C9) unless OVERRIDING SYSTEM
+--                      VALUE is used (see NOT HELD). UPDATE of id to a value is refused by the
+--                      identity (428C9; measured: the rewriter runs before the privilege check);
+--                      UPDATE of id to DEFAULT, which the identity admits, is refused by the column
+--                      grant (42501).
 --   app_admin_rw       nothing. The admin BFF calls core (SD 1237).
 --   app_safety_rw      nothing (T-020 § contract §3).
 --   answering_service  nothing (SA §INT-10).
@@ -60,8 +69,10 @@
 --   * clusters not overlapping (U-9 (2a), overlap is legal) and lying inside the service area
 --     (U-9 (3), deferred to the service-area ticket);
 --   * uniqueness of name (E.4 U-12). No seed (G-5): operators draw clusters through T-209.
--- The owner app_ddl and the superuser are not bound by the grants, and can supply an id with
--- OVERRIDING SYSTEM VALUE.
+-- Any role holding INSERT on the table, app_rw included, can supply an id with OVERRIDING SYSTEM
+-- VALUE, as can the owner app_ddl and the superuser. An id ahead of the sequence makes a later
+-- ordinary insert fail 23505. No grant closes this while drizzle lists id in every insert; every
+-- writer omits id (T-161 rework 1, QA Q-2). The owner and the superuser are not bound by the grants.
 --
 -- WHO RUNS THIS FILE. app_ddl (T-136 § contract §6), which then owns the table, its identity
 -- sequence and its index. postgis is installed by 0001, so geography exists; no CREATE EXTENSION and
@@ -92,12 +103,14 @@ CREATE TABLE public.cluster (
 CREATE INDEX idx_cluster_boundary ON public.cluster USING gist (boundary);
 
 COMMENT ON TABLE public.cluster IS
-  'Discovery clusters (SD DB-10): operator-drawn WGS 84 polygons with an open, waitlist or closed state. Retired by state closed, never deleted. Which state changes are legal, and the density snapshot shape, are held elsewhere (C12), not by this table.';
+  'Discovery clusters (SD DB-10): operator-drawn WGS 84 polygons with an open, waitlist or closed state. Retired by state closed; no application role holds DELETE. Which state changes are legal, and the density snapshot shape, are held elsewhere (C12), not by this table.';
 COMMENT ON COLUMN public.cluster.name_i18n IS
-  'The display name in en, el and ru, each a non-blank string. name is the operator label and is never shown to users.';
+  'The display name in en, el and ru, each a string that is not empty after trimming spaces (U+0020). name is the operator label and is never shown to users.';
 COMMENT ON COLUMN public.cluster.russian_speaking_share_pct IS
   'Ops-entered estimate of the Russian-speaking share, whole percent 0 to 100. NULL means unknown and is never a pass.';
 COMMENT ON COLUMN public.cluster.has_hotel_or_holiday_let_inventory IS
   'Ops-entered: the cluster contains hotel or holiday-let inventory. NULL means unknown and is never a pass.';
 
-GRANT SELECT, INSERT, UPDATE ON public.cluster TO app_rw;
+GRANT SELECT, INSERT ON public.cluster TO app_rw;
+GRANT UPDATE (metro, name, boundary, state, density_snapshot, name_i18n, russian_speaking_share_pct,
+               has_hotel_or_holiday_let_inventory) ON public.cluster TO app_rw;
