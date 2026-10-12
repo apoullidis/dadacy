@@ -182,7 +182,8 @@ describe('0005 — constraint refusals (as the superuser, so no privilege is wha
     );
   });
 
-  // T-158 (0025) added sitter_profile's two authored-locale FKs. The pin names every FK into
+  // T-158 (0025) added sitter_profile's two authored-locale FKs; T-252 (0026) added
+  // sitter_credential_attestation_locale_fkey. The pin names every FK into
   // locale_registry with its update/delete action codes, so a third FK, or an ON UPDATE CASCADE on any
   // of them (T-144's second approval measured it rewriting rows), turns this red.
   test('account_locale_fkey is NO ACTION on update and delete, on a plain deterministic text column; every FK into locale_registry is named here and is NO ACTION', async () => {
@@ -197,8 +198,8 @@ describe('0005 — constraint refusals (as the superuser, so no privilege is wha
                   WHERE f.contype = 'f' AND f.confrelid = 'public.locale_registry'::regclass)
            FROM pg_constraint c WHERE c.conname = 'account_locale_fkey'`,
       ),
-      'aa|default:true|account_locale_fkey:aa,sitter_profile_bio_authored_locale_fkey:aa,' +
-        'sitter_profile_headline_authored_locale_fkey:aa',
+      'aa|default:true|account_locale_fkey:aa,sitter_credential_attestation_locale_fkey:aa,' +
+        'sitter_profile_bio_authored_locale_fkey:aa,sitter_profile_headline_authored_locale_fkey:aa',
     );
   });
 
