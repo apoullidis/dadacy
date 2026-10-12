@@ -84,8 +84,8 @@ const TABLE_COMMENT =
   "A sitter's credential per scheme (SD §DB-4, SA §DA-4r). No certificate content, no free text, no notes. " +
   'reference_number is plain text; its format is credential_scheme.reference_format_regex, applied by the ' +
   'application, never DDL. Row-level security is FORCEd; policies are TO app_rw and read app.actor_id, ' +
-  'app.actor_role and app.break_glass, an empty value counting as unset. A sitter sees and writes only her ' +
-  'own rows and can write only status not_started or submitted; the system actor sees and writes every row; ' +
+  'app.actor_role and app.break_glass, an empty value counting as unset. A sitter sees and writes only their ' +
+  'own rows, can write only status not_started or submitted, and cannot update a row in review_hold; the system actor sees and writes every row; ' +
   'break-glass reads every row. app_rw holds no DELETE.';
 
 /** The 16 columns app_rw may UPDATE (CUT-T-060 R-9), in attnum order. Literal, not a reading. */
@@ -420,7 +420,7 @@ describe('0026 — the table, its owner, columns, ACL, constraints, indexes, pol
         "sitter_credential_break_glass_select|r|true|{app_rw}|(NULLIF(current_setting('app.break_glass'::text, true), ''::text) = 'on'::text)|-",
         `sitter_credential_sitter_insert|a|true|{app_rw}|-|(${SITTER_P} AND ${SITTER_STATUS})`,
         `sitter_credential_sitter_select|r|true|{app_rw}|(${SITTER_P})|-`,
-        `sitter_credential_sitter_update|w|true|{app_rw}|(${SITTER_P})|(${SITTER_P} AND ${SITTER_STATUS})`,
+        `sitter_credential_sitter_update|w|true|{app_rw}|(${SITTER_P} AND (status <> 'review_hold'::text))|(${SITTER_P} AND ${SITTER_STATUS})`,
         `sitter_credential_system_insert|a|true|{app_rw}|-|(${SYSTEM_P})`,
         `sitter_credential_system_select|r|true|{app_rw}|(${SYSTEM_P})|-`,
         `sitter_credential_system_update|w|true|{app_rw}|(${SYSTEM_P})|(${SYSTEM_P})`,
@@ -852,7 +852,7 @@ describe('0026 — row-level security (R-2; real app_rw login; GUCs by SET LOCAL
     assertRefusedBy('no actor INSERT', await asRw(insertRow()), RLS_DENIED);
   });
 
-  test("a sitter sees her own row and not another sitter's", async () => {
+  test("a sitter sees their own row and not another sitter's", async () => {
     assertPermittedWith(
       'sitter A',
       await asRw(
@@ -867,7 +867,7 @@ describe('0026 — row-level security (R-2; real app_rw login; GUCs by SET LOCAL
     );
   });
 
-  test("a sitter's UPDATE of another sitter's row affects 0 rows; CONTROL: the same UPDATE of her own row affects 1", async () => {
+  test("a sitter's UPDATE of another sitter's row affects 0 rows; CONTROL: the same UPDATE of their own row affects 1", async () => {
     assertPermittedWith(
       'sitter A updates B',
       await asRw(
@@ -929,7 +929,7 @@ describe('0026 — row-level security (R-2; real app_rw login; GUCs by SET LOCAL
     );
   });
 
-  test("Q-3: a sitter's INSERT … ON CONFLICT (sitter_id, scheme_id) DO NOTHING inserts 0 rows for a scheme she holds and 1 for one she does not", async () => {
+  test("Q-3: a sitter's INSERT … ON CONFLICT (sitter_id, scheme_id) DO NOTHING inserts 0 rows for a scheme the sitter holds and 1 for one the sitter does not", async () => {
     const q3 = (scheme: string): string =>
       `INSERT INTO ${TABLE} (id, sitter_id, scheme_id, status) VALUES ('${CRED_NEW}', '${SITTER_A}', ${scheme}, 'not_started')
          ON CONFLICT (sitter_id, scheme_id) DO NOTHING`;
@@ -941,7 +941,7 @@ describe('0026 — row-level security (R-2; real app_rw login; GUCs by SET LOCAL
     assertPermittedWith('Q-3 new scheme', await asRw(...SITTER(SITTER_A), q3(ART22)), 'INSERT 0 1');
   });
 
-  test("a sitter records reference_number '0', 'ΑΒΓ-123' and a 20-digit string on her own row (each affects 1 row; S-1's bound)", async () => {
+  test("a sitter records reference_number '0', 'ΑΒΓ-123' and a 20-digit string on their own row (each affects 1 row; S-1's bound)", async () => {
     for (const v of ['0', 'ΑΒΓ-123', '12345678901234567890']) {
       assertPermittedWith(
         `sitter reference ${v}`,
@@ -1061,30 +1061,101 @@ describe('0026 — row-level security (R-2; real app_rw login; GUCs by SET LOCAL
 });
 
 describe('0026 — what the database does NOT refuse (stated bounds, each pinned so a change to it is seen)', () => {
-  test("NOT HELD — R-2's sitter policies constrain the NEW row only: a sitter moves her own valid row, and her own review_hold row, to submitted (each affects 1 row)", async () => {
-    assertPermittedWith(
-      'sitter B: valid -> submitted',
-      await asRw(
-        ...SITTER(SITTER_B),
-        `UPDATE ${TABLE} SET status = 'submitted' WHERE id = '${CRED_B}' AND status = 'valid'`,
-      ),
-      'UPDATE 1',
-    );
+  test("R-2 AMENDED (OD-326) — a sitter's UPDATE of their own review_hold row affects 0 rows (the row stays visible to them, and unchanged), whether it moves to submitted or only rewrites the reference; the system actor can still update it", async () => {
     const r = await asRw(
       ...SYSTEM,
       `UPDATE ${TABLE} SET status = 'review_hold' WHERE id = '${CRED_B}'`,
       ...SITTER(SITTER_B),
-      `UPDATE ${TABLE} SET status = 'submitted' WHERE id = '${CRED_B}' AND status = 'review_hold'`,
+      COUNT(`id = '${CRED_B}' AND status = 'review_hold'`).replace("'n='", "'held-visible='"),
+      `UPDATE ${TABLE} SET status = 'submitted', reference_number = '999' WHERE id = '${CRED_B}'`,
+      `UPDATE ${TABLE} SET reference_number = '999' WHERE id = '${CRED_B}'`,
+      ...SYSTEM,
+      `SELECT 'after=' || status || '|' || coalesce(reference_number, 'NULL') || ';' FROM ${TABLE} WHERE id = '${CRED_B}'`,
+      `UPDATE ${TABLE} SET status = 'valid' WHERE id = '${CRED_B}'`,
     );
-    assertPermitted('system sets review_hold, then sitter B: review_hold -> submitted', r);
-    assert.equal(
-      (r.output.match(/^UPDATE 1$/gm) ?? []).length,
-      2,
-      `expected two UPDATE 1 tags.\n${r.output}`,
+    assertPermittedWith(
+      'review_hold refused to the sitter',
+      r,
+      'held-visible=1;',
+      'after=review_hold|NULL;',
+    );
+    assert.deepEqual(
+      r.output.match(/^UPDATE [01]$/gm),
+      ['UPDATE 1', 'UPDATE 0', 'UPDATE 0', 'UPDATE 1'],
+      r.output,
     );
   });
 
-  test('MEASURED consequence — a sitter cannot record an attestation on her own valid row: UPDATE of last_attestation_at alone is REFUSED (42501, RLS), because the new row is valid', async () => {
+  test("NOT HELD — R-2's sitter policies otherwise constrain the NEW row only: from not_started, submitted, in_review, valid, expired, failed and withdrawn, a sitter moves their own row to submitted (each affects 1 row)", async () => {
+    for (const from of [
+      'not_started',
+      'submitted',
+      'in_review',
+      'valid',
+      'expired',
+      'failed',
+      'withdrawn',
+    ]) {
+      const r = await asRw(
+        ...SYSTEM,
+        `UPDATE ${TABLE} SET status = '${from}' WHERE id = '${CRED_B}'`,
+        ...SITTER(SITTER_B),
+        `UPDATE ${TABLE} SET status = 'submitted' WHERE id = '${CRED_B}' AND status = '${from}'`,
+      );
+      assertPermitted(`sitter B: ${from} -> submitted`, r);
+      assert.deepEqual(
+        r.output.match(/^UPDATE [01]$/gm),
+        ['UPDATE 1', 'UPDATE 1'],
+        `${from}:\n${r.output}`,
+      );
+    }
+  });
+
+  test('NOT HELD (Q-4) — a sitter writes every granted column on their own row whose new status is submitted, with any value the type and CHECKs allow (expires_on, expiry_provenance, issued_on, the three due/attestation dates, decided_by, decided_at, attestation_template_version, attestation_locale, reference_number)', async () => {
+    assertPermittedWith(
+      'sitter writes every granted column',
+      await asRw(
+        ...SITTER(SITTER_A),
+        `UPDATE ${TABLE} SET status = 'submitted', reference_number = '42', issued_on = '2026-01-01',
+                expires_on = '2099-12-31', expiry_provenance = 'from_document',
+                next_recertification_due_at = '2099-01-01', last_attestation_at = now(),
+                next_attestation_due_at = now() + interval '90 days', attestation_template_version = 'v1',
+                attestation_locale = 'el', decided_by = '${SITTER_A}', decided_at = now()
+          WHERE id = '${CRED_A}'`,
+        `SELECT 'got=' || expires_on || '|' || decided_by || ';' FROM ${TABLE} WHERE id = '${CRED_A}'`,
+      ),
+      'UPDATE 1',
+      `got=2099-12-31|${SITTER_A};`,
+    );
+  });
+
+  test('NOT HELD (Q-5) — the owner app_ddl, which reads no row under FORCE, can still TRUNCATE every row, and can turn FORCE off and then read them', async () => {
+    assertPermittedWith(
+      'app_ddl TRUNCATE',
+      await asSuperuser(
+        'SET ROLE app_ddl',
+        COUNT().replace("'n='", "'ddl-sees='"),
+        `TRUNCATE ${TABLE}`,
+        'RESET ROLE',
+        COUNT().replace("'n='", "'after-truncate='"),
+      ),
+      'ddl-sees=0;',
+      'TRUNCATE TABLE',
+      'after-truncate=0;',
+    );
+    assertPermittedWith(
+      'app_ddl NO FORCE',
+      await asSuperuser(
+        'SET ROLE app_ddl',
+        `ALTER TABLE ${TABLE} NO FORCE ROW LEVEL SECURITY`,
+        COUNT().replace("'n='", "'ddl-sees='"),
+      ),
+      'ALTER TABLE',
+      'ddl-sees=2;',
+    );
+  });
+
+  test('MEASURED consequence — a sitter cannot record an attestation on their own valid row: UPDATE of last_attestation_at alone is REFUSED (42501, RLS), because the new row is valid', async () => {
     const r = await asRw(
       ...SITTER(SITTER_B),
       COUNT(`id = '${CRED_B}' AND status = 'valid'`),

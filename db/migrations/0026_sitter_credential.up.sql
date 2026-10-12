@@ -48,10 +48,14 @@
 -- Seven policies, one per command per actor class:
 --   sitter (self)   SELECT, INSERT, UPDATE where actor_role = 'sitter' and sitter_id = actor_id.
 --                   INSERT and UPDATE also require the new row's status to be one a sitter causes:
---                   not_started (Q-3, onboarding) or submitted (her submission). Every other status
---                   (in_review, valid, expired, failed, review_hold, withdrawn) is caused by the
---                   system or an operator, never by the sitter (SD 1432-1434; R-2.4). A
---                   self-validated credential is I-1's attack.
+--                   not_started (Q-3, onboarding) or submitted (the sitter's submission). Every
+--                   other status (in_review, valid, expired, failed, review_hold, withdrawn) is
+--                   caused by the system or an operator, never by the sitter (SD 1432-1434;
+--                   R-2.4). A self-validated credential is I-1's attack. UPDATE's USING also
+--                   excludes a row in review_hold (R-2 as amended by T-252 rework 1, OD-326):
+--                   SD 1433-1434 lets a hold end only in valid (four-eyes) or failed, so a sitter
+--                   may not move a held row back to submitted. A held sitter's fresh certificates
+--                   are written by the system actor.
 --   system          SELECT, INSERT, UPDATE on every row where actor_role = 'system' and actor_id
 --                   (the job identity, SD 1240) is set.
 --   break-glass     SELECT on every row where app.break_glass = 'on' (SD 1986). Nothing else.
@@ -109,7 +113,7 @@ CREATE INDEX idx_sitter_credential_expires ON public.sitter_credential (expires_
   WHERE status = 'valid' AND expires_on IS NOT NULL;
 
 COMMENT ON TABLE public.sitter_credential IS
-  'A sitter''s credential per scheme (SD §DB-4, SA §DA-4r). No certificate content, no free text, no notes. reference_number is plain text; its format is credential_scheme.reference_format_regex, applied by the application, never DDL. Row-level security is FORCEd; policies are TO app_rw and read app.actor_id, app.actor_role and app.break_glass, an empty value counting as unset. A sitter sees and writes only her own rows and can write only status not_started or submitted; the system actor sees and writes every row; break-glass reads every row. app_rw holds no DELETE.';
+  'A sitter''s credential per scheme (SD §DB-4, SA §DA-4r). No certificate content, no free text, no notes. reference_number is plain text; its format is credential_scheme.reference_format_regex, applied by the application, never DDL. Row-level security is FORCEd; policies are TO app_rw and read app.actor_id, app.actor_role and app.break_glass, an empty value counting as unset. A sitter sees and writes only their own rows, can write only status not_started or submitted, and cannot update a row in review_hold; the system actor sees and writes every row; break-glass reads every row. app_rw holds no DELETE.';
 
 ALTER TABLE public.sitter_credential ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.sitter_credential FORCE ROW LEVEL SECURITY;
@@ -126,7 +130,8 @@ CREATE POLICY sitter_credential_sitter_insert ON public.sitter_credential
 CREATE POLICY sitter_credential_sitter_update ON public.sitter_credential
   FOR UPDATE TO app_rw
   USING (NULLIF(current_setting('app.actor_role', true), '') = 'sitter'
-         AND sitter_id = NULLIF(current_setting('app.actor_id', true), ''))
+         AND sitter_id = NULLIF(current_setting('app.actor_id', true), '')
+         AND status <> 'review_hold')
   WITH CHECK (NULLIF(current_setting('app.actor_role', true), '') = 'sitter'
               AND sitter_id = NULLIF(current_setting('app.actor_id', true), '')
               AND status IN ('not_started','submitted'));
