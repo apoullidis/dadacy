@@ -959,7 +959,7 @@ cred_tbl '"reference_number" char(12)'
 check CK0E "the column name quoted, \"reference_number\" char(12)" R-CRED-REF
 pair expand "DO \$d\$ BEGIN EXECUTE 'ALTER TABLE public.t253_cred ADD CONSTRAINT cred_ref_format CHECK (reference_number ~ ''^[0-9]{12}\$'')'; END \$d\$;"
 check CK0F "TL2-1 (TL2-VIA V6): the CHECK arrives in an EXECUTEd string inside a DO body" R-CRED-REF
-pair expand "DO \$d\$ BEGIN EXECUTE 'ALTER TABLE public.t253_cred ALTER COLUMN reference_number TYPE varchar(12)'; END \$d\$;"
+pair contract "DO \$d\$ BEGIN EXECUTE 'ALTER TABLE public.t253_cred ALTER COLUMN reference_number TYPE varchar(12)'; END \$d\$;"
 check CK0G "TL2-1: the type arrives in an EXECUTEd string inside a DO body" R-CRED-REF
 pair expand "SELECT 'ALTER TABLE public.t253_cred ADD COLUMN reference_number char(12)';"
 check CK0H "TL2-1's safe side: a string only SELECTed, never executed, is refused too (s.via is not read)" R-CRED-REF
