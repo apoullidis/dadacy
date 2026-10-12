@@ -20,8 +20,9 @@
  *
  * Every refusal and control in V1–V8 runs over the REAL LOGIN of a member of exactly one role
  * (T-020 Evidence §4): app_rw for every write, as the brief requires, so what is measured is what
- * core and worker meet. The superuser is used only where a case needs a privilege app_rw lacks
- * (OVERRIDING SYSTEM VALUE, and the ?& plant), and says so. Every write runs inside a transaction
+ * core and worker meet. The superuser is used only for the ?& plant and the superuser rows of V5,
+ * and says so. OVERRIDING SYSTEM VALUE needs no privilege beyond INSERT, and V8 pins app_rw using
+ * it (T-161 rework 1, QA Q-2). Every write runs inside a transaction
  * that is never committed (`inTransaction`), so the table is empty throughout, and the last test of
  * the file re-reads it.
  */
@@ -60,10 +61,11 @@ const NAMES = '{"el": "Συστάδα δοκιμής", "en": "Test cluster", "ru
 /** The texts 0027 installs, verbatim: a change to a comment must change this suite too. */
 const TABLE_COMMENT =
   'Discovery clusters (SD DB-10): operator-drawn WGS 84 polygons with an open, waitlist or closed ' +
-  'state. Retired by state closed, never deleted. Which state changes are legal, and the density ' +
+  'state. Retired by state closed; no application role holds DELETE. Which state changes are legal, and the density ' +
   'snapshot shape, are held elsewhere (C12), not by this table.';
 const NAME_I18N_COMMENT =
-  'The display name in en, el and ru, each a non-blank string. name is the operator label and is never shown to users.';
+  'The display name in en, el and ru, each a string that is not empty after trimming spaces (U+0020). ' +
+  'name is the operator label and is never shown to users.';
 const SHARE_COMMENT =
   'Ops-entered estimate of the Russian-speaking share, whole percent 0 to 100. NULL means unknown and is never a pass.';
 const INVENTORY_COMMENT =
@@ -169,7 +171,7 @@ const DENIED = 'ERROR:  42501: permission denied for table cluster';
 const READ_CONTROL = `SELECT 'before=' || count(*) FROM ${TABLE} WHERE name = 't161 control'`;
 
 describe('0027 — the table, its owner, columns, constraints, indexes, sequence, ACL and comments', () => {
-  test("SD 2961–2965's six columns first in SD's order, then name_i18n (C14 (a)) and the two OE-53 columns; id integer GENERATED ALWAYS AS IDENTITY (E.4 U-1); boundary geography(Polygon,4326); density_snapshot DEFAULT '{}'; name_i18n NOT NULL with NO default; the OE-53 columns nullable; owner app_ddl; ACL app_rw SELECT, INSERT, UPDATE only; no column ACL", async () => {
+  test("SD 2961–2965's six columns first in SD's order, then name_i18n (C14 (a)) and the two OE-53 columns; id integer GENERATED ALWAYS AS IDENTITY (E.4 U-1); boundary geography(Polygon,4326); density_snapshot DEFAULT '{}'; name_i18n NOT NULL with NO default; the OE-53 columns nullable; owner app_ddl; table ACL app_rw SELECT + INSERT only; column ACL app_rw UPDATE on each of the eight columns but id (rework 1, QA Q-1)", async () => {
     assert.equal(
       await db.value(
         `SELECT (SELECT string_agg(attname || ':' || format_type(atttypid, atttypmod) || ':' ||
@@ -186,7 +188,10 @@ describe('0027 — the table, its owner, columns, constraints, indexes, sequence
       'id:integer:nn:-:a,metro:text:nn:-:-,name:text:nn:-:-,boundary:geography(Polygon,4326):nn:-:-,' +
         "state:text:nn:-:-,density_snapshot:jsonb:nn:'{}'::jsonb:-,name_i18n:jsonb:nn:-:-," +
         'russian_speaking_share_pct:integer:null:-:-,has_hotel_or_holiday_let_inventory:boolean:null:-:-' +
-        '|app_ddl|{app_ddl=arwdDxtm/app_ddl,app_rw=arw/app_ddl}|no column ACL',
+        '|app_ddl|{app_ddl=arwdDxtm/app_ddl,app_rw=ar/app_ddl}|' +
+        'metro={app_rw=w/app_ddl},name={app_rw=w/app_ddl},boundary={app_rw=w/app_ddl},state={app_rw=w/app_ddl},' +
+        'density_snapshot={app_rw=w/app_ddl},name_i18n={app_rw=w/app_ddl},russian_speaking_share_pct={app_rw=w/app_ddl},' +
+        'has_hotel_or_holiday_let_inventory={app_rw=w/app_ddl}',
     );
   });
 
@@ -257,13 +262,21 @@ describe('0027 — the table, its owner, columns, constraints, indexes, sequence
     );
   });
 
-  test("app_rw's effective table privileges are exactly SELECT, INSERT, UPDATE (no DELETE, E.4 U-10 (1); no TRUNCATE, REFERENCES, TRIGGER, MAINTAIN), and no role but app_ddl (owner) and app_rw holds any privilege on the table or its sequence, PUBLIC included (superusers, pg_* roles and this suite's t161_* logins are not read)", async () => {
+  test("app_rw's effective table privileges are exactly SELECT, INSERT (no table-level UPDATE; no DELETE, E.4 U-10 (1); no TRUNCATE, REFERENCES, TRIGGER, MAINTAIN); its UPDATE is on exactly the eight columns but id (rework 1, QA Q-1); and no role but app_ddl (owner) and app_rw holds any table, column or sequence privilege, PUBLIC included (superusers, pg_* roles and this suite's t161_* logins are not read)", async () => {
     assert.equal(
       await db.value(
         `SELECT string_agg(p, ',' ORDER BY ord) FROM unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER','MAINTAIN'])
                 WITH ORDINALITY AS u(p, ord) WHERE has_table_privilege('app_rw', '${TABLE}', p)`,
       ),
-      'SELECT,INSERT,UPDATE',
+      'SELECT,INSERT',
+    );
+    assert.equal(
+      await db.value(
+        `SELECT string_agg(attname, ',' ORDER BY attnum) FROM pg_attribute
+          WHERE attrelid = '${TABLE}'::regclass AND attnum > 0 AND NOT attisdropped
+            AND has_column_privilege('app_rw', '${TABLE}', attname, 'UPDATE')`,
+      ),
+      'metro,name,boundary,state,density_snapshot,name_i18n,russian_speaking_share_pct,has_hotel_or_holiday_let_inventory',
     );
     assert.equal(
       await db.value(
@@ -273,6 +286,8 @@ describe('0027 — the table, its owner, columns, constraints, indexes, sequence
           WHERE r.rolname NOT IN ('app_ddl') AND r.rolname NOT LIKE 'pg\\_%' AND r.rolname NOT LIKE 't161\\_%'
             AND NOT (SELECT rolsuper FROM pg_roles WHERE rolname = r.rolname) IS TRUE
             AND (has_table_privilege(r.rolname, '${TABLE}', p)
+                 OR CASE WHEN p IN ('SELECT','INSERT','UPDATE','REFERENCES')
+                         THEN has_any_column_privilege(r.rolname, '${TABLE}', p) ELSE false END
                  OR (p IN ('SELECT','UPDATE') AND has_sequence_privilege(r.rolname, 'public.cluster_id_seq', p))
                  OR (p = 'SELECT' AND has_sequence_privilege(r.rolname, 'public.cluster_id_seq', 'USAGE')))`,
       ),
@@ -384,6 +399,14 @@ describe('V2 — a cluster boundary is one WGS 84 polygon (SD 2963), as app_rw',
     });
   }
 
+  test('a polygon with an SRID absent from spatial_ref_sys (9999) is REFUSED with XX000, not 22023 (measured; rework 1, QA Q-4)', async () => {
+    assertRefusedBy(
+      'SRID 9999',
+      await asAppRw(insertRow({ boundary: `'SRID=9999;${POLY}'` })),
+      'ERROR:  XX000: Cannot find SRID (9999) in spatial_ref_sys',
+    );
+  });
+
   test('a polygon UPDATEd to a POINT is REFUSED (22023), the row read first', async () => {
     const r = await asAppRw(
       insertRow(),
@@ -453,7 +476,7 @@ describe('V3 — every column SD marks NOT NULL refuses NULL (SD 2962–2965), a
   });
 });
 
-describe('V4 — only app_rw reads or writes the table, at SELECT, INSERT, UPDATE (E.4 U-4, U-10)', () => {
+describe('V4 — only app_rw reads or writes the table: SELECT, INSERT, and UPDATE of every column but id (E.4 U-4, U-10; rework 1, QA Q-1)', () => {
   for (const role of ['app_admin_rw', 'app_safety_rw', 'answering_service'] as const) {
     test(`${role} SELECT is REFUSED (42501)`, async () => {
       assertRefusedBy(
@@ -557,7 +580,7 @@ describe('V5 — the primary key is unique and GENERATED ALWAYS (E.4 U-1)', () =
     );
   });
 
-  test('app_rw UPDATE … SET id = … is REFUSED (428C9; measured), the row read first', async () => {
+  test('app_rw UPDATE … SET id = 7 is REFUSED by the identity (428C9; measured: the rewriter runs before the privilege check), the row read first', async () => {
     const r = await asAppRw(
       insertRow(),
       READ_CONTROL,
@@ -568,6 +591,54 @@ describe('V5 — the primary key is unique and GENERATED ALWAYS (E.4 U-1)', () =
       'app_rw UPDATE id',
       r,
       'ERROR:  428C9: column "id" can only be updated to DEFAULT',
+    );
+  });
+
+  test('app_rw UPDATE … SET id = DEFAULT (a renumber, which the identity admits) is REFUSED (42501): UPDATE is granted on every column but id (rework 1, QA Q-1), the row read first', async () => {
+    const r = await asAppRw(
+      insertRow(),
+      READ_CONTROL,
+      `UPDATE ${TABLE} SET id = DEFAULT WHERE name = 't161 control'`,
+    );
+    assert.ok(r.output.includes('before=1'), `precondition not read:\n${r.output}`);
+    assertRefusedBy('app_rw renumber', r, DENIED);
+  });
+
+  test('CONTROL — the superuser CAN renumber (SET id = DEFAULT, UPDATE 1, the id changes): the identity alone does not stop it, so the column grant is what refuses app_rw above', async () => {
+    const r = await asSuperuser(
+      `${insertRow()} RETURNING 'before=' || id`,
+      `UPDATE ${TABLE} SET id = DEFAULT WHERE name = 't161 control' RETURNING 'after=' || id`,
+    );
+    assertPermitted('superuser renumber', r);
+    assert.ok(r.output.includes('UPDATE 1'), `UPDATE 1 expected:\n${r.output}`);
+    const before = /before=(\d+)/.exec(r.output)?.[1];
+    const after = /after=(\d+)/.exec(r.output)?.[1];
+    assert.ok(
+      before !== undefined && after !== undefined && before !== after,
+      `id not changed:\n${r.output}`,
+    );
+  });
+
+  test('CONTROL — app_rw UPDATEs each of the eight columns but id on its own (UPDATE 1 each): every legitimate update column is granted (T-160 Q6, Q7)', async () => {
+    const SETS: ReadonlyArray<readonly [column: string, value: string]> = [
+      ['metro', `'CY'`],
+      ['name', `'t161 renamed'`],
+      ['boundary', `'SRID=4326;POLYGON((33 34.6,33.2 34.6,33.2 34.8,33 34.8,33 34.6))'`],
+      ['state', `'closed'`],
+      ['density_snapshot', `'{"computedAt": "2026-10-13"}'`],
+      ['name_i18n', `'{"en": "Renamed", "el": "Μετονομάστηκε", "ru": "Переименован"}'`],
+      ['russian_speaking_share_pct', '50'],
+      ['has_hotel_or_holiday_let_inventory', 'true'],
+    ];
+    const r = await asAppRw(
+      `${insertRow()} RETURNING 'rid=' || id`,
+      ...SETS.map(([c, v]) => `UPDATE ${TABLE} SET ${c} = ${v} WHERE metro = 'CY'`),
+    );
+    assertPermitted('eight column updates', r);
+    assert.equal(
+      (r.output.match(/UPDATE 1/g) ?? []).length,
+      8,
+      `eight UPDATE 1 expected:\n${r.output}`,
     );
   });
 
@@ -611,6 +682,10 @@ describe('V6 — a display name exists in en, el and ru, each a non-blank string
     ['{}', '{}'],
     ['ru a JSON null', '{"en": "Test", "el": "Δοκιμή", "ru": null}'],
     ['ru the number 5', '{"en": "Test", "el": "Δοκιμή", "ru": 5}'],
+    ['en two spaces', '{"en": "  ", "el": "Δοκιμή", "ru": "Тест"}'],
+    ['en the number 5', '{"en": 5, "el": "Δοκιμή", "ru": "Тест"}'],
+    ['el two spaces', '{"en": "Test", "el": "  ", "ru": "Тест"}'],
+    ['el the number 5', '{"en": "Test", "el": 5, "ru": "Тест"}'],
     ['ru two spaces', '{"en": "Test", "el": "Δοκιμή", "ru": "  "}'],
     ['ru empty', '{"en": "Test", "el": "Δοκιμή", "ru": ""}'],
     ['a JSON array of the three codes', '["en", "el", "ru"]'],
@@ -798,13 +873,80 @@ describe('V8 — what this table does NOT hold (each ACCEPTED as app_rw, so nobo
     );
   });
 
-  test('NOT HELD — the superuser (and the owner) can supply an id with OVERRIDING SYSTEM VALUE', async () => {
-    assertInsertedOne(
-      'OVERRIDING SYSTEM VALUE',
-      await asSuperuser(
-        insertRow({ id: '1000' }).replace(') VALUES (', ') OVERRIDING SYSTEM VALUE VALUES ('),
-      ),
+  test('NOT HELD — app_rw, as any role holding INSERT, can supply an id with OVERRIDING SYSTEM VALUE: 1000, -1 and 2147483647 are each accepted (rework 1, QA Q-2)', async () => {
+    for (const id of ['1000', '-1', '2147483647']) {
+      assertInsertedOne(
+        `OVERRIDING id ${id}`,
+        await asAppRw(
+          insertRow({ id }).replace(') VALUES (', ') OVERRIDING SYSTEM VALUE VALUES ('),
+        ),
+      );
+    }
+  });
+
+  test('NOT HELD — an id app_rw supplies ahead of the sequence makes the next ordinary insert fail 23505 cluster_pkey (rework 1, QA Q-2)', async () => {
+    const cols = Object.keys(GOOD).join(', ');
+    const vals = Object.values(GOOD).join(', ');
+    const r = await asAppRw(
+      `${insertRow()} RETURNING 'first=' || id`,
+      `INSERT INTO ${TABLE} (id, ${cols}) OVERRIDING SYSTEM VALUE SELECT max(id) + 1, ${vals} FROM ${TABLE}`,
+      insertRow(),
     );
+    assert.equal(
+      (r.output.match(/INSERT 0 1/g) ?? []).length,
+      2,
+      `two inserts before the collision:\n${r.output}`,
+    );
+    assertRefusedBy(
+      'ordinary insert after OVERRIDING',
+      r,
+      'ERROR:  23505: duplicate key value violates unique constraint "cluster_pkey"',
+      'CONSTRAINT NAME:  cluster_pkey',
+    );
+  });
+
+  test('NOT HELD — POLYGON EMPTY is accepted on INSERT and on UPDATE, and ST_IsValid reads it true (rework 1, QA Q-4: T-209 refuses it in code)', async () => {
+    const r = await asAppRw(
+      insertRow({ boundary: `'SRID=4326;POLYGON EMPTY'` }),
+      `SELECT 'empty=' || ST_AsText(boundary) || '|valid=' || ST_IsValid(boundary::geometry) FROM ${TABLE} WHERE name = 't161 control'`,
+      insertRow({ name: `'t161 second'` }),
+      `UPDATE ${TABLE} SET boundary = 'SRID=4326;POLYGON EMPTY' WHERE name = 't161 second'`,
+    );
+    assertPermitted('POLYGON EMPTY', r);
+    assert.ok(r.output.includes('empty=POLYGON EMPTY|valid=true'), `empty reading:\n${r.output}`);
+    assert.ok(r.output.includes('UPDATE 1'), `UPDATE 1 expected:\n${r.output}`);
+  });
+
+  test('NOT HELD — a latitude of 91 is coerced into range with only a NOTICE and stored as 89 (rework 1, QA Q-4)', async () => {
+    const r = await asAppRw(
+      insertRow({ boundary: `'SRID=4326;POLYGON((33 34.6,33.1 34.6,33.1 91,33 34.6))'` }),
+      `SELECT 'stored=' || ST_AsText(boundary) FROM ${TABLE} WHERE name = 't161 control'`,
+    );
+    assertInsertedOne('latitude 91', r);
+    assert.ok(
+      r.output.includes(
+        'Coordinate values were coerced into range [-180 -90, 180 90] for GEOGRAPHY',
+      ),
+      `NOTICE expected:\n${r.output}`,
+    );
+    assert.ok(
+      r.output.includes('stored=POLYGON((33 34.6,33.1 34.6,33.1 89,33 34.6))'),
+      `coercion:\n${r.output}`,
+    );
+  });
+
+  test('NOT HELD — a NaN coordinate and a zero-area ring are each accepted, and ST_IsValid reads each false (rework 1, QA Q-4)', async () => {
+    for (const poly of [
+      'POLYGON((33 34.6,NaN 34.6,33.1 34.7,33 34.6))',
+      'POLYGON((33 34.6,33 34.6,33 34.6,33 34.6))',
+    ]) {
+      const r = await asAppRw(
+        insertRow({ boundary: `'SRID=4326;${poly}'` }),
+        `SELECT 'valid=' || ST_IsValid(boundary::geometry) FROM ${TABLE} WHERE name = 't161 control'`,
+      );
+      assertInsertedOne(poly, r);
+      assert.ok(r.output.includes('valid=false'), `${poly}:\n${r.output}`);
+    }
   });
 });
 

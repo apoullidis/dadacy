@@ -1089,11 +1089,13 @@ const CREATED_BY: Readonly<
       },
       {
         title:
-          'cluster is owned by app_ddl, its ACL is app_rw SELECT + INSERT + UPDATE only, and row-level security is off (E.4 U-4, U-10)',
+          'cluster is owned by app_ddl, its table ACL is app_rw SELECT + INSERT, app_rw holds UPDATE on 8 columns (not id), and row-level security is off (E.4 U-4, U-10; T-161 rework 1)',
         sql: `SELECT coalesce((SELECT pg_get_userbyid(relowner) || ' ' || relacl::text || ' ' ||
+                                      (SELECT count(*) FROM pg_attribute WHERE attrelid = c.oid
+                                         AND attacl IS NOT NULL AND attname <> 'id')::text || ' ' ||
                                       relrowsecurity::text || ' ' || relforcerowsecurity::text
-                                 FROM pg_class WHERE oid = to_regclass('public.cluster')), '(absent)')`,
-        holds: 'app_ddl {app_ddl=arwdDxtm/app_ddl,app_rw=arw/app_ddl} false false',
+                                 FROM pg_class c WHERE oid = to_regclass('public.cluster')), '(absent)')`,
+        holds: 'app_ddl {app_ddl=arwdDxtm/app_ddl,app_rw=ar/app_ddl} 8 false false',
       },
     ],
   },
