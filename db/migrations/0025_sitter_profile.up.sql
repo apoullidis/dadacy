@@ -54,9 +54,10 @@
 --   protected four, with EXECUTE revoked from PUBLIC (SA §INT-10 check 8), taking only the sitter id,
 --   that DERIVES the values from its inputs and writes them; the triggers on sitter_credential and
 --   on account (EV-39: the derivation re-runs on an account status change) are SECURITY INVOKER and
---   call it. The reconciler recomputes with the same derivation. app_rw holds TEMP, so any name
---   resolved through search_path can be answered by an app_rw pg_temp object. EVERYTHING THAT RUNS
---   AS THE OWNER (the definer itself, every function it calls, including a helper it shares with the
+--   call it. The reconciler recomputes with the same derivation. app_rw holds TEMP, so any relation
+--   or type name resolved through search_path can be answered by an app_rw pg_temp object; pg_temp
+--   is never searched for function or operator names (T-158 QA2-S A5, A6). EVERYTHING THAT RUNS AS
+--   THE OWNER (the definer itself, every function it calls, including a helper it shares with the
 --   reconciler, and any trigger its writes fire) MUST pin SET search_path = pg_catalog, pg_temp
 --   (pg_temp named LAST, the 0021 form) AND schema-qualify every relation AND every type it names,
 --   types both declared and in :: casts. A helper's own SET search_path replaces the definer's.
