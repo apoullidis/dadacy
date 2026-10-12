@@ -146,24 +146,30 @@
  *                        parses, an `EXECUTE`d one (CK0F, CK0G) and one that never runs (CK0H, a false FAIL).
  *                        Refused: (1) a CHECK whose expression names the column, inline, table-level or `ADD
  *                        CONSTRAINT`, `NOT VALID` included, quoted or through a function call (CK01-CK04, CK0M,
- *                        CK0N, CK0O, CK0S); (2) the column declared or retyped as anything but plain `text`
- *                        (`text` or `pg_catalog.text`, no length, no array): `char(n)`, `character(n)`,
- *                        `varchar(n)`, `character varying(n)` at `CREATE TABLE`, `ADD COLUMN`, `ALTER COLUMN …
- *                        TYPE` (CK05-CK0A, CK0D, CK0E), a domain however created (CK0B, CK0C), a bare `varchar`,
- *                        `text[]`, an integer type (CK0K, CK0L, CK0T), a composite-type attribute (CK0Q); (3) a
- *                        `RENAME COLUMN … TO reference_number`, which carries no type (CK0P). A function call's
- *                        record-definition list (`… AS r(reference_number varchar(20))`) declares no column and
- *                        is not refused (CK28, CK29). ONE ADMISSION, S-1 (b)(ii) as ruled: the CHECK
- *                        `sitter_credential_reference_number_bounds` on `sitter_credential`, equal to the ruled
- *                        text as PostgreSQL parses it (CK10-CK12; whitespace, comments, keyword case and quoting
- *                        are not compared, CK13); any change to a token is refused (CK14-CK1C), and the admission
- *                        admits nothing beside it (CK1D). Each admission is printed. No marker permits anything
- *                        else. NOT READ: SQL assembled at run time, an `EXECUTE format(…)` whose template carries
- *                        a placeholder (CK30) or a concatenation (CK31); a trigger or function body enforcing a
- *                        format (CK32; `T-252`'s catalogue probe reads trigger functions on `sitter_credential`);
- *                        a column of the same meaning under another name (CK33); the columns and CHECKs
- *                        `CREATE TABLE (LIKE …)` copies (CK34); a CHECK that passes the whole row to a function
- *                        (CK35); a partial index's predicate, which refuses no write (CK36).
+ *                        CK0N, CK0O, CK0S); (2) the column declared or retyped as anything but plain `text`:
+ *                        `text` or `pg_catalog.text` (another schema's `text` is refused, CK0U), with no type
+ *                        modifier (CK0V) and no array (CK0L). So `char(n)`, `character(n)`, `varchar(n)`,
+ *                        `character varying(n)` at `CREATE TABLE`, `ADD COLUMN`, `ALTER COLUMN … TYPE` (CK05-CK0A,
+ *                        CK0D, CK0E), a domain however created (CK0B, CK0C), a bare `varchar`, an integer type
+ *                        (CK0K, CK0T), a composite-type attribute (CK0Q); (3) `RENAME COLUMN … TO reference_number`
+ *                        and `ALTER TYPE … RENAME ATTRIBUTE … TO reference_number`, which carry no type (CK0P,
+ *                        CK0W). A function call's record-definition list (`… AS r(reference_number varchar(20))`)
+ *                        declares no column and is not refused (CK28, CK29). ONE ADMISSION, S-1 (b)(ii) as ruled:
+ *                        the CHECK `sitter_credential_reference_number_bounds` on `sitter_credential`, equal to the
+ *                        ruled text as PostgreSQL parses it (CK10-CK12; whitespace, comments, keyword case and
+ *                        quoting are not compared, CK13); any change to a token is refused (CK14-CK1C), and the
+ *                        admission admits nothing beside it (CK1D). Each admission is printed. No marker exempts
+ *                        the rule: an accepted `-- @vendor-sql` marker on the body (CK0X) and a `-- @compliance-
+ *                        review` marker naming the column (CK0Y) do not; `-- @restore-public` and the runner
+ *                        directives were not planted. NOT READ: SQL assembled at run time, an `EXECUTE format(…)`
+ *                        whose template carries a placeholder (CK30) or a concatenation (CK31); a trigger or
+ *                        function body enforcing a format (CK32; `T-252`'s catalogue probe reads trigger functions
+ *                        on `sitter_credential`); a column of the same meaning under another name (CK33), a
+ *                        generated copy of the column carrying a format CHECK included (CK37); the columns and
+ *                        CHECKs `CREATE TABLE (LIKE …)` copies (CK34); a type inferred by `CREATE TABLE … AS`
+ *                        (CK39); a CHECK that passes the whole row to a function (CK35); a partial index's
+ *                        predicate (CK36) and an expression index casting the column (CK38), the second of which
+ *                        refuses a non-digit write as a trigger would.
  *   [R-PARSE]            (T-229) a migration file, a DO body or a `sql`/`plpgsql` function body that
  *                        PostgreSQL's parser (libpg_query 18.1.5) refuses. PostgreSQL would refuse it
  *                        too (T-229 block DB2), and the protected-object rules cannot read what does
