@@ -1060,6 +1060,51 @@ describe('0026 — row-level security (R-2; real app_rw login; GUCs by SET LOCAL
   });
 });
 
+describe('0026 — what the database does NOT refuse (stated bounds, each pinned so a change to it is seen)', () => {
+  test("NOT HELD — R-2's sitter policies constrain the NEW row only: a sitter moves her own valid row, and her own review_hold row, to submitted (each affects 1 row)", async () => {
+    assertPermittedWith(
+      'sitter B: valid -> submitted',
+      await asRw(
+        ...SITTER(SITTER_B),
+        `UPDATE ${TABLE} SET status = 'submitted' WHERE id = '${CRED_B}' AND status = 'valid'`,
+      ),
+      'UPDATE 1',
+    );
+    const r = await asRw(
+      ...SYSTEM,
+      `UPDATE ${TABLE} SET status = 'review_hold' WHERE id = '${CRED_B}'`,
+      ...SITTER(SITTER_B),
+      `UPDATE ${TABLE} SET status = 'submitted' WHERE id = '${CRED_B}' AND status = 'review_hold'`,
+    );
+    assertPermitted('system sets review_hold, then sitter B: review_hold -> submitted', r);
+    assert.equal(
+      (r.output.match(/^UPDATE 1$/gm) ?? []).length,
+      2,
+      `expected two UPDATE 1 tags.\n${r.output}`,
+    );
+  });
+
+  test('MEASURED consequence — a sitter cannot record an attestation on her own valid row: UPDATE of last_attestation_at alone is REFUSED (42501, RLS), because the new row is valid', async () => {
+    const r = await asRw(
+      ...SITTER(SITTER_B),
+      COUNT(`id = '${CRED_B}' AND status = 'valid'`),
+      `UPDATE ${TABLE} SET last_attestation_at = now() WHERE id = '${CRED_B}'`,
+    );
+    assert.ok(r.output.includes('n=1;'), `the valid row was not visible first.\n${r.output}`);
+    assertRefusedBy('sitter attestation on valid row', r, RLS_DENIED);
+  });
+
+  test('NOT HELD — S-1 (b)(ii) is a capacity bound, not a format: a reference of three spaces, and one with leading and trailing spaces, are accepted', async () => {
+    for (const v of [`'   '`, `' 12 '`]) {
+      assertPermittedWith(
+        `reference_number ${v}`,
+        await asSuperuser(insertRow({ reference_number: v })),
+        'INSERT 0 1',
+      );
+    }
+  });
+});
+
 describe('0026 — the SA §INT-10 guard', () => {
   test('after up, kinvara_guard.assert_answering_service_write_only() called directly returns clean', async () => {
     assertPermitted(
