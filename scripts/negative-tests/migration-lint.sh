@@ -853,12 +853,15 @@ check CY0K "SD's *_fee* glob is a substring: is_feedback real is refused (a fals
 pair expand "CREATE TYPE public.t173_qct AS (price int);
 ALTER TYPE public.t173_qct ALTER ATTRIBUTE price TYPE numeric(12,2);"
 check CY0L "ALTER TYPE … ALTER ATTRIBUTE … TYPE numeric (QA09's plant)" R-MONEY-TYPE
-# CY0M: "No marker permits it" (contract §2, the gate header). The -- @vendor-sql marker is ACCEPTED (the
-# gate's review record "exempts body DO#1" must be in the output), and the DO body it exempts still has
-# its EXECUTEd numeric amount_minor refused. Red under mutation M-VENDOR (T-173.md § Rework 1).
+# CY0M: "No marker permits it" (contract §2, the gate header). The DO body's EXECUTEd numeric amount_minor
+# is refused although the plant carries a -- @vendor-sql marker for that body. The reason string is the
+# gate's review record for the PLANT's own marker ("9001_t021_plant.up.sql:2 exempts body DO#1"), so the
+# case also fails if the gate does not accept that marker; the bare "exempts body DO#1" would not, since
+# 0006_pgboss_schema.up.sql:11 prints it on every run (QA Q-10). Red under mutation M-VENDOR (T-173.md
+# § Rework 1); BAD with no marker (T-173.md § Rework 2, RW2-NOMARK).
 pair expand "-- @vendor-sql: DO#1 — T-173 QA probe
 DO \$d\$ BEGIN EXECUTE 'ALTER TABLE public.t173_qa ADD COLUMN amount_minor numeric'; END \$d\$;"
-checkwhy CY0M "no marker permits it: an accepted -- @vendor-sql marker on the DO body does not exempt R-MONEY-TYPE (QA40's plant)" R-MONEY-TYPE "exempts body DO#1"
+checkwhy CY0M "no marker permits it: an accepted -- @vendor-sql marker on the DO body does not exempt R-MONEY-TYPE (QA40's plant)" R-MONEY-TYPE "9001_t021_plant.up.sql:2 exempts body DO#1"
 money_tbl 'amount_minor "FLOAT8"'
 check CY0N "a quoted upper-case type name \"FLOAT8\" is refused (PostgreSQL has no such type; a harmless false FAIL; QA31's shape)" R-MONEY-TYPE
 money_tbl "latitude float"
