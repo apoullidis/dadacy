@@ -916,11 +916,11 @@ echo "== R-CRED-REF (T-253; OD-310, SD 2126 and SD §Revision Log C6; CUT-T-060 
 # SD 2126: reference_number is text, "format validated in the APP against credential_scheme.reference_format_regex,
 # not in DDL"; SD 2065-2070 names the leak this rule exists for (char(12) with CHECK (~ '^[0-9]{12}$')). The rule
 # keys on the column NAME (case-insensitive) and reads PostgreSQL's parse (AST_RULES, T-229 § contract §4):
-# CK01-CK0T refusals (a CHECK naming the column; a type other than text; a domain; a RENAME onto the name);
+# CK01-CK0Y refusals (a CHECK naming the column; a type other than text; a domain; a RENAME onto the name; no marker);
 # CK10-CK1D the one admission S-1 (b)(ii) rules, sitter_credential_reference_number_bounds on sitter_credential,
 # compared as PostgreSQL parses it, and one-token changes to it refused; CK20-CK2C neighbours and controls that
-# pass; CK30-CK36 the bounds, pinned as PASS. Red-first: every refusal and every admission was run against
-# ba0f33a's lint (T-253.md § Evidence, CK-RED).
+# pass; CK30-CK39 the bounds, pinned as PASS. Red-first: every refusal and every admission was run against
+# ba0f33a's lint (T-253.md § Evidence, CK-RED; rework 1's CK0U-CK0Y: § Rework 1, RW1-RED).
 cred_tbl() {
   pair expand "CREATE TABLE public.t253_cred (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, scheme_id uuid, status text, $1);
 GRANT SELECT ON public.t253_cred TO app_rw;"
@@ -1021,6 +1021,20 @@ check CK1C "the ruled constraint NOT VALID: refused" R-CRED-REF
 pair expand "ALTER TABLE sitter_credential ADD CONSTRAINT $S1_NAME $S1_EXPR;
 ALTER TABLE sitter_credential ADD CONSTRAINT cred_ref_format CHECK (reference_number ~ '^[0-9]{12}\$');"
 checkwhy CK1D "the admission admits itself only: a second CHECK beside it is refused" R-CRED-REF "R-CRED-REF admits 9001_t021_plant.up.sql:2 $S1_NAME on sitter_credential (S-1 (b)(ii))"
+# Rework 1 (QA Q-2, Q-3, Q-5; QA's plants QA0C, QA07, QA18, QA19, plus a typmod case): the qualifier and
+# typmod halves of "plain text", RENAME ATTRIBUTE, and no marker exempting the rule.
+cred_tbl "reference_number public.text"
+check CK0U "a type spelled public.text (a type named text outside pg_catalog) is refused (QA0C; red under mutation MQ1)" R-CRED-REF
+cred_tbl "reference_number text(12)"
+check CK0V "text with a type modifier, text(12), is refused (PostgreSQL refuses it too; red under mutation MQ2)" R-CRED-REF
+pair contract "ALTER TYPE public.t253_ct RENAME ATTRIBUTE legacy_ref TO reference_number;"
+check CK0W "ALTER TYPE … RENAME ATTRIBUTE … TO reference_number (QA07)" R-CRED-REF
+pair expand "-- @vendor-sql: DO#1 — T-253 rework 1 case
+DO \$d\$ BEGIN EXECUTE 'ALTER TABLE public.t253_cred ADD CONSTRAINT cred_ref_format CHECK (reference_number ~ ''^[0-9]{12}\$'')'; END \$d\$;"
+checkwhy CK0X "no marker exempts it: an ACCEPTED -- @vendor-sql marker on the DO body does not exempt R-CRED-REF (QA18; the plant's own review record asserted)" R-CRED-REF "vendor-sql: db/migrations/9001_t021_plant.up.sql:2 exempts body DO#1"
+pair expand "-- @compliance-review: reference_number — T-253 rework 1 case
+ALTER TABLE public.t253_cred ADD CONSTRAINT cred_ref_format CHECK (reference_number ~ '^[0-9]{12}\$');"
+check CK0Y "no marker exempts it: a -- @compliance-review marker naming the column does not exempt R-CRED-REF (QA19)" R-CRED-REF
 cred_tbl "reference_number text"
 check CK20 "NEIGHBOUR: reference_number text (SD 2126)" PASS
 pair expand "ALTER TABLE public.t253_cred ADD COLUMN reference_number pg_catalog.text COLLATE \"C\";"
@@ -1069,6 +1083,13 @@ pair expand "ALTER TABLE public.t253_cred ADD CONSTRAINT cred_ref_row CHECK (pub
 check CK35 "THE BOUND: a CHECK that passes the whole row to a function names no column and is not refused" PASS
 pair expand "CREATE UNIQUE INDEX t253_ref_idx ON public.t253_cred (reference_number) WHERE reference_number ~ '^[0-9]{12}\$';"
 check CK36 "THE BOUND: a partial index predicate on the column is not a CHECK and is not refused (it refuses no write)" PASS
+pair expand "ALTER TABLE public.t253_cred ADD COLUMN ref_digits text GENERATED ALWAYS AS (reference_number) STORED CHECK (ref_digits ~ '^[0-9]{12}\$');"
+check CK37 "THE BOUND (QA20): a generated copy of the column, under another name, carrying the format CHECK is not refused" PASS
+pair expand "CREATE INDEX t253_ref_cast ON public.t253_cred ((reference_number::bigint));"
+check CK38 "THE BOUND (QA21): an expression index casting the column is not refused (it refuses a non-digit write)" PASS
+pair expand "CREATE TABLE public.t253_ctas AS SELECT ''::char(12) AS reference_number;
+GRANT SELECT ON public.t253_ctas TO app_rw;"
+check CK39 "THE BOUND (QA22): CREATE TABLE … AS, whose reference_number type (char(12)) is inferred, is not read" PASS
 
 echo "== R-CASCADE"
 pair expand "DROP FUNCTION assert_sitter_bookable() CASCADE;"
