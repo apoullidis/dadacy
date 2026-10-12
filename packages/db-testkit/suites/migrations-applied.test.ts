@@ -1081,7 +1081,8 @@ const CREATED_BY: Readonly<
     // are asserted by suites/cluster.test.ts, not here (T-137 TV2-A1: a probe names an object).
     probes: [
       {
-        title: 'table public.cluster and index public.idx_cluster_boundary exist (T-160 request; E.4 U-11)',
+        title:
+          'table public.cluster and index public.idx_cluster_boundary exist (T-160 request; E.4 U-11)',
         sql: `SELECT (to_regclass('public.cluster') IS NOT NULL)::text || ' ' ||
                      (to_regclass('public.idx_cluster_boundary') IS NOT NULL)::text`,
         holds: 'true true',

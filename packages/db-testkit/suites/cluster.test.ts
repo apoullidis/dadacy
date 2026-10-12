@@ -444,7 +444,10 @@ describe('V3 — every column SD marks NOT NULL refuses NULL (SD 2962–2965), a
     assertInsertedOne(
       'explicit NULLs',
       await asAppRw(
-        insertRow({ russian_speaking_share_pct: 'NULL', has_hotel_or_holiday_let_inventory: 'NULL' }),
+        insertRow({
+          russian_speaking_share_pct: 'NULL',
+          has_hotel_or_holiday_let_inventory: 'NULL',
+        }),
       ),
     );
   });
@@ -453,12 +456,20 @@ describe('V3 — every column SD marks NOT NULL refuses NULL (SD 2962–2965), a
 describe('V4 — only app_rw reads or writes the table, at SELECT, INSERT, UPDATE (E.4 U-4, U-10)', () => {
   for (const role of ['app_admin_rw', 'app_safety_rw', 'answering_service'] as const) {
     test(`${role} SELECT is REFUSED (42501)`, async () => {
-      assertRefusedBy(`${role} SELECT`, await asLogin(LOGINS[role], `SELECT id FROM ${TABLE}`), DENIED);
+      assertRefusedBy(
+        `${role} SELECT`,
+        await asLogin(LOGINS[role], `SELECT id FROM ${TABLE}`),
+        DENIED,
+      );
     });
   }
 
   test('app_rw DELETE of an existing row is REFUSED (42501; E.4 U-10 (1)), the row read first', async () => {
-    const r = await asAppRw(insertRow(), READ_CONTROL, `DELETE FROM ${TABLE} WHERE name = 't161 control'`);
+    const r = await asAppRw(
+      insertRow(),
+      READ_CONTROL,
+      `DELETE FROM ${TABLE} WHERE name = 't161 control'`,
+    );
     assert.ok(r.output.includes('before=1'), `precondition not read:\n${r.output}`);
     assertRefusedBy('app_rw DELETE', r, DENIED);
   });
@@ -502,13 +513,19 @@ describe('V4 — only app_rw reads or writes the table, at SELECT, INSERT, UPDAT
               has_hotel_or_holiday_let_inventory FROM ${TABLE} WHERE name = 't161 control'`,
     );
     assertPermitted('app_rw control', r);
-    assert.equal((r.output.match(/INSERT 0 1/g) ?? []).length, 2, `two inserts expected:\n${r.output}`);
+    assert.equal(
+      (r.output.match(/INSERT 0 1/g) ?? []).length,
+      2,
+      `two inserts expected:\n${r.output}`,
+    );
     assert.ok(r.output.includes('UPDATE 1'), `UPDATE 1 expected:\n${r.output}`);
     assert.ok(r.output.includes('q1=t161 control:open,t161 geojson:waitlist'), `Q1:\n${r.output}`);
     assert.ok(r.output.includes('q2=t161 geojson\n'), `Q2:\n${r.output}`);
     assert.ok(r.output.includes('q3=open:{},waitlist:{}'), `Q3:\n${r.output}`);
     assert.ok(
-      r.output.includes('upd=Переименован|POLYGON((33 34.6,33.2 34.6,33.2 34.8,33 34.8,33 34.6))|9|false'),
+      r.output.includes(
+        'upd=Переименован|POLYGON((33 34.6,33.2 34.6,33.2 34.8,33 34.8,33 34.6))|9|false',
+      ),
       `updated values:\n${r.output}`,
     );
   });
@@ -541,7 +558,11 @@ describe('V5 — the primary key is unique and GENERATED ALWAYS (E.4 U-1)', () =
   });
 
   test('app_rw UPDATE … SET id = … is REFUSED (428C9; measured), the row read first', async () => {
-    const r = await asAppRw(insertRow(), READ_CONTROL, `UPDATE ${TABLE} SET id = 7 WHERE name = 't161 control'`);
+    const r = await asAppRw(
+      insertRow(),
+      READ_CONTROL,
+      `UPDATE ${TABLE} SET id = 7 WHERE name = 't161 control'`,
+    );
     assert.ok(r.output.includes('before=1'), `precondition not read:\n${r.output}`);
     assertRefusedBy(
       'app_rw UPDATE id',
@@ -570,14 +591,21 @@ describe('V5 — the primary key is unique and GENERATED ALWAYS (E.4 U-1)', () =
       `SELECT 'distinct=' || count(DISTINCT id) || '/' || count(*) FROM ${TABLE}`,
     );
     assertPermitted('two inserts', r);
-    assert.equal((r.output.match(/rid=\d+/g) ?? []).length, 2, `two returned ids expected:\n${r.output}`);
+    assert.equal(
+      (r.output.match(/rid=\d+/g) ?? []).length,
+      2,
+      `two returned ids expected:\n${r.output}`,
+    );
     assert.ok(r.output.includes('distinct=2/2'), `ids not distinct:\n${r.output}`);
   });
 });
 
 describe('V6 — a display name exists in en, el and ru, each a non-blank string (C14 (a); SD 3089), as app_rw', () => {
   const REFUSED: ReadonlyArray<readonly [what: string, value: string]> = [
-    ['the ru key missing (accepted if ?& is removed: see the plant below)', '{"en": "Test", "el": "Δοκιμή"}'],
+    [
+      'the ru key missing (accepted if ?& is removed: see the plant below)',
+      '{"en": "Test", "el": "Δοκιμή"}',
+    ],
     ['the en key missing', '{"el": "Δοκιμή", "ru": "Тест"}'],
     ['the el key missing', '{"en": "Test", "ru": "Тест"}'],
     ['{}', '{}'],
@@ -599,7 +627,7 @@ describe('V6 — a display name exists in en, el and ru, each a non-blank string
     });
   }
 
-  test('an UPDATE removing ru (name_i18n - \'ru\') is REFUSED (23514), the row read first', async () => {
+  test("an UPDATE removing ru (name_i18n - 'ru') is REFUSED (23514), the row read first", async () => {
     const r = await asAppRw(
       insertRow(),
       READ_CONTROL,
@@ -658,7 +686,10 @@ describe('V7 — an entered Russian-speaking share is a whole percent from 0 to 
 
   test('CONTROL — NULL, 0, 10, 11 and 100 are each accepted', async () => {
     for (const value of ['NULL', '0', '10', '11', '100']) {
-      assertInsertedOne(`share ${value}`, await asAppRw(insertRow({ russian_speaking_share_pct: value })));
+      assertInsertedOne(
+        `share ${value}`,
+        await asAppRw(insertRow({ russian_speaking_share_pct: value })),
+      );
     }
   });
 
@@ -698,7 +729,7 @@ describe('V8 — what this table does NOT hold (each ACCEPTED as app_rw, so nobo
     );
   });
 
-  test('NOT HELD — a density_snapshot of any JSON shape (array, string, number, JSON null) is accepted: its shape is T-211\'s', async () => {
+  test("NOT HELD — a density_snapshot of any JSON shape (array, string, number, JSON null) is accepted: its shape is T-211's", async () => {
     for (const value of [`'[]'`, `'"x"'`, `'5'`, `'null'`]) {
       assertInsertedOne(`snapshot ${value}`, await asAppRw(insertRow({ density_snapshot: value })));
     }
@@ -707,19 +738,28 @@ describe('V8 — what this table does NOT hold (each ACCEPTED as app_rw, so nobo
   test('NOT HELD — two overlapping clusters are accepted (U-9 (2a): overlap is legal), and Q1 returns both', async () => {
     const r = await asAppRw(
       insertRow(),
-      insertRow({ name: `'t161 overlap'`, boundary: `'SRID=4326;POLYGON((33.05 34.6,33.2 34.6,33.2 34.7,33.05 34.7,33.05 34.6))'` }),
+      insertRow({
+        name: `'t161 overlap'`,
+        boundary: `'SRID=4326;POLYGON((33.05 34.6,33.2 34.6,33.2 34.7,33.05 34.7,33.05 34.6))'`,
+      }),
       `SELECT 'q1=' || count(*) FROM ${TABLE} WHERE state <> 'closed'
           AND ST_Covers(boundary, ST_SetSRID(ST_MakePoint(33.07, 34.65), 4326)::geography)`,
     );
     assertPermitted('overlap', r);
-    assert.equal((r.output.match(/INSERT 0 1/g) ?? []).length, 2, `two inserts expected:\n${r.output}`);
+    assert.equal(
+      (r.output.match(/INSERT 0 1/g) ?? []).length,
+      2,
+      `two inserts expected:\n${r.output}`,
+    );
     assert.ok(r.output.includes('q1=2'), `Q1 did not return both:\n${r.output}`);
   });
 
   test('NOT HELD — a polygon far outside the service area (in the Atlantic) is accepted (U-9 (3): containment deferred to the service-area ticket)', async () => {
     assertInsertedOne(
       'outside service area',
-      await asAppRw(insertRow({ boundary: `'SRID=4326;POLYGON((-30 40,-29 40,-29 41,-30 41,-30 40))'` })),
+      await asAppRw(
+        insertRow({ boundary: `'SRID=4326;POLYGON((-30 40,-29 40,-29 41,-30 41,-30 40))'` }),
+      ),
     );
   });
 
@@ -751,7 +791,11 @@ describe('V8 — what this table does NOT hold (each ACCEPTED as app_rw, so nobo
   test('NOT HELD — two clusters with the same metro and name are accepted (E.4 U-12: no UNIQUE)', async () => {
     const r = await asAppRw(insertRow(), insertRow());
     assertPermitted('same name', r);
-    assert.equal((r.output.match(/INSERT 0 1/g) ?? []).length, 2, `two inserts expected:\n${r.output}`);
+    assert.equal(
+      (r.output.match(/INSERT 0 1/g) ?? []).length,
+      2,
+      `two inserts expected:\n${r.output}`,
+    );
   });
 
   test('NOT HELD — the superuser (and the owner) can supply an id with OVERRIDING SYSTEM VALUE', async () => {
