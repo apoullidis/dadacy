@@ -160,9 +160,14 @@ const SUITES: readonly Suite[] = [
     // (an accepted -- @vendor-sql marker does not exempt R-MONEY-TYPE; red under mutation M-VENDOR),
     // CY0N (a quoted "FLOAT8", refused), CY27 (LIKE, PASS), CY28 (a view column, PASS). No older case
     // touched. Red-first and green footers: T-173.md § Rework 1.
-    cases: 488,
+    // 488 -> 550, 2026-10-12, T-253: sixty-two cases CK* for R-CRED-REF (OD-310, SD 2126, C6): twenty-eight
+    // refusals, fourteen S-1 (b)(ii) admission cases (four admitted with the admission record asserted, ten
+    // refused), thirteen neighbours/controls, seven bounds pinned as PASS. No older case touched. Against
+    // ba0f33a's lint the forty-two refusal and admission cases were BAD (`!! 42 of 550` at dae59b2); green
+    // footer: T-253.md § Evidence, CK-GREEN.
+    cases: 550,
     state: 'GREEN',
-    why: 'gate:migration-lint: expand/contract, protected objects (the I-5 objects since T-186, 0011\'s since T-192; read through PostgreSQL\'s parser since T-229), R-TRIGGER-BYPASS by name, R-PROTECTED-RENAME, R-ADMIN-MEMBERSHIP, R-PROTECTED-TABLE, R-PROTECTED-EXTENSION, R-PARSE, U&"…" decoding, R-ROLE-SWITCH, R-RUN-AS, R-MERGED, R-TRAILER, R-VENDOR-SQL, R-RESTORE-PUBLIC, R-RULE, R-MONEY-TYPE (T-021, T-031, T-167, T-186, T-192, T-227, T-241, T-237, T-229, T-173)',
+    why: 'gate:migration-lint: expand/contract, protected objects (the I-5 objects since T-186, 0011\'s since T-192; read through PostgreSQL\'s parser since T-229), R-TRIGGER-BYPASS by name, R-PROTECTED-RENAME, R-ADMIN-MEMBERSHIP, R-PROTECTED-TABLE, R-PROTECTED-EXTENSION, R-PARSE, U&"…" decoding, R-ROLE-SWITCH, R-RUN-AS, R-MERGED, R-TRAILER, R-VENDOR-SQL, R-RESTORE-PUBLIC, R-RULE, R-MONEY-TYPE, R-CRED-REF (T-021, T-031, T-167, T-186, T-192, T-227, T-241, T-237, T-229, T-173, T-253)',
   },
   {
     id: 'semgrep',

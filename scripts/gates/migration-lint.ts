@@ -134,10 +134,36 @@
  *                        `"FLOAT8"` is refused too (CY0N; PostgreSQL has no such type, a false FAIL). NOT
  *                        READ: a domain over a refused type (CY20), a `RENAME COLUMN` to a money name
  *                        (CY21), a type inferred by `CREATE TABLE … AS` (CY22), a function's parameters
- *                        or `RETURNS TABLE` (CY26), a column assembled at run time (CY25), the columns
+ *                        or `RETURNS TABLE` (CY26), a column assembled at run time (CY25), a `format()`
+ *                        template with a placeholder (TL01), the columns
  *                        `CREATE TABLE (LIKE …)` copies (CY27), a view's columns (CY28). Not attacked, so
  *                        no claim either way: `SELECT … INTO`, `%TYPE`. Not refused: PostgreSQL's `money`
  *                        type (CY23) and `integer` (CY24), which SD's list omits.
+ *   [R-CRED-REF]         (T-253; OD-310, SD 2126 and SD §Revision Log C6, CUT-T-060 R-7) no certificate-reference
+ *                        format in DDL on a column NAMED `reference_number` (any table; the name compared
+ *                        case-insensitively, a quoted `"Reference_Number"` included: CK0J). Read from PostgreSQL's
+ *                        parse (AST_RULES), in up and down files (CK0I) and in every string constant the reader
+ *                        parses, an `EXECUTE`d one (CK0F, CK0G) and one that never runs (CK0H, a false FAIL).
+ *                        Refused: (1) a CHECK whose expression names the column, inline, table-level or `ADD
+ *                        CONSTRAINT`, `NOT VALID` included, quoted or through a function call (CK01-CK04, CK0M,
+ *                        CK0N, CK0O, CK0S); (2) the column declared or retyped as anything but plain `text`
+ *                        (`text` or `pg_catalog.text`, no length, no array): `char(n)`, `character(n)`,
+ *                        `varchar(n)`, `character varying(n)` at `CREATE TABLE`, `ADD COLUMN`, `ALTER COLUMN …
+ *                        TYPE` (CK05-CK0A, CK0D, CK0E), a domain however created (CK0B, CK0C), a bare `varchar`,
+ *                        `text[]`, an integer type (CK0K, CK0L, CK0T), a composite-type attribute (CK0Q); (3) a
+ *                        `RENAME COLUMN … TO reference_number`, which carries no type (CK0P). A function call's
+ *                        record-definition list (`… AS r(reference_number varchar(20))`) declares no column and
+ *                        is not refused (CK28, CK29). ONE ADMISSION, S-1 (b)(ii) as ruled: the CHECK
+ *                        `sitter_credential_reference_number_bounds` on `sitter_credential`, equal to the ruled
+ *                        text as PostgreSQL parses it (CK10-CK12; whitespace, comments, keyword case and quoting
+ *                        are not compared, CK13); any change to a token is refused (CK14-CK1C), and the admission
+ *                        admits nothing beside it (CK1D). Each admission is printed. No marker permits anything
+ *                        else. NOT READ: SQL assembled at run time, an `EXECUTE format(…)` whose template carries
+ *                        a placeholder (CK30) or a concatenation (CK31); a trigger or function body enforcing a
+ *                        format (CK32; `T-252`'s catalogue probe reads trigger functions on `sitter_credential`);
+ *                        a column of the same meaning under another name (CK33); the columns and CHECKs
+ *                        `CREATE TABLE (LIKE …)` copies (CK34); a CHECK that passes the whole row to a function
+ *                        (CK35); a partial index's predicate, which refuses no write (CK36).
  *   [R-PARSE]            (T-229) a migration file, a DO body or a `sql`/`plpgsql` function body that
  *                        PostgreSQL's parser (libpg_query 18.1.5) refuses. PostgreSQL would refuse it
  *                        too (T-229 block DB2), and the protected-object rules cannot read what does
@@ -316,13 +342,16 @@ import {
   type AstStmt,
   MAX_DEPTH,
   allStrings,
+  type ColumnType,
   columnTypes,
   identifiers,
   isObj,
   nameList,
   rangeVar,
   readSqlAst,
+  recordDefinitionColumns,
   str,
+  walkNodes,
   walkStmt,
 } from './lib/sql-ast.ts';
 
@@ -509,6 +538,57 @@ const MONEY_REFUSED_TYPES: ReadonlyMap<string, string> = new Map([
 const moneyColumns = { read: 0, named: 0 };
 
 /**
+ * (T-253) R-CRED-REF's column name and its one admission. The column is keyed by NAME, compared
+ * case-insensitively (CK0J). The admission is CUT-T-060 § S-1 (b)(ii) as the stakeholder ruled it
+ * (2026-10-10, EV-34's acceptance), copied byte for byte: `CONSTRAINT sitter_credential_reference_number_bounds
+ * CHECK (char_length(reference_number) BETWEEN 1 AND 64 AND reference_number !~ '[[:cntrl:]]')`. A CHECK naming
+ * the column is admitted only when it is on `sitter_credential` (unqualified or `public`) and its Constraint
+ * node, as PostgreSQL's parser gives it with every `location` removed, equals the node parsed from that text
+ * (name, expression and flags; CK10-CK12). So whitespace, comments, keyword case and identifier quoting are
+ * not compared (CK13), and any change to a token the parser keeps is refused: the name (CK14, CK15), a
+ * constant, an operator or the pattern (CK16-CK19), a qualifier (CK1A), another table (CK1B), NOT VALID
+ * (CK1C). If the text below does not parse (no parser loaded), nothing is admitted.
+ */
+const CRED_REF_COLUMN = 'reference_number';
+const CRED_REF_ADMITTED = {
+  table: 'sitter_credential',
+  name: 'sitter_credential_reference_number_bounds',
+  sql: "ALTER TABLE sitter_credential ADD CONSTRAINT sitter_credential_reference_number_bounds CHECK (char_length(reference_number) BETWEEN 1 AND 64 AND reference_number !~ '[[:cntrl:]]');",
+} as const;
+/** A node as JSON with every `location` removed and object keys sorted (a parse compared as a parse). */
+const canonicalNode = (x: unknown): string => {
+  const go = (y: unknown): unknown => {
+    if (Array.isArray(y)) return y.map(go);
+    if (!isObj(y)) return y;
+    const o: Record<string, unknown> = {};
+    for (const k of Object.keys(y).sort()) if (k !== 'location') o[k] = go(y[k]);
+    return o;
+  };
+  return JSON.stringify(go(x));
+};
+const CRED_REF_ADMITTED_NODE: string | null = (() => {
+  const r = readSqlAst(CRED_REF_ADMITTED.sql);
+  const found: string[] = [];
+  for (const s of r.stmts)
+    walkStmt(s, (kind, f) => {
+      if (kind === 'Constraint' && str(f['contype']) === 'CONSTR_CHECK')
+        found.push(canonicalNode(f));
+    });
+  return r.errors.length === 0 && found.length === 1 ? (found[0] ?? null) : null;
+})();
+/** A column type as written back for a message: `pg_catalog.bpchar(12)`, `text[]`. */
+const showType = (c: ColumnType): string => {
+  const mods = c.typmods.map((t) => {
+    const a = isObj(t) && isObj(t['A_Const']) ? t['A_Const'] : null;
+    const iv = a !== null && isObj(a['ival']) ? a['ival']['ival'] : undefined;
+    return typeof iv === 'number' ? String(iv) : a !== null && isObj(a['ival']) ? '0' : '?';
+  });
+  return `${c.type.join('.')}${mods.length > 0 ? `(${mods.join(',')})` : ''}${c.array ? '[]' : ''}`;
+};
+/** What R-CRED-REF read and admitted (printed in the summary). */
+const credRef = { types: 0, checks: 0, admitted: new Set<string>() };
+
+/**
  * One rule over parsed statements. `check` returns one message per violation in `s`, a statement
  * of migration `m` at any depth the reader goes to (top level, a DO or function body, an EXECUTE string
  * or any other string constant that parses), to a nesting depth of 8; deeper fails closed (R-PARSE)
@@ -681,6 +761,75 @@ const AST_RULES: readonly AstRule[] = [
           `the money column ${c.column} (its name matches SD's ${glob}) is ${c.how === 'retype' ? 'retyped to' : 'typed'} ${label}${c.array ? '[]' : ''}; money is bigint minor units, EUR cents (SD §DB-13 rule 7; SE-5; T-022 § contract §3 MinorUnits), so declare it bigint`,
         );
       }
+      return out;
+    },
+  },
+  {
+    // (T-253) OD-310, SD 2126, SD §Revision Log C6; CUT-T-060 R-7, S-1 (b)(ii). See the header entry.
+    // Every statement the reader reached, wherever it was found: s.via is not read (TL2-1).
+    tag: 'R-CRED-REF',
+    check: (s, m) => {
+      const out: string[] = [];
+      const records = recordDefinitionColumns(s).map(canonicalNode);
+      for (const c of columnTypes(s)) {
+        if (c.how === 'define') {
+          const i = records.indexOf(canonicalNode(c));
+          if (i >= 0) {
+            records.splice(i, 1);
+            continue;
+          }
+        }
+        if (lc(c.column) !== CRED_REF_COLUMN) continue;
+        credRef.types += 1;
+        const last = c.type[c.type.length - 1] ?? '';
+        const qualifier = c.type.length === 2 ? c.type[0] : null;
+        const plainText =
+          last === 'text' &&
+          (c.type.length === 1 || qualifier === 'pg_catalog') &&
+          c.typmods.length === 0 &&
+          !c.array;
+        if (plainText) continue;
+        out.push(
+          `the column ${c.column} is ${c.how === 'retype' ? 'retyped to' : 'typed'} ${showType(c)}; a certificate reference is plain text, its format validated in the application against credential_scheme.reference_format_regex and never in DDL (SD 2126, SD §Revision Log C6, OD-310), so declare it text`,
+        );
+      }
+      walkStmt(s, (kind, f) => {
+        if (
+          kind === 'RenameStmt' &&
+          (str(f['renameType']) === 'OBJECT_COLUMN' ||
+            str(f['renameType']) === 'OBJECT_ATTRIBUTE') &&
+          lc(str(f['newname']) ?? '') === CRED_REF_COLUMN
+        ) {
+          out.push(
+            `a column is renamed to ${CRED_REF_COLUMN}; a rename carries no type, so this gate cannot see the type it keeps: add the column as text instead (SD 2126, OD-310)`,
+          );
+        }
+        if (kind !== 'Constraint' || str(f['contype']) !== 'CONSTR_CHECK') return;
+        let names = false;
+        walkNodes(f['raw_expr'], (k2, f2) => {
+          if (k2 === 'String' && lc(str(f2['sval']) ?? '') === CRED_REF_COLUMN) names = true;
+        });
+        if (!names) return;
+        credRef.checks += 1;
+        const conname = str(f['conname']);
+        const rel =
+          s.kind === 'CreateStmt' || s.kind === 'AlterTableStmt'
+            ? rangeVar(s.node['relation'])
+            : null;
+        if (
+          CRED_REF_ADMITTED_NODE !== null &&
+          rel !== null &&
+          rel.name === CRED_REF_ADMITTED.table &&
+          (rel.schema === null || rel.schema === 'public') &&
+          canonicalNode(f) === CRED_REF_ADMITTED_NODE
+        ) {
+          credRef.admitted.add(`${m.rel}:${String(s.line)}`);
+          return;
+        }
+        out.push(
+          `the CHECK ${conname === null ? '(unnamed)' : conname} names the column ${CRED_REF_COLUMN}; no CHECK on a certificate reference goes in DDL (SD 2126, SD §Revision Log C6, OD-310), except S-1 (b)(ii)'s ${CRED_REF_ADMITTED.name} on ${CRED_REF_ADMITTED.table}, exactly as ruled (CUT-T-060 § S-1)`,
+        );
+      });
       return out;
     },
   },
@@ -2905,6 +3054,14 @@ console.log(
 console.log(
   `  R-MONEY-TYPE: column types read: ${String(moneyColumns.read)}; of them money-named (SD §DB-13 rule 7 globs): ${String(moneyColumns.named)}`,
 );
+console.log(
+  `  R-CRED-REF: ${CRED_REF_COLUMN} column types read: ${String(credRef.types)}; CHECKs naming it: ${String(credRef.checks)}; admitted (S-1 (b)(ii) ${CRED_REF_ADMITTED.name}): ${String(credRef.admitted.size)}; admission text parsed: ${CRED_REF_ADMITTED_NODE === null ? 'NO (nothing is admitted)' : 'yes'}`,
+);
+for (const at of credRef.admitted) {
+  console.log(
+    `    R-CRED-REF admits ${at.replace(/^.*\//, '')} ${CRED_REF_ADMITTED.name} on ${CRED_REF_ADMITTED.table} (S-1 (b)(ii))`,
+  );
+}
 console.log(
   `  merged migrations changed and compared outside comments: ${String(mergedCompared)}; contract migrations added: ${String(addedContracts.length)}; contract up files read for expand statements: ${String(contractsReadForExpand)}`,
 );

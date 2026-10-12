@@ -169,8 +169,10 @@ export function nameList(x: unknown): string[] {
  * `typmods` (`[{ A_Const: { ival: { ival: 12 } } }]` for `char(12)`; a bare `char` carries an implicit 1,
  * `location: -1`: measured, T-173.md § Rework 1, RW1-PROBE). `array`: the type carries `[]`. `how`:
  * `define` for a ColumnDef with a name (`CREATE TABLE`, `ADD COLUMN`, `CREATE TYPE … AS (…)`, `ALTER TYPE
- * … ADD ATTRIBUTE`, `CREATE FOREIGN TABLE`), `retype` for `ALTER COLUMN|ATTRIBUTE … [SET DATA] TYPE` (an
- * `AT_AlterColumnType` command, whose ColumnDef has no name: the name is the command's; ATTRIBUTE: CY0L).
+ * … ADD ATTRIBUTE`, `CREATE FOREIGN TABLE`, and a record-definition list (`coldeflist`, TL11), which
+ * declares no table column: `T-253` excludes those with `recordDefinitionColumns`), `retype` for `ALTER
+ * COLUMN|ATTRIBUTE … [SET DATA] TYPE` (an `AT_AlterColumnType` command, whose ColumnDef has no name: the
+ * name is the command's; ATTRIBUTE: CY0L).
  * NOT here: CHECK constraints (they are `Constraint` nodes, `contype: 'CONSTR_CHECK'`, inline in
  * `ColumnDef.constraints` or under `AT_AddConstraint`'s `def`; walk them yourself), a column whose type is
  * inferred (`CREATE TABLE … AS`: CY22; a view's columns: CY28), the columns `CREATE TABLE (LIKE …)` copies
@@ -186,16 +188,16 @@ export interface ColumnType {
   readonly array: boolean;
   readonly how: 'define' | 'retype';
 }
+const typeOf = (tn: unknown): Omit<ColumnType, 'column' | 'how'> | null => {
+  if (!isObj(tn)) return null;
+  const type = nameList(tn['names']);
+  if (type.length === 0) return null;
+  const typmods = Array.isArray(tn['typmods']) ? (tn['typmods'] as unknown[]) : [];
+  const bounds = tn['arrayBounds'];
+  return { type, typmods, array: Array.isArray(bounds) && bounds.length > 0 };
+};
 export function columnTypes(s: AstStmt): ColumnType[] {
   const out: ColumnType[] = [];
-  const typeOf = (tn: unknown): Omit<ColumnType, 'column' | 'how'> | null => {
-    if (!isObj(tn)) return null;
-    const type = nameList(tn['names']);
-    if (type.length === 0) return null;
-    const typmods = Array.isArray(tn['typmods']) ? (tn['typmods'] as unknown[]) : [];
-    const bounds = tn['arrayBounds'];
-    return { type, typmods, array: Array.isArray(bounds) && bounds.length > 0 };
-  };
   walkStmt(s, (kind, f) => {
     if (kind === 'ColumnDef') {
       const column = str(f['colname']);
@@ -206,6 +208,38 @@ export function columnTypes(s: AstStmt): ColumnType[] {
       const def = asNode(f['def']);
       const t = def !== null && def[0] === 'ColumnDef' ? typeOf(def[1]['typeName']) : null;
       if (column !== null && t !== null) out.push({ column, ...t, how: 'retype' });
+    }
+  });
+  return out;
+}
+
+/**
+ * (T-253) The entries `columnTypes(s)` gives for a function call's record-definition list, which declares
+ * no table column: `f(…) AS r(x varchar(20))` (`RangeFunction.coldeflist`) and the per-function list of
+ * `ROWS FROM (f(…) AS (x varchar(20)))` (the second item of each `RangeFunction.functions` pair). Same
+ * shape as `columnTypes`, `how: 'define'`, one entry per ColumnDef, so a rule removes them from
+ * `columnTypes(s)` as a multiset (an entry equal in every field is interchangeable). Measured shapes:
+ * T-253.md § Evidence, PROBE. Falsified by migration-lint.sh CK28, CK29 (R-CRED-REF passes both) and by
+ * mutation M-COLDEF (with this exclusion removed, exactly CK28 and CK29 go BAD).
+ */
+export function recordDefinitionColumns(s: AstStmt): ColumnType[] {
+  const out: ColumnType[] = [];
+  const take = (list: unknown): void => {
+    walkNodes(list, (kind, f) => {
+      if (kind !== 'ColumnDef') return;
+      const column = str(f['colname']);
+      const t = typeOf(f['typeName']);
+      if (column !== null && t !== null) out.push({ column, ...t, how: 'define' });
+    });
+  };
+  walkStmt(s, (kind, f) => {
+    if (kind !== 'RangeFunction') return;
+    take(f['coldeflist']);
+    const fns = f['functions'];
+    if (!Array.isArray(fns)) return;
+    for (const pair of fns) {
+      const items = asNode(pair)?.[1]['items'];
+      if (Array.isArray(items)) take(items[1]);
     }
   });
   return out;
