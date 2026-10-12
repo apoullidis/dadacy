@@ -40,7 +40,7 @@ import {
 import { assertPermitted, assertRefused, INT10_RAISE } from '../src/expect.ts';
 
 const SUITE = 'migrations-applied';
-const HIGHEST_COMMITTED = '0026';
+const HIGHEST_COMMITTED = '0027';
 const COMMITTED_DIR = path.join(REPO_ROOT, MIGRATIONS_DIR);
 const RECORD_SQL = `SELECT coalesce(shobj_description(oid, 'pg_database'), '(no comment)')
                       FROM pg_database WHERE datname = current_database()`;
@@ -1071,6 +1071,28 @@ const CREATED_BY: Readonly<
                                       relrowsecurity::text || ' ' || relforcerowsecurity::text
                                  FROM pg_class WHERE oid = to_regclass('public.sitter_credential')), '(absent)')`,
         holds: 'app_ddl {app_ddl=arwdDxtm/app_ddl,app_rw=ar/app_ddl} true true',
+      },
+    ],
+  },
+  '0027': {
+    source: 'T-161',
+    // Each probe names an object 0027 creates and returns a value rather than raising once it is gone:
+    // to_regclass returns NULL for a missing name, and the ACL read is coalesced. The refusals (V1-V8)
+    // are asserted by suites/cluster.test.ts, not here (T-137 TV2-A1: a probe names an object).
+    probes: [
+      {
+        title: 'table public.cluster and index public.idx_cluster_boundary exist (T-160 request; E.4 U-11)',
+        sql: `SELECT (to_regclass('public.cluster') IS NOT NULL)::text || ' ' ||
+                     (to_regclass('public.idx_cluster_boundary') IS NOT NULL)::text`,
+        holds: 'true true',
+      },
+      {
+        title:
+          'cluster is owned by app_ddl, its ACL is app_rw SELECT + INSERT + UPDATE only, and row-level security is off (E.4 U-4, U-10)',
+        sql: `SELECT coalesce((SELECT pg_get_userbyid(relowner) || ' ' || relacl::text || ' ' ||
+                                      relrowsecurity::text || ' ' || relforcerowsecurity::text
+                                 FROM pg_class WHERE oid = to_regclass('public.cluster')), '(absent)')`,
+        holds: 'app_ddl {app_ddl=arwdDxtm/app_ddl,app_rw=arw/app_ddl} false false',
       },
     ],
   },
