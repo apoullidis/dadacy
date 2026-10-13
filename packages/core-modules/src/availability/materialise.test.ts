@@ -236,6 +236,48 @@ test('OD-335 case 3: two exceptions sharing created_at (one transaction) order b
   assert.ok(compareExceptions(remove, add) < 0);
 });
 
+test('OD-335 case 4: created_at decides before id — the earlier created_at carries the LARGER id (two writers) and still applies first', () => {
+  // ids are monotonic only within one process (`ids.ts`); two `core` tasks can write a later
+  // exception under a smaller id. Contract §2: (`on_date`, `created_at`, `id`).
+  const big = '01J0000000000000000000000Z';
+  const small = '01J00000000000000000000001';
+  assert.ok(small < big, 'the fixture: the later row carries the smaller id');
+  const remove = ex('2026-10-30', 'REMOVE', null, null, '2026-10-21T10:00:00Z', big);
+  const add = ex('2026-10-30', 'ADD', '09:00', '17:00', '2026-10-21T10:05:00Z', small);
+  for (const exceptions of [
+    [remove, add],
+    [add, remove],
+  ]) {
+    assert.deepEqual(
+      on(
+        materialise({ bookable: true, today: '2026-10-20', templates: [], exceptions }),
+        '2026-10-29T22:00:00Z',
+        '2026-10-30T22:00:00Z',
+      ),
+      [['2026-10-30T07:00:00.000Z', '2026-10-30T15:00:00.000Z']],
+      'REMOVE (earlier created_at, larger id) then ADD: the ADD applies last',
+    );
+  }
+  const addFirst = ex('2026-10-30', 'ADD', '09:00', '17:00', '2026-10-21T10:00:00Z', big);
+  const removeLater = ex('2026-10-30', 'REMOVE', null, null, '2026-10-21T10:05:00Z', small);
+  assert.deepEqual(
+    on(
+      materialise({
+        bookable: true,
+        today: '2026-10-20',
+        templates: [],
+        exceptions: [removeLater, addFirst],
+      }),
+      '2026-10-29T22:00:00Z',
+      '2026-10-30T22:00:00Z',
+    ),
+    [],
+    'the mirror: ADD (earlier, larger id) then REMOVE (later, smaller id) gives none',
+  );
+  assert.ok(compareExceptions(remove, add) < 0);
+  assert.ok(compareExceptions(removeLater, addFirst) > 0);
+});
+
 test('a later exception overrides an earlier one only over the window it covers', () => {
   const spans = materialise({
     bookable: true,

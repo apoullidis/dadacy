@@ -297,6 +297,25 @@ test(
         },
       });
     });
+    // Contract §3 / E.3 U-2 (5), on any weekday the suite runs (rework 1, QA Q-3): the three old
+    // rows are retired to the day BEFORE effectiveFrom (= local today, read by Postgres here, not
+    // by the code) with version 2; the three new rows begin on it with version 1. A retire to
+    // effectiveFrom itself would leave old and new both live today.
+    const rowsAfter = (
+      await pool.query<{ retired: number; fresh: number; n: number }>(
+        `WITH t AS (SELECT (now() AT TIME ZONE 'Europe/Nicosia')::date AS d)
+         SELECT count(*) FILTER (WHERE effective_from < t.d AND effective_to = t.d - 1 AND version = 2)::int AS retired,
+                count(*) FILTER (WHERE effective_from = t.d AND effective_to IS NULL AND version = 1)::int AS fresh,
+                count(*)::int AS n
+           FROM public.availability_template, t WHERE sitter_id = $1`,
+        [id],
+      )
+    ).rows[0];
+    assert.deepEqual(
+      rowsAfter,
+      { retired: 3, fresh: 3, n: 6 },
+      'retired rows end the day before effectiveFrom (effective_to = effectiveFrom - 1, version + 1)',
+    );
     const want = await expected([
       { isodow: 1, start: '16:00', end: '20:00' },
       { isodow: 3, start: '18:00', end: '22:00' },
@@ -469,6 +488,86 @@ test(
       onDate((await slots(c)).pairs),
       [wantSlot],
       'one transaction, REMOVE then ADD',
+    );
+  },
+);
+
+test(
+  'OD-335 in the database, the created_at key: an exception written in a LATER transaction under a SMALLER id applies after the earlier one (and the mirror)',
+  { timeout: 90_000 },
+  async () => {
+    // ids are monotonic within one process only (`ids.ts`); two `core` tasks can write a later
+    // row under a smaller id. The rows go in by explicit id, one autocommit statement (one
+    // transaction, one `now()`) each, `created_at` left to the column default.
+    const date = await localDate(4, 10); // a Thursday
+    const block = [{ weekday: 3, start: '08:00', end: '20:00' }];
+    const wantSlot: Pair = [await at(date, '09:00'), await at(date, '17:00')];
+    const lo = await at(date, '00:00');
+    const hi = await at(date, '23:59');
+    const onDate = (pairs: Pair[]) => pairs.filter(([s, e]) => s < hi && e > lo);
+    const insert = (
+      id: string,
+      sitterId: Ulid,
+      kind: 'ADD' | 'REMOVE',
+      start: string | null,
+      end: string | null,
+    ) =>
+      pool.query(
+        `INSERT INTO public.availability_exception (id, sitter_id, on_date, kind, start_local, end_local, tz)
+         VALUES ($1, $2, $3::date, $4, $5::time, $6::time, 'Europe/Nicosia')`,
+        [id, sitterId, date, kind, start, end],
+      );
+    const order = async (sitterId: Ulid) =>
+      (
+        await pool.query<{ kind: string; later_created: boolean; smaller_id: boolean }>(
+          `SELECT kind,
+                  created_at > min(created_at) OVER () AS later_created,
+                  id < max(id) OVER () AS smaller_id
+             FROM public.availability_exception WHERE sitter_id = $1 ORDER BY created_at`,
+          [sitterId],
+        )
+      ).rows;
+
+    const d = await sitter();
+    await templateRows(d, block);
+    const dSmall = newAvailabilityId();
+    const dBig = newAvailabilityId();
+    await insert(dBig, d, 'REMOVE', null, null);
+    await insert(dSmall, d, 'ADD', '09:00', '17:00');
+    assert.deepEqual(
+      await order(d),
+      [
+        { kind: 'REMOVE', later_created: false, smaller_id: false },
+        { kind: 'ADD', later_created: true, smaller_id: true },
+      ],
+      'the fixture: the REMOVE is earlier by created_at and larger by id',
+    );
+    await db.withAppRw((tx) => materialiseSitter(tx, d));
+    assert.deepEqual(
+      onDate((await slots(d)).pairs),
+      [wantSlot],
+      'created_at first: REMOVE then ADD gives 09:00-17:00 (id order alone would give none)',
+    );
+
+    const e = await sitter();
+    await templateRows(e, block);
+    const eSmall = newAvailabilityId();
+    const eBig = newAvailabilityId();
+    await insert(eBig, e, 'ADD', '09:00', '17:00');
+    await insert(eSmall, e, 'REMOVE', null, null);
+    assert.deepEqual(
+      await order(e),
+      [
+        { kind: 'ADD', later_created: false, smaller_id: false },
+        { kind: 'REMOVE', later_created: true, smaller_id: true },
+      ],
+      'the fixture: the ADD is earlier by created_at and larger by id',
+    );
+    await db.withAppRw((tx) => materialiseSitter(tx, e));
+    assert.deepEqual(
+      onDate((await slots(e)).pairs),
+      [],
+      'created_at first: ADD then REMOVE gives none (id order alone would give 09:00-17:00)',
     );
   },
 );
