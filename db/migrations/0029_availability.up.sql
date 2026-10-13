@@ -4,7 +4,7 @@
 --
 -- Ticket:  T-163 (tech-lead -> bbp).
 -- Request: tasks/state/EP-9/T-089.md § Migration request (ADR 0001 §1); the requesting code is T-089
---          (the slot materialiser and the availability endpoints). T-162 and T-216 read the tables.
+--          (the slot materialiser and the availability endpoints). T-162 extends the materialiser and writes slots as T-089 does; T-216 reads availability_template.
 -- Spec:    SD §DB-5 lines 2235-2268 (the DDL and the materialisation rules); SA §DA-3 1206-1239.
 -- Rulings: tasks/state/EP-8b/OD-226-cut.md § 4 row T-163 (the binding brief addendum, OE-50), which
 --          names tasks/state/EP-2/OE-30-34-rulings.md E.3 U-1, U-2 and U-23, and from Part F (OE-50):
