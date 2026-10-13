@@ -8,6 +8,22 @@
  * not write one; nothing refuses it today.
  */
 export {
+  ACTOR_GUCS,
+  ActorRefusedError,
+  BREAK_GLASS_OFF,
+  BREAK_GLASS_ON,
+  JOB_IDENTITY_SHAPE,
+  personActor,
+  SYSTEM_ACTOR_ROLE,
+  systemActor,
+  type Actor,
+  type ActorRefusal,
+  type ActorTxOptions,
+  type PersonActor,
+  type SystemActor,
+} from './actor.ts';
+export {
+  bindSystemActor,
   Database,
   DATABASE_LOG,
   DATABASE_SHUT_DOWN,
@@ -17,6 +33,7 @@ export {
   TransactionClosedError,
   type DatabaseSource,
   type LogLine,
+  type SystemActorDatabase,
   type Tx,
 } from './database.ts';
 export {

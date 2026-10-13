@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "EV-30 / OD-292a: the code of SA §SA-2's modules that SD §BE-1 loads in more than one deployable, in src/<module>/, plus the shared NestJS runtime in src/runtime/ (Database/Tx/withAppRw, DatabaseModule, errorClass, the decorator helpers) — T-245; the transactional enqueue in src/jobs/ — T-149. Declared by apps/core and apps/worker. Never declares @nestjs/platform-*: that would put an HTTP adapter into the worker image.",
+  "description": "EV-30 / OD-292a: the code of SA §SA-2's modules that SD §BE-1 loads in more than one deployable, in src/<module>/, plus the shared NestJS runtime in src/runtime/ (Database/Tx/withAppRw, DatabaseModule, errorClass, the decorator helpers) — T-245, and the RLS actor transaction (withActor, personActor, systemActor) — T-254; the transactional enqueue in src/jobs/ — T-149. Declared by apps/core and apps/worker. Never declares @nestjs/platform-*: that would put an HTTP adapter into the worker image.",
   "exports": {
     "./availability": "./src/availability/index.ts",
     "./credential": "./src/credential/index.ts",
@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@kinvara/domain-types": "workspace:*",
+    "@kinvara/policy": "workspace:*",
     "@nestjs/common": "11.2.3",
     "@nestjs/core": "11.2.3",
     "drizzle-orm": "0.45.2",

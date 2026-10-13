@@ -34,20 +34,29 @@
  * the grants; it is not a boundary around the process.
  *
  * The three session statements (`BEGIN`, `SET LOCAL ROLE app_rw`, `COMMIT`/`ROLLBACK`) are constant
- * strings with no parameters, sent on the pooled connection. Every read and write of a table goes
+ * strings with no parameters, sent on the pooled connection. `withActor` (T-254) adds one more,
+ * `SET_ACTOR_SQL`, a constant string whose three values are bind parameters. Every read and write of a table goes
  * through the Drizzle handle `work` receives.
  */
 import pg from 'pg';
 import type { Pool, PoolClient, PoolConfig } from 'pg';
 import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { errorClass } from './error-class.ts';
+import {
+  ACTOR_GUCS,
+  actorSettings,
+  type Actor,
+  type ActorTxOptions,
+  type SystemActor,
+  systemActor,
+} from './actor.ts';
 
 declare const TX_BRAND: unique symbol;
 
 /**
  * A Drizzle handle bound to ONE pooled connection, inside an `app_rw` transaction.
  *
- * BRANDED (T-149). Only `withAppRw` mints one, so a function that takes a `Tx` cannot be handed a
+ * BRANDED (T-149). Only `withAppRw` and `withActor` (T-254) mint one, so a function that takes a `Tx` cannot be handed a
  * pool-bound `drizzle(pool)` handle, `undefined`, or nothing at all: each is a compile error. The
  * enqueue (`@kinvara/core-modules/jobs`) relies on it — SD §BE-11 line 1313, a job is enqueued in
  * the caller's transaction. Held by `type-tests/enqueue-refusals.ts` under `pnpm -w typecheck`.
@@ -176,6 +185,15 @@ export function poolConfigFor(source: DatabaseSource, connectionString: string):
   };
 }
 
+/**
+ * `withActor`'s one extra statement: the three GUCs, transaction-local (`is_local = true`, i.e.
+ * `SET LOCAL`), values as bind parameters $1 $2 $3 in `ACTOR_GUCS` order.
+ */
+export const SET_ACTOR_SQL =
+  `SELECT set_config('${ACTOR_GUCS.actorId}', $1, true), ` +
+  `set_config('${ACTOR_GUCS.actorRole}', $2, true), ` +
+  `set_config('${ACTOR_GUCS.breakGlass}', $3, true)`;
+
 export class Database {
   readonly #source: DatabaseSource;
   readonly #log: LogLine;
@@ -208,14 +226,65 @@ export class Database {
    * operation joined to the `Tx` (`joinTx`, i.e. every enqueue) has settled — COMMIT, or ROLLBACK
    * and rethrow when `work` threw or a joined operation rejected (`work`'s error wins).
    * Rejects `DatabaseShutDownError` once `onApplicationShutdown` has run.
+   *
+   * Sets no actor. A table under FORCE row-level security (T-252's `sitter_credential`) shows such
+   * a transaction 0 rows and refuses its writes: use `withActor` for those.
    */
   async withAppRw<T>(work: (tx: Tx) => Promise<T>): Promise<T> {
+    return this.#transaction(undefined, work);
+  }
+
+  /**
+   * One transaction as `app_rw` ACTING FOR `actor` (T-254; SD 3906, SD 1240). Exactly
+   * `withAppRw`'s statements, plus ONE statement after `SET LOCAL ROLE app_rw` and before `work`:
+   *
+   *   SELECT set_config('app.actor_id', $1, true), set_config('app.actor_role', $2, true),
+   *          set_config('app.break_glass', $3, true)
+   *
+   * `set_config(…, true)` is `SET LOCAL` (PostgreSQL: "is_local … only apply during the current
+   * transaction"), with the values as bind parameters rather than spliced into SQL. It is never the
+   * session form (`SET` / `is_local = false`): on a pooled connection that would carry the actor
+   * into the next transaction (SA-10, SD 4604). After COMMIT or ROLLBACK the next transaction on the
+   * connection reads the three as `''`, not NULL (measured: `test/actor-context.spec.ts`).
+   *
+   * Values: person → (account id, policy role, …); system → (job name, `'system'`, …); the third is
+   * `'on'` ONLY when `options` is exactly `{ breakGlass: true }`, else `'off'`.
+   *
+   * REFUSED BEFORE ANY SQL: the actor and `options` are re-validated first (`ActorRefusedError`),
+   * before the shut-down check, the URL check, and any pool or connection. There is no overload
+   * without an actor, and an object literal is not an `Actor` (the brand), so neither compiles
+   * (`type-tests/actor-refusals.ts`).
+   *
+   * BOUND (CUT-T-060 R-2.5): any code holding the `Tx`, and any `app_rw` session, can call
+   * `set_config` itself and change all three, `app.break_glass` included. This is SA 835's backstop
+   * against an application-layer bug, not a control against hostile application code.
+   */
+  async withActor<T>(
+    actor: Actor,
+    work: (tx: Tx) => Promise<T>,
+    options?: ActorTxOptions,
+  ): Promise<T> {
+    const settings = actorSettings(actor, options);
+    return this.#transaction(async (client) => {
+      await client.query(SET_ACTOR_SQL, [
+        settings.actorId,
+        settings.actorRole,
+        settings.breakGlass,
+      ]);
+    }, work);
+  }
+
+  async #transaction<T>(
+    prelude: ((client: PoolClient) => Promise<void>) | undefined,
+    work: (tx: Tx) => Promise<T>,
+  ): Promise<T> {
     const client: PoolClient = await this.#pool_().connect();
     let broken = false;
     let state: TxState | undefined;
     try {
       await client.query('BEGIN');
       await client.query('SET LOCAL ROLE app_rw');
+      if (prelude !== undefined) await prelude(client);
       // The one place a `Tx` is minted (the brand is a type; see `Tx`).
       const tx = drizzle({ client }) as unknown as Tx;
       state = { phase: 'open', joined: [] };
@@ -261,4 +330,26 @@ export class Database {
     this.#pool = undefined;
     if (pool !== undefined) await pool.end();
   }
+}
+
+/** A `Database` bound to one system actor: `withActor` without the actor argument. */
+export interface SystemActorDatabase {
+  readonly actor: SystemActor;
+  withActor<T>(work: (tx: Tx) => Promise<T>, options?: ActorTxOptions): Promise<T>;
+}
+
+/**
+ * THE WORKER'S BINDING (T-254). A worker has no session and no service JWT: every transaction it
+ * runs acts as the system actor named after its job (SD 1240). Bind once, where the handler is
+ * built, with the queue name as the job identity (`bindSystemActor(db, QUEUE)`); a refused name
+ * throws `ActorRefusedError` there, at boot, not on the first job. A job payload is never an
+ * identity source.
+ */
+export function bindSystemActor(db: Database, job: string): SystemActorDatabase {
+  const actor = systemActor(job);
+  return Object.freeze({
+    actor,
+    withActor: <T>(work: (tx: Tx) => Promise<T>, options?: ActorTxOptions): Promise<T> =>
+      db.withActor(actor, work, options),
+  });
 }
