@@ -40,7 +40,7 @@ import {
 import { assertPermitted, assertRefused, INT10_RAISE } from '../src/expect.ts';
 
 const SUITE = 'migrations-applied';
-const HIGHEST_COMMITTED = '0028';
+const HIGHEST_COMMITTED = '0029';
 const COMMITTED_DIR = path.join(REPO_ROOT, MIGRATIONS_DIR);
 const RECORD_SQL = `SELECT coalesce(shobj_description(oid, 'pg_database'), '(no comment)')
                       FROM pg_database WHERE datname = current_database()`;
@@ -1130,6 +1130,45 @@ const CREATED_BY: Readonly<
                                  FROM pg_constraint WHERE conrelid = to_regclass('public.cluster')
                                   AND conname = 'cluster_open_requires_passing_snapshot'), '(absent)')`,
         holds: 'c true false',
+      },
+    ],
+  },
+  '0029': {
+    source: 'T-163',
+    // Each probe names an object 0029 creates (the three availability tables, their indexes, the
+    // slot exclusion constraint) and returns a value rather than raising once it is gone: to_regclass
+    // returns NULL for a missing name, and every read is coalesced. The refusals are asserted by
+    // suites/availability.test.ts, not here (T-137 TV2-A1: a probe names an object).
+    probes: [
+      {
+        title:
+          'tables availability_template, availability_exception, availability_slot and indexes idx_slot_span, idx_slot_cluster, idx_slot_sitter, availability_template_sitter_id_idx, availability_exception_sitter_id_on_date_idx exist (SD §DB-5; E.3 U-23)',
+        sql: `SELECT string_agg((to_regclass('public.' || n) IS NOT NULL)::text, ' ' ORDER BY o)
+                FROM unnest(ARRAY['availability_template', 'availability_exception', 'availability_slot', 'idx_slot_span',
+                                  'idx_slot_cluster', 'idx_slot_sitter', 'availability_template_sitter_id_idx',
+                                  'availability_exception_sitter_id_on_date_idx']) WITH ORDINALITY AS t(n, o)`,
+        holds: 'true true true true true true true true',
+      },
+      {
+        title:
+          'the slot exclusion constraint availability_slot_sitter_id_span_excl (contype x) and CHECK availability_slot_span_shape exist on public.availability_slot (SD 2261; OE-32 U-15 (a))',
+        sql: `SELECT coalesce((SELECT string_agg(conname || '=' || contype::text, ' ' ORDER BY conname) FROM pg_constraint
+                                WHERE conrelid = to_regclass('public.availability_slot')
+                                  AND conname IN ('availability_slot_sitter_id_span_excl', 'availability_slot_span_shape')), '(absent)')`,
+        holds: 'availability_slot_sitter_id_span_excl=x availability_slot_span_shape=c',
+      },
+      {
+        title:
+          'the three tables are owned by app_ddl with table ACLs app_rw SELECT+INSERT (template, exception) and SELECT+INSERT+DELETE (slot), and no row-level security (E.3 U-2, U-6 (a), U-21 (a))',
+        sql: `SELECT coalesce((SELECT string_agg(relname || ' ' || pg_get_userbyid(relowner) || ' ' || relacl::text || ' ' ||
+                                             relrowsecurity::text, ' ; ' ORDER BY relname)
+                                 FROM pg_class WHERE oid IN (to_regclass('public.availability_template'),
+                                                             to_regclass('public.availability_exception'),
+                                                             to_regclass('public.availability_slot'))), '(absent)')`,
+        holds:
+          'availability_exception app_ddl {app_ddl=arwdDxtm/app_ddl,app_rw=ar/app_ddl} false ; ' +
+          'availability_slot app_ddl {app_ddl=arwdDxtm/app_ddl,app_rw=ard/app_ddl} false ; ' +
+          'availability_template app_ddl {app_ddl=arwdDxtm/app_ddl,app_rw=ar/app_ddl} false',
       },
     ],
   },
