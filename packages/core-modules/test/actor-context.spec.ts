@@ -20,6 +20,7 @@
  */
 import { afterAll, beforeAll, test } from 'vitest';
 import assert from 'node:assert/strict';
+import { inspect } from 'node:util';
 import pg from 'pg';
 import type { Pool } from 'pg';
 import { sql } from 'drizzle-orm';
@@ -247,4 +248,174 @@ test('NOT HELD (CUT-T-060 R-2.5): code holding the Tx can set the GUCs itself, b
     return owners(tx);
   });
   assert.deepEqual(rows, [A, B]);
+});
+
+/** Q-1 (rework 1): the surfaces of a refusal, as text, that contain `canary` ([] = none). */
+function canarySurfaces(e: unknown, canary: string): string[] {
+  const err = e as { message?: unknown; stack?: unknown; cause?: unknown };
+  const surfaces: Record<string, string> = {
+    message: String(err.message),
+    stack: String(err.stack),
+    cause: inspect(err.cause, { depth: null, showHidden: true }),
+    json: JSON.stringify(e) ?? '',
+    inspect: inspect(e, { depth: null, showHidden: true }),
+  };
+  return Object.entries(surfaces)
+    .filter(([, text]) => text.includes(canary))
+    .map(([name]) => name);
+}
+
+test('Q-1 CANARY against the database: a refused id, role, job, kind and break-glass value each carrying a canary rejects ActorRefusedError with no canary on message, stack, cause, JSON or util.inspect, and work never runs', async () => {
+  const C = 'CANARYT254';
+  let ran = 0;
+  const work = async (): Promise<void> => {
+    ran += 1;
+  };
+  const cases: readonly [string, Promise<unknown>][] = [
+    [
+      'id',
+      db.withActor(
+        { kind: 'person', accountId: `${C}0000000000000000`, role: 'sitter' } as unknown as Actor,
+        work,
+      ),
+    ],
+    [
+      'role',
+      db.withActor({ kind: 'person', accountId: A, role: `${C}_role` } as unknown as Actor, work),
+    ],
+    ['job', db.withActor({ kind: 'system', job: `${C}.job` } as unknown as Actor, work)],
+    ['kind', db.withActor({ kind: C, job: 'credential.sweep' } as unknown as Actor, work)],
+    ['break-glass', db.withActor(personActor(A, 'sitter'), work, { breakGlass: C } as never)],
+  ];
+  const leaks: string[] = [];
+  for (const [site, p] of cases) {
+    const e = await p.then(
+      () => undefined,
+      (x: unknown) => x,
+    );
+    assert.ok(e instanceof ActorRefusedError, `${site}: refused`);
+    for (const surface of canarySurfaces(e, C)) leaks.push(`${site} -> ${surface}`);
+  }
+  assert.deepEqual(leaks, []);
+  assert.equal(ran, 0);
+});
+
+test('A7 (rework 1) against the database: a forged actor whose role or id is a getter is bound with the value it was validated with (read once)', async () => {
+  let n = 0;
+  const roleFlip = Object.defineProperties(
+    { kind: 'person', accountId: B },
+    { role: { get: () => ((n += 1) === 1 ? 'sitter' : 'system'), enumerable: true } },
+  );
+  const [g, rows] = await db.withActor(
+    roleFlip as unknown as Actor,
+    async (tx) => [await readGucs(tx), await owners(tx)] as const,
+  );
+  assert.deepEqual([g.actor_id, g.actor_role, g.break_glass], [B, 'sitter', 'off']);
+  assert.deepEqual(rows, [B], 'a sitter sees its own row only, not every row as system would');
+  assert.equal(n, 1);
+  let m = 0;
+  const idFlip = Object.defineProperties(
+    { kind: 'person', role: 'sitter' },
+    { accountId: { get: () => ((m += 1) === 1 ? A : B), enumerable: true } },
+  );
+  const h = await db.withActor(idFlip as unknown as Actor, readGucs);
+  assert.deepEqual([h.actor_id, h.actor_role], [A, 'sitter']);
+  assert.equal(m, 1);
+});
+
+test("A8 (rework 1) against the database: an options object that INHERITS breakGlass: true is refused, and an own one is 'on'", async () => {
+  let ran = 0;
+  const inherited = Object.assign(Object.create({ breakGlass: true }) as object, { purpose: 'x' });
+  await assert.rejects(
+    db.withActor(
+      personActor(B, 'parent'),
+      async () => {
+        ran += 1;
+      },
+      inherited as never,
+    ),
+    (e: unknown) => e instanceof ActorRefusedError && e.reason === 'break_glass_option',
+  );
+  assert.equal(ran, 0);
+  assert.deepEqual(await db.withActor(personActor(B, 'parent'), owners, { breakGlass: true }), [
+    A,
+    B,
+  ]);
+});
+
+test('NOT HELD (R-2.5, A4): work that sets the GUCs in the SESSION form (set_config(…, false)) leaks them past COMMIT into later transactions on the same pooled connection, actorless ones included', async () => {
+  const own = new Database(
+    { connectionString: databaseUrl(), application_name: 'kinvara-t254-a4', max: 1 },
+    () => undefined,
+  );
+  try {
+    const p1 = await own.withActor(personActor(A, 'parent'), async (tx) => {
+      await tx.execute(
+        sql`SELECT set_config('app.actor_role', 'system', false), set_config('app.actor_id', 'x', false)`,
+      );
+      return (await readGucs(tx)).pid;
+    });
+    const [g, rows] = await own.withAppRw(
+      async (tx) => [await readGucs(tx), await owners(tx)] as const,
+    );
+    assert.equal(g.pid, p1, 'same backend');
+    assert.deepEqual(
+      [g.actor_id, g.actor_role],
+      ['x', 'system'],
+      'the session form outlived COMMIT',
+    );
+    assert.deepEqual(rows, [A, B], 'an actorless transaction sees every row');
+    const h = await own.withActor(personActor(B, 'sitter'), readGucs);
+    assert.deepEqual(
+      [h.actor_id, h.actor_role],
+      [B, 'sitter'],
+      'withActor overrides it for its own transaction',
+    );
+    const k = await own.withAppRw(readGucs);
+    assert.deepEqual([k.actor_id, k.actor_role], ['x', 'system'], 'and it is back afterwards');
+  } finally {
+    await own.onApplicationShutdown();
+  }
+});
+
+test('NOT HELD (R-2.5, A5): RESET ROLE inside work leaves app_rw for the login role, which bypasses row-level security', async () => {
+  const own = new Database(
+    { connectionString: databaseUrl(), application_name: 'kinvara-t254-a5', max: 1 },
+    () => undefined,
+  );
+  try {
+    const r = await own.withActor(personActor(B, 'parent'), async (tx) => {
+      const before = [(await readGucs(tx)).who, await owners(tx)] as const;
+      await tx.execute(sql`RESET ROLE`);
+      const g = await readGucs(tx);
+      return { before, after: [g.who, g.actor_role, await owners(tx)] as const };
+    });
+    assert.deepEqual(r.before, ['app_rw', []]);
+    assert.notEqual(r.after[0], 'app_rw');
+    assert.deepEqual(
+      r.after.slice(1),
+      ['parent', [A, B]],
+      'the GUCs still say parent; every row is visible',
+    );
+  } finally {
+    await own.onApplicationShutdown();
+  }
+});
+
+test('NOT HELD (R-2.5, A6): COMMIT sent through the Tx ends the transaction; the rest of work runs outside it, as the login role, with the actor gone', async () => {
+  const own = new Database(
+    { connectionString: databaseUrl(), application_name: 'kinvara-t254-a6', max: 1 },
+    () => undefined,
+  );
+  try {
+    const r = await own.withActor(personActor(A, 'sitter'), async (tx) => {
+      await tx.execute(sql`COMMIT`);
+      const g = await readGucs(tx);
+      return [g.who, g.actor_id, g.actor_role, g.break_glass, await owners(tx)] as const;
+    });
+    assert.notEqual(r[0], 'app_rw');
+    assert.deepEqual(r.slice(1), ['', '', '', [A, B]]);
+  } finally {
+    await own.onApplicationShutdown();
+  }
 });
