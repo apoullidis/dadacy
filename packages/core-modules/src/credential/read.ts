@@ -16,8 +16,10 @@
  *     a stale success served after a failure — there is no stale-on-error).
  *   - NO PUB/SUB INVALIDATION. SD 4035 says "Pub/sub invalidation on write"; no application role
  *     can write this table (`app_rw` holds `SELECT` only, `T-251` §3), so there is no write to
- *     publish from. A data migration's change reaches each process within 60 s of its next read.
- *     Recorded as a proposed EV in state/EP-5/T-060.md.
+ *     publish from. A write by a migration or an `app_ddl`/superuser session reaches each process
+ *     at its first call 60 s or more after that process's previous Q-1 completed (at most 60 s
+ *     plus one read after the commit). EV-53: the ticket that builds SD 347's scheme editor owes
+ *     the invalidation (state/EP-5/T-060.md § Published contract — LIVE §2, §6).
  * Held without a database by `read.test.ts` (an injected loader and clock), and against the seeded
  * schema by `test/credential-scheme.spec.ts` (the same frozen array within the window, a new one
  * after it).

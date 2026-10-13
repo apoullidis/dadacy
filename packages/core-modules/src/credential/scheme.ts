@@ -73,9 +73,9 @@ export class MandatoryRulesUnreadableError extends Error {
 }
 
 /**
- * Parse a `mandatory_rules` value with R-3's closed grammar. For `T-061` and `T-028`, which read the
- * column through this function (R-3's binding on readers). Throws `MandatoryRulesUnreadableError`
- * for anything but v1.
+ * Parse a `mandatory_rules` value with R-3's closed grammar, for TypeScript readers (`T-061`,
+ * `T-255`); R-3 binds them to it. `T-028`'s I-1 derivation is SQL and applies the same grammar in
+ * the database; it does not call this. Throws `MandatoryRulesUnreadableError` for anything but v1.
  */
 export function parseMandatoryRules(value: unknown): MandatoryRules {
   const parsed = MandatoryRulesV1.safeParse(value);
