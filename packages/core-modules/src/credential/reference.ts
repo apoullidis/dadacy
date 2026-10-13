@@ -16,8 +16,8 @@
  *     compile here with `u`, and that is an uncompilable pattern (below), not a skipped check.
  *   - WHOLE-STRING MATCH: the pattern is compiled once as written (that compile is the
  *     "does it compile" test) and then as `^(?:<pattern>)$`, which is the one used to match. So
- *     `[0-9]{12}` does not accept `x123456789012x`, and `a|ab` accepts `ab`. A pattern that already
- *     carries `^…$` is unaffected.
+ *     `[0-9]{12}` does not accept `x123456789012x`, and the group keeps an alternation inside the
+ *     anchors: `a|b` refuses `ax` and `xb`. A pattern that already carries `^…$` is unaffected.
  *   - FAIL CLOSED: a pattern that does not compile (either compile throws) refuses the submission
  *     with `ReferencePatternUnusableError` — never "validated", never skipped. That error is a
  *     server fault (it extends `Error`, not `InvalidInputError`), because the sitter's input was
@@ -33,8 +33,10 @@
  * a canary reference asserted absent from the error (message, stack, own properties, JSON) and from
  * every captured log line, AND the refusal line asserted present, so an empty log cannot pass.
  *
- * NOT BOUNDED: the matching time of a pathological pattern (catastrophic backtracking). Patterns
- * arrive only by reviewed data migration (`T-251` §5's last row), and none exists today.
+ * NOT BOUNDED: the matching time of a pathological pattern (catastrophic backtracking; `(a+)+b`
+ * roughly doubles per input character). Patterns arrive only by reviewed data migration (`T-251`
+ * §5's last row), and none exists today. Whichever ticket lets an operator author the pattern (SD's
+ * scheme editor, SD line 347) owes a bound on it (T-060 § Published contract — LIVE §6).
  */
 import { InvalidInputError } from '@kinvara/domain-types';
 import type { LogLine } from '../runtime/index.ts';

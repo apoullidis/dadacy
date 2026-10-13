@@ -282,7 +282,9 @@ test('with a non-NULL regex planted in a test transaction, a non-matching refere
 
 test('an uncompilable pattern planted on a real row fails closed: the reference is refused, not validated', async () => {
   const lines: string[] = [];
-  let refused: unknown;
+  // One error per reference, kept apart: the canary check below reads the error raised FOR the
+  // canary, not whichever error a later call left behind (T-060 QA Q-5).
+  const refused = new Map<string, unknown>();
   await inRolledBackTx(async (tx) => {
     await tx.execute(sql`RESET ROLE`);
     // PostgreSQL ARE: it does not compile as ECMAScript with u
@@ -298,16 +300,19 @@ test('an uncompilable pattern planted on a real row fails closed: the reference 
         validateReference(white, ref, (l) => lines.push(l));
         assert.fail('an uncompilable pattern must not validate anything');
       } catch (e) {
-        refused = e;
         assert.ok(e instanceof ReferencePatternUnusableError);
+        refused.set(ref, e);
       }
     }
   });
-  assert.ok(refused instanceof ReferencePatternUnusableError);
+  assert.equal(refused.size, 2);
+  const canaryError = refused.get(CANARY);
+  assert.ok(canaryError instanceof ReferencePatternUnusableError);
+  assert.notEqual(canaryError, refused.get('12345678'));
   assert.equal(lines.length, 2);
   assert.ok(lines.every((l) => l.endsWith('reason=pattern_uncompilable')));
   assert.ok(!lines.join('\n').includes(CANARY));
-  assert.ok(!exposed(refused).includes(CANARY));
+  assert.ok(!exposed(canaryError).includes(CANARY));
   for (const r of await rawCy()) assert.equal(r.reference_format_regex, null);
 });
 

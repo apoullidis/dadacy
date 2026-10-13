@@ -57,3 +57,14 @@ test('locale keys are compared exactly, and inherited properties are not locales
     assert.equal(schemeDisplayName(s, locale).status, 'missing', locale);
   }
 });
+
+test('an inherited string value is not a locale: only own properties count', () => {
+  // Every name on Object.prototype is a function or object, which the string check alone already
+  // answers missing; an inherited STRING is what only the own-property check refuses (T-060 QA Q-3).
+  const inherited = Object.create({ el: EL }) as Record<string, unknown>;
+  assert.equal(inherited['el'], EL);
+  assert.deepEqual(schemeDisplayName({ schemeNameI18n: inherited }, 'el'), {
+    status: 'missing',
+    locale: 'el',
+  });
+});

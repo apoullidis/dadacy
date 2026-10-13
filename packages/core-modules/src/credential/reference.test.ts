@@ -8,6 +8,7 @@ import { toProblem } from '@kinvara/domain-types';
 import {
   REFERENCE_PATTERN_UNUSABLE,
   REFERENCE_REFUSED_LOG,
+  REFERENCE_REGEX_FLAGS,
   ReferenceNumberRefusedError,
   ReferencePatternUnusableError,
   validateReference,
@@ -66,11 +67,27 @@ test('the pattern is matched against the whole string, not a substring', () => {
       ref,
     );
   }
-  // alternation is grouped before anchoring: `a|ab` accepts `ab`
+  // `a|ab` accepts `ab` (with or without the grouping; the grouping is pinned by the next test)
   assert.equal(
     validateReference({ id: 3, referenceFormatRegex: 'a|ab' }, 'ab', () => undefined).status,
     'format_matched',
   );
+});
+
+test('an alternation is grouped before anchoring: a|b refuses ax and xb, and accepts a and b', () => {
+  // Under `^a|b$` (anchors not grouped) `ax` would match the first branch as a prefix and `xb` the
+  // second as a suffix; under `^(?:a|b)$` both are refused (T-060 QA Q-1).
+  const AB = { id: 5, referenceFormatRegex: 'a|b' };
+  for (const ref of ['ax', 'xb']) {
+    assert.throws(
+      () => validateReference(AB, ref, () => undefined),
+      ReferenceNumberRefusedError,
+      ref,
+    );
+  }
+  for (const ref of ['a', 'b']) {
+    assert.equal(validateReference(AB, ref, () => undefined).status, 'format_matched', ref);
+  }
 });
 
 test('a non-matching reference is refused, and the canary is absent from the error and the log', () => {
@@ -136,6 +153,32 @@ test('the dialect is ECMAScript with u: a named group compiles and matches', () 
     () => undefined,
   );
   assert.equal(out.status, 'format_matched');
+});
+
+test('the flag set is u only: REFERENCE_REGEX_FLAGS is the literal u', () => {
+  // T-060 QA Q-2. The two behavioural cases below go red on their own under `um` and `ui`.
+  assert.equal(REFERENCE_REGEX_FLAGS, 'u');
+});
+
+test('not multiline: [0-9]{12} refuses a reference with a line before or after the digits', () => {
+  // under `m`, `^`/`$` would match at the line break and both would be accepted
+  for (const ref of ['123456789012\nx', 'x\n123456789012']) {
+    assert.throws(
+      () => validateReference(TWELVE, ref, () => undefined),
+      ReferenceNumberRefusedError,
+      JSON.stringify(ref),
+    );
+  }
+});
+
+test('not case-insensitive: [A-Z]{3} refuses abc and accepts ABC', () => {
+  // under `i`, `[A-Z]` would accept lower case
+  const UPPER = { id: 6, referenceFormatRegex: '[A-Z]{3}' };
+  assert.throws(
+    () => validateReference(UPPER, 'abc', () => undefined),
+    ReferenceNumberRefusedError,
+  );
+  assert.equal(validateReference(UPPER, 'ABC', () => undefined).status, 'format_matched');
 });
 
 test('a non-string reference is refused under either scheme kind, with a fixed reason', () => {
