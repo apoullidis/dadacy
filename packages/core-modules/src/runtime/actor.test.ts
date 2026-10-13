@@ -71,7 +71,7 @@ function canarySurfaces(e: unknown, canary: string): string[] {
 /** A refused value that carries a canary, per refusal site (each one IS refused, asserted). */
 const CANARY = 'CANARYT254';
 const CANARY_ID = `${CANARY}0000000000000000`; // 26 characters; first character C (> 7), so not a ULID
-const CANARY_ROLE = `${CANARY.toLowerCase()}_role`;
+const CANARY_ROLE = `${CANARY}_ROLE`; // upper case: the search is case-sensitive; isRole refuses it
 const CANARY_JOB = `${CANARY}.job`; // upper case: refused by the job shape
 
 const ABSENT: readonly unknown[] = [undefined, null, '', 0, Number.NaN, false, {}, []];
@@ -211,7 +211,7 @@ test('actorSettings re-validates a FORGED actor (the brand is a type only): no a
   }
 });
 
-test('Q-1 CANARY: no refusal carries its refused value: a canary in each refused id, role, job, kind, actor and break-glass value is absent from message, stack, cause, own properties, JSON and util.inspect', () => {
+test('Q-1 CANARY: no refusal carries its refused value: the canary CANARYT254, in the refused input at each of 12 refusal sites (personActor id and role, systemActor job, bindSystemActor job, actorSettings actor, kind, id, role and job, break-glass value, key and options), is absent from message, stack, cause, own properties, JSON and util.inspect', () => {
   const sites: readonly [string, ActorRefusal, () => unknown][] = [
     ['personActor id', 'account_id', () => personActor(CANARY_ID, 'sitter')],
     ['personActor role', 'role', () => personActor(ID, CANARY_ROLE)],
