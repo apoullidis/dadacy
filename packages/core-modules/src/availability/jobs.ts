@@ -44,6 +44,15 @@ export const SLOT_MATERIALISE_NIGHTLY_QUEUE_OPTIONS = {
 export const SLOT_MATERIALISE_NIGHTLY_CRON = '15 0 * * *';
 export const SLOT_MATERIALISE_NIGHTLY_TZ = 'Europe/Nicosia';
 
+/**
+ * The nightly fan-out's jobs go in at priority -1, below the default 0 every edit-triggered
+ * `search.slot_materialise` carries (pg-boss fetches `priority desc, created_on`), so a nightly
+ * backlog waiting in the queue is fetched AFTER the job of a sitter's own edit (SD 1352: "High
+ * priority, ≤5 s"). That order is pg-boss 12.26.4's fetch (`plans.js` `ORDER BY j.priority desc,
+ * j.created_on, j.id`, read, not run); a nightly job already in flight is not pre-empted.
+ */
+export const SLOT_MATERIALISE_NIGHTLY_FANOUT_PRIORITY = -1;
+
 const SitterUlid = z.custom<Ulid>((value) => isUlid(value), {
   message: 'sitterId must be a canonical ULID; the rejected value is not shown',
 });

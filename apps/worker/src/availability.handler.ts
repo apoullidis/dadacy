@@ -13,7 +13,9 @@
  *       `Europe/Nicosia` (C10 (a): the roll SD's job table omits, EV-n). One transaction reads
  *       every `sitter_profile` id and enqueues `search.slot_materialise {sitterId}` for each, on
  *       that same `Tx`, through `JobEnqueuer` with `BossHost`'s pg-boss (T-149 § contract §4, §7:
- *       never a second `PgBoss`). So a sitter who edits nothing keeps a full 56-day horizon.
+ *       never a second `PgBoss`), at priority `SLOT_MATERIALISE_NIGHTLY_FANOUT_PRIORITY` (-1), so
+ *       the backlog queues behind every edit-triggered job (priority 0). So a sitter who edits
+ *       nothing keeps a full 56-day horizon.
  *       `boss.schedule` is an upsert on (queue, key), so every boot converges the one schedule.
  *
  * The handler reads its input from the job alone; the payload is parsed with the queue's own
@@ -27,6 +29,7 @@ import {
   materialiseSitter,
   SLOT_MATERIALISE_JOB,
   SLOT_MATERIALISE_NIGHTLY_CRON,
+  SLOT_MATERIALISE_NIGHTLY_FANOUT_PRIORITY,
   SLOT_MATERIALISE_NIGHTLY_JOB,
   SLOT_MATERIALISE_NIGHTLY_QUEUE,
   SLOT_MATERIALISE_NIGHTLY_QUEUE_OPTIONS,
@@ -86,12 +89,15 @@ export class AvailabilityHandler implements OnApplicationBootstrap {
         tz: SLOT_MATERIALISE_NIGHTLY_TZ,
       },
     );
-    const workOptions = { batchSize: 1, pollingIntervalSeconds: 1 } as const;
-    await this.#host.work<unknown, SlotMaterialiseOutput, typeof workOptions>(
+    // Two jobs at a time, polled every 0.5 s (pg-boss's floor): each job is one sitter's
+    // transaction, and the worker's `Database` pool holds two connections (src/database.module.ts).
+    const slotOptions = { batchSize: 1, pollingIntervalSeconds: 0.5, localConcurrency: 2 } as const;
+    await this.#host.work<unknown, SlotMaterialiseOutput, typeof slotOptions>(
       SLOT_MATERIALISE_QUEUE,
-      workOptions,
+      slotOptions,
       async (jobs: Job<unknown>[]) => this.#materialise(jobs),
     );
+    const workOptions = { batchSize: 1, pollingIntervalSeconds: 1 } as const;
     await this.#host.work<unknown, SlotMaterialiseNightlyOutput, typeof workOptions>(
       SLOT_MATERIALISE_NIGHTLY_QUEUE,
       workOptions,
@@ -132,7 +138,14 @@ export class AvailabilityHandler implements OnApplicationBootstrap {
         )
       ).rows.map((r) => ulid(r.id, 'sitterId'));
       for (const sitterId of ids) {
-        await enqueuer.enqueue(tx, SLOT_MATERIALISE_JOB, { sitterId });
+        await enqueuer.enqueue(
+          tx,
+          SLOT_MATERIALISE_JOB,
+          { sitterId },
+          {
+            priority: SLOT_MATERIALISE_NIGHTLY_FANOUT_PRIORITY,
+          },
+        );
       }
       return ids.length;
     });

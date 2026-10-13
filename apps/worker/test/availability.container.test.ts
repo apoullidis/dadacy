@@ -47,6 +47,7 @@ let pool: Pool;
 let boss: PgBoss;
 let db: Database;
 let enqueuer: JobEnqueuer;
+const created: string[] = [];
 
 beforeAll(async () => {
   pool = superuserPool();
@@ -59,6 +60,12 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  // This file's sitters go with the run (the availability rows cascade from sitter_profile), so a
+  // re-run on the same project does not inherit them — and the nightly case's fan-out stays the
+  // size of one run.
+  await pool.query(`DELETE FROM public.sitter_profile WHERE id = ANY($1::char(26)[])`, [created]);
+  await pool.query(`DELETE FROM public.account WHERE id = ANY($1::char(26)[])`, [created]);
+  await pool.query(`DELETE FROM public.cluster WHERE name = 't089'`);
   await boss.stop({ graceful: false, close: true });
   await db.onApplicationShutdown();
   await pool.end();
@@ -71,6 +78,7 @@ async function sitter(
   opts: { bookable?: boolean; lonLat?: [number, number]; radiusM?: number } = {},
 ): Promise<Ulid> {
   const id = newAvailabilityId();
+  created.push(id);
   await pool.query(
     `INSERT INTO public.account (id, pseudonym, tos_version) VALUES ($1, $2, 'test')`,
     [id, newAvailabilityId()],
@@ -176,11 +184,11 @@ async function completedJob(
   where: string,
   params: unknown[],
   after: Date,
-): Promise<{ id: string; output: unknown }> {
+): Promise<{ id: string; output: unknown; createdOn: Date }> {
   return waitFor(`a completed ${queue} job`, 60_000, async () => {
     const row = (
-      await pool.query<{ id: string; state: string; output: unknown }>(
-        `SELECT id::text, state::text, output FROM pgboss.job
+      await pool.query<{ id: string; state: string; output: unknown; created_on: Date }>(
+        `SELECT id::text, state::text, output, created_on FROM pgboss.job
           WHERE name = $1 AND created_on >= $2 AND ${where}
           ORDER BY created_on DESC LIMIT 1`,
         [queue, after, ...params],
@@ -189,8 +197,21 @@ async function completedJob(
     if (row === undefined) return undefined;
     if (row.state === 'failed')
       throw new Error(`${queue} job ${row.id} failed: ${JSON.stringify(row.output)}`);
-    return row.state === 'completed' ? { id: row.id, output: row.output } : undefined;
+    return row.state === 'completed'
+      ? { id: row.id, output: row.output, createdOn: row.created_on }
+      : undefined;
   });
+}
+
+/** A refusal as `<SQLSTATE> <constraint>` read from the driver error drizzle wraps in `cause`. */
+function sqlState(reason: unknown): string {
+  const cause: unknown =
+    typeof reason === 'object' && reason !== null && 'cause' in reason ? reason.cause : reason;
+  const field = (k: string): string =>
+    typeof cause === 'object' && cause !== null && k in cause
+      ? String((cause as Record<string, unknown>)[k])
+      : '?';
+  return `${field('code')} ${field('constraint')}`;
 }
 
 const MON_WED_FRI = [
@@ -346,7 +367,7 @@ test(
       ]);
       const refused = results
         .filter((r) => r.status === 'rejected')
-        .map((r) => String((r as PromiseRejectedResult).reason));
+        .map((r) => sqlState((r as PromiseRejectedResult).reason));
       assert.deepEqual(refused, [], `round ${String(i)}: both committed`);
       assert.deepEqual((await slots(id)).pairs, want, `round ${String(i)}: one run's set`);
     }
@@ -712,6 +733,13 @@ test(
       profiles,
       'one job per sitter profile',
     );
+    const fanout = (
+      await pool.query<{ priority: number }>(
+        `SELECT DISTINCT priority FROM pgboss.job WHERE name = $1 AND created_on >= $2 AND data->>'sitterId' IS NOT NULL`,
+        [SLOT_MATERIALISE_QUEUE, nightly.createdOn],
+      )
+    ).rows.map((r) => r.priority);
+    assert.ok(fanout.includes(-1), 'the fan-out jobs carry priority -1');
     await completedJob(SLOT_MATERIALISE_QUEUE, `data->>'sitterId' = $3`, [id], before);
     assert.deepEqual(
       (await slots(id)).pairs,
