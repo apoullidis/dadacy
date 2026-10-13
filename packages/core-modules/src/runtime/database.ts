@@ -245,7 +245,9 @@ export class Database {
    * transaction"), with the values as bind parameters rather than spliced into SQL. It is never the
    * session form (`SET` / `is_local = false`): on a pooled connection that would carry the actor
    * into the next transaction (SA-10, SD 4604). After COMMIT or ROLLBACK the next transaction on the
-   * connection reads the three as `''`, not NULL (measured: `test/actor-context.spec.ts`).
+   * connection reads the three as `''`, not NULL (measured: `test/actor-context.spec.ts`). That holds
+   * for the values THIS statement sets; it does not hold if `work` itself changes them in the session
+   * form (see BOUND, A4).
    *
    * Values: person → (account id, policy role, …); system → (job name, `'system'`, …); the third is
    * `'on'` ONLY when `options` is exactly `{ breakGlass: true }`, else `'off'`.
@@ -256,8 +258,17 @@ export class Database {
    * (`type-tests/actor-refusals.ts`).
    *
    * BOUND (CUT-T-060 R-2.5): any code holding the `Tx`, and any `app_rw` session, can call
-   * `set_config` itself and change all three, `app.break_glass` included. This is SA 835's backstop
-   * against an application-layer bug, not a control against hostile application code.
+   * `set_config` itself and change all three, `app.break_glass` included. Three forms of that outlive
+   * this transaction's guarantees, each measured as NOT HELD in `test/actor-context.spec.ts`:
+   *   A4  `set_config(…, false)` / `SET app.…` inside `work`: the session form survives COMMIT, so
+   *       every later transaction on that pooled connection, actorless or another actor's, starts
+   *       with those values (a `withActor` overrides them only for its own transaction).
+   *   A5  `RESET ROLE` inside `work`: the rest of `work` runs as the login role (the bootstrap
+   *       superuser in `core`, OD-116), which bypasses row-level security whatever the GUCs say.
+   *   A6  `COMMIT` sent through the `Tx`: the rest of `work` runs outside any transaction, as the
+   *       login role, with the `SET LOCAL` values gone.
+   * This is SA 835's backstop against an application-layer bug, not a control against hostile
+   * application code.
    */
   async withActor<T>(
     actor: Actor,

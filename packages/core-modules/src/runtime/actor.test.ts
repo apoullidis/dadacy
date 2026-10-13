@@ -9,6 +9,7 @@
  */
 import { afterEach, test } from 'vitest';
 import assert from 'node:assert/strict';
+import { inspect } from 'node:util';
 import pg from 'pg';
 import type { Pool } from 'pg';
 import { ROLES } from '@kinvara/policy';
@@ -38,6 +39,40 @@ function refused(reason: ActorRefusal): (e: unknown) => boolean {
     return true;
   };
 }
+
+/**
+ * Q-1 (rework 1). Every surface a refusal can be read through, as text: message, stack, `cause`
+ * (inspected), every own property (inspected), JSON, and `util.inspect` with hidden fields. The
+ * names of the surfaces that contain `canary` are returned; [] means the refused value is absent.
+ */
+function canarySurfaces(e: unknown, canary: string): string[] {
+  const err = e as { message?: unknown; stack?: unknown; cause?: unknown };
+  const surfaces: Record<string, string> = {
+    message: String(err.message),
+    stack: String(err.stack),
+    cause: inspect(err.cause, { depth: null, showHidden: true }),
+    ownProperties: inspect(
+      Object.fromEntries(
+        Reflect.ownKeys(e as object).map((k) => [
+          String(k),
+          (e as Record<PropertyKey, unknown>)[k],
+        ]),
+      ),
+      { depth: null, showHidden: true },
+    ),
+    json: JSON.stringify(e) ?? '',
+    inspect: inspect(e, { depth: null, showHidden: true }),
+  };
+  return Object.entries(surfaces)
+    .filter(([, text]) => text.includes(canary))
+    .map(([name]) => name);
+}
+
+/** A refused value that carries a canary, per refusal site (each one IS refused, asserted). */
+const CANARY = 'CANARYT254';
+const CANARY_ID = `${CANARY}0000000000000000`; // 26 characters; first character C (> 7), so not a ULID
+const CANARY_ROLE = `${CANARY.toLowerCase()}_role`;
+const CANARY_JOB = `${CANARY}.job`; // upper case: refused by the job shape
 
 const ABSENT: readonly unknown[] = [undefined, null, '', 0, Number.NaN, false, {}, []];
 
@@ -174,6 +209,198 @@ test('actorSettings re-validates a FORGED actor (the brand is a type only): no a
   for (const [actor, reason] of cases) {
     assert.throws(() => actorSettings(actor, undefined), refused(reason));
   }
+});
+
+test('Q-1 CANARY: no refusal carries its refused value: a canary in each refused id, role, job, kind, actor and break-glass value is absent from message, stack, cause, own properties, JSON and util.inspect', () => {
+  const sites: readonly [string, ActorRefusal, () => unknown][] = [
+    ['personActor id', 'account_id', () => personActor(CANARY_ID, 'sitter')],
+    ['personActor role', 'role', () => personActor(ID, CANARY_ROLE)],
+    ['systemActor job', 'job_identity', () => systemActor(CANARY_JOB)],
+    [
+      'bindSystemActor job',
+      'job_identity',
+      () =>
+        bindSystemActor(
+          new Database(
+            { connectionString: undefined, application_name: 'kinvara-test' },
+            () => undefined,
+          ),
+          CANARY_JOB,
+        ),
+    ],
+    ['actorSettings actor', 'actor_missing', () => actorSettings(CANARY, undefined)],
+    [
+      'actorSettings kind',
+      'actor_kind',
+      () => actorSettings({ kind: CANARY, accountId: ID, role: 'sitter' }, undefined),
+    ],
+    [
+      'actorSettings id',
+      'account_id',
+      () => actorSettings({ kind: 'person', accountId: CANARY_ID, role: 'sitter' }, undefined),
+    ],
+    [
+      'actorSettings role',
+      'role',
+      () => actorSettings({ kind: 'person', accountId: ID, role: CANARY_ROLE }, undefined),
+    ],
+    [
+      'actorSettings job',
+      'job_identity',
+      () => actorSettings({ kind: 'system', job: CANARY_JOB }, undefined),
+    ],
+    [
+      'break-glass value',
+      'break_glass_option',
+      () => actorSettings(personActor(ID, 'sitter'), { breakGlass: CANARY }),
+    ],
+    [
+      'break-glass key',
+      'break_glass_option',
+      () => actorSettings(personActor(ID, 'sitter'), { [CANARY]: true }),
+    ],
+    [
+      'break-glass options',
+      'break_glass_option',
+      () => actorSettings(personActor(ID, 'sitter'), CANARY),
+    ],
+  ];
+  const leaks: string[] = [];
+  for (const [site, reason, run] of sites) {
+    let caught: unknown = undefined;
+    try {
+      run();
+    } catch (e) {
+      caught = e;
+    }
+    assert.ok(caught instanceof ActorRefusedError, `${site}: refused`);
+    assert.equal(caught.reason, reason, `${site}: reason`);
+    for (const surface of canarySurfaces(caught, CANARY)) leaks.push(`${site} -> ${surface}`);
+  }
+  assert.deepEqual(leaks, [], 'no refusal surface carries the refused value');
+});
+
+test('Q-1 CONTROL: canarySurfaces does see a canary on each surface it reads (so the case above can fail)', () => {
+  const inMessage = new Error(`x ${CANARY}`);
+  assert.deepEqual(
+    canarySurfaces(inMessage, CANARY).sort(),
+    ['inspect', 'message', 'ownProperties', 'stack'].sort(),
+  );
+  const inCause = new Error('x', { cause: CANARY });
+  assert.deepEqual(
+    canarySurfaces(inCause, CANARY).sort(),
+    ['cause', 'inspect', 'ownProperties'].sort(),
+  );
+  const inProp = Object.assign(new Error('x'), { input: CANARY });
+  assert.deepEqual(
+    canarySurfaces(inProp, CANARY).sort(),
+    ['inspect', 'json', 'ownProperties'].sort(),
+  );
+});
+
+test('A7 (rework 1): actorSettings reads each actor field EXACTLY ONCE, so a getter cannot pass validation with one value and bind another', () => {
+  const reads: Record<string, number> = {};
+  const counted =
+    <T>(name: string, values: readonly T[]) =>
+    () => {
+      const n = reads[name] ?? 0;
+      reads[name] = n + 1;
+      return values[Math.min(n, values.length - 1)];
+    };
+  const roleFlip = Object.defineProperties(
+    { accountId: ID },
+    {
+      kind: { get: counted('kind', ['person', 'system']), enumerable: true },
+      role: { get: counted('role', ['sitter', 'system']), enumerable: true },
+    },
+  );
+  assert.deepEqual(actorSettings(roleFlip, undefined), {
+    actorId: ID,
+    actorRole: 'sitter',
+    breakGlass: 'off',
+  });
+  const idFlip = Object.defineProperties(
+    { kind: 'person', role: 'sitter' },
+    {
+      accountId: { get: counted('accountId', [ID, "x'); DROP TABLE t; --"]), enumerable: true },
+    },
+  );
+  assert.deepEqual(actorSettings(idFlip, undefined), {
+    actorId: ID,
+    actorRole: 'sitter',
+    breakGlass: 'off',
+  });
+  const jobFlip = Object.defineProperties(
+    { kind: 'system' },
+    {
+      job: { get: counted('job', ['credential.sweep', ID]), enumerable: true },
+    },
+  );
+  assert.deepEqual(actorSettings(jobFlip, undefined), {
+    actorId: 'credential.sweep',
+    actorRole: 'system',
+    breakGlass: 'off',
+  });
+  assert.deepEqual(reads, { kind: 1, role: 1, accountId: 1, job: 1 });
+  // The other direction: a getter that is refused on its one read stays refused.
+  const badFirst = Object.defineProperties(
+    { kind: 'person', accountId: ID },
+    {
+      role: { get: counted('roleBad', ['system', 'sitter']), enumerable: true },
+    },
+  );
+  assert.throws(() => actorSettings(badFirst, undefined), refused('role'));
+  // A Proxy over a valid actor: every key is read at most once.
+  const gets: Record<string, number> = {};
+  const proxied = new Proxy(personActor(ID, 'sitter'), {
+    get(target, key, receiver) {
+      gets[String(key)] = (gets[String(key)] ?? 0) + 1;
+      return Reflect.get(target, key, receiver) as unknown;
+    },
+  });
+  assert.deepEqual(actorSettings(proxied, undefined), {
+    actorId: ID,
+    actorRole: 'sitter',
+    breakGlass: 'off',
+  });
+  assert.deepEqual(gets, { kind: 1, accountId: 1, role: 1 });
+});
+
+test('A8 (rework 1): break-glass needs breakGlass as the ONE OWN key; an inherited breakGlass: true, an extra symbol or non-enumerable key, are refused', () => {
+  const inherited = Object.assign(Object.create({ breakGlass: true }) as object, { purpose: 'x' });
+  assert.throws(
+    () => actorSettings(personActor(ID, 'parent'), inherited),
+    refused('break_glass_option'),
+  );
+  assert.throws(
+    () => actorSettings(personActor(ID, 'parent'), Object.create({ breakGlass: true })),
+    refused('break_glass_option'),
+  );
+  const symbolExtra = { breakGlass: true, [Symbol('purpose')]: 'x' };
+  assert.throws(
+    () => actorSettings(personActor(ID, 'parent'), symbolExtra),
+    refused('break_glass_option'),
+  );
+  const hiddenExtra = Object.defineProperty({ breakGlass: true }, 'purpose', {
+    value: 'x',
+    enumerable: false,
+  });
+  assert.throws(
+    () => actorSettings(personActor(ID, 'parent'), hiddenExtra),
+    refused('break_glass_option'),
+  );
+  // CONTROLS: an own breakGlass: true is 'on', also on an object whose prototype has other keys.
+  assert.equal(actorSettings(personActor(ID, 'parent'), { breakGlass: true }).breakGlass, 'on');
+  const ownOnTop = Object.assign(Object.create({ purpose: 'x' }) as object, { breakGlass: true });
+  assert.equal(actorSettings(personActor(ID, 'parent'), ownOnTop).breakGlass, 'on');
+  // An own getter is read once: it cannot pass the check and then answer differently.
+  let n = 0;
+  const flip = Object.defineProperty({}, 'breakGlass', {
+    get: () => (n += 1) === 1,
+    enumerable: true,
+  });
+  assert.equal(actorSettings(personActor(ID, 'parent'), flip).breakGlass, 'on');
+  assert.equal(n, 1);
 });
 
 test('the one statement withActor adds is transaction-local set_config with three bind parameters, never the session form', () => {

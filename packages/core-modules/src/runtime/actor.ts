@@ -20,8 +20,17 @@
  *
  * VALIDATED TWICE. The constructors (`personActor`, `systemActor`) refuse a bad input with
  * `ActorRefusedError`, and `actorSettings` re-checks the actor when a transaction starts, because
- * the brand is a type only: `as unknown as Actor` compiles (as for `Tx`). The refusal text is fixed
- * and never carries the refused value.
+ * the brand is a type only: `as unknown as Actor` compiles (as for `Tx`). The re-check reads each
+ * field EXACTLY ONCE into a local, validates that snapshot and returns that snapshot (rework 1, QA
+ * A7): a getter or Proxy cannot pass validation with one value and be bound with another.
+ * Break-glass needs `breakGlass` as the options' ONE OWN key (`Reflect.ownKeys`, `Object.hasOwn`), so
+ * an inherited `breakGlass: true` does not turn it on (rework 1, QA A8).
+ *
+ * The refusal carries only `reason` and a fixed text per reason: no refused value reaches its
+ * message, stack, `cause`, own properties, JSON or `util.inspect` (unit and integ CANARY cases).
+ *
+ * EV-40 TRIPWIRE (QA A-1): the unit case `EV-40 CAVEAT` asserts `ROLES` holds `dsl`. It goes red when
+ * `packages/policy` drops `dsl`, and that is intended: the successor edits that one test.
  */
 import type { AccountId } from '@kinvara/domain-types';
 import { isRole, knownId, type Role } from '@kinvara/policy';
@@ -125,16 +134,22 @@ export interface ActorSettings {
 export function actorSettings(actor: unknown, options: unknown): ActorSettings {
   if (typeof actor !== 'object' || actor === null) throw new ActorRefusedError('actor_missing');
   const a = actor as { kind?: unknown; accountId?: unknown; role?: unknown; job?: unknown };
+  // EXACTLY ONE READ PER FIELD (rework 1, QA A7): snapshot, validate the snapshot, bind the snapshot.
+  // Reading a field twice lets a getter answer validation with one value and the binding with another.
+  const kind = a.kind;
   let actorId: string;
   let actorRole: string;
-  if (a.kind === 'person') {
-    if (!knownId(a.accountId)) throw new ActorRefusedError('account_id');
-    if (!isRole(a.role)) throw new ActorRefusedError('role');
-    actorId = a.accountId;
-    actorRole = a.role;
-  } else if (a.kind === 'system') {
-    if (!isJobIdentity(a.job)) throw new ActorRefusedError('job_identity');
-    actorId = a.job;
+  if (kind === 'person') {
+    const accountId = a.accountId;
+    const role = a.role;
+    if (!knownId(accountId)) throw new ActorRefusedError('account_id');
+    if (!isRole(role)) throw new ActorRefusedError('role');
+    actorId = accountId;
+    actorRole = role;
+  } else if (kind === 'system') {
+    const job = a.job;
+    if (!isJobIdentity(job)) throw new ActorRefusedError('job_identity');
+    actorId = job;
     actorRole = SYSTEM_ACTOR_ROLE;
   } else {
     throw new ActorRefusedError('actor_kind');
@@ -142,16 +157,21 @@ export function actorSettings(actor: unknown, options: unknown): ActorSettings {
   return { actorId, actorRole, breakGlass: breakGlassValue(options) };
 }
 
-/** Exactly `undefined` → `'off'`; exactly an object whose one own key is `breakGlass: true` → `'on'`. */
+/**
+ * Exactly `undefined` → `'off'`. `'on'` only for an object whose ONE own key (`Reflect.ownKeys`:
+ * symbols and non-enumerable keys count) is `breakGlass` (`Object.hasOwn`: an inherited one does
+ * not count, rework 1, QA A8), read once, and is the literal `true`. Anything else is refused.
+ */
 function breakGlassValue(options: unknown): ActorSettings['breakGlass'] {
   if (options === undefined) return BREAK_GLASS_OFF;
   if (
     typeof options === 'object' &&
     options !== null &&
-    Object.keys(options).length === 1 &&
-    (options as { breakGlass?: unknown }).breakGlass === true
+    Reflect.ownKeys(options).length === 1 &&
+    Object.hasOwn(options, 'breakGlass')
   ) {
-    return BREAK_GLASS_ON;
+    const value: unknown = (options as { breakGlass?: unknown }).breakGlass;
+    if (value === true) return BREAK_GLASS_ON;
   }
   throw new ActorRefusedError('break_glass_option');
 }
