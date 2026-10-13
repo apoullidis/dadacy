@@ -2,13 +2,14 @@
  * `@kinvara/core-modules/credential` — the `credential` module's scheme half (T-060, re-scoped by
  * CUT-T-060 R-1): the `credential_scheme` read path (Q-1) with its 60 s in-process cache, the
  * closed `mandatory_rules` parse (R-3), the display-name lookup with an explicit missing locale
- * (R-6), and the reference validator. The `sitter_credential` repository is `T-255`'s, not here.
+ * (R-6), and the reference validator; and its second half (T-255): the `sitter_credential`
+ * repository (Q-2…Q-5) under T-254's actor scope (`repository.ts`).
  *
  * TWO-APPROVAL PATH (PROTOCOL §3, EV-30): everything under `src/credential/`. This file is the
  * subpath's whole public surface; import it by package name only (a relative path into `src/`
  * bypasses the `exports` map and nothing refuses it, T-245 RW1-C §1 row 2).
  *
- * The contract is state/EP-5/T-060.md § Published contract — LIVE.
+ * The contracts are state/EP-5/T-060.md and state/EP-5/T-255.md, § Published contract — LIVE.
  */
 export {
   CHECK_TYPES,
@@ -45,3 +46,28 @@ export {
   type ReferenceRefusalReason,
 } from './reference.ts';
 export { schemeDisplayName, type SchemeDisplayName } from './display.ts';
+export {
+  CREDENTIAL_ROW_UNREADABLE,
+  CREDENTIAL_STATUSES,
+  dueForAttestation,
+  dueForExpiry,
+  dueForRecertification,
+  ensureOnboardingCredentials,
+  HELD_RESUBMISSION_JOB,
+  listOwnCredentials,
+  REFERENCE_BOUNDS_CONSTRAINT,
+  ReferenceNumberOutOfBoundsError,
+  SITTER_CREDENTIAL_REFUSED,
+  SitterCredentialReadError,
+  SitterCredentialRefusedError,
+  sitterActor,
+  submitCertificate,
+  SWEEP_ACTOR_REFUSED,
+  SweepActorRefusedError,
+  type CertificateSubmission,
+  type CredentialStatus,
+  type OnboardingResult,
+  type SitterActor,
+  type SitterCredential,
+  type SubmissionOutcome,
+} from './repository.ts';
