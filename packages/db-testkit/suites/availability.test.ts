@@ -812,7 +812,7 @@ describe('0029 — availability_template: weekday (C9 (b)), end after start, and
     assertRead('template controls', r, 'sat 00:00:00-01:00:00');
   });
 
-  test("CONTROL — T-216's threshold 2 shape (OE-32 U-9 (a)): app_rw counts sitters whose live templates declare the whole Friday 19:00-01:00 peak (Friday 19:00-24:00 and Saturday 00:00-01:00)", async () => {
+  test("CONTROL — app_rw can count sitters from availability_template for a Friday 19:00-01:00 window stored as C7 (a)'s two rows (weekday 4 19:00-24:00, weekday 5 00:00-01:00); the predicate (effective_to IS NULL, one row per day) is a fixture, not T-216's threshold 2 rule", async () => {
     const r = await asAppRw(
       `SELECT 'peak sitters: ' || count(*) FROM public.sitter_profile s
         WHERE EXISTS (SELECT 1 FROM public.availability_template t WHERE t.sitter_id = s.id AND t.effective_to IS NULL
