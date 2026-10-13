@@ -30,9 +30,10 @@
 --             Written as the ruling words it; with both times NULL the comparison is NULL, and a
 --             CHECK that evaluates to NULL passes. EV proposed by T-163.
 --   U-5 (1a)  CONSTRAINT availability_exception_whole_day_remove_only: NULL times mean the whole
---             local day and are allowed only for REMOVE, so an ADD row carries both times. The ruling
---             states the rule; holding it here rather than in the materialiser alone is T-163's
---             choice (PROTOCOL §9 item 1), stated for review. Same EV as U-5 (2).
+--             local day and are allowed only for REMOVE, so an ADD row carries both times. It rests
+--             on the ruling, OE-30-34-rulings.md B.3 OE-32 U-5 (1a), accepted under OE-50, which
+--             states the rule but not its layer. SD 2251 writes no CHECK, so it departs from SD
+--             under EV-n (T-163), the same EV as U-5 (2), numbered by the orchestrator at merge.
 --   E.3 U-23  availability_template_sitter_id_idx on availability_template (sitter_id). EV proposed
 --             by T-163 (minor).
 -- SD's unnamed constraints and index keep PostgreSQL's generated names (measured, T-163):
