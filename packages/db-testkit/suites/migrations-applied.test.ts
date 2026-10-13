@@ -40,7 +40,7 @@ import {
 import { assertPermitted, assertRefused, INT10_RAISE } from '../src/expect.ts';
 
 const SUITE = 'migrations-applied';
-const HIGHEST_COMMITTED = '0027';
+const HIGHEST_COMMITTED = '0028';
 const COMMITTED_DIR = path.join(REPO_ROOT, MIGRATIONS_DIR);
 const RECORD_SQL = `SELECT coalesce(shobj_description(oid, 'pg_database'), '(no comment)')
                       FROM pg_database WHERE datname = current_database()`;
@@ -1089,13 +1089,47 @@ const CREATED_BY: Readonly<
       },
       {
         title:
-          'cluster is owned by app_ddl, its table ACL is app_rw SELECT + INSERT, app_rw holds UPDATE on 8 columns (not id), and row-level security is off (E.4 U-4, U-10; T-161 rework 1)',
+          'cluster is owned by app_ddl, its table ACL is app_rw SELECT + INSERT, 8 columns other than id carry a column ACL, and row-level security is off (E.4 U-4, U-10; T-161 rework 1); which column privilege, and that id carries none, is pinned by suites/cluster.test.ts',
         sql: `SELECT coalesce((SELECT pg_get_userbyid(relowner) || ' ' || relacl::text || ' ' ||
                                       (SELECT count(*) FROM pg_attribute WHERE attrelid = c.oid
                                          AND attacl IS NOT NULL AND attname <> 'id')::text || ' ' ||
                                       relrowsecurity::text || ' ' || relforcerowsecurity::text
                                  FROM pg_class c WHERE oid = to_regclass('public.cluster')), '(absent)')`,
         holds: 'app_ddl {app_ddl=arwdDxtm/app_ddl,app_rw=ar/app_ddl} 8 false false',
+      },
+    ],
+  },
+  '0028': {
+    source: 'T-211',
+    // Each probe names an object 0028 creates (the function cluster_state_transition(), the trigger
+    // trg_cluster_state_transition, the CHECK cluster_open_requires_passing_snapshot) and returns a
+    // value rather than raising once it is gone: to_regprocedure returns NULL for a missing function,
+    // and every read is coalesced. The transition matrix is asserted by suites/cluster-state.test.ts,
+    // not here (T-137 TV2-A1: a probe names an object).
+    probes: [
+      {
+        title:
+          'function public.cluster_state_transition() exists: owner app_ddl, SECURITY INVOKER, EXECUTE revoked from PUBLIC, search_path pinned',
+        sql: `SELECT coalesce((SELECT pg_get_userbyid(proowner) || ' ' || prosecdef::text || ' ' || proacl::text || ' ' ||
+                                      array_to_string(proconfig, ';')
+                                 FROM pg_proc WHERE oid = to_regprocedure('public.cluster_state_transition()')), '(absent)')`,
+        holds: 'app_ddl false {app_ddl=X/app_ddl} search_path=pg_catalog, pg_temp',
+      },
+      {
+        title:
+          'trigger trg_cluster_state_transition is BEFORE INSERT OR UPDATE FOR EACH ROW on public.cluster, enabled, executing cluster_state_transition()',
+        sql: `SELECT coalesce((SELECT tgtype::text || ' ' || tgenabled::text FROM pg_trigger
+                               WHERE tgrelid = to_regclass('public.cluster') AND tgname = 'trg_cluster_state_transition'
+                                 AND tgfoid = to_regprocedure('public.cluster_state_transition()')), '(absent)')`,
+        holds: '23 O',
+      },
+      {
+        title:
+          'CHECK cluster_open_requires_passing_snapshot exists on public.cluster, validated and not deferrable (C12 (b))',
+        sql: `SELECT coalesce((SELECT contype::text || ' ' || convalidated::text || ' ' || condeferrable::text
+                                 FROM pg_constraint WHERE conrelid = to_regclass('public.cluster')
+                                  AND conname = 'cluster_open_requires_passing_snapshot'), '(absent)')`,
+        holds: 'c true false',
       },
     ],
   },

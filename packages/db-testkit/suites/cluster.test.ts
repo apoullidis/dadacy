@@ -5,6 +5,11 @@
  * (OE-50: C14 (a) name_i18n, C15 (b) metro, U-9 boundary bounds, G-5 no seed), OE-52 (C12 is
  * T-211's) and OE-53 (the two ops-entered columns). These are T-160's cases V1–V8.
  *
+ * T-211 (migration 0028) adds a trigger, a CHECK and two comments to this table. The pins below
+ * that 0028 changes (constraint set, one-line trigger pin, comments) were changed in T-211's change
+ * set, and the cases that wrote state 'open' or a non-empty snapshot now do so as 0028 admits. The
+ * transition matrix itself is suites/cluster-state.test.ts.
+ *
  * The table's catalogue is pinned: its columns (type, nullability, default, identity), owner, ACL,
  * its whole constraint set by name and deparse (NOT NULL constraints included, contype 'n' on
  * PostgreSQL 18), its indexes, its identity sequence's owner and ACL, its comments, and in ONE
@@ -61,8 +66,13 @@ const NAMES = '{"el": "Συστάδα δοκιμής", "en": "Test cluster", "ru
 /** The texts 0027 installs, verbatim: a change to a comment must change this suite too. */
 const TABLE_COMMENT =
   'Discovery clusters (SD DB-10): operator-drawn WGS 84 polygons with an open, waitlist or closed ' +
-  'state. Retired by state closed; no application role holds DELETE. Which state changes are legal, and the density ' +
-  'snapshot shape, are held elsewhere (C12), not by this table.';
+  'state. Retired by state closed; no application role holds DELETE. Which state changes are legal is held by ' +
+  'trg_cluster_state_transition and cluster_open_requires_passing_snapshot (C12).';
+/** 0028's comment on density_snapshot (T-211). */
+const SNAPSHOT_COMMENT =
+  "Written by the density job: computedAt (equal to the writing transaction's now()) and thresholds bookableSitters, " +
+  'fridayPeakSitters, infantQualifiedSitters, simulatedSearchMedian, russianValidatedSitters and visitorReadySitters, ' +
+  'each with measured, required and a boolean pass. The empty object until first computed.';
 const NAME_I18N_COMMENT =
   'The display name in en, el and ru, each a string that is not empty after trimming spaces (U+0020). ' +
   'name is the operator label and is never shown to users.';
@@ -82,7 +92,21 @@ const DEPARSE = {
     "(jsonb_typeof((name_i18n -> 'ru'::text)) = 'string'::text) AND (btrim((name_i18n ->> 'ru'::text)) <> ''::text)))",
   cluster_russian_speaking_share_pct_range:
     'CHECK (((russian_speaking_share_pct >= 0) AND (russian_speaking_share_pct <= 100)))',
+  cluster_open_requires_passing_snapshot:
+    'CHECK (((state <> \'open\'::text) OR (density_snapshot @> \'{"thresholds": {"bookableSitters": {"pass": true}, ' +
+    '"fridayPeakSitters": {"pass": true}, "visitorReadySitters": {"pass": true}, "simulatedSearchMedian": {"pass": true}, ' +
+    '"infantQualifiedSitters": {"pass": true}, "russianValidatedSitters": {"pass": true}}}\'::jsonb)))',
 } as const;
+
+/**
+ * A density snapshot 0028 admits for waitlist → open in the writing transaction: computedAt is that
+ * transaction's now(), and all six thresholds pass (T-211 § Published contract).
+ */
+const FRESH_ALL_PASS =
+  "jsonb_build_object('computedAt', to_jsonb(now()), 'thresholds', '{" +
+  '"bookableSitters": {"pass": true}, "fridayPeakSitters": {"pass": true}, "infantQualifiedSitters": {"pass": true}, ' +
+  '"simulatedSearchMedian": {"pass": true}, "russianValidatedSitters": {"pass": true}, "visitorReadySitters": {"pass": true}' +
+  "}'::jsonb)";
 
 let db: Cluster;
 
@@ -195,7 +219,7 @@ describe('0027 — the table, its owner, columns, constraints, indexes, sequence
     );
   });
 
-  test('the constraint set is exactly these names and deparses: PK, cluster_state_check (SD 2964, named explicitly), cluster_name_i18n_three_locales (C14 (a)), cluster_russian_speaking_share_pct_range (OE-53), and the seven NOT NULLs; no FOREIGN KEY, no UNIQUE (E.4 U-12), no EXCLUDE (U-9 (2a)), no CHECK on metro (C15 (b)), boundary validity (U-9 (1b)) or density_snapshot (T-211); none deferrable', async () => {
+  test('the constraint set is exactly these names and deparses: PK, cluster_state_check (SD 2964, named explicitly), cluster_name_i18n_three_locales (C14 (a)), cluster_russian_speaking_share_pct_range (OE-53), and the seven NOT NULLs; no FOREIGN KEY, no UNIQUE (E.4 U-12), no EXCLUDE (U-9 (2a)), no CHECK on metro (C15 (b)) or boundary validity (U-9 (1b)); since 0028 (T-211), cluster_open_requires_passing_snapshot; none deferrable', async () => {
     assert.equal(
       await db.value(
         `SELECT string_agg(conname || ' ' || contype::text || ' ' || condeferrable::text || ' ' ||
@@ -210,6 +234,7 @@ describe('0027 — the table, its owner, columns, constraints, indexes, sequence
         'cluster_name_i18n_not_null n false NOT NULL name_i18n',
         `cluster_name_i18n_three_locales c false ${DEPARSE.cluster_name_i18n_three_locales}`,
         'cluster_name_not_null n false NOT NULL name',
+        `cluster_open_requires_passing_snapshot c false ${DEPARSE.cluster_open_requires_passing_snapshot}`,
         'cluster_pkey p false PRIMARY KEY (id)',
         `cluster_russian_speaking_share_pct_range c false ${DEPARSE.cluster_russian_speaking_share_pct_range}`,
         `cluster_state_check c false ${DEPARSE.cluster_state_check}`,
@@ -229,7 +254,7 @@ describe('0027 — the table, its owner, columns, constraints, indexes, sequence
     );
   });
 
-  test('ONE-LINE PIN: 0 non-internal triggers, 0 rewrite rules, rls=false, force=false, 0 policies (no RLS: cluster is not on SD 1309/3906, app_admin_rw holds nothing; OD-223, E.4 U-4). C12 adds a trigger in T-211, which changes this pin on purpose', async () => {
+  test('ONE-LINE PIN: 1 non-internal trigger (trg_cluster_state_transition, 0028, T-211), 0 rewrite rules, rls=false, force=false, 0 policies (no RLS: cluster is not on SD 1309/3906, app_admin_rw holds nothing; OD-223, E.4 U-4)', async () => {
     assert.equal(
       await db.value(
         `SELECT (SELECT count(*) FROM pg_trigger WHERE tgrelid = c.oid AND NOT tgisinternal) || ' triggers, ' ||
@@ -238,7 +263,7 @@ describe('0027 — the table, its owner, columns, constraints, indexes, sequence
                 (SELECT count(*) FROM pg_policy WHERE polrelid = c.oid) || ' policies'
            FROM pg_class c WHERE c.oid = '${TABLE}'::regclass`,
       ),
-      '0 triggers, 0 rules, rls=false, force=false, 0 policies',
+      '1 triggers, 0 rules, rls=false, force=false, 0 policies',
     );
   });
 
@@ -295,7 +320,7 @@ describe('0027 — the table, its owner, columns, constraints, indexes, sequence
     );
   });
 
-  test('COMMENT ON TABLE and the three column comments are exactly these texts, and no other column carries one', async () => {
+  test('COMMENT ON TABLE and the four column comments (density_snapshot since 0028) are exactly these texts, and no other column carries one', async () => {
     assert.equal(
       await db.value(`SELECT obj_description('${TABLE}'::regclass, 'pg_class')`),
       TABLE_COMMENT,
@@ -306,7 +331,7 @@ describe('0027 — the table, its owner, columns, constraints, indexes, sequence
            FROM pg_attribute WHERE attrelid = '${TABLE}'::regclass AND attnum > 0
             AND col_description(attrelid, attnum) IS NOT NULL`,
       ),
-      `name_i18n=${NAME_I18N_COMMENT}\nrussian_speaking_share_pct=${SHARE_COMMENT}\n` +
+      `density_snapshot=${SNAPSHOT_COMMENT}\nname_i18n=${NAME_I18N_COMMENT}\nrussian_speaking_share_pct=${SHARE_COMMENT}\n` +
         `has_hotel_or_holiday_let_inventory=${INVENTORY_COMMENT}`,
     );
   });
@@ -348,10 +373,17 @@ describe('V1 — a cluster state is exactly one of waitlist, open, closed (SD 29
     });
   }
 
-  test("CONTROL — each of 'waitlist', 'open' and 'closed' is accepted", async () => {
-    for (const value of ['waitlist', 'open', 'closed']) {
+  test("CONTROL — 'waitlist' and 'closed' are each accepted on INSERT, and 'open' by an UPDATE writing a fresh all-pass snapshot (an INSERT as open is 0028's refusal, T-211)", async () => {
+    for (const value of ['waitlist', 'closed']) {
       assertInsertedOne(`state '${value}'`, await asAppRw(insertRow({ state: `'${value}'` })));
     }
+    const r = await asAppRw(
+      insertRow(),
+      `UPDATE ${TABLE} SET state = 'open', density_snapshot = ${FRESH_ALL_PASS} WHERE name = 't161 control'`,
+      `SELECT 'now=' || state FROM ${TABLE} WHERE name = 't161 control'`,
+    );
+    assertPermitted("state 'open'", r);
+    assert.ok(r.output.includes('now=open'), `open not reached:\n${r.output}`);
   });
 
   test("an UPDATE to state 'Open' is REFUSED by cluster_state_check (23514), the row read first", async () => {
@@ -518,7 +550,8 @@ describe('V4 — only app_rw reads or writes the table: SELECT, INSERT, and UPDA
                  'waitlist', NULL, NULL)`,
       `UPDATE ${TABLE} SET name_i18n = '{"en": "Renamed", "el": "Μετονομάστηκε", "ru": "Переименован"}',
                            boundary = 'SRID=4326;POLYGON((33 34.6,33.2 34.6,33.2 34.8,33 34.8,33 34.6))',
-                           state = 'open', russian_speaking_share_pct = 9, has_hotel_or_holiday_let_inventory = false
+                           state = 'open', density_snapshot = ${FRESH_ALL_PASS},
+                           russian_speaking_share_pct = 9, has_hotel_or_holiday_let_inventory = false
          WHERE name = 't161 control'`,
       // Q1 (point-in-polygon, SD 3054): both rows cover INSIDE.
       `SELECT 'q1=' || string_agg(name || ':' || state, ',' ORDER BY id) FROM (
@@ -529,7 +562,7 @@ describe('V4 — only app_rw reads or writes the table: SELECT, INSERT, and UPDA
       `SELECT 'q2=' || string_agg(name, ',' ORDER BY id) FROM (SELECT c.id, c.name FROM ${TABLE} c WHERE c.state <> 'closed'
           AND ST_DWithin(ST_Centroid(c.boundary), 'SRID=4326;POINT(${INSIDE.lon} ${INSIDE.lat})'::geography, 5000) ORDER BY c.id) q`,
       // Q3 (the gating read before search).
-      `SELECT 'q3=' || string_agg(state || ':' || density_snapshot::text, ',' ORDER BY id) FROM (
+      `SELECT 'q3=' || string_agg(state || ':' || CASE WHEN density_snapshot = '{}' THEN '{}' ELSE 'snapshot' END, ',' ORDER BY id) FROM (
          SELECT id, state, density_snapshot FROM ${TABLE}
           WHERE id = ANY((SELECT array_agg(id) FROM ${TABLE})::int[]) AND state <> 'closed' ORDER BY id) q`,
       `SELECT 'upd=' || (name_i18n ->> 'ru') || '|' || ST_AsText(boundary) || '|' || russian_speaking_share_pct || '|' ||
@@ -544,7 +577,7 @@ describe('V4 — only app_rw reads or writes the table: SELECT, INSERT, and UPDA
     assert.ok(r.output.includes('UPDATE 1'), `UPDATE 1 expected:\n${r.output}`);
     assert.ok(r.output.includes('q1=t161 control:open,t161 geojson:waitlist'), `Q1:\n${r.output}`);
     assert.ok(r.output.includes('q2=t161 geojson\n'), `Q2:\n${r.output}`);
-    assert.ok(r.output.includes('q3=open:{},waitlist:{}'), `Q3:\n${r.output}`);
+    assert.ok(r.output.includes('q3=open:snapshot,waitlist:{}'), `Q3:\n${r.output}`);
     assert.ok(
       r.output.includes(
         'upd=Переименован|POLYGON((33 34.6,33.2 34.6,33.2 34.8,33 34.8,33 34.6))|9|false',
@@ -671,7 +704,7 @@ describe('V5 — the primary key is unique and GENERATED ALWAYS (E.4 U-1)', () =
   });
 });
 
-describe('V6 — a display name exists in en, el and ru, each a non-blank string (C14 (a); SD 3089), as app_rw', () => {
+describe('V6 — a display name exists in en, el and ru, each a string not empty after trimming U+0020 (C14 (a); SD 3089), as app_rw', () => {
   const REFUSED: ReadonlyArray<readonly [what: string, value: string]> = [
     [
       'the ru key missing (accepted if ?& is removed: see the plant below)',
@@ -788,26 +821,28 @@ describe('V8 — what this table does NOT hold (each ACCEPTED as app_rw, so nobo
     assertInsertedOne('metro Limassol', await asAppRw(insertRow({ metro: `'Limassol'` })));
   });
 
-  test("NOT HELD — an INSERT with state 'open' and an empty snapshot, or an all-fail one, is accepted: C12 is T-211's (OE-52)", async () => {
-    assertInsertedOne(
+  test("HELD SINCE 0028 (T-211) — an INSERT with state 'open' and an empty snapshot is REFUSED (KV073); the transition matrix is suites/cluster-state.test.ts", async () => {
+    assertRefusedBy(
       "open, '{}'",
       await asAppRw(insertRow({ state: `'open'`, density_snapshot: `'{}'` })),
-    );
-    assertInsertedOne(
-      'open, all-fail',
-      await asAppRw(
-        insertRow({
-          state: `'open'`,
-          density_snapshot: `'{"t1": {"pass": false}, "t2": {"pass": false}, "t3": {"pass": false}, "t4": {"pass": false}, "t5": {"pass": false}, "t6": {"pass": false}}'`,
-        }),
-      ),
+      'ERROR:  KV073: CLUSTER_STATE_TRANSITION_REFUSED: a cluster is inserted as waitlist or closed, never open (trg_cluster_state_transition)',
+      'COLUMN NAME:  state',
     );
   });
 
-  test("NOT HELD — a density_snapshot of any JSON shape (array, string, number, JSON null) is accepted: its shape is T-211's", async () => {
-    for (const value of [`'[]'`, `'"x"'`, `'5'`, `'null'`]) {
-      assertInsertedOne(`snapshot ${value}`, await asAppRw(insertRow({ density_snapshot: value })));
-    }
+  test('NOT HELD — a density_snapshot of any JSON shape (array, string, number, JSON null) UPDATEd onto a waitlist row is accepted (0028 constrains the snapshot on INSERT and on moves into and out of open only, T-211)', async () => {
+    const r = await asAppRw(
+      insertRow(),
+      ...[`'[]'`, `'"x"'`, `'5'`, `'null'`].map(
+        (value) => `UPDATE ${TABLE} SET density_snapshot = ${value} WHERE name = 't161 control'`,
+      ),
+    );
+    assertPermitted('snapshot shapes on waitlist', r);
+    assert.equal(
+      (r.output.match(/UPDATE 1/g) ?? []).length,
+      4,
+      `four UPDATE 1 expected:\n${r.output}`,
+    );
   });
 
   test('NOT HELD — two overlapping clusters are accepted (U-9 (2a): overlap is legal), and Q1 returns both', async () => {
