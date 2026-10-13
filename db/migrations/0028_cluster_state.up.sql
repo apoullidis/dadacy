@@ -15,7 +15,7 @@
 --          computedAt; U-7 (a) (OE-50): closed is retired, and an admin may reopen it to waitlist.
 --          decisions.md OE-52 (N-1): the database bound is accepted, with no sixth role and no
 --          separate density-job login; OE-53 (the two ops-entered columns, which this file does not
---          read). EV-40: nothing here names or grants to the dsl or deputy_dsl roles.
+--          read). EV-40: no role outside T-020's five is named or granted here.
 -- Contracts: T-161 § Published contract (rework 1) §3-§4 (0027: the table this trigger is on);
 --          T-020 § Published contract §3-§5 (roles, the SA §INT-10 guard); T-252 § contract §4 (any
 --          app_rw session can set an app.* GUC, so none is read here); T-021 (rework 2), T-031,
