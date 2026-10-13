@@ -2,5 +2,5 @@
   "$schema": "https://json.schemastore.org/tsconfig",
   "//": "SD §DH-2 strict baseline. The repo-wide typecheck runs from the root tsconfig.json, which globs packages/**/*.ts, so src/ and tools/ are both in `pnpm -w typecheck`. There is no emit: consumers run this package as TypeScript source under Node's type stripping, through the workspace link (T-245).",
   "extends": "../../tsconfig.base.json",
-  "include": ["src/**/*", "tools/**/*"]
+  "include": ["src/**/*", "test/**/*", "tools/**/*"]
 }

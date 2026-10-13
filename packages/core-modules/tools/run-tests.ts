@@ -71,7 +71,7 @@ const PKG = join(dirname(fileURLToPath(import.meta.url)), '..');
 // which is not a declared test file"), this package's `test` exits 1, and gate:unit-tests is red
 // with "@kinvara/core-modules: `test` exited 1" — measured, T-245 QA-17 and rework 1 RW1-A4. In
 // those runs gate:unit-tests did NOT print FILE-SET-DRIFT.
-const TEST_DIRS = ['src/availability', 'src/identity', 'src/jobs', 'src/runtime'];
+const TEST_DIRS = ['src/availability', 'src/credential', 'src/identity', 'src/jobs', 'src/runtime'];
 const COUNTS = [
   'numTotalTests',
   'numPassedTests',
@@ -179,7 +179,16 @@ try {
   const reportPath = join(tmp, 'report.json');
   const run = spawnSync(
     join(PKG, 'node_modules', '.bin', 'vitest'),
-    ['run', '--reporter=verbose', '--reporter=json', `--outputFile.json=${reportPath}`],
+    [
+      'run',
+      // T-060: `test/` holds `test:integration`'s files (tools/run-integration-tests.ts), which
+      // need the `db` profile; this runner never runs them.
+      '--exclude',
+      'test/**',
+      '--reporter=verbose',
+      '--reporter=json',
+      `--outputFile.json=${reportPath}`,
+    ],
     {
       cwd: PKG,
       encoding: 'utf8',
