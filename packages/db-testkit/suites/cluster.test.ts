@@ -830,7 +830,7 @@ describe('V8 — what this table does NOT hold (each ACCEPTED as app_rw, so nobo
     );
   });
 
-  test('NOT HELD — a density_snapshot of any JSON shape (array, string, number, JSON null) UPDATEd onto a waitlist row is accepted (0028 constrains the snapshot on INSERT and on moves into and out of open only, T-211)', async () => {
+  test('NOT HELD — a density_snapshot of any JSON shape (array, string, number, JSON null) UPDATEd onto a waitlist row is accepted (0028 constrains the snapshot on INSERT, on moves into and out of open, and on a new snapshot on an open row, T-211)', async () => {
     const r = await asAppRw(
       insertRow(),
       ...[`'[]'`, `'"x"'`, `'5'`, `'null'`].map(

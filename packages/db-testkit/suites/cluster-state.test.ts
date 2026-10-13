@@ -363,6 +363,50 @@ describe('waitlist → open — only with a new, well-formed, fresh, all-pass sn
     assertRefusedBy('client clock', r, R_STALE, COL_SNAPSHOT);
   });
 
+  // Fresh means EQUAL to now(), not "not older than now()": a computedAt AFTER now() (the direction
+  // a fast job clock produces) is refused too. QA mutation QM1 (`<>` to `<`) turns these red.
+  test('waitlist → open with a computedAt after now() (now() plus one second) is REFUSED (KV073)', async () => {
+    const r = await asAppRw(
+      ...rowIn('waitlist'),
+      update(
+        `state = 'open', density_snapshot = ${snapshot({ computedAt: `to_jsonb(now() + interval '1 second')` })}`,
+      ),
+    );
+    assertReached('ahead 1s', r, 'waitlist');
+    assertRefusedBy('ahead 1s', r, R_STALE, COL_SNAPSHOT);
+  });
+
+  /** now() plus `ahead`, rendered as text with an explicit +02:00 offset at the given precision. */
+  const plus2Text = (ahead: string, precision: 'MS' | 'US'): string =>
+    `to_jsonb(to_char((now() + interval '${ahead}') AT TIME ZONE 'UTC' + interval '2 hours', 'YYYY-MM-DD"T"HH24:MI:SS.${precision}') || '+02:00')`;
+
+  test('waitlist → open with a computedAt from a client clock an hour AHEAD (millisecond precision, text with a +02:00 offset) is REFUSED (KV073)', async () => {
+    const r = await asAppRw(
+      ...rowIn('waitlist'),
+      `SELECT 'ahead=' || (${plus2Text('1 hour', 'MS')} #>> '{}')`,
+      update(
+        `state = 'open', density_snapshot = ${snapshot({ computedAt: plus2Text('1 hour', 'MS') })}`,
+      ),
+    );
+    assert.ok(/ahead=\S+\.\d{3}\+02:00/.test(r.output), `rendering not shown:\n${r.output}`);
+    assertReached('ahead 1h', r, 'waitlist');
+    assertRefusedBy('ahead 1h', r, R_STALE, COL_SNAPSHOT);
+  });
+
+  test('CONTROL — now() itself, rendered as text with a +02:00 offset by the same expression at microsecond precision, is accepted: the offset text form is not why the hour-ahead case is refused', async () => {
+    const r = await asAppRw(
+      ...rowIn('waitlist'),
+      `SELECT 'now=' || (${plus2Text('0 seconds', 'US')} #>> '{}')`,
+      update(
+        `state = 'open', density_snapshot = ${snapshot({ computedAt: plus2Text('0 seconds', 'US') })}`,
+      ),
+      READ_STATE,
+    );
+    assert.ok(/now=\S+\.\d{6}\+02:00/.test(r.output), `rendering not shown:\n${r.output}`);
+    assertReached('offset text control', r, 'waitlist');
+    assertNowIn('offset text control', r, 'open');
+  });
+
   for (const failing of KEYS) {
     test(`waitlist → open with five of six passing (${failing} fails; RK-8) is REFUSED by the trigger (KV073), before the CHECK`, async () => {
       const r = await asAppRw(
