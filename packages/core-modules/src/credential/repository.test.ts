@@ -70,7 +70,10 @@ test('sitterActor is personActor(id, sitter): a malformed id is refused account_
   assert.equal(a.role, 'sitter');
   assert.equal(a.accountId, ID);
   for (const bad of ['', null, undefined, 0, ID.toLowerCase(), `${ID} `]) {
-    assert.throws(() => sitterActor(bad), (e: unknown) => e instanceof ActorRefusedError && e.reason === 'account_id');
+    assert.throws(
+      () => sitterActor(bad),
+      (e: unknown) => e instanceof ActorRefusedError && e.reason === 'account_id',
+    );
   }
 });
 
@@ -84,7 +87,15 @@ test('a non-sitter, system or forged actor is refused before any transaction, by
     null,
     undefined,
   ];
-  const reasons = ['role', 'role', 'actor_kind', 'role', 'account_id', 'actor_missing', 'actor_missing'];
+  const reasons = [
+    'role',
+    'role',
+    'actor_kind',
+    'role',
+    'account_id',
+    'actor_missing',
+    'actor_missing',
+  ];
   for (const [i, actor] of forged.entries()) {
     const { db, calls } = countingDb();
     const as = actor as SitterActor;
@@ -94,7 +105,10 @@ test('a non-sitter, system or forged actor is refused before any transaction, by
       () => ensureOnboardingCredentials(db, as, 'CY'),
       () => submitCertificate(db, as, sub, noLog),
     ]) {
-      await assert.rejects(call(), (e: unknown) => e instanceof ActorRefusedError && e.reason === reasons[i]);
+      await assert.rejects(
+        call(),
+        (e: unknown) => e instanceof ActorRefusedError && e.reason === reasons[i],
+      );
     }
     assert.equal(calls.length, 0, `actor ${String(i)} reached withActor`);
   }
@@ -102,7 +116,11 @@ test('a non-sitter, system or forged actor is refused before any transaction, by
 
 test('the actor is read once per field and re-built: a getter cannot answer sitter to the check and bind another value', async () => {
   const reads: Record<string, number> = { kind: 0, accountId: 0, role: 0 };
-  const values: Record<string, string[]> = { kind: ['person', 'system'], accountId: [ID, ID], role: ['sitter', 'parent'] };
+  const values: Record<string, string[]> = {
+    kind: ['person', 'system'],
+    accountId: [ID, ID],
+    role: ['sitter', 'parent'],
+  };
   const actor = {};
   for (const k of Object.keys(reads)) {
     Object.defineProperty(actor, k, {
@@ -116,12 +134,20 @@ test('the actor is read once per field and re-built: a getter cannot answer sitt
   assert.equal(calls.length, 1);
   const bound = calls[0]?.actor as { kind: string; role: string; accountId: string };
   assert.notEqual(bound, actor, 'the bound actor is a fresh personActor, not the caller object');
-  assert.deepEqual({ kind: bound.kind, role: bound.role, accountId: bound.accountId }, { kind: 'person', role: 'sitter', accountId: ID });
+  assert.deepEqual(
+    { kind: bound.kind, role: bound.role, accountId: bound.accountId },
+    { kind: 'person', role: 'sitter', accountId: ID },
+  );
 });
 
 test('submitCertificate refuses a malformed credentialId or issuedOn before any transaction, naming the field', async () => {
   const { db, calls } = countingDb();
-  const base = { credentialId: CRED, jurisdiction: 'CY', referenceNumber: CANARY, issuedOn: '2026-03-04' };
+  const base = {
+    credentialId: CRED,
+    jurisdiction: 'CY',
+    referenceNumber: CANARY,
+    issuedOn: '2026-03-04',
+  };
   for (const [override, field] of [
     [{ credentialId: CRED.toLowerCase() }, 'credentialId'],
     [{ credentialId: '' }, 'credentialId'],
@@ -144,8 +170,19 @@ test('submitCertificate refuses a malformed credentialId or issuedOn before any 
 });
 
 test('isIsoDate accepts real calendar dates written YYYY-MM-DD only', () => {
-  for (const ok of ['2026-01-01', '2024-02-29', '1999-12-31']) assert.equal(isIsoDate(ok), true, ok);
-  for (const bad of ['2026-02-29', '2026-13-01', '2026-00-10', '2026-1-01', '20260101', '2026-01-01T00:00Z', '', null, 20260101]) {
+  for (const ok of ['2026-01-01', '2024-02-29', '1999-12-31'])
+    assert.equal(isIsoDate(ok), true, ok);
+  for (const bad of [
+    '2026-02-29',
+    '2026-13-01',
+    '2026-00-10',
+    '2026-1-01',
+    '20260101',
+    '2026-01-01T00:00Z',
+    '',
+    null,
+    20260101,
+  ]) {
     assert.equal(isIsoDate(bad), false, String(bad));
   }
 });
@@ -158,7 +195,11 @@ function drizzleRefusal(code: string, constraint: string | undefined): DrizzleQu
     constraint,
     detail: `Failing row contains (${CANARY}).`,
   });
-  return new DrizzleQueryError('UPDATE public.sitter_credential SET reference_number = $1', [CANARY], pgError);
+  return new DrizzleQueryError(
+    'UPDATE public.sitter_credential SET reference_number = $1',
+    [CANARY],
+    pgError,
+  );
 }
 
 test('mapRefusal: the reference bound becomes ReferenceNumberOutOfBoundsError (400, field referenceNumber), with no cause and no parameter or detail', () => {
@@ -183,7 +224,10 @@ test('mapRefusal: every other database refusal becomes SitterCredentialRefusedEr
     ['23505', 'sitter_credential_pkey'],
     ['23503', 'sitter_credential_sitter_id_fkey'],
   ] as const) {
-    for (const thrown of [drizzleRefusal(code, constraint), drizzleRefusal(code, constraint).cause]) {
+    for (const thrown of [
+      drizzleRefusal(code, constraint),
+      drizzleRefusal(code, constraint).cause,
+    ]) {
       assert.throws(
         () => mapRefusal(thrown),
         (e: unknown) => {
@@ -203,15 +247,27 @@ test('mapRefusal: every other database refusal becomes SitterCredentialRefusedEr
 test('mapRefusal: a drizzle error without a pg cause is replaced by its cause; any other error passes through unchanged', () => {
   const cause = new Error('connect ECONNREFUSED');
   const wrapped = new DrizzleQueryError('SELECT $1', [CANARY], cause);
-  assert.throws(() => mapRefusal(wrapped), (e: unknown) => e === cause);
+  assert.throws(
+    () => mapRefusal(wrapped),
+    (e: unknown) => e === cause,
+  );
   const mine = new NotFoundError();
-  assert.throws(() => mapRefusal(mine), (e: unknown) => e === mine);
+  assert.throws(
+    () => mapRefusal(mine),
+    (e: unknown) => e === mine,
+  );
   const notPg = Object.assign(new Error('x'), { code: 'ENOTFOUND' });
-  assert.throws(() => mapRefusal(notPg), (e: unknown) => e === notPg);
+  assert.throws(
+    () => mapRefusal(notPg),
+    (e: unknown) => e === notPg,
+  );
 });
 
 /** A bound system runner whose transaction reports `who` as the actor; counts statements. */
-function fakeSystem(who: Record<string, unknown> | undefined): { sys: SystemActorDatabase; statements: number[] } {
+function fakeSystem(who: Record<string, unknown> | undefined): {
+  sys: SystemActorDatabase;
+  statements: number[];
+} {
   const statements: number[] = [];
   const tx = {
     execute: () => {
@@ -251,11 +307,20 @@ test('a sweep whose transaction does not read back a system actor is refused, an
 test('a sweep refuses a malformed asOf before any transaction', async () => {
   const { sys, statements } = fakeSystem({ actor_role: 'system', actor_id: 'x' });
   for (const bad of ['2026-02-30', '2026-01-20T00:00:00Z', '']) {
-    await assert.rejects(dueForRecertification(sys, bad), (e: unknown) => (e as { field?: string }).field === 'asOf');
-    await assert.rejects(dueForExpiry(sys, bad), (e: unknown) => (e as { field?: string }).field === 'asOf');
+    await assert.rejects(
+      dueForRecertification(sys, bad),
+      (e: unknown) => (e as { field?: string }).field === 'asOf',
+    );
+    await assert.rejects(
+      dueForExpiry(sys, bad),
+      (e: unknown) => (e as { field?: string }).field === 'asOf',
+    );
   }
   for (const bad of [new Date('nope'), '2026-01-20' as unknown as Date]) {
-    await assert.rejects(dueForAttestation(sys, bad), (e: unknown) => (e as { field?: string }).field === 'asOf');
+    await assert.rejects(
+      dueForAttestation(sys, bad),
+      (e: unknown) => (e as { field?: string }).field === 'asOf',
+    );
   }
   assert.equal(statements.length, 0);
 });

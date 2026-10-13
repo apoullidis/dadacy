@@ -18,7 +18,9 @@ import { sql, type SQL } from 'drizzle-orm';
 
 /** UTC ISO-8601 with microseconds, e.g. `2026-10-13T21:02:26.123456Z`. */
 function instant(column: string): SQL {
-  return sql.raw(`to_char(${column} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS ${column}`);
+  return sql.raw(
+    `to_char(${column} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS ${column}`,
+  );
 }
 
 /** The twenty columns of `sitter_credential` (T-252 §1), in SD's order. */

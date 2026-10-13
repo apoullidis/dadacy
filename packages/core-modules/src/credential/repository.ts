@@ -181,7 +181,8 @@ export class ReferenceNumberOutOfBoundsError extends InvalidInputError {
 }
 
 /** Fixed text: names the failing columns only. */
-export const CREDENTIAL_ROW_UNREADABLE = 'credential: a sitter_credential row is outside the read schema';
+export const CREDENTIAL_ROW_UNREADABLE =
+  'credential: a sitter_credential row is outside the read schema';
 
 /** A row outside the closed read schema. `fields` names the columns, never a value. */
 export class SitterCredentialReadError extends Error {
@@ -219,7 +220,10 @@ export function isIsoDate(value: unknown): value is string {
   return t.getUTCFullYear() === y && t.getUTCMonth() === mo - 1 && t.getUTCDate() === d;
 }
 
-function snapshotSitter(actor: unknown): { readonly actor: PersonActor; readonly sitterId: string } {
+function snapshotSitter(actor: unknown): {
+  readonly actor: PersonActor;
+  readonly sitterId: string;
+} {
   if (typeof actor !== 'object' || actor === null) throw new ActorRefusedError('actor_missing');
   const a = actor as { kind?: unknown; accountId?: unknown; role?: unknown };
   // One read per field (T-254 A7's lesson): validate the snapshot, bind the snapshot.
@@ -266,7 +270,9 @@ export function mapRefusal(thrown: unknown): never {
     throw new SitterCredentialRefusedError(pgError.code, pgError.constraint);
   }
   if (isDrizzle) {
-    throw thrown.cause instanceof Error ? thrown.cause : new SitterCredentialRefusedError('XX000', undefined);
+    throw thrown.cause instanceof Error
+      ? thrown.cause
+      : new SitterCredentialRefusedError('XX000', undefined);
   }
   throw thrown;
 }
@@ -472,7 +478,11 @@ export async function submitCertificate(
 
 // ── Q-5 ────────────────────────────────────────────────────────────────────────────────────────
 
-async function sweep(sys: SystemActorDatabase, kind: SweepKind, asOf: string): Promise<readonly string[]> {
+async function sweep(
+  sys: SystemActorDatabase,
+  kind: SweepKind,
+  asOf: string,
+): Promise<readonly string[]> {
   return sys.withActor(async (tx) => {
     const [who] = await run<{ actor_role: string | null; actor_id: string | null }>(tx, READ_ACTOR);
     if (who?.actor_role !== 'system' || who.actor_id === null) throw new SweepActorRefusedError();
@@ -502,7 +512,10 @@ export async function dueForAttestation(
 }
 
 /** Q-5: ids of `valid` rows with `expires_on <= asOf` (`YYYY-MM-DD`), ascending. */
-export async function dueForExpiry(sys: SystemActorDatabase, asOf: string): Promise<readonly string[]> {
+export async function dueForExpiry(
+  sys: SystemActorDatabase,
+  asOf: string,
+): Promise<readonly string[]> {
   if (!isIsoDate(asOf)) throw new InvalidInputError({ field: 'asOf' });
   return sweep(sys, 'expiry', asOf);
 }

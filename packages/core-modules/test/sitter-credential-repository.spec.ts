@@ -47,7 +47,11 @@ import {
   type SystemActorDatabase,
   type Tx,
 } from '@kinvara/core-modules/runtime';
-import { NotFoundError, StateTransitionInvalidError, InvalidInputError } from '@kinvara/domain-types';
+import {
+  NotFoundError,
+  StateTransitionInvalidError,
+  InvalidInputError,
+} from '@kinvara/domain-types';
 import { newSitterCredentialId } from '../src/credential/ids.ts';
 import {
   q2SelectById,
@@ -89,10 +93,10 @@ const logLine = (l: string): void => {
 /** A fresh sitter: account + sitter_profile, by the superuser. */
 async function newSitter(): Promise<string> {
   const id = newSitterCredentialId();
-  await su.query(`INSERT INTO public.account (id, pseudonym, tos_version) VALUES ($1, $2, 't255')`, [
-    id,
-    newSitterCredentialId(),
-  ]);
+  await su.query(
+    `INSERT INTO public.account (id, pseudonym, tos_version) VALUES ($1, $2, 't255')`,
+    [id, newSitterCredentialId()],
+  );
   await su.query(`INSERT INTO public.sitter_profile (id) VALUES ($1)`, [id]);
   return id;
 }
@@ -304,7 +308,12 @@ test("Q-2 as a sitter returns exactly their own rows, all twenty columns equal t
   await submitCertificate(
     db,
     a.actor,
-    { credentialId: await rowId(a.id, white), jurisdiction: 'CY', referenceNumber: 'ΑΒΓ-123', issuedOn: issued },
+    {
+      credentialId: await rowId(a.id, white),
+      jurisdiction: 'CY',
+      referenceNumber: 'ΑΒΓ-123',
+      issuedOn: issued,
+    },
     logLine,
   );
   const mine = await listOwnCredentials(db, a.actor);
@@ -315,13 +324,42 @@ test("Q-2 as a sitter returns exactly their own rows, all twenty columns equal t
     const r = raw[i] ?? {};
     assert.equal(c.sitterId, a.id);
     assert.deepEqual(
-      [c.id, c.sitterId, c.schemeId, c.status, c.referenceNumber, c.issuedOn, c.expiresOn, c.expiryProvenance,
-        c.nextRecertificationDueAt, c.attestationTemplateVersion, c.attestationLocale, c.decision,
-        c.decidedBy, c.decisionReasonCode, c.provider, c.providerRef],
-      [r['id'], r['sitter_id'], r['scheme_id'], r['status'], r['reference_number'], r['issued_on'],
-        r['expires_on'], r['expiry_provenance'], r['next_recertification_due_at'],
-        r['attestation_template_version'], r['attestation_locale'], r['decision'], r['decided_by'],
-        r['decision_reason_code'], r['provider'], r['provider_ref']],
+      [
+        c.id,
+        c.sitterId,
+        c.schemeId,
+        c.status,
+        c.referenceNumber,
+        c.issuedOn,
+        c.expiresOn,
+        c.expiryProvenance,
+        c.nextRecertificationDueAt,
+        c.attestationTemplateVersion,
+        c.attestationLocale,
+        c.decision,
+        c.decidedBy,
+        c.decisionReasonCode,
+        c.provider,
+        c.providerRef,
+      ],
+      [
+        r['id'],
+        r['sitter_id'],
+        r['scheme_id'],
+        r['status'],
+        r['reference_number'],
+        r['issued_on'],
+        r['expires_on'],
+        r['expiry_provenance'],
+        r['next_recertification_due_at'],
+        r['attestation_template_version'],
+        r['attestation_locale'],
+        r['decision'],
+        r['decided_by'],
+        r['decision_reason_code'],
+        r['provider'],
+        r['provider_ref'],
+      ],
     );
     // Instants: the same moment (the superuser's text is in the session zone).
     for (const [mineAt, rawAt] of [
@@ -354,7 +392,10 @@ test("a sitter reading another sitter's rows gets 0 rows from the database (Q-2 
   const own = await asSitter(b.actor, q2SelectBySitter(b.id));
   assert.ok('rows' in own);
   assert.equal(own.rows.length, 2);
-  assert.equal((await listOwnCredentials(db, a.actor)).every((c) => c.sitterId === a.id), true);
+  assert.equal(
+    (await listOwnCredentials(db, a.actor)).every((c) => c.sitterId === a.id),
+    true,
+  );
 });
 
 // ── Q-4 ────────────────────────────────────────────────────────────────────────────────────────
@@ -366,20 +407,37 @@ test("a sitter updating another sitter's row gets 0 rows from the database, and 
   const before = await rawRow(bRow);
   const r = await asSitter(
     a.actor,
-    q4Update({ id: bRow, fromStatus: 'not_started', toStatus: 'submitted', referenceNumber: CANARY, issuedOn: null }),
+    q4Update({
+      id: bRow,
+      fromStatus: 'not_started',
+      toStatus: 'submitted',
+      referenceNumber: CANARY,
+      issuedOn: null,
+    }),
   );
   assert.ok('rows' in r, `the update errored: ${'error' in r ? String(r.error) : ''}`);
   assert.equal(r.rows.length, 0);
   assert.deepEqual(await rawRow(bRow), before);
   await assert.rejects(
-    submitCertificate(db, a.actor, { credentialId: bRow, jurisdiction: 'CY', referenceNumber: CANARY, issuedOn: null }, logLine),
+    submitCertificate(
+      db,
+      a.actor,
+      { credentialId: bRow, jurisdiction: 'CY', referenceNumber: CANARY, issuedOn: null },
+      logLine,
+    ),
     NotFoundError,
   );
   assert.deepEqual(await rawRow(bRow), before);
   // CONTROL: the same statement as B on B's row updates 1.
   const own = await asSitter(
     b.actor,
-    q4Update({ id: bRow, fromStatus: 'not_started', toStatus: 'submitted', referenceNumber: '0', issuedOn: null }),
+    q4Update({
+      id: bRow,
+      fromStatus: 'not_started',
+      toStatus: 'submitted',
+      referenceNumber: '0',
+      issuedOn: null,
+    }),
   );
   assert.ok('rows' in own);
   assert.equal(own.rows.length, 1);
@@ -391,12 +449,21 @@ test("a sitter's write to valid is refused by the database (42501), mapped by SQ
   const before = await rawRow(row);
   const r = await asSitter(
     a.actor,
-    q4Update({ id: row, fromStatus: 'not_started', toStatus: 'valid', referenceNumber: CANARY, issuedOn: null }),
+    q4Update({
+      id: row,
+      fromStatus: 'not_started',
+      toStatus: 'valid',
+      referenceNumber: CANARY,
+      issuedOn: null,
+    }),
   );
   assert.ok('error' in r, 'the database accepted a sitter write to valid');
   const pgError = (r.error as { cause?: { code?: string; message?: string } }).cause;
   assert.equal(pgError?.code, '42501');
-  assert.match(String(pgError?.message), /new row violates row-level security policy for table "sitter_credential"/);
+  assert.match(
+    String(pgError?.message),
+    /new row violates row-level security policy for table "sitter_credential"/,
+  );
   assert.throws(
     () => mapRefusal(r.error),
     (e: unknown) => {
@@ -408,7 +475,10 @@ test("a sitter's write to valid is refused by the database (42501), mapped by SQ
       return true;
     },
   );
-  assert.ok(exposed(r.error).includes(CANARY), "CONTROL: drizzle's own error does carry the parameter");
+  assert.ok(
+    exposed(r.error).includes(CANARY),
+    "CONTROL: drizzle's own error does carry the parameter",
+  );
   assert.deepEqual(await rawRow(row), before);
 });
 
@@ -445,7 +515,12 @@ test('Q-4 refuses every status but not_started and review_hold with StateTransit
     const before = await rawRow(row);
     assert.equal(before?.['status'], status);
     await assert.rejects(
-      submitCertificate(db, a.actor, { credentialId: row, jurisdiction: 'CY', referenceNumber: CANARY, issuedOn: '2026-01-01' }, logLine),
+      submitCertificate(
+        db,
+        a.actor,
+        { credentialId: row, jurisdiction: 'CY', referenceNumber: CANARY, issuedOn: '2026-01-01' },
+        logLine,
+      ),
       StateTransitionInvalidError,
       status,
     );
@@ -464,7 +539,13 @@ test("Q-4 on the sitter's review_hold row writes the reference and issue date as
   );
   const direct = await asSitter(
     a.actor,
-    q4Update({ id: row, fromStatus: 'review_hold', toStatus: 'submitted', referenceNumber: 'X', issuedOn: null }),
+    q4Update({
+      id: row,
+      fromStatus: 'review_hold',
+      toStatus: 'submitted',
+      referenceNumber: 'X',
+      issuedOn: null,
+    }),
   );
   assert.ok('rows' in direct);
   assert.equal(direct.rows.length, 0, 'OD-326: the sitter policy does not update a held row');
@@ -484,7 +565,12 @@ test("Q-4 on the sitter's review_hold row writes the reference and issue date as
   // Another sitter cannot reach A's held row through the system write: NotFoundError, unchanged.
   const b = await onboardedSitter();
   await assert.rejects(
-    submitCertificate(db, b.actor, { credentialId: row, jurisdiction: 'CY', referenceNumber: CANARY, issuedOn: null }, logLine),
+    submitCertificate(
+      db,
+      b.actor,
+      { credentialId: row, jurisdiction: 'CY', referenceNumber: CANARY, issuedOn: null },
+      logLine,
+    ),
     NotFoundError,
   );
   assert.deepEqual(await rawRow(row), r);
@@ -498,7 +584,12 @@ test('a reference over the database bound is refused 23514 sitter_credential_ref
     log.length = 0;
     const { out, result } = await capturingStdio(async () => {
       try {
-        await submitCertificate(db, a.actor, { credentialId: row, jurisdiction: 'CY', referenceNumber: ref, issuedOn: null }, logLine);
+        await submitCertificate(
+          db,
+          a.actor,
+          { credentialId: row, jurisdiction: 'CY', referenceNumber: ref, issuedOn: null },
+          logLine,
+        );
         return undefined;
       } catch (e) {
         return e;
@@ -525,7 +616,12 @@ test('the scheme is read inside the write transaction (not a cache): a non-NULL 
   const row = await rowId(id, xt);
   log.length = 0;
   await assert.rejects(
-    submitCertificate(db, actor, { credentialId: row, jurisdiction: 'XT', referenceNumber: CANARY, issuedOn: null }, logLine),
+    submitCertificate(
+      db,
+      actor,
+      { credentialId: row, jurisdiction: 'XT', referenceNumber: CANARY, issuedOn: null },
+      logLine,
+    ),
     (e: unknown) => {
       assert.ok(e instanceof ReferenceNumberRefusedError);
       assert.equal(e.reason, 'format_mismatch');
@@ -534,22 +630,39 @@ test('the scheme is read inside the write transaction (not a cache): a non-NULL 
       return true;
     },
   );
-  assert.deepEqual(log, [`credential: reference refused scheme_id=${String(xt)} reason=format_mismatch`]);
+  assert.deepEqual(log, [
+    `credential: reference refused scheme_id=${String(xt)} reason=format_mismatch`,
+  ]);
   assert.equal((await rawRow(row))?.['status'], 'not_started');
   // The row's scheme is not a CY scheme: the jurisdiction is refused, nothing written.
   await assert.rejects(
-    submitCertificate(db, actor, { credentialId: row, jurisdiction: 'CY', referenceNumber: '123456789012', issuedOn: null }, logLine),
+    submitCertificate(
+      db,
+      actor,
+      { credentialId: row, jurisdiction: 'CY', referenceNumber: '123456789012', issuedOn: null },
+      logLine,
+    ),
     (e: unknown) => e instanceof InvalidInputError && e.field === 'jurisdiction',
   );
   // The pattern changes (committed); the very next call applies it.
   await setXtRegex('^[A-Z]{3}$');
   await assert.rejects(
-    submitCertificate(db, actor, { credentialId: row, jurisdiction: 'XT', referenceNumber: '123456789012', issuedOn: null }, logLine),
+    submitCertificate(
+      db,
+      actor,
+      { credentialId: row, jurisdiction: 'XT', referenceNumber: '123456789012', issuedOn: null },
+      logLine,
+    ),
     ReferenceNumberRefusedError,
   );
   await setXtRegex('[[:digit:]]{8}');
   await assert.rejects(
-    submitCertificate(db, actor, { credentialId: row, jurisdiction: 'XT', referenceNumber: '12345678', issuedOn: null }, logLine),
+    submitCertificate(
+      db,
+      actor,
+      { credentialId: row, jurisdiction: 'XT', referenceNumber: '12345678', issuedOn: null },
+      logLine,
+    ),
     ReferencePatternUnusableError,
   );
   await setXtRegex('^[0-9]{12}$');
@@ -567,7 +680,11 @@ test('the scheme is read inside the write transaction (not a cache): a non-NULL 
 
 /** Superuser count of due rows across the whole table: the sweep must return this many. */
 async function allDue(kind: SweepKind): Promise<string[]> {
-  const column = { recertification: 'next_recertification_due_at', attestation: 'next_attestation_due_at', expiry: 'expires_on' }[kind];
+  const column = {
+    recertification: 'next_recertification_due_at',
+    attestation: 'next_attestation_due_at',
+    expiry: 'expires_on',
+  }[kind];
   const asOf = kind === 'attestation' ? AS_OF_INSTANT.toISOString() : AS_OF;
   return (
     await su.query<{ id: string }>(
@@ -577,14 +694,20 @@ async function allDue(kind: SweepKind): Promise<string[]> {
   ).rows.map((r) => r.id);
 }
 
-test("Q-5 as system sees every due row: each sweep returns every valid row due at asOf across all sitters, and none that is not valid or not due", async () => {
+test('Q-5 as system sees every due row: each sweep returns every valid row due at asOf across all sitters, and none that is not valid or not due', async () => {
   const d = await onboardedSitter();
   const e = await onboardedSitter();
   const dW = await rowId(d.id, white);
   const dA = await rowId(d.id, art22);
   const eW = await rowId(e.id, white);
   const eA = await rowId(e.id, art22);
-  const set = async (id: string, status: string, recert: string | null, attest: string | null, expires: string | null) =>
+  const set = async (
+    id: string,
+    status: string,
+    recert: string | null,
+    attest: string | null,
+    expires: string | null,
+  ) =>
     su.query(
       `UPDATE public.sitter_credential SET status = $2, next_recertification_due_at = $3,
               next_attestation_due_at = $4, expires_on = $5 WHERE id = $1`,
@@ -606,11 +729,20 @@ test("Q-5 as system sees every due row: each sweep returns every valid row due a
     expiry: await dueForExpiry(sweeper, AS_OF),
   };
   for (const kind of ['recertification', 'attestation', 'expiry'] as const) {
-    assert.deepEqual(got[kind].filter((id) => fixture.has(id)), expected[kind], kind);
+    assert.deepEqual(
+      got[kind].filter((id) => fixture.has(id)),
+      expected[kind],
+      kind,
+    );
     const total = await allDue(kind);
     assert.deepEqual([...got[kind]], total, `${kind}: the sweep does not see every due row`);
-    assert.ok(total.length > expected[kind].length, `${kind}: the volume fixture contributes due rows of other sitters`);
-    console.log(`MEASURED Q-5 ${kind} asOf=${kind === 'attestation' ? AS_OF_INSTANT.toISOString() : AS_OF}: sweep=${String(got[kind].length)} superuser=${String(total.length)} fixture=${String(expected[kind].length)}`);
+    assert.ok(
+      total.length > expected[kind].length,
+      `${kind}: the volume fixture contributes due rows of other sitters`,
+    );
+    console.log(
+      `MEASURED Q-5 ${kind} asOf=${kind === 'attestation' ? AS_OF_INSTANT.toISOString() : AS_OF}: sweep=${String(got[kind].length)} superuser=${String(total.length)} fixture=${String(expected[kind].length)}`,
+    );
   }
   // Boundary: a row due exactly at asOf is due (<=).
   await set(dA, 'valid', AS_OF, AS_OF_INSTANT.toISOString(), AS_OF);
@@ -635,7 +767,9 @@ test('a Q-5 sweep whose transaction is not a system actor is refused SweepActorR
     await assert.rejects(dueForExpiry(forged, AS_OF), SweepActorRefusedError);
   }
   // CONTROL: the same Q-5 statement under no actor really does read 0 rows (what the check prevents).
-  const silent = await db.withAppRw(async (tx) => (await tx.execute(q5Due('recertification', AS_OF))).rows);
+  const silent = await db.withAppRw(
+    async (tx) => (await tx.execute(q5Due('recertification', AS_OF))).rows,
+  );
   assert.equal(silent.length, 0);
   assert.ok((await allDue('recertification')).length > 0);
 });
@@ -658,6 +792,9 @@ test('each Q-5 sweep is served by its partial index: EXPLAIN of the repository s
     const scan = plan.find((l) => l.includes(INDEX[kind]));
     assert.ok(scan !== undefined, `${kind}: the plan does not use ${INDEX[kind]}`);
     assert.match(scan, /Index (Only )?Scan using|Bitmap Index Scan on/);
-    assert.ok(!plan.some((l) => /Seq Scan on sitter_credential/.test(l)), `${kind}: a sequential scan`);
+    assert.ok(
+      !plan.some((l) => /Seq Scan on sitter_credential/.test(l)),
+      `${kind}: a sequential scan`,
+    );
   }
 });
