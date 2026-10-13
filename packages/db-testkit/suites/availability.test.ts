@@ -14,8 +14,8 @@
  *
  * What the database does NOT refuse is pinned too, each in a case named NOT HELD: touching slots, a
  * voided template row (effective_to before effective_from), tz, reason and cluster_ids content,
- * app_rw-chosen created_at/generated_at/version, an ON CONFLICT DO NOTHING that silently skips an
- * overlapping slot, and every write by the owner app_ddl or the superuser beyond the constraints.
+ * app_rw-chosen created_at/generated_at/version, an ON CONFLICT DO NOTHING (no target, or naming the
+ * exclusion constraint) that silently skips an overlapping slot, and every write by the owner app_ddl or the superuser beyond the constraints.
  * The catalogue reads (columns, defaults, constraints, indexes and their operator classes, table and
  * column ACLs, the comments, and the counts of triggers, rewrite rules, policies and both
  * row-level-security flags on each table) turn red if a grant, a constraint, an index, a trigger, a
@@ -25,7 +25,9 @@
  * Every refusal asserts psql's exit status AND its `ERROR:  <SQLSTATE>: <message>` line AND, where
  * PostgreSQL gives one, the `CONSTRAINT NAME:` field, and exactly one ERROR line, so a crash, a
  * syntax error or a refusal for another reason cannot read as this one. Each rule has a CONTROL.
- * Every UPDATE or DELETE refusal first reads its target row in the same psql session and asserts it.
+ * Every UPDATE or DELETE refusal first reads its target row in the same psql session and asserts it,
+ * except app_admin_rw's: it holds no SELECT, so its DELETE and UPDATE read no column (no WHERE) and a
+ * CONTROL shows each succeeding with only the named privilege added.
  *
  * Privilege refusals run over REAL LOGIN principals, each a member of exactly one role (T-020
  * Evidence §4). Constraint refusals run as the single-membership app_rw login unless a case says
@@ -522,6 +524,34 @@ describe('0029 — V1: no two slots of one sitter overlap (SD 2261, the EXCLUDE)
     assertPermitted('targetless ON CONFLICT DO NOTHING', r);
     assertRead('targetless ON CONFLICT DO NOTHING', r, PRESENT('availability_slot', SLOT_A1));
     assertRead('targetless ON CONFLICT DO NOTHING', r, 'INSERT 0 0');
+  });
+
+  test('NOT HELD — app_rw INSERT … ON CONFLICT ON CONSTRAINT availability_slot_sitter_id_span_excl DO NOTHING (the exclusion constraint named) of an overlapping slot: NO error, the row is silently skipped (INSERT 0 0)', async () => {
+    const r = await asAppRw(
+      readRow('availability_slot', SLOT_A1),
+      `${slot(ulid('OCN2'), SIT_A, span('2026-10-16T21:00:00Z', '2026-10-16T23:00:00Z'))} ON CONFLICT ON CONSTRAINT ${EXCL} DO NOTHING`,
+      readRow('availability_slot', ulid('OCN2')),
+    );
+    assertPermitted('named-constraint ON CONFLICT DO NOTHING', r);
+    assertRead('named-constraint ON CONFLICT DO NOTHING', r, PRESENT('availability_slot', SLOT_A1));
+    assertRead('named-constraint ON CONFLICT DO NOTHING', r, 'INSERT 0 0');
+    assertRead(
+      'named-constraint ON CONFLICT DO NOTHING',
+      r,
+      `availability_slot ${ulid('OCN2')} count=0`,
+    );
+  });
+
+  test('CONTROL — app_rw INSERT … ON CONFLICT (id) DO NOTHING of an overlapping slot is REFUSED 23P01 naming the exclusion constraint (an id target does not arbitrate it)', async () => {
+    assertRefusedBy(
+      'ON CONFLICT (id) DO NOTHING',
+      await asAppRw(
+        readRow('availability_slot', SLOT_A1),
+        `${slot(ulid('OCN3'), SIT_A, span('2026-10-16T21:00:00Z', '2026-10-16T23:00:00Z'))} ON CONFLICT (id) DO NOTHING`,
+      ),
+      EXCL_23P01,
+      EXCL_FIELD,
+    );
   });
 });
 
@@ -1083,23 +1113,54 @@ describe('0029 — no other role reads or writes them (U-21 (a)), over real sing
     });
   }
 
-  test('app_admin_rw DELETE of a slot and UPDATE of a template are REFUSED (42501)', async () => {
+  // app_admin_rw holds no SELECT, so a WHERE that reads a column would be refused for the missing
+  // SELECT whatever DELETE or UPDATE it held (T-163 QA Q-1). These statements read no column: a bare
+  // DELETE needs DELETE on the table alone, and a bare UPDATE setting a constant needs UPDATE on that
+  // column alone. The CONTROL below shows each succeeding with only that privilege added.
+  test('app_admin_rw DELETE FROM availability_slot with no WHERE (needs DELETE alone) is REFUSED (42501)', async () => {
     assertRefusedBy(
-      'admin DELETE slot',
-      await asLogin(
-        LOGINS.app_admin_rw,
-        `DELETE FROM public.availability_slot WHERE id = ${q(SLOT_A1)}`,
-      ),
+      'admin bare DELETE slot',
+      await asLogin(LOGINS.app_admin_rw, `DELETE FROM public.availability_slot`),
       denied('availability_slot'),
     );
+  });
+
+  test('app_admin_rw UPDATE availability_template SET effective_to = <constant> with no WHERE (needs UPDATE on effective_to alone) is REFUSED (42501)', async () => {
     assertRefusedBy(
-      'admin UPDATE template',
+      'admin bare UPDATE template',
       await asLogin(
         LOGINS.app_admin_rw,
-        `UPDATE public.availability_template SET effective_to = '2026-10-01' WHERE id = ${q(TPL_A1)}`,
+        `UPDATE public.availability_template SET effective_to = '2026-10-01'`,
       ),
       denied('availability_template'),
     );
+  });
+
+  test('CONTROL — with ONLY DELETE on availability_slot, or ONLY UPDATE (effective_to) on availability_template, granted to app_admin_rw (rolled back, no SELECT), the same bare statements SUCCEED as its login', async () => {
+    const del = await asSuperuser(
+      'GRANT DELETE ON public.availability_slot TO app_admin_rw',
+      `SET LOCAL ROLE ${LOGINS.app_admin_rw}`,
+      `SELECT 'admin slot SELECT=' || has_table_privilege('public.availability_slot', 'SELECT') ||
+              ' DELETE=' || has_table_privilege('public.availability_slot', 'DELETE')`,
+      `DELETE FROM public.availability_slot`,
+    );
+    assertPermitted('admin bare DELETE with DELETE granted', del);
+    assertRead('admin bare DELETE with DELETE granted', del, 'admin slot SELECT=false DELETE=true');
+    assertRead('admin bare DELETE with DELETE granted', del, 'DELETE 3');
+    const upd = await asSuperuser(
+      'GRANT UPDATE (effective_to) ON public.availability_template TO app_admin_rw',
+      `SET LOCAL ROLE ${LOGINS.app_admin_rw}`,
+      `SELECT 'admin template SELECT=' || has_any_column_privilege('public.availability_template', 'SELECT') ||
+              ' UPDATE(effective_to)=' || has_column_privilege('public.availability_template', 'effective_to', 'UPDATE')`,
+      `UPDATE public.availability_template SET effective_to = '2026-10-01'`,
+    );
+    assertPermitted('admin bare UPDATE with UPDATE (effective_to) granted', upd);
+    assertRead(
+      'admin bare UPDATE with UPDATE (effective_to) granted',
+      upd,
+      'admin template SELECT=false UPDATE(effective_to)=true',
+    );
+    assertRead('admin bare UPDATE with UPDATE (effective_to) granted', upd, 'UPDATE 2');
   });
 
   test('no role but app_ddl (the owner) and app_rw holds any privilege on any of the three tables or their columns, PUBLIC included', async () => {
