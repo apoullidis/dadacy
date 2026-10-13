@@ -5,6 +5,7 @@
   "type": "module",
   "description": "EV-30 / OD-292a: the code of SA §SA-2's modules that SD §BE-1 loads in more than one deployable, in src/<module>/, plus the shared NestJS runtime in src/runtime/ (Database/Tx/withAppRw, DatabaseModule, errorClass, the decorator helpers) — T-245; the transactional enqueue in src/jobs/ — T-149. Declared by apps/core and apps/worker. Never declares @nestjs/platform-*: that would put an HTTP adapter into the worker image.",
   "exports": {
+    "./availability": "./src/availability/index.ts",
     "./identity": "./src/identity/index.ts",
     "./jobs": "./src/jobs/index.ts",
     "./runtime": "./src/runtime/index.ts"
