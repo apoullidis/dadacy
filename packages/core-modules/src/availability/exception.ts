@@ -21,6 +21,8 @@
  *
  * `availableNow` (SD 1104, U-5 (3a)) turns `{ hours: 1..8 }` at `now` into the ADD rows: one, or
  * two when the window passes local midnight (`start–24:00` on day D and `00:00–end` on D+1).
+ * Inside a repeated (fall-back) wall hour it is NOT exactly `[now, now + hours)`: see
+ * `availableNowBodies` for the bound (rework 1, QA Q-1).
  */
 import { sql } from 'drizzle-orm';
 import * as z from 'zod';
@@ -107,8 +109,26 @@ export const AvailableNowInput = z.strictObject({ hours: z.number().int().min(1)
 
 /**
  * The ADD exception bodies for "available now" (SD 1104): from `now` (to the minute, rounded
- * DOWN) for `hours`, in `zone`. The end is the instant `now + hours`, read back as a wall time, so
- * a DST change inside the window is honoured. Past local midnight it is two rows (U-5 (3a)).
+ * DOWN) for `hours`, in `zone`. Start and end are the instants `now` and `now + hours`, each read
+ * back as a wall time. Past local midnight it is two rows (U-5 (3a)).
+ *
+ * THE BOUND (rework 1, QA Q-1). The rows are local-time rows (U-5 (3a)), and the materialiser
+ * resolves an ambiguous wall time to its FIRST instant (E.3 U-16 (a)), so no row can start or end
+ * inside the SECOND occurrence of a repeated (fall-back) wall time. The slot is therefore exactly
+ * `[now, now + hours)` — across a spring-forward gap too — EXCEPT:
+ *   (i)   `now` in the second occurrence: the start resolves to the first, so the slot starts one
+ *         repeat-length BEFORE `now` (wider; the extra part is already past at write time);
+ *   (ii)  the end in the second occurrence and `now` before the repeated time: the end resolves
+ *         to the first, so the slot ends one repeat-length EARLY (narrower);
+ *   (iii) `now` in the first occurrence and the end in the second: both rows' wall times resolve
+ *         into the first; where the end's wall time is not after the start's, `ExceptionInput`
+ *         refuses the body (`InvalidInputError` field `endLocal`, a 400 at a route) and nothing is
+ *         written.
+ * Europe/Nicosia, 25 Oct 2026 (03:00–03:59 is EEST 00:00Z–00:59Z, then EET 01:00Z–01:59Z):
+ * (i) `now` 01:00Z–01:59Z, any `hours`; (ii) `now` before 00:00Z with the end in 01:00Z–01:59Z
+ * (`hours` ≥ 2); (iii) `hours` 1 from 00:00Z–00:59Z (equal wall times). Changing this needs a
+ * row shape or a U-16 (a) reading other than the ruled ones. Held by the `available-now bound`
+ * cases in `exception.test.ts` (host `date`/`zdump` literals).
  */
 export function availableNowBodies(now: Date, hours: number, zone: IanaZone): ExceptionBody[] {
   const parsed = AvailableNowInput.safeParse({ hours });
