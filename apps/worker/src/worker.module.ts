@@ -5,10 +5,11 @@
  * its module to `imports` (src/selftest.handler.ts states the pattern).
  */
 import { Module } from '@nestjs/common';
+import { AvailabilityModule } from './availability.handler.ts';
 import { WorkerRuntimeModule } from './runtime.module.ts';
 import { SelftestModule } from './selftest.handler.ts';
 
 export class WorkerModule {}
 Module({
-  imports: [WorkerRuntimeModule, SelftestModule],
+  imports: [WorkerRuntimeModule, SelftestModule, AvailabilityModule],
 })(WorkerModule);
