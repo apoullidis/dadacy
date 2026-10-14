@@ -15,18 +15,20 @@
  *     the transaction's actor: a sweep whose transaction is not a `system` actor's is refused, never
  *     answered with the 0 rows RLS would give it (a sweep that silently sees nothing is a missed
  *     expiry).
- *   - A HELD sitter's fresh certificate (row in `review_hold`, which the sitter policy will not let
- *     the sitter update, OD-326) is written as the `system` actor `credential.held_resubmission`,
- *     after the repository has read the row as the sitter and found it theirs and held (T-252 §6).
- *     That write does not touch `status`: the row stays `review_hold`, which it leaves only to
- *     `valid` by SD 1436's four-eyes decision or to `failed` (SD 1433), neither of which is here.
+ *   - There is NO write as any other actor on a sitter's behalf. A HELD row (`review_hold`) is
+ *     changed by staff only (stakeholder ruling OE-88, 2026-10-14; it withdrew the held-row
+ *     re-submission T-252 §6 had prescribed): the sitter's submission against it is refused like
+ *     every other status but `not_started`. The row leaves `review_hold` only to `valid` by SD
+ *     1436's four-eyes decision or to `failed` (SD 1433), neither of which is here.
  *   - Nothing here hands its `Tx` to other code: the only callees given a `Tx` are
  *     `readCredentialSchemes` (T-060) and this file's own statements, none of which sets a GUC,
  *     sends `RESET ROLE` or `COMMIT` (T-254 §5, A4–A6).
  *
  * TRANSITIONS ARE THE REPOSITORY'S (T-252 §4 row 1). The only sitter edge offered is SD 1432's
  * `not_started → submitted`. Every other current status is refused `StateTransitionInvalidError`
- * (409) before any write, `valid` included (no sitter-caused edge out of `valid`, SD 1436, SA I-8).
+ * (409) before any write: `valid` (no sitter-caused edge out of `valid`, SD 1436, SA I-8),
+ * `review_hold` (staff only, OE-88), and `submitted`, `expired` and `withdrawn`, whose sitter edges
+ * OE-88 grants are successor `T-267`'s and are refused here until it lands.
  * The write itself is compare-and-set (`WHERE id = $ AND status = 'not_started'`), so a row that
  * changed between the read and the write is refused too, never a silent no-op.
  *
@@ -55,7 +57,6 @@ import { z } from 'zod';
 import {
   ActorRefusedError,
   personActor,
-  systemActor,
   type Database,
   type LogLine,
   type PersonActor,
@@ -67,7 +68,6 @@ import {
   q2SelectById,
   q2SelectBySitter,
   q3InsertNotStarted,
-  q4HeldResubmission,
   q4Update,
   q5Due,
   READ_ACTOR,
@@ -102,9 +102,6 @@ export type SitterActor = PersonActor & { readonly role: 'sitter' };
 export function sitterActor(accountId: unknown): SitterActor {
   return personActor(accountId, 'sitter') as SitterActor;
 }
-
-/** The job identity a held sitter's fresh certificate is written under (T-252 §6). */
-export const HELD_RESUBMISSION_JOB = 'credential.held_resubmission';
 
 /** One `sitter_credential` row, all twenty columns, camel-cased. Dates `YYYY-MM-DD`; instants UTC ISO. */
 export interface SitterCredential {
@@ -141,11 +138,11 @@ export interface CertificateSubmission {
   readonly issuedOn: string | null;
 }
 
-export type SubmissionOutcome =
-  /** `not_started → submitted`, written as the sitter. */
-  | { readonly status: 'submitted'; readonly credentialId: string }
-  /** The row is held: reference and issue date written as `system`; status unchanged. */
-  | { readonly status: 'review_hold'; readonly credentialId: string };
+/** `not_started → submitted`, written as the sitter: the only outcome (OE-88; T-267 adds edges). */
+export interface SubmissionOutcome {
+  readonly status: 'submitted';
+  readonly credentialId: string;
+}
 
 // ── Errors ─────────────────────────────────────────────────────────────────────────────────────
 
@@ -415,8 +412,9 @@ function schemeOf(schemes: readonly CredentialScheme[], schemeId: number): Crede
 /**
  * Q-4, the sitter's submission of a certificate's reference and issue date.
  *   - `not_started`: validated and written as the sitter, `→ submitted`, compare-and-set.
- *   - `review_hold`: validated and written as the `system` actor, status unchanged (T-252 §6).
- *   - any other status, `valid` included: `StateTransitionInvalidError`, nothing written.
+ *   - any other status, `valid` and `review_hold` included: `StateTransitionInvalidError`, nothing
+ *     written (a held row is staff-only, OE-88; the `expired` / `withdrawn` / `submitted` edges OE-88
+ *     grants are `T-267`'s).
  *   - a row the sitter cannot see (another sitter's, or none): `NotFoundError`, nothing written.
  * Refused before any SQL: a malformed `credentialId` (field `credentialId`) or `issuedOn` (field
  * `issuedOn`), a non-sitter or forged actor (`ActorRefusedError`), a malformed jurisdiction
@@ -436,10 +434,9 @@ export async function submitCertificate(
   if (!isUlid(credentialId)) throw new InvalidInputError({ field: 'credentialId' });
   if (issuedOn !== null && !isIsoDate(issuedOn)) throw new InvalidInputError({ field: 'issuedOn' });
 
-  const asSitter = await db.withActor(s.actor, async (tx) => {
+  return db.withActor(s.actor, async (tx) => {
     const [row] = (await run<unknown>(tx, q2SelectById(credentialId))).map(parseRow);
     if (row === undefined) throw new NotFoundError();
-    if (row.status === 'review_hold') return { held: true as const, schemeId: row.schemeId };
     if (row.status !== 'not_started') throw new StateTransitionInvalidError();
     const scheme = schemeOf(await readCredentialSchemes(tx, jurisdiction), row.schemeId);
     const outcome = validateReference(scheme, referenceNumber, log);
@@ -454,26 +451,8 @@ export async function submitCertificate(
       }),
     );
     if (written.length !== 1) throw new StateTransitionInvalidError();
-    return { held: false as const };
+    return Object.freeze({ status: 'submitted' as const, credentialId });
   });
-  if (!asSitter.held) return Object.freeze({ status: 'submitted', credentialId });
-
-  await db.withActor(systemActor(HELD_RESUBMISSION_JOB), async (tx) => {
-    const scheme = schemeOf(await readCredentialSchemes(tx, jurisdiction), asSitter.schemeId);
-    const outcome = validateReference(scheme, referenceNumber, log);
-    const written = await run<{ id: string }>(
-      tx,
-      q4HeldResubmission({
-        id: credentialId,
-        sitterId: s.sitterId,
-        schemeId: scheme.id,
-        referenceNumber: outcome.referenceNumber,
-        issuedOn,
-      }),
-    );
-    if (written.length !== 1) throw new StateTransitionInvalidError();
-  });
-  return Object.freeze({ status: 'review_hold', credentialId });
 }
 
 // ── Q-5 ────────────────────────────────────────────────────────────────────────────────────────

@@ -81,27 +81,6 @@ export function q4Update(u: Q4Update): SQL {
               RETURNING id`;
 }
 
-export interface HeldResubmission {
-  readonly id: string;
-  readonly sitterId: string;
-  readonly schemeId: number;
-  readonly referenceNumber: string;
-  readonly issuedOn: string | null;
-}
-
-/**
- * Q-4 for a held sitter's fresh certificate, sent as the `system` actor (T-252 §6, OD-326): the
- * status is not written, so the row stays `review_hold`. The `system` policy sees every row, so the
- * owner, the scheme and the held status are all in the predicate.
- */
-export function q4HeldResubmission(h: HeldResubmission): SQL {
-  return sql`UPDATE public.sitter_credential
-                SET reference_number = ${h.referenceNumber}, issued_on = ${h.issuedOn}::date
-              WHERE id = ${h.id} AND sitter_id = ${h.sitterId} AND scheme_id = ${h.schemeId}
-                AND status = 'review_hold'
-              RETURNING id`;
-}
-
 /** The three Q-5 sweeps, each served by its partial index (`0026`, T-252 §1). */
 export type SweepKind = 'recertification' | 'attestation' | 'expiry';
 

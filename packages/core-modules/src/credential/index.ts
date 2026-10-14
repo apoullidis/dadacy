@@ -53,7 +53,6 @@ export {
   dueForExpiry,
   dueForRecertification,
   ensureOnboardingCredentials,
-  HELD_RESUBMISSION_JOB,
   listOwnCredentials,
   REFERENCE_BOUNDS_CONSTRAINT,
   ReferenceNumberOutOfBoundsError,

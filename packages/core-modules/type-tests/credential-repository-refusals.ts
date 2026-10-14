@@ -46,7 +46,7 @@ void listOwnCredentials(db, undefined);
 // @ts-expect-error TS2345 role Role is not assignable to 'sitter'
 void listOwnCredentials(db, personActor(ID, 'parent'));
 // @ts-expect-error TS2345 a SystemActor is not a SitterActor
-void submitCertificate(db, systemActor('credential.held_resubmission'), sub, log);
+void submitCertificate(db, systemActor('credential.expiry_sweep'), sub, log);
 // @ts-expect-error TS2345 the literal lacks the Actor brand
 void listOwnCredentials(db, { kind: 'person', accountId: ID as AccountId, role: 'sitter' });
 

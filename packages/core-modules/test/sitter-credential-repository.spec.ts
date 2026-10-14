@@ -507,7 +507,7 @@ test('Q-4 moves not_started to submitted, writing the validator referenceNumber 
   }
 });
 
-test('Q-4 refuses every status but not_started and review_hold with StateTransitionInvalidError, valid included, and writes nothing', async () => {
+test('Q-4 refuses submitted, in_review, valid, expired, failed and withdrawn with StateTransitionInvalidError (the edges OE-88 grants are T-267s), and writes nothing', async () => {
   const a = await onboardedSitter();
   const row = await rowId(a.id, white);
   for (const status of ['submitted', 'in_review', 'valid', 'expired', 'failed', 'withdrawn']) {
@@ -528,15 +528,47 @@ test('Q-4 refuses every status but not_started and review_hold with StateTransit
   }
 });
 
-test("Q-4 on the sitter's review_hold row writes the reference and issue date as the system actor; the row stays review_hold (the sitter's own update of it is 0 rows)", async () => {
+test('OE-88: a sitter submitting against their own review_hold row is refused StateTransitionInvalidError (409) and the row, all twenty columns, is byte-identical; there is no write as system on their behalf', async () => {
   const a = await onboardedSitter();
   const row = await rowId(a.id, art22);
+  // Every column the database lets carry a value populated (sixteen; `decision`,
+  // `decision_reason_code`, `provider`, `provider_ref` are NULL-only by S-1's CHECKs), so a write
+  // to any of them shows.
   await su.query(
     `UPDATE public.sitter_credential SET status = 'review_hold', reference_number = 'OLD-1',
-            issued_on = '2025-01-01', expires_on = '2026-01-01', expiry_provenance = 'from_document'
+            issued_on = '2025-01-01', expires_on = '2026-01-01', expiry_provenance = 'from_document',
+            next_recertification_due_at = '2026-06-01', last_attestation_at = '2025-10-01T00:00Z',
+            next_attestation_due_at = '2026-01-01T00:00Z', attestation_template_version = 'v1',
+            attestation_locale = 'el', decided_by = $2, decided_at = '2025-11-01T00:00Z'
       WHERE id = $1`,
-    [row],
+    [row, newSitterCredentialId()],
   );
+  const before = await rawRow(row);
+  assert.equal(before?.['status'], 'review_hold');
+  assert.equal(
+    Object.values(before ?? {}).filter((v) => v === null).length,
+    4,
+    'only the four NULL-only columns are NULL',
+  );
+  for (const issuedOn of ['2026-02-02', null]) {
+    await assert.rejects(
+      submitCertificate(
+        db,
+        a.actor,
+        { credentialId: row, jurisdiction: 'CY', referenceNumber: CANARY, issuedOn },
+        logLine,
+      ),
+      (e: unknown) => {
+        assert.ok(e instanceof StateTransitionInvalidError, String(e));
+        assert.equal(e.status, 409);
+        assert.ok(!exposed(e).includes(CANARY));
+        return true;
+      },
+    );
+    assert.deepEqual(await rawRow(row), before, `issuedOn=${String(issuedOn)}`);
+  }
+  assert.ok(!log.join('\n').includes(CANARY), 'the refused reference reached the log');
+  // CONTROL (OD-326): the database too refuses the sitter's own update of a held row (0 rows).
   const direct = await asSitter(
     a.actor,
     q4Update({
@@ -549,31 +581,141 @@ test("Q-4 on the sitter's review_hold row writes the reference and issue date as
   );
   assert.ok('rows' in direct);
   assert.equal(direct.rows.length, 0, 'OD-326: the sitter policy does not update a held row');
-  const out = await submitCertificate(
-    db,
-    a.actor,
-    { credentialId: row, jurisdiction: 'CY', referenceNumber: 'NEW-2', issuedOn: '2026-02-02' },
-    logLine,
-  );
-  assert.deepEqual(out, { status: 'review_hold', credentialId: row });
-  const r = await rawRow(row);
-  assert.equal(r?.['status'], 'review_hold');
-  assert.equal(r?.['reference_number'], 'NEW-2');
-  assert.equal(r?.['issued_on'], '2026-02-02');
-  assert.equal(r?.['expires_on'], '2026-01-01', 'a held write touched expires_on');
-  assert.equal(r?.['expiry_provenance'], 'from_document');
-  // Another sitter cannot reach A's held row through the system write: NotFoundError, unchanged.
-  const b = await onboardedSitter();
-  await assert.rejects(
-    submitCertificate(
+  assert.deepEqual(await rawRow(row), before);
+});
+
+test('Q-4 compare-and-set: a not_started row moved to submitted by another transaction between the sitter read and the sitter write lands 0 rows, StateTransitionInvalidError, and nothing is written', async () => {
+  const a = await onboardedSitter();
+  const row = await rowId(a.id, white);
+  const locker = await su.connect();
+  let committed: Record<string, unknown> | undefined;
+  try {
+    await locker.query('BEGIN');
+    await locker.query(
+      `UPDATE public.sitter_credential SET status = 'submitted', reference_number = 'FIRST',
+              issued_on = '2025-05-05' WHERE id = $1`,
+      [row],
+    );
+    // The sitter's read sees the committed `not_started` (not blocked); its UPDATE then waits on
+    // the row lock the uncommitted write holds: the read and the write are interleaved for certain.
+    const pending = submitCertificate(
       db,
-      b.actor,
-      { credentialId: row, jurisdiction: 'CY', referenceNumber: CANARY, issuedOn: null },
+      a.actor,
+      { credentialId: row, jurisdiction: 'CY', referenceNumber: 'SECOND', issuedOn: '2026-03-03' },
       logLine,
+    ).then(
+      (v) => ({ ok: v as unknown }),
+      (e: unknown) => ({ err: e }),
+    );
+    let waiting = 0;
+    for (let i = 0; i < 200 && waiting === 0; i++) {
+      await new Promise((r) => setTimeout(r, 25));
+      waiting =
+        (
+          await su.query<{ n: number }>(
+            `SELECT count(*)::int AS n FROM pg_stat_activity
+            WHERE wait_event_type = 'Lock' AND application_name = 'kinvara-t255-test'
+              AND query LIKE 'UPDATE public.sitter_credential%'`,
+          )
+        ).rows[0]?.n ?? 0;
+    }
+    console.log(`MEASURED Q-4 compare-and-set blocked-sitter-writers=${String(waiting)}`);
+    assert.equal(waiting, 1, 'the sitter write never blocked on the other transaction');
+    await locker.query('COMMIT');
+    committed = await rawRow(row);
+    const out = await pending;
+    assert.ok(
+      'err' in out && out.err instanceof StateTransitionInvalidError,
+      `outcome: ${inspect(out)}`,
+    );
+  } finally {
+    locker.release();
+  }
+  assert.equal(committed?.['reference_number'], 'FIRST');
+  assert.deepEqual(await rawRow(row), committed, 'the sitter write landed over the other');
+});
+
+test('Q-4 under concurrency (adopted QA-A1): eight concurrent submissions on one not_started row, exactly one is submitted, the rest StateTransitionInvalidError, the stored reference is the winner', async () => {
+  const a = await onboardedSitter();
+  const row = await rowId(a.id, white);
+  const refs = Array.from({ length: 8 }, (_, i) => `REF-${String(i)}`);
+  const settled = await Promise.allSettled(
+    refs.map((r) =>
+      submitCertificate(
+        db,
+        a.actor,
+        { credentialId: row, jurisdiction: 'CY', referenceNumber: r, issuedOn: null },
+        logLine,
+      ),
     ),
-    NotFoundError,
   );
-  assert.deepEqual(await rawRow(row), r);
+  const won = settled.flatMap((x, i) => (x.status === 'fulfilled' ? [refs[i]] : []));
+  const lost = settled.flatMap((x) => (x.status === 'rejected' ? [x.reason as unknown] : []));
+  console.log(
+    `MEASURED Q-4 concurrent fulfilled=${String(won.length)} rejected=${String(lost.length)}`,
+  );
+  assert.equal(won.length, 1);
+  for (const l of lost) assert.ok(l instanceof StateTransitionInvalidError, String(l));
+  const r = await rawRow(row);
+  assert.equal(r?.['status'], 'submitted');
+  assert.equal(r?.['reference_number'], won[0]);
+});
+
+test('Q-3 under concurrency (adopted QA-A2): eight concurrent onboardings of one sitter raise no error, leave two rows, and their inserted counts sum to two', async () => {
+  const id = await newSitter();
+  const actor = sitterActor(id);
+  const settled = await Promise.allSettled(
+    Array.from({ length: 8 }, () => ensureOnboardingCredentials(db, actor, 'CY')),
+  );
+  const rejected = settled.flatMap((x) => (x.status === 'rejected' ? [String(x.reason)] : []));
+  assert.deepEqual(rejected, []);
+  const sum = settled.reduce((n, x) => n + (x.status === 'fulfilled' ? x.value.inserted : 0), 0);
+  assert.equal(sum, 2);
+  assert.equal((await rowsOf(id)).length, 2);
+});
+
+test('the reference bound is counted in characters (adopted QA-A7): 64 Greek letters and 64 ASCII accepted, 65 Greek and a U+0085 refused ReferenceNumberOutOfBoundsError with no echo, nothing written', async () => {
+  for (const [ref, accept] of [
+    ['Α'.repeat(64), true],
+    ['Α'.repeat(65), false],
+    [`${CANARY}\u0085`, false],
+    ['x'.repeat(64), true],
+  ] as const) {
+    const a = await onboardedSitter();
+    const row = await rowId(a.id, white);
+    const before = await rawRow(row);
+    const res = await submitCertificate(
+      db,
+      a.actor,
+      { credentialId: row, jurisdiction: 'CY', referenceNumber: ref, issuedOn: null },
+      logLine,
+    ).catch((x: unknown) => x);
+    if (accept) {
+      assert.deepEqual(res, { status: 'submitted', credentialId: row });
+      assert.equal((await rawRow(row))?.['reference_number'], ref);
+    } else {
+      assert.ok(
+        res instanceof ReferenceNumberOutOfBoundsError,
+        `${String(ref.length)}: ${String(res)}`,
+      );
+      assert.ok(!exposed(res).includes(CANARY));
+      assert.deepEqual(await rawRow(row), before);
+    }
+  }
+});
+
+test('a real 23503 through the repository (adopted QA-A8): onboarding an account with no sitter_profile maps to SitterCredentialRefusedError with the constraint name, no cause, the id not echoed', async () => {
+  const id = newSitterCredentialId();
+  await su.query(
+    `INSERT INTO public.account (id, pseudonym, tos_version) VALUES ($1, $2, 't255')`,
+    [id, newSitterCredentialId()],
+  );
+  const e = await ensureOnboardingCredentials(db, sitterActor(id), 'CY').catch((x: unknown) => x);
+  assert.ok(e instanceof SitterCredentialRefusedError, String(e));
+  assert.equal(e.sqlstate, '23503');
+  assert.equal(e.constraint, 'sitter_credential_sitter_id_fkey');
+  assert.equal(e.cause, undefined);
+  assert.ok(!exposed(e).includes(id), 'the sitter id reached the mapped error');
 });
 
 test('a reference over the database bound is refused 23514 sitter_credential_reference_number_bounds as ReferenceNumberOutOfBoundsError; the canary is absent from the error, the log and stdio; nothing is written', async () => {
@@ -751,7 +893,7 @@ test('Q-5 as system sees every due row: each sweep returns every valid row due a
   assert.ok((await dueForExpiry(sweeper, AS_OF)).includes(dA));
 });
 
-test('a Q-5 sweep whose transaction is not a system actor is refused SweepActorRefusedError, never answered with the 0 rows RLS gives it', async () => {
+test('a Q-5 sweep whose transaction is not a system actor (actorless, a sitter, a sitter under break-glass) is refused SweepActorRefusedError, never answered with the 0 rows RLS gives it', async () => {
   const a = await onboardedSitter();
   const actorless = {
     actor: bindSystemActor(db, 'credential.sweep_test').actor,
@@ -761,7 +903,13 @@ test('a Q-5 sweep whose transaction is not a system actor is refused SweepActorR
     actor: bindSystemActor(db, 'credential.sweep_test').actor,
     withActor: <T>(work: (tx: Tx) => Promise<T>) => db.withActor(a.actor, work),
   } as unknown as SystemActorDatabase;
-  for (const forged of [actorless, asPerson]) {
+  // Adopted QA-A9: a sitter's break-glass transaction is not a system actor either.
+  const breakGlassSitter = {
+    actor: bindSystemActor(db, 'credential.sweep_test').actor,
+    withActor: <T>(work: (tx: Tx) => Promise<T>) =>
+      db.withActor(a.actor, work, { breakGlass: true }),
+  } as unknown as SystemActorDatabase;
+  for (const forged of [actorless, asPerson, breakGlassSitter]) {
     await assert.rejects(dueForRecertification(forged, AS_OF), SweepActorRefusedError);
     await assert.rejects(dueForAttestation(forged, AS_OF_INSTANT), SweepActorRefusedError);
     await assert.rejects(dueForExpiry(forged, AS_OF), SweepActorRefusedError);
