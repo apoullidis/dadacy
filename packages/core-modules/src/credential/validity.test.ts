@@ -18,6 +18,7 @@ import { InvalidInputError, toProblem } from '@kinvara/domain-types';
 import {
   MandatoryRulesUnreadableError,
   VALIDITY_MODELS,
+  attestationGraceEndsAt,
   VALIDITY_NOT_COMPUTED,
   VALIDITY_SCHEME_UNUSABLE,
   validityDatesForDecision,
@@ -282,22 +283,318 @@ test('point_in_time: every date column is NULL, whatever the facts and parameter
   }
 });
 
-// ── periodic_attestation (OD-346) ───────────────────────────────────────────────────────────────
+// ── periodic_attestation (OD-346, ruled 2026-10-14T14:30:00Z) ───────────────────────────────────
+//
+// Every expected instant below is a literal printed OUTSIDE the code under test:
+//   - PostgreSQL 18.6 with `SET TimeZone = 'Europe/Nicosia'`, `t + make_interval(days => n)`
+//     (`.cache/T-061/anchors-attest.sql` → `anchors-attest-pg.txt`), which adds local calendar days
+//     keeping the wall-clock time, i.e. OD-346's rule, for every row where the target local time
+//     exists exactly once;
+//   - for the four GAP / AMBIGUOUS rows, where PostgreSQL resolves differently from SD §DB-6 rules
+//     3–4 (it prints 01:30Z for all four), host `zdump -v Europe/Nicosia` (the transition instants)
+//     and `date -u -d '<local> <offset>'` (`anchors-attest-host.txt`).
+// Transitions (zdump): 2026-03-29 01:00Z, 2026-10-25 01:00Z, 2027-03-28 01:00Z, 2027-10-31 01:00Z.
 
-test('periodic_attestation: not computed here (OD-346) — ValidityNotComputedError naming the model, fixed text, no date', () => {
-  let caught: unknown;
-  try {
-    validityDatesForDecision(
-      scheme({ validityModel: 'periodic_attestation', defaultValidityMonths: null }),
-      facts('2026-10-14', null),
-    );
-  } catch (e) {
-    caught = e;
+function attestation(over: Partial<Record<keyof ValidityScheme, unknown>> = {}): ValidityScheme {
+  return scheme({
+    validityModel: 'periodic_attestation',
+    defaultValidityMonths: null,
+    attestationIntervalDays: 90,
+    attestationGraceDays: 7,
+    ...over,
+  });
+}
+
+function attested(at: unknown) {
+  return { issuedOn: null, documentExpiresOn: null, attestedAt: at } as unknown as {
+    issuedOn: null;
+    documentExpiresOn: null;
+    attestedAt: string;
+  };
+}
+
+/** [case, attested_at (UTC), +90 Nicosia calendar days (UTC), source of the expected value]. */
+const ATTEST_90: ReadonlyArray<readonly [string, string, string, 'pg' | 'zdump']> = [
+  ['A crosses spring 2026', '2026-01-15T08:00:00.000000Z', '2026-04-15T07:00:00.000000Z', 'pg'],
+  ['B crosses autumn 2026', '2026-09-01T07:00:00.000000Z', '2026-11-30T08:00:00.000000Z', 'pg'],
+  ['C crosses spring 2027', '2027-01-15T08:00:00.000000Z', '2027-04-15T07:00:00.000000Z', 'pg'],
+  ['D crosses autumn 2027', '2027-08-15T07:00:00.000000Z', '2027-11-13T08:00:00.000000Z', 'pg'],
+  ['E crosses nothing', '2026-05-01T09:00:00.000000Z', '2026-07-30T09:00:00.000000Z', 'pg'],
+  [
+    'F leap day 2028, crosses spring 2028',
+    '2027-12-31T10:00:00.000000Z',
+    '2028-03-30T09:00:00.000000Z',
+    'pg',
+  ],
+  ['G microseconds carried', '2026-09-01T07:00:12.345678Z', '2026-11-30T08:00:12.345678Z', 'pg'],
+  [
+    'H local day is not the UTC day',
+    '2026-06-30T22:30:00.000000Z',
+    '2026-09-28T22:30:00.000000Z',
+    'pg',
+  ],
+  [
+    'S26a due the day before spring 2026',
+    '2025-12-28T10:00:00.000000Z',
+    '2026-03-28T10:00:00.000000Z',
+    'pg',
+  ],
+  [
+    'S26b due the transition day, noon',
+    '2025-12-29T10:00:00.000000Z',
+    '2026-03-29T09:00:00.000000Z',
+    'pg',
+  ],
+  [
+    'S26c due 02:30, before the transition',
+    '2025-12-29T00:30:00.000000Z',
+    '2026-03-29T00:30:00.000000Z',
+    'pg',
+  ],
+  [
+    'S26d due 04:30, after the transition',
+    '2025-12-29T02:30:00.000000Z',
+    '2026-03-29T01:30:00.000000Z',
+    'pg',
+  ],
+  [
+    'S26g due 03:30, in the gap: the transition instant',
+    '2025-12-29T01:30:00.000000Z',
+    '2026-03-29T01:00:00.000000Z',
+    'zdump',
+  ],
+  [
+    'A26a due 02:30, before the transition',
+    '2026-07-26T23:30:00.000000Z',
+    '2026-10-24T23:30:00.000000Z',
+    'pg',
+  ],
+  [
+    'A26g due 03:30, ambiguous: the first (EEST)',
+    '2026-07-27T00:30:00.000000Z',
+    '2026-10-25T00:30:00.000000Z',
+    'zdump',
+  ],
+  [
+    'A26b due 04:30, after the transition',
+    '2026-07-27T01:30:00.000000Z',
+    '2026-10-25T02:30:00.000000Z',
+    'pg',
+  ],
+  [
+    'A26c due the day after autumn 2026',
+    '2026-07-28T09:00:00.000000Z',
+    '2026-10-26T10:00:00.000000Z',
+    'pg',
+  ],
+  [
+    'S27a due 02:30, before the transition',
+    '2026-12-28T00:30:00.000000Z',
+    '2027-03-28T00:30:00.000000Z',
+    'pg',
+  ],
+  [
+    'S27g due 03:30, in the gap: the transition instant',
+    '2026-12-28T01:30:00.000000Z',
+    '2027-03-28T01:00:00.000000Z',
+    'zdump',
+  ],
+  [
+    'S27b due 04:30, after the transition',
+    '2026-12-28T02:30:00.000000Z',
+    '2027-03-28T01:30:00.000000Z',
+    'pg',
+  ],
+  [
+    'A27a due 02:30, before the transition',
+    '2027-08-01T23:30:00.000000Z',
+    '2027-10-30T23:30:00.000000Z',
+    'pg',
+  ],
+  [
+    'A27g due 03:30, ambiguous: the first (EEST)',
+    '2027-08-02T00:30:00.000000Z',
+    '2027-10-31T00:30:00.000000Z',
+    'zdump',
+  ],
+  [
+    'A27b due 04:30, after the transition',
+    '2027-08-02T01:30:00.000000Z',
+    '2027-10-31T02:30:00.000000Z',
+    'pg',
+  ],
+];
+
+test('periodic_attestation: next_attestation_due_at is the attestation instant + 90 Europe/Nicosia calendar days at the same wall-clock time (23 rows, both 2026 and 2027 transitions, each side of each)', () => {
+  for (const [name, at, expected] of ATTEST_90) {
+    const got = validityDatesForDecision(attestation(), attested(at));
+    assert.deepEqual(got, { ...NONE, lastAttestationAt: at, nextAttestationDueAt: expected }, name);
   }
-  assert.ok(caught instanceof ValidityNotComputedError);
-  assert.equal(caught.validityModel, 'periodic_attestation');
-  assert.equal(caught.message, VALIDITY_NOT_COMPUTED);
-  assert.equal(problem(caught).status, 500);
+});
+
+test('periodic_attestation: never 90 x 24 h and never the UTC-session reading (the two OD-346 rejected)', () => {
+  // UTC-session PostgreSQL printed 2026-04-15T08:00:00Z and 2026-11-30T07:00:00Z for A and B.
+  const a = validityDatesForDecision(attestation(), attested('2026-01-15T08:00:00Z'));
+  const b = validityDatesForDecision(attestation(), attested('2026-09-01T07:00:00Z'));
+  assert.equal(a.nextAttestationDueAt, '2026-04-15T07:00:00.000000Z');
+  assert.equal(b.nextAttestationDueAt, '2026-11-30T08:00:00.000000Z');
+  assert.notEqual(a.nextAttestationDueAt, '2026-04-15T08:00:00.000000Z');
+  assert.notEqual(b.nextAttestationDueAt, '2026-11-30T07:00:00.000000Z');
+});
+
+test('periodic_attestation: in a spring-forward gap the due instant is the transition instant, sub-minute part dropped', () => {
+  const got = validityDatesForDecision(attestation(), attested('2025-12-29T01:30:12.5Z'));
+  assert.equal(got.lastAttestationAt, '2025-12-29T01:30:12.500000Z');
+  assert.equal(got.nextAttestationDueAt, '2026-03-29T01:00:00.000000Z');
+});
+
+test('periodic_attestation: the interval is the scheme parameter, not a constant 90', () => {
+  // 2026-01-15T08:00Z + 97 days (PostgreSQL, Nicosia session: GRACE A +97) = 2026-04-22T07:00Z.
+  const got = validityDatesForDecision(
+    attestation({ attestationIntervalDays: 97 }),
+    attested('2026-01-15T08:00:00Z'),
+  );
+  assert.equal(got.nextAttestationDueAt, '2026-04-22T07:00:00.000000Z');
+});
+
+test('periodic_attestation: a Date and its ISO text give the same answer; fractions are written to six digits', () => {
+  const fromDate = validityDatesForDecision(
+    attestation(),
+    attested(new Date('2026-09-01T07:00:12.345Z')),
+  );
+  const fromText = validityDatesForDecision(attestation(), attested('2026-09-01T07:00:12.345Z'));
+  assert.deepEqual(fromDate, fromText);
+  assert.equal(fromText.lastAttestationAt, '2026-09-01T07:00:12.345000Z');
+  assert.equal(fromText.nextAttestationDueAt, '2026-11-30T08:00:12.345000Z');
+});
+
+test('periodic_attestation: the result is the same under any host TZ', () => {
+  for (const tz of ['UTC', 'Europe/Nicosia', 'Pacific/Kiritimati', 'America/Adak']) {
+    process.env['TZ'] = tz;
+    for (const [name, at, expected] of ATTEST_90) {
+      assert.equal(
+        validityDatesForDecision(attestation(), attested(at)).nextAttestationDueAt,
+        expected,
+        `${tz} ${name}`,
+      );
+    }
+  }
+});
+
+test('periodic_attestation: issued_on, a document expiry and default_validity_months are not read; only the two attestation columns are set', () => {
+  const got = validityDatesForDecision(attestation({ defaultValidityMonths: 'x' }), {
+    issuedOn: 'garbage',
+    documentExpiresOn: 'garbage',
+    attestedAt: '2026-05-01T09:00:00Z',
+  });
+  assert.deepEqual(got, {
+    ...NONE,
+    lastAttestationAt: '2026-05-01T09:00:00.000000Z',
+    nextAttestationDueAt: '2026-07-30T09:00:00.000000Z',
+  });
+});
+
+test('periodic_attestation: an attested_at that is not a valid instant is InvalidInputError (400, field attestedAt) and the value is not echoed', () => {
+  const bad = [
+    null,
+    undefined,
+    '',
+    '2026-10-14',
+    '2026-10-14T10:00:00',
+    '2026-10-14T10:00:00+03:00',
+    '2026-10-14 10:00:00Z',
+    '2026-02-30T10:00:00Z',
+    '2026-10-14T24:00:00Z',
+    '2026-10-14T10:60:00Z',
+    '2026-10-14T10:00:60Z',
+    '2026-10-14T10:00:00.1234567Z',
+    ' 2026-10-14T10:00:00Z',
+    '1969-12-31T23:59:59Z',
+    new Date(Number.NaN),
+    1_760_000_000_000,
+  ];
+  for (const value of bad) {
+    let caught: unknown;
+    try {
+      validityDatesForDecision(attestation(), attested(value));
+    } catch (e) {
+      caught = e;
+    }
+    assert.ok(caught instanceof InvalidInputError, String(value));
+    const body = JSON.stringify(problem(caught));
+    assert.match(body, /attestedAt/);
+    if (typeof value === 'string' && value.trim().length > 0) {
+      assert.ok(!body.includes(value.trim()), `echoed ${value}`);
+      assert.ok(!caught.message.includes(value.trim()), `echoed ${value}`);
+    }
+  }
+});
+
+test('periodic_attestation: an attestation_interval_days that is not an integer 1…3660 refuses the scheme, naming the field only', () => {
+  for (const days of [null, undefined, 0, -90, 1.5, '90', Number.NaN, Infinity, 3661]) {
+    assert.throws(
+      () =>
+        validityDatesForDecision(
+          attestation({ attestationIntervalDays: days }),
+          attested('2026-10-14T10:00:00Z'),
+        ),
+      (e: unknown) =>
+        e instanceof ValiditySchemeUnusableError &&
+        JSON.stringify(e.fields) === '["attestationIntervalDays"]',
+      String(days),
+    );
+  }
+});
+
+test('attestationGraceEndsAt: the lapse instant is the attestation + interval + grace (90 + 7) Nicosia calendar days', () => {
+  // PostgreSQL, Nicosia session, + 97 days: GRACE A, GRACE B, GRACE S26b.
+  const rows: ReadonlyArray<readonly [string, string]> = [
+    ['2026-01-15T08:00:00Z', '2026-04-22T07:00:00.000000Z'],
+    ['2026-09-01T07:00:00Z', '2026-12-07T08:00:00.000000Z'],
+    ['2025-12-29T10:00:00Z', '2026-04-05T09:00:00.000000Z'],
+  ];
+  for (const [at, expected] of rows) {
+    assert.equal(attestationGraceEndsAt(attestation(), at), expected, at);
+  }
+  // A grace of 0 lapses at the due instant.
+  assert.equal(
+    attestationGraceEndsAt(attestation({ attestationGraceDays: 0 }), '2026-01-15T08:00:00Z'),
+    '2026-04-15T07:00:00.000000Z',
+  );
+});
+
+test('attestationGraceEndsAt: refuses another model, a bad grace, a bad interval and bad rules', () => {
+  assert.throws(
+    () => attestationGraceEndsAt(scheme(), '2026-01-15T08:00:00Z'),
+    (e: unknown) =>
+      e instanceof ValidityNotComputedError && e.validityModel === 'point_in_time_annual_reissue',
+  );
+  for (const grace of [null, undefined, -1, 1.5, '7', 3661]) {
+    assert.throws(
+      () =>
+        attestationGraceEndsAt(
+          attestation({ attestationGraceDays: grace }),
+          '2026-01-15T08:00:00Z',
+        ),
+      (e: unknown) =>
+        e instanceof ValiditySchemeUnusableError &&
+        JSON.stringify(e.fields) === '["attestationGraceDays"]',
+      String(grace),
+    );
+  }
+  assert.throws(
+    () =>
+      attestationGraceEndsAt(attestation({ attestationIntervalDays: 0 }), '2026-01-15T08:00:00Z'),
+    ValiditySchemeUnusableError,
+  );
+  assert.throws(
+    () => attestationGraceEndsAt(attestation({ mandatoryRules: {} }), '2026-01-15T08:00:00Z'),
+    MandatoryRulesUnreadableError,
+  );
+  assert.throws(
+    () => attestationGraceEndsAt(attestation(), '2026-02-30T08:00:00Z'),
+    InvalidInputError,
+  );
 });
 
 // ── the retained, unused model (SA §DA-4r 1283, SA B3) ──────────────────────────────────────────
@@ -315,6 +612,8 @@ test('continuously_monitored is present in VALIDITY_MODELS and a scheme carrying
   }
   assert.ok(caught instanceof ValidityNotComputedError);
   assert.equal(caught.validityModel, 'continuously_monitored');
+  assert.equal(caught.message, VALIDITY_NOT_COMPUTED);
+  assert.equal(problem(caught).status, 500);
 });
 
 test('continuously_monitored is unreferenced: validity.ts never names it, and no credential source file but scheme.ts carries it as a string literal', () => {
@@ -333,11 +632,15 @@ test('continuously_monitored is unreferenced: validity.ts never names it, and no
   assert.deepEqual(holders, ['scheme.ts:1']);
 });
 
-test('every one of the five models is answered: three with dates, two refused with ValidityNotComputedError', () => {
+test('every one of the five models is answered: four with dates, one refused with ValidityNotComputedError', () => {
   const answered: Record<string, string> = {};
   for (const model of VALIDITY_MODELS) {
     try {
-      validityDatesForDecision(scheme({ validityModel: model }), facts('2026-10-14', '2027-10-14'));
+      validityDatesForDecision(scheme({ validityModel: model, attestationIntervalDays: 90 }), {
+        issuedOn: '2026-10-14',
+        documentExpiresOn: '2027-10-14',
+        attestedAt: '2026-10-14T10:00:00Z',
+      });
       answered[model] = 'dates';
     } catch (e) {
       answered[model] = e instanceof ValidityNotComputedError ? 'not_computed' : String(e);
@@ -345,7 +648,7 @@ test('every one of the five models is answered: three with dates, two refused wi
   }
   assert.deepEqual(answered, {
     point_in_time_annual_reissue: 'dates',
-    periodic_attestation: 'not_computed',
+    periodic_attestation: 'dates',
     expiring: 'dates',
     point_in_time: 'dates',
     continuously_monitored: 'not_computed',

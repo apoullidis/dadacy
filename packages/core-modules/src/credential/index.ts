@@ -49,6 +49,8 @@ export {
 } from './reference.ts';
 export { schemeDisplayName, type SchemeDisplayName } from './display.ts';
 export {
+  ATTESTATION_ZONE,
+  attestationGraceEndsAt,
   VALIDITY_NOT_COMPUTED,
   VALIDITY_SCHEME_UNUSABLE,
   validityDatesForDecision,
