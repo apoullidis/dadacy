@@ -339,7 +339,12 @@ interface Instant {
 const ISO_INSTANT =
   /^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})(?:\.([0-9]{1,6}))?Z$/;
 const MINUTE_MS = 60_000;
-/** 1970-01-01T00:00Z … 9999-12-31T23:59:59.999999Z: Nicosia's offset is whole hours throughout. */
+/**
+ * The accepted INPUT range, 1970-01-01T00:00Z … 9999-12-31T23:59:59.999999Z (Nicosia's offset is
+ * whole hours throughout). Rework 1 (QA Q-3): an input from 9999-12-31T22:00Z on reads as year 10000
+ * in Nicosia, so `plusZoneDays` refuses it as `InvalidInputError` on `attestedAt` (measured:
+ * `9999-12-31T22:00:00Z` + 1 day), not as a scheme refusal.
+ */
 const MIN_MS = 0;
 const MAX_MS = Date.UTC(9999, 11, 31, 23, 59);
 
@@ -384,7 +389,9 @@ function formatInstant(minuteMs: number, sec: number, micros: number): string {
  * `at` + `days` calendar days in `ATTESTATION_ZONE`, keeping the wall-clock time (OD-346): the local
  * reading by `instantToLocal`, the date stepped here, the instant back by `resolveLocal`. In a
  * spring-forward gap the result is the transition instant (rule 3); otherwise the seconds and
- * microseconds of `at` are kept. A result past 9999-12-31 refuses the scheme (`fields`).
+ * microseconds of `at` are kept. A target past 9999-12-31 refuses the scheme (`fields`), except
+ * when `at`'s own Nicosia reading is already in year 10000 (an input from 9999-12-31T22:00Z on):
+ * that is `InvalidInputError` on `attestedAt` (rework 1, QA Q-3).
  */
 function plusZoneDays(at: Instant, days: number, fields: readonly string[]): string {
   const local = instantToLocal(new Date(at.minuteMs), ATTESTATION_ZONE);

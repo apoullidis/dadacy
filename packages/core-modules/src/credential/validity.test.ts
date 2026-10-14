@@ -314,7 +314,9 @@ function attested(at: unknown) {
 }
 
 /** [case, attested_at (UTC), +90 Nicosia calendar days (UTC), source of the expected value]. */
-const ATTEST_90: ReadonlyArray<readonly [string, string, string, 'pg' | 'zdump']> = [
+const ATTEST_90: ReadonlyArray<
+  readonly [string, string, string, 'pg' | 'zdump' | 'zoneinfo+date' | 'qa-oracle']
+> = [
   ['A crosses spring 2026', '2026-01-15T08:00:00.000000Z', '2026-04-15T07:00:00.000000Z', 'pg'],
   ['B crosses autumn 2026', '2026-09-01T07:00:00.000000Z', '2026-11-30T08:00:00.000000Z', 'pg'],
   ['C crosses spring 2027', '2027-01-15T08:00:00.000000Z', '2027-04-15T07:00:00.000000Z', 'pg'],
@@ -423,9 +425,36 @@ const ATTEST_90: ReadonlyArray<readonly [string, string, string, 'pg' | 'zdump']
     '2027-10-31T02:30:00.000000Z',
     'pg',
   ],
+  // Rework 1 (QA Q-4): the two ends of the repeated hour, each resolving to the first (EEST)
+  // instant. 2026 rows: Python 3.14 zoneinfo (fold=0) and host `date -u -d '<local> +03:00'`
+  // (`.cache/T-061/anchors-r1.txt`). 2027 rows: QA's oracle (`.cache/T-061-qa/oracle.jsonl` 9-10).
+  [
+    'A26h due 03:00:00.000000, ambiguous start: the first (EEST)',
+    '2026-07-27T00:00:00.000000Z',
+    '2026-10-25T00:00:00.000000Z',
+    'zoneinfo+date',
+  ],
+  [
+    'A26i due 03:59:59.999999, ambiguous end: the first (EEST)',
+    '2026-07-27T00:59:59.999999Z',
+    '2026-10-25T00:59:59.999999Z',
+    'zoneinfo+date',
+  ],
+  [
+    'A27h due 03:00:00.000000, ambiguous start: the first (EEST)',
+    '2027-08-02T00:00:00.000000Z',
+    '2027-10-31T00:00:00.000000Z',
+    'qa-oracle',
+  ],
+  [
+    'A27i due 03:59:59.999999, ambiguous end: the first (EEST)',
+    '2027-08-02T00:59:59.999999Z',
+    '2027-10-31T00:59:59.999999Z',
+    'qa-oracle',
+  ],
 ];
 
-test('periodic_attestation: next_attestation_due_at is the attestation instant + 90 Europe/Nicosia calendar days at the same wall-clock time (23 rows, both 2026 and 2027 transitions, each side of each)', () => {
+test('periodic_attestation: next_attestation_due_at is the attestation instant + 90 Europe/Nicosia calendar days at the same wall-clock time (27 rows, both 2026 and 2027 transitions, each side of each, both ends of each repeated hour)', () => {
   for (const [name, at, expected] of ATTEST_90) {
     const got = validityDatesForDecision(attestation(), attested(at));
     assert.deepEqual(got, { ...NONE, lastAttestationAt: at, nextAttestationDueAt: expected }, name);
@@ -510,6 +539,10 @@ test('periodic_attestation: an attested_at that is not a valid instant is Invali
     '2026-10-14T10:00:00.1234567Z',
     ' 2026-10-14T10:00:00Z',
     '1969-12-31T23:59:59Z',
+    // Rework 1 (QA Q-2): the Date branch's own bounds.
+    new Date(-1),
+    new Date('1969-12-31T23:59:59.999Z'),
+    new Date(Date.UTC(10000, 0, 1)),
     new Date(Number.NaN),
     1_760_000_000_000,
   ];
@@ -563,12 +596,20 @@ test('attestationGraceEndsAt: the lapse instant is the attestation + interval + 
   );
 });
 
-test('attestationGraceEndsAt: refuses another model, a bad grace, a bad interval and bad rules', () => {
-  assert.throws(
-    () => attestationGraceEndsAt(scheme(), '2026-01-15T08:00:00Z'),
-    (e: unknown) =>
-      e instanceof ValidityNotComputedError && e.validityModel === 'point_in_time_annual_reissue',
-  );
+test('attestationGraceEndsAt: refuses each of the four other models, a bad grace, a bad interval and bad rules', () => {
+  // Rework 1 (QA Q-1): every model but periodic_attestation, the retained unused one included.
+  for (const model of [
+    'point_in_time_annual_reissue',
+    'expiring',
+    'point_in_time',
+    'continuously_monitored',
+  ]) {
+    assert.throws(
+      () => attestationGraceEndsAt(attestation({ validityModel: model }), '2026-01-15T08:00:00Z'),
+      (e: unknown) => e instanceof ValidityNotComputedError && e.validityModel === model,
+      model,
+    );
+  }
   for (const grace of [null, undefined, -1, 1.5, '7', 3661]) {
     assert.throws(
       () =>
