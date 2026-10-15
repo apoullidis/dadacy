@@ -876,6 +876,29 @@ const CASES: readonly Case[] = [
     mustCount: [{ name: 'MISSING-RECORD', n: '1' }],
   },
   {
+    name: 'WAIVER-READDED-LAPSED',
+    why:
+      'T-259 LIVE §5 item 3: a waiver re-added to the flipped register with expected_by on or ' +
+      'before the anchor is a new dated instrument, not a renewal. Once its date has passed it ' +
+      'is WAIVER-EXPIRED, which fails the build by itself even though every record is final.',
+    edits: [
+      {
+        file: REVIEW,
+        plant: json((doc) => {
+          if (doc['pending_pipeline'] !== null) throw new Error('expected no committed waiver');
+          doc['pending_pipeline'] = { ...PRE_FLIP_WAIVER, expected_by: '2026-09-19' };
+        }),
+      },
+    ],
+    expect: 'FAIL',
+    mustInclude: [
+      "WAIVER-EXPIRED the safety-copy waiver's DECISION REVIEW DATE 2026-09-19 has passed",
+      'GATE FAIL  gate:safety-review-currency — 1 problem(s):',
+    ],
+    mustExclude: ['GATE PASS', 'CRASH', '  - NOT-FINAL ', '  - WAIVER-RENEWED '],
+    mustCount: [{ name: 'WAIVER-EXPIRED', n: '1' }],
+  },
+  {
     name: 'T259-CLOCK-PAST-ANCHOR',
     why:
       'T-259 cut §3 negative 6: the date faked to just past the old waiver anchor (2026-12-06, ' +
