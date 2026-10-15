@@ -47,6 +47,18 @@ postgresql 18
 # so bumping this line without regenerating the hash set fails loudly.
 semgrep 1.176.1
 
+# --- added by T-262 --------------------------------------------------------
+# espeak-ng, for gate:read-aloud (T-263) — the automated read-aloud/TTS pass
+# that stakeholder ruling OE-82 put in place of the DSL read-aloud stage (SA
+# §TS-12.4). A Debian package, installed from bookworm into the DEFAULT
+# toolbox target only, with its espeak-ng-data voices (en, el, ru asserted by
+# gate:toolbox). This pin is the UPSTREAM version `espeak-ng --version`
+# prints; the Dockerfile refuses to build if bookworm's candidate is not that
+# upstream version, and again if the installed binary does not report it.
+# TOOLBOX ONLY: it is in no application image, by design — the product's own
+# voice path is pre-recorded audio, never runtime TTS (T-108, DV-7).
+espeak-ng 1.51
+
 # ===========================================================================
 # HOW A PIN REACHES THE IMAGE  (T-016 / OD-1 — this used to be wrong)
 # ===========================================================================

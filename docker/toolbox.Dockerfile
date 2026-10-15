@@ -37,6 +37,10 @@ ARG POSTGRESQL_VERSION=18
 # Added by T-133: Semgrep, for gate:semgrep. Default target only — see below.
 ARG SEMGREP_VERSION=1.176.1
 
+# Added by T-262: espeak-ng, for gate:read-aloud (T-263, OE-82). Default target
+# only — see below.
+ARG ESPEAK_NG_VERSION=1.51
+
 # --- T-016 / OD-1: how these ARGs are supplied -----------------------------
 # scripts/lib/toolbox.sh passes ONE --build-arg PER LINE of app/.tool-versions,
 # named <KEY>_VERSION (upper-cased, non-alphanumerics folded to '_', with the
@@ -144,6 +148,7 @@ ARG GITLEAKS_VERSION
 ARG TRIVY_VERSION
 ARG POSTGRESQL_VERSION
 ARG SEMGREP_VERSION
+ARG ESPEAK_NG_VERSION
 
 LABEL org.opencontainers.image.title="kinvara-toolbox" \
       org.opencontainers.image.description="Kinvara pinned toolchain (DOCKER.md §4.2)" \
@@ -154,7 +159,8 @@ LABEL org.opencontainers.image.title="kinvara-toolbox" \
       io.kinvara.gitleaks="${GITLEAKS_VERSION}" \
       io.kinvara.trivy="${TRIVY_VERSION}" \
       io.kinvara.postgresql="${POSTGRESQL_VERSION}" \
-      io.kinvara.semgrep="${SEMGREP_VERSION}"
+      io.kinvara.semgrep="${SEMGREP_VERSION}" \
+      io.kinvara.espeak-ng="${ESPEAK_NG_VERSION}"
 
 # git: pnpm resolves git-hosted deps and the gates shell out to it.
 # ca-certificates: the toolbox is the one container with egress (DOCKER.md §7).
@@ -212,6 +218,38 @@ RUN set -eux; \
     [ "${got}" = "${SEMGREP_VERSION}" ] \
       || { echo "semgrep --version printed '${got}', pinned ${SEMGREP_VERSION}" >&2; exit 1; }
 
+# T-262: espeak-ng, for gate:read-aloud (T-263) — the automated read-aloud/TTS
+# pass that stakeholder ruling OE-82 kept in place of the DSL read-aloud stage
+# (SA §TS-12.4). Debian's package, from bookworm, with espeak-ng-data (every
+# compiled language dictionary, en/el/ru among them; gate:toolbox asserts
+# those three by listing AND by synthesising with each).
+# The ARG is USED, twice, following T-133's pattern, so a .tool-versions bump
+# with no matching install cannot pass quietly:
+#   1. bookworm's candidate version must BE the pinned upstream version
+#      (Debian revision `<pin>+dfsg-N` or `<pin>-N`); the exact candidate is
+#      then installed, never "whatever is newest";
+#   2. the installed binary must report exactly the pin.
+# The Debian revision is NOT pinned — the same standing as every other apt
+# package in this stage (git, curl, python3, psql's minor). gate:toolbox's WAV
+# determinism check is what notices a data change that alters the audio.
+# Default target only: gate:read-aloud is a PR-stage gate, and the --playwright
+# variant is Ubuntu noble (psql's and Semgrep's precedent). gate:toolbox reports
+# it absent-by-design there.
+# TOOLBOX ONLY. No application image installs it: the product's voice path is
+# pre-recorded audio, never runtime TTS (T-108, DV-7).
+RUN set -eux; \
+    apt-get update; \
+    cand="$(apt-cache policy espeak-ng | awk '/Candidate:/ { print $2 }')"; \
+    case "${cand}" in \
+      "${ESPEAK_NG_VERSION}"+*|"${ESPEAK_NG_VERSION}"-*) ;; \
+      *) echo "bookworm's espeak-ng candidate is '${cand}', not the pinned upstream ${ESPEAK_NG_VERSION} (.tool-versions)" >&2; exit 1 ;; \
+    esac; \
+    apt-get install -y --no-install-recommends "espeak-ng=${cand}"; \
+    rm -rf /var/lib/apt/lists/*; \
+    got="$(espeak-ng --version | sed -n 's/^eSpeak NG text-to-speech: \([^ ]*\).*/\1/p')"; \
+    [ "${got}" = "${ESPEAK_NG_VERSION}" ] \
+      || { echo "espeak-ng --version reports '${got}', pinned ${ESPEAK_NG_VERSION}" >&2; exit 1; }
+
 COPY --from=terraform-fetch /out/terraform /usr/local/bin/terraform
 
 # T-001: the two no-app-code security gates (SD §QD-4 PR row: gitleaks,
@@ -238,12 +276,18 @@ RUN set -eux; \
 # HOME and the pnpm/npm caches must be writable by an arbitrary uid.
 # /pnpm-store exists in the image so that Docker initialises the named volume
 # mounted there with these permissions rather than root-owned 0755.
+# T-262: ~/.config too. espeak-ng links libpulse (through libpcaudio), which
+# creates ~/.config/pulse on EVERY invocation — `--version` included — and
+# printed "Failed to create secure directory (/home/toolbox/.config/pulse):
+# Permission denied" to stderr when that directory was root-owned 0755
+# (measured on the first T-262 build). Nothing is played; the line was noise
+# in every byte-comparison of stderr gate:toolbox makes.
 ENV HOME=/home/toolbox \
     npm_config_cache=/home/toolbox/.npm \
     npm_config_update_notifier=false
 RUN set -eux; \
     mkdir -p /home/toolbox/.npm /home/toolbox/.cache /home/toolbox/.config/pnpm /pnpm-store; \
-    chmod 1777 /home/toolbox /home/toolbox/.npm /home/toolbox/.cache /pnpm-store
+    chmod 1777 /home/toolbox /home/toolbox/.npm /home/toolbox/.cache /home/toolbox/.config /pnpm-store
 # Pointing pnpm at the named volume. Measured against pnpm 11.25.0, because
 # three of the five plausible mechanisms silently do nothing:
 #   npm_config_store_dir=  env      IGNORED  -> falls back to <repo>/.pnpm-store
@@ -298,6 +342,11 @@ ARG POSTGRESQL_VERSION
 # venv is bound to bookworm's python3.11 and gate:semgrep is a PR-stage gate,
 # not a heavy one. gate:toolbox reports it absent-by-design in this variant.
 ARG SEMGREP_VERSION
+# T-262: declared but deliberately unused — gate:read-aloud is a PR-stage gate,
+# so espeak-ng is in the default target only. gate:toolbox reports it
+# absent-by-design in this variant. (gate:safety-copy-render, T-265, is the
+# heavy one, and it renders; it does not speak.)
+ARG ESPEAK_NG_VERSION
 
 LABEL org.opencontainers.image.title="kinvara-toolbox-playwright" \
       io.kinvara.node="${NODE_VERSION}" \
