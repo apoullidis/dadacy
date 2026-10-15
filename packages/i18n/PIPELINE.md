@@ -205,11 +205,19 @@ They are still demanded of every human-path record. One date rule is added:
 mechanism, not a side effect.** A reviewed Greek string cannot vouch for an
 unreviewed Russian one, because the register is keyed by locale as well as key.
 
-`gate:safety-review-currency` (`T-044`) fails unless, for every
-`safety_critical` key and every enabled locale, a record exists whose
-`content_hash` matches the current source, whose `status` is `signed_off`, whose
-`provenance` is not `placeholder`, and which names a reviewer and a date —
-**unless** the key sits inside an unexpired `pending_pipeline` waiver.
+`gate:safety-review-currency` (`T-044`; rule replaced by `T-258` under
+stakeholder ruling OE-5) fails unless, for every `safety_critical` key and
+every enabled locale, a record exists whose `content_hash` matches the current
+source **and** the hash pinned in the gate's own `AUTHORED_CONTENT_PINNED`,
+whose `provenance` is `ai_authored` with a `ruling` and an exact `authored_by`
+that the gate's `tools/rulings.ts` accepts for that locale, whose `status` is
+`unreviewed_by_ruling` with `review_ruling: "OE-5"`, and which claims no review
+(`status` never `signed_off`, `reviewed_by` and `reviewed_at` null) —
+**unless** the key sits inside an unexpired `pending_pipeline` waiver, where
+only the record's existence and the no-review-claim rule are checked. Since
+OE-5 a record that names a reviewer is refused (`CLAIMS-REVIEW`), signed off
+or not. The rest of this document still describes the human sign-off path
+that OE-5 removed; `T-259` and `T-260` rewrite it.
 
 ### What stops a record saying "reviewed" when nothing was reviewed
 
