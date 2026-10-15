@@ -9,13 +9,21 @@
  * is `ai_authored` (PLACEHOLDER / NOT-AI-AUTHORED / MALFORMED-RECORD) AND
  * `ruling` is a ruling in `tools/rulings.ts` covering L (UNRULED-AUTHOR) AND
  * `authored_by` is exactly a model that ruling names (WRONG-AUTHOR) AND the
- * record claims no review — `status` is not `signed_off`, `reviewed_by` and
- * `reviewed_at` are null (CLAIMS-REVIEW) AND `status` is
+ * record claims no review — `status` is not `signed_off`, and no field whose
+ * name contains "review" other than `review_ruling` is non-null, which
+ * includes `reviewed_by` and `reviewed_at` (CLAIMS-REVIEW) AND it carries no
+ * field outside the nine of `RECORD_FIELDS` (UNDEFINED-FIELD) AND `status` is
  * `unreviewed_by_ruling` (NOT-FINAL) AND `review_ruling` is a ruling in
  * `REVIEW_DROPPED_RULINGS` covering L (UNRULED-NO-REVIEW) AND `content_hash`
- * equals `AUTHORED_CONTENT_PINNED[L][K]` in this file (UNPINNED-CONTENT) —
- * UNLESS K is listed in an unexpired `pending_pipeline` waiver, in which case
- * only a record's existence (WAIVED-NO-RECORD) and CLAIMS-REVIEW are checked.
+ * equals `AUTHORED_CONTENT_PINNED[L][K]` in this file (UNPINNED-CONTENT).
+ * If K is listed in an unexpired `pending_pipeline` waiver, the authorship and
+ * finality conjuncts (PLACEHOLDER, NOT-AI-AUTHORED, UNRULED-AUTHOR,
+ * WRONG-AUTHOR, NOT-FINAL, UNRULED-NO-REVIEW) are NOT checked. Everything else
+ * still is: the record's existence (WAIVED-NO-RECORD), that it is an object
+ * (MALFORMED-RECORD), CLAIMS-REVIEW, UNDEFINED-FIELD, and its bytes (NO-SOURCE,
+ * STALE-RECORD, UNPINNED-CONTENT; T-258 rework 1). Inside the waiver the VALUES
+ * of `authored_by`, `ruling`, `review_ruling` and of a `status` other than
+ * `signed_off` are not judged here; `gate:unit-tests` judges some of them.
  * This supersedes T-040 § contract §6's rule, which required `signed_off` and a
  * named reviewer: under OE-5 no human reviews this copy, so a record claiming
  * a review is now the refusal, not the requirement.
@@ -199,29 +207,38 @@ const WAIVER_NOT_AFTER = '2026-12-05';
 /**
  * THE REPLACEMENT ANCHOR (T-258; `OE-5-cut.md` §2 item 4): the exact content
  * hash of every safety string accepted as AI-authored and final with no review
- * under OE-5, per (locale, key). A record outside the waiver whose
- * `content_hash` is not the one pinned here is UNPINNED-CONTENT.
+ * under OE-5, per (locale, key). A record whose `content_hash` is not the one
+ * pinned here is UNPINNED-CONTENT, inside an unexpired waiver or not (rework 1).
  *
  * Why it exists. Before OE-5, editing a safety string un-signed it: its hash
  * moved, the record went STALE, and only a human re-signing it cleared that.
  * Under OE-5 nobody signs. Without this pin an edit plus a matching hash in
  * `review.json` — two files the same commit can change — would pass. With it,
- * the same edit fails here until THIS FILE is edited too, so adding or changing
- * a safety string, a key or a locale is a conspicuous edit to gate source.
+ * the same edit fails here until THIS FILE is edited too, whether or not a
+ * waiver covers the key. That includes today's waiver and one re-added on or
+ * before 2026-12-05 (Vitest *UNPINNED-CONTENT — a safety string edited…*,
+ * *UNPINNED-CONTENT (waived) — …*, *a waiver RE-ADDED after the flip…*). A new
+ * `safety_critical` key has no pin, and an absent pin never matches (Vitest
+ * *UNPINNED-CONTENT — a NEW safety_critical key…*). A newly enabled locale
+ * takes the same branch; that is a reading of the code, not a case.
  *
  * THE BOUND, STATED PLAINLY. This makes a change VISIBLE. It does not PREVENT
  * one: a commit can edit the catalogue, the record and this pin together, and
  * review of the diff is the control for that. Nothing here can prove that the
  * named model wrote the bytes. SD Revision Log D8's "an MT engine cannot
- * produce a DSL review record" weakens to "an MT engine's output cannot enter
- * without an edit to the gate"; that weakening is inherent in the ruling.
+ * produce a DSL review record" weakens to "a changed or new `safety_critical`
+ * string in a pair this gate examines cannot pass it without an edit to this
+ * pin"; that weakening is inherent in the ruling. Copy below the
+ * `safety_critical` tier is not examined at all (Vitest *COUNTEREXAMPLE…*).
  *
  * Filled by T-258 with the 24 hashes the committed register carried at
  * `main` `f36b40f` — each equal to `contentHash()` of the committed catalogue
  * string, which `src/review.test.ts`'s currency test asserts. The cut (§3)
  * allowed T-258 to ship it empty or partial for T-259 to fill; measured, an
  * empty pin makes the cut's own CONTROL (every pair final and pinned, passing)
- * unsatisfiable. While the waiver covers a pair this pin is not consulted.
+ * unsatisfiable. Since rework 1 it is consulted for waived pairs too, and the
+ * committed tree stays green (all 24 pins equal an independently computed
+ * NFC-sha256 of the committed strings: `state/EP-0/T-258.md` § Rework 1, R1).
  *
  * Not a reading-C pin: it is applied per record inside reading A, so it also
  * binds under `--root` (a temporary root copies this package's catalogues).
@@ -682,8 +699,9 @@ function checkAuthorship(
  * covering test is half-falsifiable (the note QA raised on T-042).
  *
  * Since T-258 (OE-5, OE-81) the record is ACCEPTED only when it is current,
- * AI-authored under a ruling the gate reads, claims no review, is final with
- * no review under a ruling the gate reads, and carries the pinned hash. Returns
+ * AI-authored under a ruling the gate reads, claims no review, carries no
+ * field outside RECORD_FIELDS, is final with no review under a ruling the gate
+ * reads, and carries the pinned hash. Returns
  * whether it was accepted — the number the OE-5 line prints.
  */
 function checkPair(

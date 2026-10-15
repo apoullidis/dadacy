@@ -844,6 +844,38 @@ test('UNPINNED-CONTENT — a safety string edited with its record hash updated, 
   );
 });
 
+test('UNPINNED-CONTENT — a NEW safety_critical key, final, current and AI-authored but with no pin, is refused in every locale: an absent pin never matches', () => {
+  const NEW_KEY = 'legal.terms.accept';
+  const locales = enabledLocales().map((d) => d.code);
+  attack(
+    (root) => {
+      finalise(root);
+      const tiers = readJson(root, 'tiers.json');
+      (tiers['tiers'] as Record<string, string>)[NEW_KEY] = 'safety_critical';
+      writeJson(root, 'tiers.json', tiers);
+      const register = readJson(root, 'review.json');
+      const entries = register['entries'] as Entries;
+      for (const locale of locales) {
+        const template = entries[locale]?.[SAFETY_KEY];
+        const source = catalogueSource(locale, NEW_KEY, root);
+        assert.ok(template !== undefined && source !== undefined, `fixture gap in ${locale}`);
+        entries[locale] = {
+          ...entries[locale],
+          [NEW_KEY]: { ...template, content_hash: contentHash(source) },
+        };
+      }
+      writeJson(root, 'review.json', register);
+    },
+    (root) =>
+      (readJson(root, 'tiers.json')['tiers'] as Record<string, string>)[NEW_KEY] ===
+        'safety_critical' && locales.every((l) => recordOf(root, l, NEW_KEY)?.['status'] === FINAL),
+    'FAIL',
+    locales.map((l) => `UNPINNED-CONTENT '${NEW_KEY}' in ${l}`).concat(['(none pinned)']),
+    ['  - STALE-RECORD ', ...othersThan('UNPINNED-CONTENT')],
+    { 'UNPINNED-CONTENT': locales.length },
+  );
+});
+
 /* ------ the content checks bind INSIDE the waiver too (rework 1, QA-F2) */
 
 test("UNPINNED-CONTENT (waived) — under TODAY'S waiver, a safety string edited with its record re-hashed and no gate edit is refused", () => {
@@ -935,7 +967,12 @@ test('a waiver RE-ADDED after the flip with expected_by on or before 2026-12-05,
         ]
       : ['  - WAIVER-EXPIRED ', `UNPINNED-CONTENT '${SAFETY_KEY}' in ru:`],
     inForce
-      ? ['  - STALE-RECORD ', '  - WAIVER-RENEWED ', '  - WAIVER-EXPIRED ', ...othersThan('UNPINNED-CONTENT')]
+      ? [
+          '  - STALE-RECORD ',
+          '  - WAIVER-RENEWED ',
+          '  - WAIVER-EXPIRED ',
+          ...othersThan('UNPINNED-CONTENT'),
+        ]
       : ['  - STALE-RECORD ', '  - WAIVER-RENEWED ', ...othersThan('UNPINNED-CONTENT')],
     { 'UNPINNED-CONTENT': 1 },
   );

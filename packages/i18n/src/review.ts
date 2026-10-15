@@ -12,11 +12,15 @@
  * the weakening is inherent in the ruling: since T-258,
  * `gate:safety-review-currency` passes a `safety_critical` record outside the
  * dated waiver only when it is AI-authored under a ruling the GATE reads
- * (`tools/rulings.ts`), final with no review under OE-5, claims no review, and
- * carries the exact content hash pinned in the gate's own source
- * (`AUTHORED_CONTENT_PINNED`). So *an MT engine's output cannot enter without an
- * edit to the gate* — which makes a change VISIBLE in review of the diff; it
- * does not prove that the named model wrote the bytes. Machine translation is
+ * (`tools/rulings.ts`), final with no review under OE-5, claims no review,
+ * carries no field outside the record's nine, and carries the exact content
+ * hash pinned in the gate's own source (`AUTHORED_CONTENT_PINNED`). The pin and
+ * the currency check bind inside the waiver too (T-258 rework 1). So *a changed
+ * or new `safety_critical` string cannot pass the gate without an edit to the
+ * gate's pin* (the gate's Vitest *UNPINNED-CONTENT* cases, waived and not).
+ * That makes a change VISIBLE in review of the diff. It does not prove that the
+ * named model wrote the bytes, and copy below `safety_critical` is not
+ * examined. Machine translation is
  * still prohibited for `safety_critical` and `transactional` copy (DV-11).
  *
  * `T-044` owns `gate:safety-review-currency` and reads this file.

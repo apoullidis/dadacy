@@ -212,12 +212,19 @@ source **and** the hash pinned in the gate's own `AUTHORED_CONTENT_PINNED`,
 whose `provenance` is `ai_authored` with a `ruling` and an exact `authored_by`
 that the gate's `tools/rulings.ts` accepts for that locale, whose `status` is
 `unreviewed_by_ruling` with `review_ruling: "OE-5"`, and which claims no review
-(`status` never `signed_off`, `reviewed_by` and `reviewed_at` null) —
-**unless** the key sits inside an unexpired `pending_pipeline` waiver, where
-only the record's existence and the no-review-claim rule are checked. Since
-OE-5 a record that names a reviewer is refused (`CLAIMS-REVIEW`), signed off
-or not. The rest of this document still describes the human sign-off path
-that OE-5 removed; `T-259` and `T-260` rewrite it.
+(`status` never `signed_off`, no non-null field named with `review` other
+than `review_ruling`) and carries no field outside the nine a record defines
+(`UNDEFINED-FIELD`). When the key sits inside an unexpired `pending_pipeline`
+waiver, authorship and finality are not checked. The record's existence, the
+no-review-claim rule, the closed field set, currency and the pin still are
+(`T-258` rework 1). So since OE-5, the gate refuses a record whose `status` is
+`signed_off`, which carries a non-null `review`-named field, or which carries
+any field outside the nine (`signed_off_by`, `approved_by`, `dsl_signoff`, …),
+waived or not (the gate's Vitest _UNDEFINED-FIELD_ and _CLAIMS-REVIEW_ cases).
+Inside the waiver it does not judge the _values_ of `authored_by`, `ruling`,
+`review_ruling` or a `status` other than `signed_off`, and nowhere does it read
+prose in `note`. The rest of this document still describes the human sign-off
+path that OE-5 removed; `T-259` and `T-260` rewrite it.
 
 ### What stops a record saying "reviewed" when nothing was reviewed
 
