@@ -41,6 +41,7 @@
  * `gate:pr` refuses a dirty tree (`T-005` § Published contract §4).
  */
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -461,7 +462,162 @@ const CASES: readonly Case[] = [
     ],
     mustCount: [{ name: 'UNRULED-NO-REVIEW', n: '{KEYS}' }],
   },
+  {
+    name: 'WAIVED-UNDEFINED-FIELD',
+    why:
+      'T-258 rework 1 (QA-F1, A1/A4): the record field set is closed, and the waiver does not ' +
+      'cover a field outside it. A sign-off in a field named without "review" (signed_off_by, ' +
+      "the register's own stage name dsl_signoff) on a waived record of the real tree.",
+    edits: [
+      {
+        file: REVIEW,
+        plant: json((doc) => {
+          const entries = doc['entries'] as Record<string, Record<string, Record<string, unknown>>>;
+          const ru = entries['ru']?.[KEY];
+          const el = entries['el']?.[KEY];
+          if (ru === undefined || el === undefined) throw new Error(`no ru/el record for ${KEY}`);
+          ru['signed_off_by'] = 'Eleni Constantinou, Designated Safeguarding Lead';
+          el['dsl_signoff'] = '2026-10-01';
+        }),
+      },
+    ],
+    expect: 'FAIL',
+    mustInclude: [
+      '(in force)',
+      `UNDEFINED-FIELD '${KEY}' in ru (waived): signed_off_by is "Eleni Constantinou, Designated Safeguarding Lead"`,
+      `UNDEFINED-FIELD '${KEY}' in el (waived): dsl_signoff is "2026-10-01"`,
+    ],
+    mustExclude: ['GATE PASS', 'CRASH', 'CLAIMS-REVIEW', 'NOT-FINAL', 'UNPINNED-CONTENT'],
+    mustCount: [{ name: 'UNDEFINED-FIELD', n: '2' }],
+  },
+  {
+    name: 'FINAL-UNDEFINED-FIELD',
+    why:
+      'T-258 rework 1 (QA-F1, A2/A3): after the T-259 flip, on the full run, a sign-off in ' +
+      'signed_off_by or approved_by must not be counted "reviewed by nobody".',
+    edits: [
+      {
+        file: REVIEW,
+        plant: json((doc) => {
+          finalise(doc);
+          const entries = doc['entries'] as Record<string, Record<string, Record<string, unknown>>>;
+          const ru = entries['ru']?.[KEY];
+          const en = entries['en']?.['safety.sos.confirm'];
+          if (ru === undefined || en === undefined) throw new Error('fixture records missing');
+          ru['signed_off_by'] = 'Eleni Constantinou, Designated Safeguarding Lead';
+          en['approved_by'] = 'Eleni Constantinou, Designated Safeguarding Lead';
+        }),
+      },
+    ],
+    expect: 'FAIL',
+    mustInclude: [
+      'waiver: none in force',
+      `UNDEFINED-FIELD '${KEY}' in ru: signed_off_by is`,
+      "UNDEFINED-FIELD 'safety.sos.confirm' in en: approved_by is",
+    ],
+    mustExclude: ['GATE PASS', 'CRASH', 'OE-5: {PAIRS} of {PAIRS}', 'NOT-FINAL'],
+    mustCount: [{ name: 'UNDEFINED-FIELD', n: '2' }],
+  },
+  {
+    name: 'WAIVED-EDIT-REHASHED',
+    why:
+      "T-258 rework 1 (QA-F2, P2): under TODAY'S waiver a safety string is edited and its " +
+      'record re-hashed, with no gate edit. The pin binds inside the waiver too.',
+    edits: [
+      {
+        file: CATALOGUE_RU,
+        plant: json((doc) => {
+          doc['checkins_missed'] = `${String(doc['checkins_missed'])} !!`;
+        }),
+      },
+      {
+        file: REVIEW,
+        plant: json((doc) => {
+          const entries = doc['entries'] as Record<string, Record<string, Record<string, unknown>>>;
+          const ru = entries['ru']?.[KEY];
+          if (ru === undefined) throw new Error(`no ru record for ${KEY}`);
+          ru['content_hash'] = rehashRu();
+        }),
+      },
+    ],
+    expect: 'FAIL',
+    mustInclude: ['(in force)', `UNPINNED-CONTENT '${KEY}' in ru (waived)`],
+    mustExclude: ['GATE PASS', 'CRASH', 'STALE-RECORD', 'NOT-FINAL'],
+    mustCount: [{ name: 'UNPINNED-CONTENT', n: '1' }],
+  },
+  {
+    name: 'WAIVED-THEN-STALE',
+    why:
+      "T-258 rework 1 (QA-F2): under today's waiver a safety string is edited under its record. " +
+      'Currency is checked inside the waiver too.',
+    edits: [
+      {
+        file: CATALOGUE_RU,
+        plant: json((doc) => {
+          doc['checkins_missed'] = `${String(doc['checkins_missed'])} !!`;
+        }),
+      },
+    ],
+    expect: 'FAIL',
+    mustInclude: ['(in force)', `STALE-RECORD '${KEY}' in ru (waived)`],
+    mustExclude: ['GATE PASS', 'CRASH', 'NOT-FINAL'],
+    mustCount: [{ name: 'STALE-RECORD', n: '1' }],
+  },
+  {
+    name: 'WAIVER-READDED-EDITED',
+    why:
+      "T-258 rework 1 (QA-F2, P3; the negative QA found missing from T-259's plan): after the " +
+      'flip, a waiver is re-added with expected_by ON the 2026-12-05 anchor (so not ' +
+      'WAIVER-RENEWED) over one key, whose string is then edited and re-hashed with no gate edit.',
+    edits: [
+      {
+        file: CATALOGUE_RU,
+        plant: json((doc) => {
+          doc['checkins_missed'] = `${String(doc['checkins_missed'])} !!`;
+        }),
+      },
+      {
+        file: REVIEW,
+        plant: json((doc) => {
+          const w = { ...waiverOf(doc), keys: [KEY], expected_by: '2026-12-05' };
+          finalise(doc);
+          doc['pending_pipeline'] = w;
+          const entries = doc['entries'] as Record<string, Record<string, Record<string, unknown>>>;
+          const ru = entries['ru']?.[KEY];
+          if (ru === undefined) throw new Error(`no ru record for ${KEY}`);
+          ru['content_hash'] = rehashRu();
+        }),
+      },
+    ],
+    expect: 'FAIL',
+    mustInclude: [
+      'waiver: pending_pipeline expires 2026-12-05 (in force), naming 1 key(s)',
+      `UNPINNED-CONTENT '${KEY}' in ru (waived)`,
+    ],
+    mustExclude: [
+      'GATE PASS',
+      'CRASH',
+      'STALE-RECORD',
+      'WAIVER-RENEWED',
+      'WAIVER-EXTENDED',
+      'WAIVER-EXPIRED',
+    ],
+    mustCount: [{ name: 'UNPINNED-CONTENT', n: '1' }],
+  },
 ];
+
+/**
+ * The NFC-sha256 of the ru catalogue string of KEY AS IT IS ON DISK NOW — the
+ * edit plants run in order, so a review.json plant listed after the catalogue
+ * plant re-hashes the edited string. The same definition as `contentHash()`
+ * (src/review.ts), written out here so the suite does not agree with itself.
+ */
+function rehashRu(): string {
+  const doc = JSON.parse(readFileSync(join(REPO, CATALOGUE_RU), 'utf8')) as Record<string, unknown>;
+  const s = String(doc['checkins_missed']);
+  if (!s.endsWith(' !!')) throw new Error('rehashRu ran before the catalogue edit landed');
+  return `sha256:${createHash('sha256').update(s.normalize('NFC'), 'utf8').digest('hex')}`;
+}
 
 /* ------------------------------------------------------------------ driver */
 
@@ -560,7 +716,8 @@ for (const c of CASES) {
       const s = fill(raw);
       if (!run.out.includes(s)) problems.push(`missing: ${s}`);
     }
-    for (const s of c.mustExclude) {
+    for (const raw of c.mustExclude) {
+      const s = fill(raw);
       if (run.out.includes(s)) problems.push(`present but banned: ${s}`);
     }
     for (const { name, n } of c.mustCount ?? []) {

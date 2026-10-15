@@ -293,7 +293,60 @@ const T258_REFUSALS = [
   'NOT-FINAL',
   'UNRULED-NO-REVIEW',
   'UNPINNED-CONTENT',
+  'UNDEFINED-FIELD',
 ] as const;
+
+/**
+ * T-258 rework 1 (QA-F1): the record's CLOSED field set, written HERE as a
+ * literal rather than imported from the gate, so the CONTROL below judges the
+ * gate's set against this one and against the committed register's own fields.
+ */
+const RECORD_FIELDS_LITERAL = [
+  'authored_by',
+  'content_hash',
+  'note',
+  'provenance',
+  'review_ruling',
+  'reviewed_at',
+  'reviewed_by',
+  'ruling',
+  'status',
+] as const;
+
+/**
+ * A waiver as someone might RE-ADD it after T-259 has set `pending_pipeline`
+ * to null: well-formed, one key, `expected_by` on the gate's anchor day. A
+ * literal, not the committed waiver, so the case survives T-259 removing it.
+ */
+function readdedWaiver(expectedBy: string): Record<string, unknown> {
+  return {
+    opened_at: '2026-10-15',
+    expected_by: expectedBy,
+    owner: 'frontend-developer',
+    ticket: 'T-258 rework 1 fixture',
+    reason: 'a waiver re-added over one key, to edit its copy without a gate edit',
+    keys: [SAFETY_KEY],
+  };
+}
+
+/** Edit the ru catalogue string of SAFETY_KEY and re-hash its record to match — the QA-F2 shape. */
+function editAndRehash(root: string, suffix: string): string {
+  const doc = readJson(root, SAFETY_KEY_FILE);
+  const edited = `${String(doc['checkins_missed'])}${suffix}`;
+  doc['checkins_missed'] = edited;
+  writeJson(root, SAFETY_KEY_FILE, doc);
+  editRecord(root, 'ru', SAFETY_KEY, { content_hash: contentHash(edited) });
+  return edited;
+}
+
+function editedAndRehashed(root: string, suffix: string): boolean {
+  const source = catalogueSource('ru', SAFETY_KEY, root);
+  return (
+    source !== undefined &&
+    source.endsWith(suffix) &&
+    recordOf(root, 'ru', SAFETY_KEY)?.['content_hash'] === contentHash(source)
+  );
+}
 
 function othersThan(...planted: readonly string[]): readonly string[] {
   return T258_REFUSALS.filter((r) => !planted.includes(r)).map((r) => `  - ${r} `);
@@ -331,14 +384,25 @@ test('CONTROL — every pair final under OE-5 and pinned, no waiver: the gate pa
     (root) => {
       finalise(root);
     },
-    (root) =>
-      readJson(root, 'review.json')['pending_pipeline'] === null &&
-      Object.values(entriesOf(root)).every((perLocale) =>
-        Object.values(perLocale).every(
-          (r) =>
-            r['status'] === FINAL && r['review_ruling'] === 'OE-5' && r['reviewed_by'] === null,
+    (root) => {
+      // T-258 rework 1: the passing fixture uses EVERY field of the closed set,
+      // so UNDEFINED-FIELD over-refusing a defined field would turn this red.
+      const used = new Set(
+        Object.values(entriesOf(root)).flatMap((perLocale) =>
+          Object.values(perLocale).flatMap((r) => Object.keys(r)),
         ),
-      ),
+      );
+      assert.deepEqual([...used].sort(), [...RECORD_FIELDS_LITERAL]);
+      return (
+        readJson(root, 'review.json')['pending_pipeline'] === null &&
+        Object.values(entriesOf(root)).every((perLocale) =>
+          Object.values(perLocale).every(
+            (r) =>
+              r['status'] === FINAL && r['review_ruling'] === 'OE-5' && r['reviewed_by'] === null,
+          ),
+        )
+      );
+    },
     'PASS',
     [
       'waiver: none in force — every record is checked in full',
@@ -450,9 +514,12 @@ test('CLAIMS-REVIEW — a review claim in a field the register does not define (
     [
       `CLAIMS-REVIEW '${SAFETY_KEY}' in el: review_date is "2026-10-12"`,
       `CLAIMS-REVIEW '${SAFETY_KEY}' in ru: reviewer is "${REAL_LOOKING_REVIEWER}"`,
+      // Rework 1: neither field is in the closed set, so each is ALSO undefined.
+      `UNDEFINED-FIELD '${SAFETY_KEY}' in el: review_date is "2026-10-12"`,
+      `UNDEFINED-FIELD '${SAFETY_KEY}' in ru: reviewer is "${REAL_LOOKING_REVIEWER}"`,
     ],
-    othersThan('CLAIMS-REVIEW'),
-    { 'CLAIMS-REVIEW': 2 },
+    othersThan('CLAIMS-REVIEW', 'UNDEFINED-FIELD'),
+    { 'CLAIMS-REVIEW': 2, 'UNDEFINED-FIELD': 2 },
   );
 });
 
@@ -474,6 +541,83 @@ test('CLAIMS-REVIEW — status signed_off alone, with no reviewer and no date, i
     ],
     othersThan('CLAIMS-REVIEW', 'NOT-FINAL'),
     { 'CLAIMS-REVIEW': 1 },
+  );
+});
+
+/* ------------- UNDEFINED-FIELD: the record's field set is closed (rework 1, QA-F1) */
+
+test('UNDEFINED-FIELD — a sign-off in a field named without "review" (signed_off_by, approved_by, dsl_signoff) is refused on a final record', () => {
+  const plants: readonly (readonly [string, string, string])[] = [
+    ['el', 'signed_off_by', REAL_LOOKING_REVIEWER],
+    ['ru', 'approved_by', REAL_LOOKING_REVIEWER],
+    ['en', 'dsl_signoff', '2026-10-01'],
+  ];
+  attack(
+    (root) => {
+      finalise(root);
+      for (const [locale, field, value] of plants) {
+        editRecord(root, locale, SAFETY_KEY, { [field]: value });
+      }
+    },
+    (root) =>
+      plants.every(([l, field, value]) => recordOf(root, l, SAFETY_KEY)?.[field] === value) &&
+      readJson(root, 'review.json')['pending_pipeline'] === null,
+    'FAIL',
+    plants.map(
+      ([l, field, value]) =>
+        `UNDEFINED-FIELD '${SAFETY_KEY}' in ${l}: ${field} is ${JSON.stringify(value)}`,
+    ),
+    othersThan('UNDEFINED-FIELD'),
+    { 'UNDEFINED-FIELD': plants.length },
+  );
+});
+
+test('UNDEFINED-FIELD — the same fields on records INSIDE the waiver are refused too: the waiver never covers an undefined field', () => {
+  attack(
+    (root) => {
+      editRecord(root, 'ru', SAFETY_KEY, { signed_off_by: REAL_LOOKING_REVIEWER });
+      editRecord(root, 'el', SAFETY_KEY, { dsl_signoff: '2026-10-01' });
+    },
+    (root) => {
+      const waiver = readJson(root, 'review.json')['pending_pipeline'] as Record<string, unknown>;
+      return (
+        (waiver['keys'] as string[]).includes(SAFETY_KEY) &&
+        recordOf(root, 'ru', SAFETY_KEY)?.['signed_off_by'] === REAL_LOOKING_REVIEWER &&
+        recordOf(root, 'el', SAFETY_KEY)?.['dsl_signoff'] === '2026-10-01'
+      );
+    },
+    'FAIL',
+    [
+      '(in force)',
+      `${String(expectedPairs())} waived, 0 with a record read`,
+      `UNDEFINED-FIELD '${SAFETY_KEY}' in ru (waived): signed_off_by is "${REAL_LOOKING_REVIEWER}"`,
+      `UNDEFINED-FIELD '${SAFETY_KEY}' in el (waived): dsl_signoff is "2026-10-01"`,
+    ],
+    othersThan('UNDEFINED-FIELD'),
+    { 'UNDEFINED-FIELD': 2 },
+  );
+});
+
+test('UNDEFINED-FIELD — a field outside the set is refused even when it is null, or names nothing like a review (preview_png)', () => {
+  attack(
+    (root) => {
+      finalise(root);
+      editRecord(root, 'ru', SAFETY_KEY, { approved_by: null });
+      editRecord(root, 'el', SAFETY_KEY, { reviewer: null });
+      editRecord(root, 'en', SAFETY_KEY, { preview_png: 'checks/render-360/en.png' });
+    },
+    (root) =>
+      recordOf(root, 'ru', SAFETY_KEY)?.['approved_by'] === null &&
+      recordOf(root, 'el', SAFETY_KEY)?.['reviewer'] === null &&
+      recordOf(root, 'en', SAFETY_KEY)?.['preview_png'] === 'checks/render-360/en.png',
+    'FAIL',
+    [
+      `UNDEFINED-FIELD '${SAFETY_KEY}' in ru: approved_by is null`,
+      `UNDEFINED-FIELD '${SAFETY_KEY}' in el: reviewer is null`,
+      `UNDEFINED-FIELD '${SAFETY_KEY}' in en: preview_png is "checks/render-360/en.png"`,
+    ],
+    othersThan('UNDEFINED-FIELD', 'CLAIMS-REVIEW'),
+    { 'UNDEFINED-FIELD': 3, 'CLAIMS-REVIEW': 1 },
   );
 });
 
@@ -696,6 +840,103 @@ test('UNPINNED-CONTENT — a safety string edited with its record hash updated, 
     'FAIL',
     [`UNPINNED-CONTENT '${SAFETY_KEY}' in ru`, 'AUTHORED_CONTENT_PINNED'],
     ['STALE-RECORD', ...othersThan('UNPINNED-CONTENT')],
+    { 'UNPINNED-CONTENT': 1 },
+  );
+});
+
+/* ------ the content checks bind INSIDE the waiver too (rework 1, QA-F2) */
+
+test("UNPINNED-CONTENT (waived) — under TODAY'S waiver, a safety string edited with its record re-hashed and no gate edit is refused", () => {
+  attack(
+    (root) => {
+      editAndRehash(root, ' (edited under the waiver)');
+    },
+    (root) => {
+      const waiver = readJson(root, 'review.json')['pending_pipeline'] as Record<string, unknown>;
+      return (
+        (waiver['keys'] as string[]).includes(SAFETY_KEY) &&
+        editedAndRehashed(root, ' (edited under the waiver)')
+      );
+    },
+    'FAIL',
+    ['(in force)', `UNPINNED-CONTENT '${SAFETY_KEY}' in ru (waived)`, 'AUTHORED_CONTENT_PINNED'],
+    ['STALE-RECORD', ...othersThan('UNPINNED-CONTENT')],
+    { 'UNPINNED-CONTENT': 1 },
+  );
+});
+
+test("STALE-RECORD (waived) — under today's waiver, a safety string edited under its record is refused", () => {
+  attack(
+    (root) => {
+      const doc = readJson(root, SAFETY_KEY_FILE);
+      doc['checkins_missed'] = `${String(doc['checkins_missed'])} (edited, record untouched)`;
+      writeJson(root, SAFETY_KEY_FILE, doc);
+    },
+    (root) =>
+      String(readJson(root, SAFETY_KEY_FILE)['checkins_missed']).endsWith(
+        ' (edited, record untouched)',
+      ) &&
+      (
+        (readJson(root, 'review.json')['pending_pipeline'] as Record<string, unknown>)[
+          'keys'
+        ] as string[]
+      ).includes(SAFETY_KEY),
+    'FAIL',
+    [`STALE-RECORD '${SAFETY_KEY}' in ru (waived)`, 'the catalogue string now hashes to sha256:'],
+    othersThan(),
+    { 'STALE-RECORD': 1 },
+  );
+});
+
+test("NO-SOURCE (waived) — under today's waiver, a waived key whose catalogue string is deleted is refused: currency is unjudgeable", () => {
+  attack(
+    (root) => {
+      const doc = readJson(root, SAFETY_KEY_FILE);
+      delete doc['checkins_missed'];
+      writeJson(root, SAFETY_KEY_FILE, doc);
+    },
+    (root) => !('checkins_missed' in readJson(root, SAFETY_KEY_FILE)),
+    'FAIL',
+    [`NO-SOURCE '${SAFETY_KEY}' in ru (waived)`, 'fails closed'],
+    othersThan(),
+    { 'NO-SOURCE': 1 },
+  );
+});
+
+test('a waiver RE-ADDED after the flip with expected_by on or before 2026-12-05, over an edited and re-hashed key, is refused — a register-only edit cannot launder a catalogue edit', () => {
+  // The gate's anchor day. Up to and including it the re-added waiver is in
+  // force and the pair is refused as waived; from the day after it has expired
+  // and the pair is refused unwaived. Either way it is refused: the case reads
+  // the gate's own `today (UTC)` line rather than assuming the date.
+  const expectedBy = '2026-12-05';
+  const inForce = Date.now() <= Date.parse(`${expectedBy}T23:59:59.999Z`);
+  attack(
+    (root) => {
+      finalise(root);
+      const register = readJson(root, 'review.json');
+      register['pending_pipeline'] = readdedWaiver(expectedBy);
+      writeJson(root, 'review.json', register);
+      editAndRehash(root, ' (edited under a re-added waiver)');
+    },
+    (root) => {
+      const w = readJson(root, 'review.json')['pending_pipeline'] as Record<string, unknown>;
+      return (
+        w['expected_by'] === expectedBy &&
+        JSON.stringify(w['keys']) === JSON.stringify([SAFETY_KEY]) &&
+        recordOf(root, 'ru', SAFETY_KEY)?.['status'] === FINAL &&
+        editedAndRehashed(root, ' (edited under a re-added waiver)')
+      );
+    },
+    'FAIL',
+    inForce
+      ? [
+          `waiver: pending_pipeline expires ${expectedBy} (in force), naming 1 key(s)`,
+          `UNPINNED-CONTENT '${SAFETY_KEY}' in ru (waived)`,
+        ]
+      : ['WAIVER-EXPIRED', `UNPINNED-CONTENT '${SAFETY_KEY}' in ru:`],
+    inForce
+      ? ['STALE-RECORD', 'WAIVER-RENEWED', 'WAIVER-EXPIRED', ...othersThan('UNPINNED-CONTENT')]
+      : ['STALE-RECORD', 'WAIVER-RENEWED', ...othersThan('UNPINNED-CONTENT')],
     { 'UNPINNED-CONTENT': 1 },
   );
 });
