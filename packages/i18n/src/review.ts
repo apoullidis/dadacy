@@ -6,11 +6,18 @@
  * re-exported from the package root, so it can never be pulled into a browser
  * bundle. `import { … } from '@kinvara/i18n/review'`.
  *
- * The argument it implements, in one line: *an MT engine cannot produce a DSL
- * review record.* Machine translation is prohibited for `safety_critical` and
- * `transactional` copy (DV-11), and the way that prohibition is made
- * enforceable rather than merely intended is that passing the gate requires a
- * commit to this file naming a human reviewer — there is no other route.
+ * The argument it implemented until stakeholder ruling OE-5 (2026-10-11), in
+ * one line: *an MT engine cannot produce a DSL review record.* OE-5 removed
+ * human review of this copy (EV-16 as extended), so that argument weakens, and
+ * the weakening is inherent in the ruling: since T-258,
+ * `gate:safety-review-currency` passes a `safety_critical` record outside the
+ * dated waiver only when it is AI-authored under a ruling the GATE reads
+ * (`tools/rulings.ts`), final with no review under OE-5, claims no review, and
+ * carries the exact content hash pinned in the gate's own source
+ * (`AUTHORED_CONTENT_PINNED`). So *an MT engine's output cannot enter without an
+ * edit to the gate* — which makes a change VISIBLE in review of the diff; it
+ * does not prove that the named model wrote the bytes. Machine translation is
+ * still prohibited for `safety_critical` and `transactional` copy (DV-11).
  *
  * `T-044` owns `gate:safety-review-currency` and reads this file.
  * `T-049`'s six-week external copy pipeline is what populates it.
@@ -57,9 +64,18 @@ export interface ReviewRecord {
    * `ai_authored`.
    */
   readonly ruling?: string;
-  /** The DSL or legal reviewer who signed off. `null` only while `status` is `pending_review`. */
+  /**
+   * T-258. The stakeholder ruling (e.g. `OE-5`) under which this record is final
+   * with NO review. Present exactly when `status` is `unreviewed_by_ruling`.
+   */
+  readonly review_ruling?: string;
+  /**
+   * The DSL or legal reviewer who signed off. On a `safety_critical` record it
+   * must be `null` at every status since OE-5 — `gate:safety-review-currency`
+   * refuses any value as `CLAIMS-REVIEW` (T-258).
+   */
   readonly reviewed_by: string | null;
-  /** ISO-8601 UTC. `null` only while `status` is `pending_review`. */
+  /** ISO-8601 UTC. Same rule as `reviewed_by`: `null` on a `safety_critical` record since OE-5. */
   readonly reviewed_at: string | null;
   readonly note?: string;
 }

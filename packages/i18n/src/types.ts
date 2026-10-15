@@ -77,7 +77,11 @@ export interface TierPolicy {
   readonly fallbackMetric: string | null;
   /** Machine translation permitted at all? Prohibited outright on the strict tiers (DV-11). */
   readonly machineTranslationPermitted: boolean;
-  /** Requires a DSL review record in `review.json` (SA §TS-12.3, SD Revision Log D8). */
+  /**
+   * Requires a record in `review.json`, held by `gate:safety-review-currency`
+   * (SA §TS-12.3, SD Revision Log D8). Since OE-5 that record names no human
+   * reviewer: it is AI-authored and final with no review (T-258).
+   */
   readonly requiresSafetyReview: boolean;
 }
 
@@ -93,4 +97,15 @@ export interface TierPolicy {
 export type ReviewProvenance =
   'authored' | 'translated_professional' | 'legal_review' | 'placeholder' | 'ai_authored';
 
-export type ReviewStatus = 'signed_off' | 'pending_review';
+/**
+ * Review state of one `safety_critical` record.
+ *
+ * `unreviewed_by_ruling` (T-258): FINAL, and reviewed by nobody, because a
+ * stakeholder ruling removed human review of this copy (OE-5, 2026-10-11; EV-16
+ * as extended; OE-81: releasable). It is the only status
+ * `gate:safety-review-currency` accepts outside the dated waiver, and only with
+ * `review_ruling` citing that ruling and with `reviewed_by`/`reviewed_at` null.
+ * `signed_off` remains a value of this type so that a record claiming a human
+ * review is a refusal the gate can name (`CLAIMS-REVIEW`), not a parse error.
+ */
+export type ReviewStatus = 'signed_off' | 'pending_review' | 'unreviewed_by_ruling';

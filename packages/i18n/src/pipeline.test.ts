@@ -33,9 +33,10 @@ import {
   stageManifestProblems,
   stageApplies,
 } from './review.ts';
-import type { ReviewRegister, CopyPipeline, AiAuthorshipRuling } from './review.ts';
+import type { ReviewRegister, CopyPipeline } from './review.ts';
 import { keysAtTier } from './tiers.ts';
 import { enabledLocales } from './registry.ts';
+import { MODEL, AI_RULINGS } from '../tools/rulings.ts';
 
 const LOCALES = enabledLocales().map((l) => l.code);
 const SAFETY_KEYS = [...keysAtTier('safety_critical')];
@@ -73,31 +74,14 @@ const ORIGINAL_EXPECTED_BY = '2026-10-17';
  */
 const MAX_UNSTARTED_RE_ANCHORS = 1;
 
-/**
- * T-233. The model identity OE-66 and OE-67 name as the author, spelled exactly
- * as `authored_by` must carry it. Transcribed from the drafts' own provenance
- * lines (`tasks/state/EP-0/OE-66/{en,el,ru}/NOTES.md`: "Claude Opus
- * (claude-opus-5-5), AI agent").
+/*
+ * T-233's `MODEL` and `AI_RULINGS` — the model identity OE-66/OE-67 name and
+ * the ONLY rulings that make a model an author — were written here as
+ * literals. T-258 moved them, unchanged, into `tools/rulings.ts` so that
+ * `gate:safety-review-currency` reads the same literal (closing OD-258's split,
+ * where only this suite could tell a legitimate AI record from a forged one).
+ * They are still never read from `review.json`; see that file's header.
  */
-const MODEL = 'Claude Opus (claude-opus-5-5), AI agent';
-
-/**
- * T-233. The ONLY stakeholder rulings that make an AI model an author, written
- * HERE from `tasks/state/decisions.md` and never read from `review.json` — a
- * register that listed the rulings it is checked against could widen its own
- * authority in the same commit as the record that needs it (PROTOCOL §5.1).
- *   - OE-66, 2026-09-27T18:54:51Z: the model authors ALL `el` and `ru` copy,
- *     safety_critical included (EV-16).
- *   - OE-67, 2026-09-27T19:27:39Z: the model authors the `en` safety_critical
- *     copy. Every key in `entries` is safety_critical, so the locale is the
- *     whole of its scope here.
- * Adding a ruling, a locale or a model is a stakeholder decision recorded in
- * decisions.md first, and must cost an edit to this literal.
- */
-const AI_RULINGS: readonly AiAuthorshipRuling[] = [
-  { id: 'OE-66', decided_at: '2026-09-27T18:54:51Z', locales: ['el', 'ru'], authors: [MODEL] },
-  { id: 'OE-67', decided_at: '2026-09-27T19:27:39Z', locales: ['en'], authors: [MODEL] },
-];
 
 /**
  * The pipeline whose `external_start` a given waiver is being checked against.
@@ -1191,7 +1175,15 @@ test("T-040's published `entries` shape survives this ticket, field by field", (
         typeof r.ruling === 'string',
         `${locale}/${key}: \`ruling\` must be present exactly when provenance is ai_authored`,
       );
-      assert.ok(['signed_off', 'pending_review'].includes(r.status));
+      // T-258 widened it ADDITIVELY again, in the same two ways: one terminal
+      // status (final, reviewed by nobody, by stakeholder ruling OE-5) and one
+      // optional field naming that ruling, present exactly when that status is.
+      assert.ok(['signed_off', 'pending_review', 'unreviewed_by_ruling'].includes(r.status));
+      assert.equal(
+        r.status === 'unreviewed_by_ruling',
+        typeof r.review_ruling === 'string',
+        `${locale}/${key}: \`review_ruling\` must be present exactly when status is unreviewed_by_ruling`,
+      );
       for (const f of ['authored_by', 'reviewed_by', 'reviewed_at'] as const) {
         assert.ok(r[f] === null || typeof r[f] === 'string', `${locale}/${key}.${f}`);
       }
