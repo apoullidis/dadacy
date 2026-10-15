@@ -112,7 +112,8 @@ function finalise(doc: Record<string, unknown>): void {
 /** Replace exactly one occurrence, or refuse — a plant that matched nothing would judge nothing. */
 function once(s: string, from: string | RegExp, to: string): string {
   const hits = typeof from === 'string' ? s.split(from).length - 1 : [...s.matchAll(from)].length;
-  if (hits !== 1) throw new Error(`expected exactly one match of ${String(from)}, found ${String(hits)}`);
+  if (hits !== 1)
+    throw new Error(`expected exactly one match of ${String(from)}, found ${String(hits)}`);
   return s.replace(from, to);
 }
 
@@ -565,7 +566,8 @@ for (const c of CASES) {
     for (const { name, n } of c.mustCount ?? []) {
       const want = Number(fill(n));
       const got = run.out.split('\n').filter((l) => l.startsWith(`  - ${name} `)).length;
-      if (got !== want) problems.push(`${name} printed ${String(got)} time(s), expected ${String(want)}`);
+      if (got !== want)
+        problems.push(`${name} printed ${String(got)} time(s), expected ${String(want)}`);
     }
     if (problems.length > 0) {
       console.log(run.out.trimEnd());

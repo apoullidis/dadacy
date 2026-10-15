@@ -161,7 +161,10 @@ function finalise(root: string): void {
   for (const locale of enabledLocales().map((d) => d.code)) {
     for (const key of reviewTieredKeys()) {
       const record = entries[locale]?.[key];
-      assert.ok(record !== undefined, `the committed register has no record for ${key} in ${locale}`);
+      assert.ok(
+        record !== undefined,
+        `the committed register has no record for ${key} in ${locale}`,
+      );
       entries[locale] = {
         ...entries[locale],
         [key]: {
@@ -266,7 +269,11 @@ function attack(
       assert.ok(!run.out.includes(name), `${name} must not be printed\n${run.out}`);
     }
     for (const [name, n] of Object.entries(counts)) {
-      assert.equal(countRefusals(run.out, name), n, `${name} must be printed ${String(n)} time(s)\n${run.out}`);
+      assert.equal(
+        countRefusals(run.out, name),
+        n,
+        `${name} must be printed ${String(n)} time(s)\n${run.out}`,
+      );
     }
     assert.ok(
       run.out.includes('SOURCE READING ONLY'),
@@ -328,7 +335,8 @@ test('CONTROL — every pair final under OE-5 and pinned, no waiver: the gate pa
       readJson(root, 'review.json')['pending_pipeline'] === null &&
       Object.values(entriesOf(root)).every((perLocale) =>
         Object.values(perLocale).every(
-          (r) => r['status'] === FINAL && r['review_ruling'] === 'OE-5' && r['reviewed_by'] === null,
+          (r) =>
+            r['status'] === FINAL && r['review_ruling'] === 'OE-5' && r['reviewed_by'] === null,
         ),
       ),
     'PASS',
@@ -438,7 +446,11 @@ test('CLAIMS-REVIEW — status signed_off alone, with no reviewer and no date, i
       recordOf(root, 'en', SAFETY_KEY)?.['reviewed_by'] === null &&
       recordOf(root, 'en', SAFETY_KEY)?.['reviewed_at'] === null,
     'FAIL',
-    [`CLAIMS-REVIEW '${SAFETY_KEY}' in en`, 'status is "signed_off"', `NOT-FINAL '${SAFETY_KEY}' in en`],
+    [
+      `CLAIMS-REVIEW '${SAFETY_KEY}' in en`,
+      'status is "signed_off"',
+      `NOT-FINAL '${SAFETY_KEY}' in en`,
+    ],
     othersThan('CLAIMS-REVIEW', 'NOT-FINAL'),
     { 'CLAIMS-REVIEW': 1 },
   );
@@ -513,7 +525,9 @@ test('WRONG-AUTHOR — a human name as authored_by under OE-66 is refused, and s
     },
     (root) => plants.every(([l, k, name]) => recordOf(root, l, k)?.['authored_by'] === name),
     'FAIL',
-    plants.map(([l, k, name]) => `WRONG-AUTHOR '${k}' in ${l}: authored_by is ${JSON.stringify(name)}`),
+    plants.map(
+      ([l, k, name]) => `WRONG-AUTHOR '${k}' in ${l}: authored_by is ${JSON.stringify(name)}`,
+    ),
     othersThan('WRONG-AUTHOR'),
     { 'WRONG-AUTHOR': plants.length },
   );
@@ -527,7 +541,10 @@ test('UNRULED-AUTHOR — OE-67 cited on el is refused: OE-67 makes a model the a
     },
     (root) => recordOf(root, 'el', SAFETY_KEY)?.['ruling'] === 'OE-67',
     'FAIL',
-    [`UNRULED-AUTHOR '${SAFETY_KEY}' in el`, 'cites OE-67, which makes a model the author of en copy'],
+    [
+      `UNRULED-AUTHOR '${SAFETY_KEY}' in el`,
+      'cites OE-67, which makes a model the author of en copy',
+    ],
     othersThan('UNRULED-AUTHOR'),
     { 'UNRULED-AUTHOR': 1 },
   );
@@ -706,7 +723,8 @@ test('a STALE record is refused when the record carries a hash of some other tex
       editRecord(root, 'el', SAFETY_KEY, { content_hash: contentHash('some other text entirely') });
     },
     (root) =>
-      recordOf(root, 'el', SAFETY_KEY)?.['content_hash'] === contentHash('some other text entirely'),
+      recordOf(root, 'el', SAFETY_KEY)?.['content_hash'] ===
+      contentHash('some other text entirely'),
     'FAIL',
     [`STALE-RECORD '${SAFETY_KEY}' in el`, `UNPINNED-CONTENT '${SAFETY_KEY}' in el`],
     othersThan('UNPINNED-CONTENT'),

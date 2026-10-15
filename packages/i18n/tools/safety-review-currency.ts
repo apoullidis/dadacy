@@ -240,8 +240,7 @@ const AUTHORED_CONTENT_PINNED: Readonly<Record<string, Readonly<Record<string, s
       'sha256:ae4b702322aa691073f7169cc9b7b06e5e65cfea71cc78c1c5ff96e262b50e0e',
     'safety.helpline.199.label':
       'sha256:0d689c6aeea19ecfc72bac1bf244498fb6cbbb7a366504af232e9e1d065b996b',
-    'safety.sos.confirm':
-      'sha256:342b18f4e610094106850734e3c7fd55b4566898111ecb9a3f1bdd7bc1af3edd',
+    'safety.sos.confirm': 'sha256:342b18f4e610094106850734e3c7fd55b4566898111ecb9a3f1bdd7bc1af3edd',
     'session.checkins_missed':
       'sha256:cb64809d098db9a1b0b90d6c2c01f7da08d198d792c16d352140067cbe9cad18',
   },
@@ -258,8 +257,7 @@ const AUTHORED_CONTENT_PINNED: Readonly<Record<string, Readonly<Record<string, s
       'sha256:24b478fe5386eadd4bd645649015f139ce75ba73335d28e36f3a84f8a834caae',
     'safety.helpline.199.label':
       'sha256:6ee8a81d63be2acfdf7af071193f4b775f2739ba5baf1f9b4e6f4e68f8f188c5',
-    'safety.sos.confirm':
-      'sha256:e22d5b3d1dc081a86e6f5baef3e1b045e4c01d8d63c960ed49b950a1420fc1a9',
+    'safety.sos.confirm': 'sha256:e22d5b3d1dc081a86e6f5baef3e1b045e4c01d8d63c960ed49b950a1420fc1a9',
     'session.checkins_missed':
       'sha256:1d53ec4f326ee233f10ff28ffde8babf063d0943f2732f1140708342a8a9422b',
   },
@@ -276,8 +274,7 @@ const AUTHORED_CONTENT_PINNED: Readonly<Record<string, Readonly<Record<string, s
       'sha256:646f7e01eca1a5dc8cdba7e98c293057f24692586da4ae621068a70353f836af',
     'safety.helpline.199.label':
       'sha256:04ecd049923efd888060927ea027a70ffc42c80156465b6b673959c05b33baee',
-    'safety.sos.confirm':
-      'sha256:22039738873227fea69fa0f269799d9b17f1e51df1fed651b01940660ddead50',
+    'safety.sos.confirm': 'sha256:22039738873227fea69fa0f269799d9b17f1e51df1fed651b01940660ddead50',
     'session.checkins_missed':
       'sha256:cdf9119a8ba54fd4c14688649f1e4182ec6b9c0365dd5f9ceab726fe23e31589',
   },
