@@ -353,6 +353,16 @@ test(
       ['en', 'zero-width space', '24/\u200B7 support', /contains "24\/7 support"/],
       ['en', 'BOM', 'always\uFEFF on', /contains "always on"/],
       ['en', 'fullwidth digits', '\uFF12\uFF14/\uFF17 support', /contains "24\/7 support"/],
+      // The whitespace-run step (T-043 QA F1): a space, a tab, a newline and a
+      // second space between the two words. NFKC leaves U+0009/U+000A alone, so
+      // only the `\s+` collapse brings this to "always on"; an ASCII-only ` +`
+      // collapse leaves the tab and newline and misses it too.
+      [
+        'en',
+        'tab, newline and double space',
+        'Kinvara is always \t\n  on.',
+        /contains "always on"/,
+      ],
       [
         'en',
         'non-breaking hyphens',
@@ -372,6 +382,42 @@ test(
         `${locale} ${label}`,
         expected,
       );
+    }
+  },
+  T,
+);
+
+test(
+  'NEGATIVE — every list applies to every locale: el and ru list phrases planted in the other locales are refused',
+  () => {
+    // T-043 QA F2. Bare "24/7" in en copy is caught ONLY through the el/ru
+    // lists — the PM en constants spell "24/7 support" / "24/7 staffed" — so
+    // both list sources are expected and the PM source must be absent.
+    const bare = withString('en', 'common.json', 'app.name', 'Help line 24/7');
+    expectFail(
+      bare,
+      'en bare 24/7',
+      'PROHIBITED en/common.app.name contains "24/7" — claim "24/7 support", from prohibited/el.json',
+      'PROHIBITED en/common.app.name contains "24/7" — claim "24/7 support", from prohibited/ru.json',
+    );
+    assert.doesNotMatch(
+      bare.out,
+      /from PM \(en\)/,
+      `en bare 24/7: a PM constant matched\n${bare.out}`,
+    );
+    // Each list's phrase in each locale other than its own.
+    for (const list of ['el', 'ru']) {
+      const phrase = String(
+        entryFor(readDoc(join(PKG, 'prohibited', `${list}.json`)), 'continuously monitored')
+          .phrases[0],
+      );
+      for (const locale of ['en', 'el', 'ru'].filter((l) => l !== list)) {
+        expectFail(
+          withString(locale, 'common.json', 'app.name', `Kinvara: ${phrase}.`),
+          `${list} phrase in ${locale}`,
+          `PROHIBITED ${locale}/common.app.name contains ${JSON.stringify(phrase)} — claim "continuously monitored", from prohibited/${list}.json`,
+        );
+      }
     }
   },
   T,
