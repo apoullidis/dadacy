@@ -31,7 +31,7 @@ const a3 = [
   { type: 0, value: '?' },
 ] as unknown as readonly MessageFormatElement[];
 const a4 = [
-  { type: 0, value: 'Childcare in Cyprus, with a safeguarding operator on shift.' },
+  { type: 0, value: 'Childcare in Cyprus, with an SOS button that calls 112.' },
 ] as unknown as readonly MessageFormatElement[];
 
 export const messages = {

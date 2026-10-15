@@ -1,11 +1,18 @@
 {
   "locale": "el",
   "provenance": "ai_authored",
-  "authored_by": "Claude Opus (claude-opus-5-5), AI agent, under stakeholder ruling OE-66",
+  "ruling": "OE-66",
+  "authored_by": "Claude Opus (claude-opus-5-5), AI agent",
+  "notes": [
+    "Authored by the model under stakeholder ruling OE-66 (EV-16); reviewed by nobody (OE-5). The draft is tasks/state/EP-0/OE-66/el/prohibited.json.",
+    "T-043: `ruling` added and `authored_by` set to exactly the model OE-66 names (it previously read \"Claude Opus (claude-opus-5-5), AI agent, under stakeholder ruling OE-66\"), so the gate can apply T-233's AI-author rule.",
+    "T-043: bare \"24/7\" added to \"24/7 support\" — OE-68 (the ban stands) and OD-256: the el author omitted it only because of OD-249, which OE-68 resolved; ru already bans it."
+  ],
   "banned": [
     {
       "claim": "24/7 support",
       "phrases": [
+        "24/7",
         "24/7 υποστήριξη",
         "24/7 υποστηριξη",
         "υποστήριξη 24/7",
