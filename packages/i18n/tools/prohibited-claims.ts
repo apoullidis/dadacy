@@ -61,6 +61,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { MODEL } from './rulings.ts';
 
 const GATE = 'gate:prohibited-claims';
 const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -126,14 +127,17 @@ const PERMITTED_IS9: readonly string[] = [
  * OE-67 (the `en` safety copy) is NOT here: there is no `en` list, and OE-67
  * does not cover one. Adding a ruling, a locale or a model is a stakeholder
  * decision recorded in decisions.md first, and must cost an edit to this
- * literal. The model string is the one `src/pipeline.test.ts`'s `MODEL`
- * carries for the register (T-233 § Published contract §1).
+ * literal. The model string is `MODEL` from `tools/rulings.ts`, the same
+ * constant the register's rulings use (T-233 § Published contract §1; moved
+ * there by T-258 so the name exists once in gate source). This literal stays
+ * separate from `AI_RULINGS` on purpose: the rulings over the LISTS are not the
+ * rulings over the register, and widening one must not widen the other.
  */
 const LIST_RULINGS: readonly {
   readonly id: string;
   readonly locales: readonly string[];
   readonly author: string;
-}[] = [{ id: 'OE-66', locales: ['el', 'ru'], author: 'Claude Opus (claude-opus-5-5), AI agent' }];
+}[] = [{ id: 'OE-66', locales: ['el', 'ru'], author: MODEL }];
 
 /* ------------------------------------------------------------------- fold */
 

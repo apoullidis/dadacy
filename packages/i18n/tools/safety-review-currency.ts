@@ -1,34 +1,45 @@
 /**
- * `gate:safety-review-currency` — T-044. SD §Revision Log D8, SA §TS-12.3.
+ * `gate:safety-review-currency` — T-044; T-258 (the OE-5 terminal state).
+ * SD §Revision Log D8, SA §TS-12.3, as departed from under EV-16 (extended by
+ * stakeholder ruling OE-5, 2026-10-11) and OE-81.
  *
- * THE RULE, quoted from `T-040` § Published contract §6 because this gate is
- * that paragraph and nothing wider: *for every `safety_critical` key K and
- * every enabled locale L, FAIL unless `entries[L][K]` exists AND
- * `content_hash === contentHash(source(L,K))` AND `status === "signed_off"` AND
- * `provenance !== "placeholder"` AND `reviewed_by` and `reviewed_at` are
- * non-null — UNLESS K is listed in an unexpired `pending_pipeline` waiver.*
+ * THE RULE SINCE T-258. For every `safety_critical` key K and every enabled
+ * locale L, FAIL unless `entries[L][K]` exists AND
+ * `content_hash === contentHash(source(L,K))` (STALE-RECORD) AND `provenance`
+ * is `ai_authored` (PLACEHOLDER / NOT-AI-AUTHORED / MALFORMED-RECORD) AND
+ * `ruling` is a ruling in `tools/rulings.ts` covering L (UNRULED-AUTHOR) AND
+ * `authored_by` is exactly a model that ruling names (WRONG-AUTHOR) AND the
+ * record claims no review — `status` is not `signed_off`, `reviewed_by` and
+ * `reviewed_at` are null (CLAIMS-REVIEW) AND `status` is
+ * `unreviewed_by_ruling` (NOT-FINAL) AND `review_ruling` is a ruling in
+ * `REVIEW_DROPPED_RULINGS` covering L (UNRULED-NO-REVIEW) AND `content_hash`
+ * equals `AUTHORED_CONTENT_PINNED[L][K]` in this file (UNPINNED-CONTENT) —
+ * UNLESS K is listed in an unexpired `pending_pipeline` waiver, in which case
+ * only a record's existence (WAIVED-NO-RECORD) and CLAIMS-REVIEW are checked.
+ * This supersedes T-040 § contract §6's rule, which required `signed_off` and a
+ * named reviewer: under OE-5 no human reviews this copy, so a record claiming
+ * a review is now the refusal, not the requirement.
  *
  * WHAT THIS GATE IS THE OTHER HALF OF. `gate:locale-completeness` (T-042)
  * proves a `safety_critical` string is PRESENT and RENDERABLE; it states in its
  * own contract §5 that a present, well-formed string that is WRONG passes it.
- * Provenance is this half: a human is named, a review date is recorded, and the
- * hash binds both to the exact bytes now in the catalogue. Editing a safety
- * string changes its hash and therefore un-signs it — that is the mechanism,
- * not a side effect.
+ * Provenance is this half: who wrote the string (a model, under a ruling this
+ * gate reads), that nobody reviewed it (and that the record says so), and the
+ * exact bytes accepted, bound twice — by the record's hash and by a pin in this
+ * file. NOTHING HERE PROVES THE COPY IS RIGHT, OR THAT THE MODEL WROTE IT: an
+ * edit that changes the catalogue, the record and the pin in one commit
+ * passes, and review of the diff is the control for it.
  *
- * WHY IT IS GREEN TODAY, SAID OUT LOUD RATHER THAN DISCOVERED. No safety copy
- * in this repository has been REVIEWED or signed off. Until T-233 all 24
- * records were `provenance: "placeholder"` (T-040); since T-233 all 24 are
- * `provenance: "ai_authored"` — written by an AI model under stakeholder
- * rulings OE-66/OE-67 (EV-16), `status: "pending_review"`, no reviewer — since
- * there is still no DSL to reach. A literal reading of the rule would therefore be
- * RED ON THE TRUNK the day this gate is promoted. The waiver is what carries
- * it: T-040 published a dated, self-closing waiver over exactly those keys, and
- * T-049 re-anchored its date to 2026-12-05 (stakeholder decision OE-5). So the
- * gate is green BECAUSE OF THE WAIVER, it says so on stdout in those words, and
- * it goes RED of its own accord the day after `expected_by`. A waiver that
- * never expires is a green gate wearing a date, which is why the expiry is
- * anchored OUTSIDE the register (below).
+ * WHY IT IS GREEN TODAY, SAID OUT LOUD RATHER THAN DISCOVERED. All 24 committed
+ * records are `ai_authored` (T-233, OE-66/OE-67) at `pending_review` — not yet
+ * moved to the terminal status, which is T-259's change. Outside the waiver
+ * each would be NOT-FINAL. The waiver is what carries them: T-040 published a
+ * dated, self-closing waiver over exactly those keys, and T-049 re-anchored its
+ * date to 2026-12-05 (stakeholder decision OE-5 of 2026-09-05). So the gate is
+ * green BECAUSE OF THE WAIVER, it says so on stdout in those words, and it goes
+ * RED of its own accord the day after `expected_by` unless T-259 has landed.
+ * Every run also prints how many pairs it accepted as AI-authored and reviewed
+ * by nobody, citing OE-5, so a green run never reads as "reviewed".
  *
  * THREE READINGS, FROM ARTEFACTS THAT ARE NOT EACH OTHER (PROTOCOL §5.1: "a
  * check must not be derived from the same reading as the thing it checks"):
@@ -63,16 +74,23 @@
  * a measurement. The measurement is in `state/EP-0/T-044.md` § Evidence 3.
  * `pipelineIncoherences()` is deliberately NOT wired in — T-049 offers it and
  * does not require it, and wiring it would couple this gate to a block that
- * names no people yet.
+ * still models the human roster T-260 removes. What T-258 takes from it is the
+ * authorship rule alone, applied here against the same rulings literal
+ * (`tools/rulings.ts`), which closes OD-258: this gate run alone now refuses an
+ * AI record signed off by anyone, the model included. The one T-233 authorship
+ * rule NOT applied here is "the model is not a named person in
+ * `pipeline.roles`", because this gate does not read the roster.
  *
  * USAGE:  node packages/i18n/tools/safety-review-currency.ts [--root <dir>]
  *
  * `--root` points reading A at another package root (the Vitest cases build one
  * in a temporary directory). READINGS B AND C ARE THEN NOT RUN — the compiled
  * catalogue reachable from this script belongs to `packages/i18n` and not to
- * that root, and the pins are about THIS package's key set — and the PASS/FAIL
- * BANNER SAYS SO, so a `--root` run can never be pasted as evidence of a full
- * one. The committed `pnpm gate:safety-review-currency` passes no arguments.
+ * that root, and the key, locale and waiver pins are about THIS package's key
+ * set — and the PASS/FAIL BANNER SAYS SO, so a `--root` run can never be pasted
+ * as evidence of a full one. The rulings and `AUTHORED_CONTENT_PINNED` ARE
+ * applied under `--root`: they are per-record checks inside reading A. The
+ * committed `pnpm gate:safety-review-currency` passes no arguments.
  */
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -87,6 +105,7 @@ import {
 import type { ReviewRecord, PendingPipeline } from '../src/review.ts';
 import { TIER_POLICY } from '../src/tiers.ts';
 import type { Tier } from '../src/types.ts';
+import { AI_RULINGS, REVIEW_DROPPED_RULINGS } from './rulings.ts';
 
 const GATE = 'gate:safety-review-currency';
 const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -176,6 +195,93 @@ const LOCALES_PINNED: readonly string[] = ['en', 'el', 'ru'];
  * red build.
  */
 const WAIVER_NOT_AFTER = '2026-12-05';
+
+/**
+ * THE REPLACEMENT ANCHOR (T-258; `OE-5-cut.md` §2 item 4): the exact content
+ * hash of every safety string accepted as AI-authored and final with no review
+ * under OE-5, per (locale, key). A record outside the waiver whose
+ * `content_hash` is not the one pinned here is UNPINNED-CONTENT.
+ *
+ * Why it exists. Before OE-5, editing a safety string un-signed it: its hash
+ * moved, the record went STALE, and only a human re-signing it cleared that.
+ * Under OE-5 nobody signs. Without this pin an edit plus a matching hash in
+ * `review.json` — two files the same commit can change — would pass. With it,
+ * the same edit fails here until THIS FILE is edited too, so adding or changing
+ * a safety string, a key or a locale is a conspicuous edit to gate source.
+ *
+ * THE BOUND, STATED PLAINLY. This makes a change VISIBLE. It does not PREVENT
+ * one: a commit can edit the catalogue, the record and this pin together, and
+ * review of the diff is the control for that. Nothing here can prove that the
+ * named model wrote the bytes. SD Revision Log D8's "an MT engine cannot
+ * produce a DSL review record" weakens to "an MT engine's output cannot enter
+ * without an edit to the gate"; that weakening is inherent in the ruling.
+ *
+ * Filled by T-258 with the 24 hashes the committed register carried at
+ * `main` `f36b40f` — each equal to `contentHash()` of the committed catalogue
+ * string, which `src/review.test.ts`'s currency test asserts. The cut (§3)
+ * allowed T-258 to ship it empty or partial for T-259 to fill; measured, an
+ * empty pin makes the cut's own CONTROL (every pair final and pinned, passing)
+ * unsatisfiable. While the waiver covers a pair this pin is not consulted.
+ *
+ * Not a reading-C pin: it is applied per record inside reading A, so it also
+ * binds under `--root` (a temporary root copies this package's catalogues).
+ */
+const AUTHORED_CONTENT_PINNED: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  en: {
+    'safety.emergency.address_prompt':
+      'sha256:ba7d12bfb51d44dac1e4d295ba6e1958c44b6b80941c227a51ffed00a2d66b21',
+    'safety.emergency.call_112.label':
+      'sha256:fb2d7ba42c38acfd95b6d8170d081365d13604fa225c9f39a49fe5628af1b44f',
+    'safety.emergency.call_112.script':
+      'sha256:b28ef2a488fa1ce5d1dc97f6442886547ea4069e4fa40164ab3309c522e2f33c',
+    'safety.helpline.116111.label':
+      'sha256:683a613367d2bf112d61d5776a61618650f7a7d40c76d4756f71f5952141ba1e',
+    'safety.helpline.1466.label':
+      'sha256:ae4b702322aa691073f7169cc9b7b06e5e65cfea71cc78c1c5ff96e262b50e0e',
+    'safety.helpline.199.label':
+      'sha256:0d689c6aeea19ecfc72bac1bf244498fb6cbbb7a366504af232e9e1d065b996b',
+    'safety.sos.confirm':
+      'sha256:342b18f4e610094106850734e3c7fd55b4566898111ecb9a3f1bdd7bc1af3edd',
+    'session.checkins_missed':
+      'sha256:cb64809d098db9a1b0b90d6c2c01f7da08d198d792c16d352140067cbe9cad18',
+  },
+  el: {
+    'safety.emergency.address_prompt':
+      'sha256:f942969a2405b2bfb8babdec3410a29878bd58abb384e31b6b71f87beedf5b81',
+    'safety.emergency.call_112.label':
+      'sha256:f3282b692ee2e584ef76d44680ff46bba2ebe10609ba2114fca41993281c7274',
+    'safety.emergency.call_112.script':
+      'sha256:5f5e2816b748dd4fa2153bd83b1d002a955aaa4ec43aa3e26100df3d802978b6',
+    'safety.helpline.116111.label':
+      'sha256:53cc43738de3f2964cdc024cea407f64661bfcb667dff45508d6704e33f64c1a',
+    'safety.helpline.1466.label':
+      'sha256:24b478fe5386eadd4bd645649015f139ce75ba73335d28e36f3a84f8a834caae',
+    'safety.helpline.199.label':
+      'sha256:6ee8a81d63be2acfdf7af071193f4b775f2739ba5baf1f9b4e6f4e68f8f188c5',
+    'safety.sos.confirm':
+      'sha256:e22d5b3d1dc081a86e6f5baef3e1b045e4c01d8d63c960ed49b950a1420fc1a9',
+    'session.checkins_missed':
+      'sha256:1d53ec4f326ee233f10ff28ffde8babf063d0943f2732f1140708342a8a9422b',
+  },
+  ru: {
+    'safety.emergency.address_prompt':
+      'sha256:cb176fd5b0d6c0c91e44e78eda43fce0ac61ac5e3503697d41e3a4b0d97a4c92',
+    'safety.emergency.call_112.label':
+      'sha256:0d062dc2df242b8f5ae30dd52098ff65629088ca629ba4beb49c679d4a0dddfb',
+    'safety.emergency.call_112.script':
+      'sha256:a0ec55a8f3862d981e70f1a4eb73e972b33846401e4f6680ee7ffc06dbbb4ff4',
+    'safety.helpline.116111.label':
+      'sha256:6d87f33e6832b1c1f198ef5f5f9c2b41fdeade3aa885fe4e618d7e6b525b68ac',
+    'safety.helpline.1466.label':
+      'sha256:646f7e01eca1a5dc8cdba7e98c293057f24692586da4ae621068a70353f836af',
+    'safety.helpline.199.label':
+      'sha256:04ecd049923efd888060927ea027a70ffc42c80156465b6b673959c05b33baee',
+    'safety.sos.confirm':
+      'sha256:22039738873227fea69fa0f269799d9b17f1e51df1fed651b01940660ddead50',
+    'session.checkins_missed':
+      'sha256:cdf9119a8ba54fd4c14688649f1e4182ec6b9c0365dd5f9ceab726fe23e31589',
+  },
+};
 
 /* ----------------------------------------------------------------- output */
 
@@ -395,11 +501,10 @@ function readWaiver(
 
 /* ------------------------------------------------- one (locale, key) pair */
 
-// T-233 added `ai_authored` (OE-66/OE-67, EV-16). It is a well-formed provenance
-// — never MALFORMED-RECORD — and it satisfies nothing else: the record must still
-// be `signed_off` with a named reviewer and a date. Whether an `ai_authored`
-// record cites a ruling that permits it is `pipelineIncoherences()`'s check,
-// asserted over the committed register in `src/pipeline.test.ts`, not this gate's.
+// T-233 added `ai_authored` (OE-66/OE-67, EV-16). Since T-258 it is the ONLY
+// provenance accepted outside the waiver; the other three non-placeholder
+// values are well-formed (never MALFORMED-RECORD) and refused as
+// NOT-AI-AUTHORED, because since OE-5 no human authors or reviews this copy.
 const PROVENANCE_VALUES = [
   'authored',
   'translated_professional',
@@ -408,10 +513,85 @@ const PROVENANCE_VALUES = [
   'ai_authored',
 ];
 
+/** The terminal status T-258 adds: final, reviewed by nobody, by stakeholder ruling (`src/types.ts`). */
+const FINAL_STATUS = 'unreviewed_by_ruling';
+
 /**
- * The rule, one pair at a time. EACH CONJUNCT GETS ITS OWN NAMED REFUSAL and
- * its own case: "stale or absent" is two claims, and a compound claim with one
+ * CLAIMS-REVIEW, at ANY status and on waived records too (T-258; OE-5: nothing
+ * may record or claim a human review). Each of the three fields is a claim on
+ * its own, so one is enough; all of them are named on one line. Returns whether
+ * a claim was found.
+ */
+function claimsReview(
+  where: string,
+  record: Readonly<Record<string, unknown>>,
+  failures: string[],
+): boolean {
+  const claims: string[] = [];
+  if (record['status'] === 'signed_off') claims.push('status is "signed_off"');
+  for (const field of ['reviewed_by', 'reviewed_at'] as const) {
+    const v = record[field];
+    if (v !== null && v !== undefined) claims.push(`${field} is ${JSON.stringify(v)}`);
+  }
+  if (claims.length === 0) return false;
+  failures.push(
+    `CLAIMS-REVIEW ${where}: ${claims.join('; ')}. Since stakeholder ruling OE-5 (2026-10-11) no ` +
+      'human reviews safety copy, and nothing may record or claim a review: `status` must never ' +
+      'be "signed_off" and `reviewed_by`/`reviewed_at` must be null (EV-16).',
+  );
+  return true;
+}
+
+/**
+ * The authorship half (T-233 § contract §1, read by the GATE since T-258 —
+ * OD-258). `ruling` must be a ruling in `tools/rulings.ts` that covers this
+ * locale, and `authored_by` must be exactly a model that ruling names: raw
+ * string comparison, no normalisation, so case, spacing, zero-width and
+ * look-alike variants are all refused.
+ */
+function checkAuthorship(
+  where: string,
+  locale: string,
+  record: ReviewRecord,
+  failures: string[],
+): void {
+  const ruling = AI_RULINGS.find((r) => r.id === record.ruling);
+  if (typeof record.ruling !== 'string') {
+    failures.push(
+      `UNRULED-AUTHOR ${where}: provenance "ai_authored" with no \`ruling\`. A model may be ` +
+        'recorded as the author only under a stakeholder ruling that makes it one (known: ' +
+        `${AI_RULINGS.map((r) => r.id).join(', ') || 'none'}).`,
+    );
+  } else if (ruling === undefined) {
+    failures.push(
+      `UNRULED-AUTHOR ${where}: cites ${JSON.stringify(record.ruling)}, which is not a ` +
+        'stakeholder ruling that makes a model an author (known: ' +
+        `${AI_RULINGS.map((r) => r.id).join(', ') || 'none'}).`,
+    );
+  } else if (!ruling.locales.includes(locale)) {
+    failures.push(
+      `UNRULED-AUTHOR ${where}: cites ${ruling.id}, which makes a model the author of ` +
+        `${ruling.locales.join('/')} copy, not ${locale}.`,
+    );
+  } else if (record.authored_by === null || !ruling.authors.includes(record.authored_by)) {
+    failures.push(
+      `WRONG-AUTHOR ${where}: authored_by is ${JSON.stringify(record.authored_by)}, not the model ` +
+        `${ruling.id} names (${ruling.authors.map((a) => JSON.stringify(a)).join('; ')}), ` +
+        'character for character. Record the model truthfully — never a human name, never ' +
+        'another engine or version.',
+    );
+  }
+}
+
+/**
+ * The rule, one pair at a time, for a pair OUTSIDE the waiver. EACH CONJUNCT
+ * GETS ITS OWN NAMED REFUSAL and its own case: a compound claim with one
  * covering test is half-falsifiable (the note QA raised on T-042).
+ *
+ * Since T-258 (OE-5, OE-81) the record is ACCEPTED only when it is current,
+ * AI-authored under a ruling the gate reads, claims no review, is final with
+ * no review under a ruling the gate reads, and carries the pinned hash. Returns
+ * whether it was accepted — the number the OE-5 line prints.
  */
 function checkPair(
   root: string,
@@ -419,8 +599,9 @@ function checkPair(
   key: string,
   record: ReviewRecord | undefined,
   failures: string[],
-): void {
+): boolean {
   const where = `'${key}' in ${locale}`;
+  const before = failures.length;
   const source = catalogueSource(locale, key, root);
   if (source === undefined) {
     failures.push(
@@ -428,58 +609,84 @@ function checkPair(
         'be held against anything. gate:locale-completeness (T-042) names the same absence as ' +
         'MISSING; here it means currency is unjudgeable, which fails closed.',
     );
-    return;
+    return false;
   }
   if (record === undefined) {
     failures.push(
       `MISSING-RECORD ${where}: review.json has no record. Absence must fail — a gate that ` +
         'passed on a deleted record could be satisfied by deleting records (T-040 § contract §6).',
     );
-    return;
+    return false;
   }
   if (!isRecord(record)) {
     failures.push(`MALFORMED-RECORD ${where}: the review record is not an object.`);
-    return;
+    return false;
   }
   const expected = contentHash(source);
   if (record.content_hash !== expected) {
     failures.push(
       `STALE-RECORD ${where}: the record's content_hash is ` +
         `${JSON.stringify(record.content_hash)} but the catalogue string now hashes to ` +
-        `${expected}. The reviewed text and the shipped text are not the same text. Editing a ` +
-        'safety string un-signs it; that is the mechanism, not a side effect.',
+        `${expected}. The recorded text and the shipped text are not the same text.`,
     );
   }
-  if (record.status !== 'signed_off') {
-    failures.push(
-      `NOT-SIGNED-OFF ${where}: status is ${JSON.stringify(record.status)}. A safety_critical ` +
-        'string ships only on a DSL sign-off (SA §TS-12.4).',
-    );
-  }
+
+  // Who wrote it.
   if (record.provenance === 'placeholder') {
     failures.push(
       `PLACEHOLDER ${where}: provenance is "placeholder" — engineering copy written to exercise ` +
-        'the mechanism, not reviewed safety copy. It must not ship.',
+        'the mechanism, not authored safety copy. It must not ship.',
     );
   } else if (!PROVENANCE_VALUES.includes(record.provenance)) {
     failures.push(
       `MALFORMED-RECORD ${where}: provenance is ${JSON.stringify(record.provenance)}, not one of ` +
         `${PROVENANCE_VALUES.join(', ')}.`,
     );
-  }
-  if (record.reviewed_by === null || record.reviewed_by === undefined) {
+  } else if (record.provenance !== 'ai_authored') {
     failures.push(
-      `UNREVIEWED ${where}: reviewed_by is null. The record must name the human who signed it ` +
-        'off — an MT engine cannot produce one, which is what makes DV-11 enforceable rather ' +
-        'than intended.',
+      `NOT-AI-AUTHORED ${where}: provenance is ${JSON.stringify(record.provenance)}. Since ` +
+        'stakeholder ruling OE-5 safety copy is AI-authored under a ruling (OE-66/OE-67, EV-16) ' +
+        'and no human authors or reviews it, so only "ai_authored" is accepted.',
+    );
+  } else {
+    checkAuthorship(where, locale, record, failures);
+  }
+
+  // Whether it claims a review it cannot have had.
+  claimsReview(where, record as unknown as Record<string, unknown>, failures);
+
+  // Whether it is final, by a ruling the gate reads.
+  if (record.status !== FINAL_STATUS) {
+    failures.push(
+      `NOT-FINAL ${where}: status is ${JSON.stringify(record.status)}, not "${FINAL_STATUS}". ` +
+        'Outside the waiver a safety_critical record ships only as final with no review, under ' +
+        'the stakeholder ruling that removed review (OE-5; OE-81: releasable).',
     );
   }
-  if (typeof record.reviewed_at !== 'string' || !Number.isFinite(Date.parse(record.reviewed_at))) {
+  const dropped = REVIEW_DROPPED_RULINGS.find((r) => r.id === record.review_ruling);
+  if (dropped === undefined || !dropped.locales.includes(locale)) {
+    const cited =
+      record.review_ruling === undefined ? 'undefined' : JSON.stringify(record.review_ruling);
     failures.push(
-      `UNDATED ${where}: reviewed_at is ${JSON.stringify(record.reviewed_at)}. A sign-off with ` +
-        'no date cannot be held against the content it signed.',
+      `UNRULED-NO-REVIEW ${where}: review_ruling is ${cited}, which is not a stakeholder ruling ` +
+        `that removes review of ${locale} safety copy (known: ` +
+        `${REVIEW_DROPPED_RULINGS.map((r) => `${r.id} [${r.locales.join(', ')}]`).join(', ') || 'none'}). ` +
+        'A record final with no review must say which ruling made it so.',
     );
   }
+
+  // Whether the bytes are the ones accepted, pinned outside the register.
+  const pinned = AUTHORED_CONTENT_PINNED[locale]?.[key];
+  if (record.content_hash !== pinned) {
+    failures.push(
+      `UNPINNED-CONTENT ${where}: content_hash ${JSON.stringify(record.content_hash)} is not the ` +
+        `hash pinned for it in AUTHORED_CONTENT_PINNED (${pinned === undefined ? 'none pinned' : pinned}) in ` +
+        'tools/safety-review-currency.ts. Under OE-5 nobody re-signs an edited safety string, so ' +
+        'an edit is accepted only when the same commit edits that pin — a change to gate source ' +
+        'that review of the diff can see.',
+    );
+  }
+  return failures.length === before;
 }
 
 /* ------------------------------------------------------------------- main */
@@ -487,7 +694,7 @@ function checkPair(
 async function main(argv: readonly string[]): Promise<void> {
   const { root, explicitRoot } = parseArgs(argv);
   const banner = explicitRoot
-    ? `${GATE}  [--root ${root}: SOURCE READING ONLY — the compiled artefact and the pins were NOT read]`
+    ? `${GATE}  [--root ${root}: SOURCE READING ONLY — the compiled artefact and the key, locale and waiver pins were NOT read]`
     : GATE;
   const failures: string[] = [];
   const nowMs = Date.now();
@@ -557,6 +764,7 @@ async function main(argv: readonly string[]): Promise<void> {
   let examined = 0;
   let waived = 0;
   let verified = 0;
+  let accepted = 0;
   const verifiedPerLocale = new Map<string, number>();
   const waivedPerLocale = new Map<string, number>();
 
@@ -582,10 +790,14 @@ async function main(argv: readonly string[]): Promise<void> {
               'review.json has no record for it at all. The waiver waives the currency of a ' +
               'review, not the existence of the provenance row that the pipeline will fill.',
           );
+        } else if (isRecord(record)) {
+          // T-258: the waiver never covers a CLAIM of review. OE-5 forbids one
+          // at any status, so the honesty property holds before T-259 too.
+          claimsReview(`'${key}' in ${locale} (waived)`, record, failures);
         }
         continue;
       }
-      checkPair(root, locale, key, record, failures);
+      if (checkPair(root, locale, key, record, failures)) accepted += 1;
       if (record !== undefined) {
         verified += 1;
         localeVerified += 1;
@@ -615,15 +827,25 @@ async function main(argv: readonly string[]): Promise<void> {
         `${String(expectedPairs)}. Some pair was never looked at.`,
     );
   }
+  // T-258, OE-5-cut §2 item 5: EVERY run says how many pairs it passed as
+  // AI-authored and reviewed by nobody, so a green gate never reads as
+  // "reviewed".
+  console.log(
+    `  OE-5: ${String(accepted)} of ${String(examined)} pair(s) accepted as AI-authored and ` +
+      'reviewed by nobody — final by stakeholder ruling OE-5 (2026-10-11), not by any review; ' +
+      `${String(waived)} waived`,
+  );
   if (waived === examined && examined > 0) {
-    // NOT a failure, and it is the honest state of this repository today. It is
-    // PRINTED because a gate that is green while checking nothing must say so
-    // (PROTOCOL §5.1) — and because the sentence names the date that ends it.
+    // NOT a failure, and it is the honest state of this repository until T-259.
+    // It is PRINTED because a gate that is green while checking almost nothing
+    // must say so (PROTOCOL §5.1) — and because the sentence names the date
+    // that ends it.
     console.log(
-      `  NOTE: all ${String(examined)} pair(s) are waived and NONE had its review currency ` +
-        `verified. This gate is green BECAUSE OF THE WAIVER, which expires ${String(
+      `  NOTE: all ${String(examined)} pair(s) are waived: each was checked only for a record ` +
+        'and for claiming no review (CLAIMS-REVIEW), and NONE was checked as final under OE-5. ' +
+        `This gate is green BECAUSE OF THE WAIVER, which expires ${String(
           waiver?.expectedBy,
-        )}; from the day after, every one of them fails here.`,
+        )}; from the day after, every one of them fails here unless it is final under OE-5.`,
     );
   }
 
@@ -631,7 +853,9 @@ async function main(argv: readonly string[]): Promise<void> {
   if (explicitRoot) {
     console.log(
       '  READINGS B AND C NOT RUN: --root was given. The compiled artefact reachable from this ' +
-        'script belongs to packages/i18n, and the pins are about that package. Reading A only.',
+        'script belongs to packages/i18n, and the key, locale and waiver pins are about that ' +
+        'package. Reading A only — which still applies the rulings and AUTHORED_CONTENT_PINNED ' +
+        'to every record.',
     );
     finish(banner, failures);
   }
