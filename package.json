@@ -45,7 +45,7 @@
     "gate:pr-gate-suite": "node scripts/gates/pr-gate-suite.ts",
     "gate:drizzle-parity": "node scripts/gates/drizzle-parity.ts",
     "gate:locale-completeness": "node packages/i18n/tools/locale-completeness.ts",
-    "gate:prohibited-claims": "node scripts/gates/not-yet-supplied.ts gate:prohibited-claims",
+    "gate:prohibited-claims": "node packages/i18n/tools/prohibited-claims.ts",
     "gate:safety-review-currency": "node packages/i18n/tools/safety-review-currency.ts",
     "gate:plural-completeness": "node scripts/gates/not-yet-supplied.ts gate:plural-completeness",
     "gate:sms-segments": "node packages/i18n/tools/sms-segments.ts",

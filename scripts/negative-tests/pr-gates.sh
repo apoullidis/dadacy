@@ -286,7 +286,7 @@ mut "$ROSTER" "    cls: 'BLOCKING'," "    cls: 'PENDING',
     owner: 'nobody',
     unblocks: 'never'," &&
   run_case "A6 one BLOCKING gate demoted: the floor bites" FAIL \
-    'the floor is 26' 'A gate was demoted or deleted' -- node "$PR" --roster-only
+    'the floor is 27' 'A gate was demoted or deleted' -- node "$PR" --roster-only
 
 echo
 echo "=== A(bis). the CLASS assertion — a hook cannot pass, or fail wrongly ==="
@@ -678,7 +678,7 @@ echo
 echo "=== F. gate:workflow — the mirrored, never-executed YAML ==="
 WF=.github/workflows/pr.yml
 wf() { node scripts/gates/workflow.ts; }
-# The `W7: 36 concrete` reason is not decoration: 36 is pr.yml's 26 blocking + 4
+# The `W7: 36 concrete` reason is not decoration: 36 is pr.yml's 27 blocking + 3
 # advisory matrix values plus heavy.yml's 3 + 3, so it is the assertion that ALL
 # FOUR `pnpm run ${{ matrix.gate }}` steps were expanded and every value checked. Before rework 1 this number would
 # have been 0 — W7's pattern excluded `$`, `{` and `}` and skipped both lines.
@@ -703,6 +703,8 @@ wf() { node scripts/gates/workflow.ts; }
 # tasks/state/EP-1/T-006.md § Evidence 6 — at 36 a deleted heavy leg is caught;
 # at the stale 30 the same tree is MISBEHAVED for the wrong reason, which is
 # how a pin that is not moved stops meaning anything.
+# T-043 (2026-10-15) promoted gate:prohibited-claims: 26 + 4 became 27 + 3 in
+# pr.yml, the total unchanged, so again this line moved and the pin did not.
 CASE="F0"
 run_case "F0 CONTROL: pr.yml is structurally valid and mirrors the roster" PASS \
   'GATE PASS' 'W7: 36 concrete' -- wf

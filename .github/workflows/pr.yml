@@ -69,6 +69,7 @@ jobs:
           - gate:locale-completeness
           - gate:safety-review-currency
           - gate:sms-segments
+          - gate:prohibited-claims
     steps:
       - uses: actions/checkout@v4
         with:
@@ -98,16 +99,16 @@ jobs:
   #                               would need. It stays here, and stays red here,
   #                               because THIS stage declares `svc: none` — that
   #                               is structural and no ticket can pay it off.
-  #   gate:prohibited-claims      T-043      gate:plural-completeness    T-045
-  #   gate:pii-canary             T-119
+  #   gate:plural-completeness    T-045      gate:pii-canary             T-119
   #
   #   gate:locale-completeness was here until 2026-09-20; T-042 supplied it and
   #   it is in the `blocking` matrix above. gate:safety-review-currency was here
   #   until later the same day; T-044 supplied it and it is there too — green
   #   while the dated T-049 copy waiver holds, red from 2026-12-06.
   #   gate:sms-segments was here until 2026-09-21; T-046 supplied it and it is
-  #   there too. W4 compares both matrices with the roster's classes, so a
-  #   promotion is two edits or gate:workflow reds.
+  #   there too. gate:prohibited-claims was here until 2026-10-15; T-043
+  #   supplied it and it is there too. W4 compares both matrices with the
+  #   roster's classes, so a promotion is two edits or gate:workflow reds.
   advisory:
     name: gate (not yet supplied)
     runs-on: ubuntu-latest
@@ -117,7 +118,6 @@ jobs:
       matrix:
         gate:
           - gate:drizzle-parity
-          - gate:prohibited-claims
           - gate:plural-completeness
           - gate:pii-canary
     steps:

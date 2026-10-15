@@ -305,13 +305,15 @@ export const ROSTER: readonly RosterEntry[] = [
     why: 'no Critical- or Transactional-tier string may resolve to a missing translation (SA §TS-12.3, SD §FE-10)',
   },
   {
+    // T-043 supplied it (frontend-developer), so this entry moved PENDING ->
+    // BLOCKING and lost its owner/unblocks fields, as T-005 § Published
+    // contract §8 (as amended, OD-176) requires. Its `why` was corrected under
+    // the sixth granted edit: the `el`/`ru` lists are AI-authored under OE-66
+    // (EV-16), not natively authored — see packages/i18n/tools/prohibited-claims.ts.
     name: 'gate:prohibited-claims',
     spec: '`gate:prohibited-claims`',
-    cls: 'PENDING',
-    why: 'prohibited marketing claims across all three locales, `el`/`ru` lists natively authored (PM §MVP-L4 AC6, §MVP-S8 AC5, §MVP-IS9 AC6)',
-    owner: 'T-043 — frontend-developer (blocked_by T-040, T-005)',
-    unblocks:
-      'T-043 supplies the three lists with named authorship and the gate fails on each prohibited string in each locale (nine demonstrated failures minimum).',
+    cls: 'BLOCKING',
+    why: 'no catalogue string in any enabled locale carries a prohibited claim — the PM English strings, DV-3 "escrow", and the `el`/`ru` lists, which are AI-authored under OE-66 (EV-16) and fail closed when absent (PM §MVP-L4 AC6, §MVP-S8 AC5, §MVP-IS9 AC6)',
   },
   {
     // T-044 supplied it (frontend-developer), so this entry moved PENDING ->
