@@ -1006,9 +1006,9 @@ async function main(argv: readonly string[]): Promise<void> {
     console.log(
       `  NOTE: all ${String(examined)} pair(s) are waived: each was checked only for a record, ` +
         'for claiming no review (CLAIMS-REVIEW), for fields outside the record set ' +
-        '(UNDEFINED-FIELD) and for its bytes (NO-SOURCE, STALE-RECORD, UNPINNED-CONTENT), and ' +
-        'NONE was checked for authorship or as final under OE-5. ' +
-        `This gate is green BECAUSE OF THE WAIVER, which expires ${String(
+        '(UNDEFINED-FIELD), for a note that is not text (NOTE-NOT-TEXT) and for its bytes ' +
+        '(NO-SOURCE, STALE-RECORD, UNPINNED-CONTENT), and NONE was checked for authorship or as ' +
+        `final under OE-5. This gate is green BECAUSE OF THE WAIVER, which expires ${String(
           waiver?.expectedBy,
         )}; from the day after, every one of them fails here unless it is final under OE-5.`,
     );
