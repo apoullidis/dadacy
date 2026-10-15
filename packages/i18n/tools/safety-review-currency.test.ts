@@ -828,18 +828,22 @@ test('NOTE-NOT-TEXT — the same values on records INSIDE the waiver are refused
   );
 });
 
-test('NOTE-NOT-TEXT is not over-wide — a note that is a string, null, or absent passes on a final record', () => {
+test('NOTE-NOT-TEXT is not over-wide, and its bound — a note that is a string (even prose claiming a review), null, or absent passes on a final record', () => {
+  // The BOUND, pinned so it cannot be closed or widened silently: the TEXT of a
+  // string note is not read. A sentence claiming a sign-off passes this gate.
+  const prose = `Signed off by ${REAL_LOOKING_REVIEWER} on 2026-10-01.`;
   const n = String(expectedPairs());
   attack(
     (root) => {
       finalise(root);
       editRecord(root, 'ru', SAFETY_KEY, { note: null });
       editRecord(root, 'el', SAFETY_KEY, { note: undefined });
+      editRecord(root, 'en', SAFETY_KEY, { note: prose });
     },
     (root) =>
       recordOf(root, 'ru', SAFETY_KEY)?.['note'] === null &&
       !('note' in (recordOf(root, 'el', SAFETY_KEY) ?? { note: 1 })) &&
-      typeof recordOf(root, 'en', SAFETY_KEY)?.['note'] === 'string',
+      recordOf(root, 'en', SAFETY_KEY)?.['note'] === prose,
     'PASS',
     [`OE-5: ${n} of ${n} pair(s) accepted as AI-authored and reviewed by nobody`],
     ['NOTE-NOT-TEXT'],

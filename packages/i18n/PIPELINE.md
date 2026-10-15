@@ -23,9 +23,11 @@ Two things this document deliberately does **not** contain:
    the catalogues. Until `T-233` every `safety_critical` string there was an
    **engineering placeholder** written by `T-040`; since `T-233` every one is
    **AI-authored** under OE-66/OE-67 and recorded as `provenance:
-"ai_authored"` in `review.json`, at `status: "pending_review"`. **It is not
-   reviewed and it must not ship until it is.** Writing copy that _read_ as
-   reviewed would be the exact failure this whole mechanism exists to prevent —
+"ai_authored"` in `review.json`, and since `T-259` at `status:
+"unreviewed_by_ruling"` with `review_ruling: "OE-5"`. **It is not reviewed and
+   no review will happen** (OE-5); OE-81 makes it releasable as it stands.
+   Writing copy that _read_ as reviewed would be the exact failure this whole
+   mechanism exists to prevent —
    an English SMS delivered to a Russian speaker succeeds at every layer,
    returns 200, raises no alarm, and is discovered when it matters least.
 2. **The Greek and Russian prohibited-claim lists.** They are in
@@ -153,17 +155,19 @@ additively** — one provenance value, `ai_authored`, and one optional field,
 }
 ```
 
-What every one of the 24 records actually says today (`T-233`):
+What every one of the 24 records actually says today (`T-233`, flipped by `T-259`):
 
 ```jsonc
 "safety.sos.confirm": {
   "content_hash": "sha256:…",              // current: the landed AI-authored copy
   "provenance":   "ai_authored",
-  "status":       "pending_review",        // NOT signed off
+  "status":       "unreviewed_by_ruling",  // final with NO review, by ruling — never signed off
   "authored_by":  "Claude Opus (claude-opus-5-5), AI agent",
   "ruling":       "OE-66",                 // "OE-67" for en
-  "reviewed_by":  null,                    // no DSL or deputy is named
-  "reviewed_at":  null
+  "review_ruling": "OE-5",                 // the ruling that dropped the review
+  "reviewed_by":  null,                    // nobody reviews this copy (OE-5)
+  "reviewed_at":  null,
+  "note":         "… No review: dropped by stakeholder ruling OE-5 …"
 }
 ```
 
@@ -311,7 +315,8 @@ translation** — there is nobody to brief and no brief to acknowledge. Re-decla
 ## 4. The strings — eight keys, three locales, 24 records
 
 All eight are `safety_critical`. Since `T-233` all 24 records are
-`provenance: "ai_authored"`, `status: "pending_review"` (§3). The **Intent**
+`provenance: "ai_authored"`, and since `T-259` `status: "unreviewed_by_ruling"`
+under `review_ruling: "OE-5"` (§3). The **Intent**
 column is what the string is _for_ as `T-049` wrote it; **the meaning contract
 the landed copy was written to is `tasks/state/EP-0/OE-66/en/MEANING.md`
 (OE-67), and where the two differ the contract is what the copy says** — noted

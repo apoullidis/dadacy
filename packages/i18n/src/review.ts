@@ -561,7 +561,7 @@ export function pipelineIncoherences(
 
       // T-233 (OE-66 / OE-67, EV-16). AUTHORSHIP is checked at every status, not
       // only at sign-off, because an `ai_authored` record is exactly the record
-      // that sits at `pending_review` for months — and a model or a free-text
+      // that is never signed off (since T-259, final with no review) — and a model or a free-text
       // name in `authored_by` is a claim about who wrote safety copy whether or
       // not anyone has reviewed it yet. `aiRuling` is set ONLY when every
       // condition of the one permitted non-human route holds.

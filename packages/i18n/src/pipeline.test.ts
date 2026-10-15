@@ -532,7 +532,7 @@ test('NEGATIVE — QA-F2: signed off before the copy was even sent out for autho
 });
 
 // ─── Round-2 residuals. Every one of these fires on a STAKEHOLDER ACTION —
-// naming a person into the roster, or recording a real external_start — not on a
+// naming a person into the roster (and, until T-259 deleted the field, recording an external_start) — not on a
 // ticket dispatch. There is no ticket between here and the moment they matter,
 // which is why they are closed here rather than carried.
 
@@ -1008,7 +1008,7 @@ test('the register as it stands: every stage applies, and none is dated', () => 
 //
 // One route for a non-human author, and the tests below pin both of its edges:
 // what it ACCEPTS (a truthfully recorded model, under a ruling that covers the
-// locale, at `pending_review`), and what it still REFUSES — every forgery the
+// locale, at any status short of `signed_off`), and what it still REFUSES — every forgery the
 // human path refuses, plus the ones this route itself could invite.
 
 /** A DSL sign-off of OE-66 copy: the model authored it, the named human DSL reviewed it. */
@@ -1121,7 +1121,7 @@ test('NEGATIVE — T-233: a caller that supplies no rulings refuses every AI-aut
 });
 
 test('T-233: an OE-66 AI-authored record is accepted as AUTHORED — with the roster filled and every stage done', () => {
-  // The committed register (24 `ai_authored` records at `pending_review`) against
+  // The committed register (24 `ai_authored` records, final under OE-5 since T-259) against
   // a pipeline in which the four humans are named and confirmed: the authorship
   // is coherent, and nothing claims a review, so nothing is reported.
   assert.deepEqual(

@@ -745,9 +745,11 @@ function checkAuthorship(
  * covering test is half-falsifiable (the note QA raised on T-042).
  *
  * Since T-258 (OE-5, OE-81) the record is ACCEPTED only when it is current,
- * AI-authored under a ruling the gate reads, claims no review, carries no
- * field outside RECORD_FIELDS, is final with no review under a ruling the gate
- * reads, and carries the pinned hash. Returns
+ * AI-authored under a ruling the gate reads, carries no `signed_off` status
+ * and no non-null `review`-named field other than `review_ruling`
+ * (CLAIMS-REVIEW), carries no field outside RECORD_FIELDS, has a `note` that
+ * is a string or null if present (NOTE-NOT-TEXT, T-259), is final with no
+ * review under a ruling the gate reads, and carries the pinned hash. Returns
  * whether it was accepted — the number the OE-5 line prints.
  */
 function checkPair(
@@ -927,9 +929,9 @@ async function main(argv: readonly string[]): Promise<void> {
         // describes, never wider, and a placeholder record satisfies it.
         if (record === undefined) {
           failures.push(
-            `WAIVED-NO-RECORD '${key}' in ${locale}: the key is inside the T-049 waiver, but ` +
+            `WAIVED-NO-RECORD '${key}' in ${locale}: the key is inside the waiver, but ` +
               'review.json has no record for it at all. The waiver waives the currency of a ' +
-              'review, not the existence of the provenance row that the pipeline will fill.',
+              'review, not the existence of the provenance row.',
           );
         } else if (!isRecord(record)) {
           failures.push(
