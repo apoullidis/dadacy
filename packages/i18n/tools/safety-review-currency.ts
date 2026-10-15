@@ -25,8 +25,13 @@
  * of `authored_by`, `ruling`, `review_ruling` and of a `status` other than
  * `signed_off` are not judged here; `gate:unit-tests` judges some of them.
  * This supersedes T-040 § contract §6's rule, which required `signed_off` and a
- * named reviewer: under OE-5 no human reviews this copy, so a record claiming
- * a review is now the refusal, not the requirement.
+ * named reviewer: under OE-5 no human reviews this copy, so a review claim
+ * is now the refusal, not the requirement. "A review claim" here means only
+ * what CLAIMS-REVIEW and UNDEFINED-FIELD read: a `signed_off` status, a
+ * non-null `review`-named field other than `review_ruling`, or a field outside
+ * the record's nine. `note`'s value is never read, at any status, whatever its
+ * JSON type: a sign-off nested in it passes (T-258 rework 2; closing that is
+ * T-259's, OD-353).
  *
  * WHAT THIS GATE IS THE OTHER HALF OF. `gate:locale-completeness` (T-042)
  * proves a `safety_critical` string is PRESENT and RENDERABLE; it states in its

@@ -223,7 +223,8 @@ any field outside the nine (`signed_off_by`, `approved_by`, `dsl_signoff`, …),
 waived or not (the gate's Vitest _UNDEFINED-FIELD_ and _CLAIMS-REVIEW_ cases).
 Inside the waiver it does not judge the _values_ of `authored_by`, `ruling`,
 `review_ruling` or a `status` other than `signed_off`, and nowhere does it read
-prose in `note`. The rest of this document still describes the human sign-off
+`note`'s value, prose, object or array: a sign-off nested in `note` passes
+(closing that is `T-259`'s, OD-353). The rest of this document still describes the human sign-off
 path that OE-5 removed; `T-259` and `T-260` rewrite it.
 
 ### What stops a record saying "reviewed" when nothing was reviewed
