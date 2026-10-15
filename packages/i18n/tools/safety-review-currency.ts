@@ -602,10 +602,39 @@ function undefinedFields(
         `and ${JSON.stringify(field)} is not a field of a review record ` +
         `(${RECORD_FIELDS.join(', ')}). The field set is closed so that a sign-off, an approval or a ` +
         'review cannot be recorded under a field name outside it (OE-5: nothing may record or claim one). ' +
-        'This check reads field names, not the value of a defined field: a sign-off nested in note is not refused by this gate. Adding a field is an edit to RECORD_FIELDS in this gate.',
+        'This check reads field names, not the value of a defined field (NOTE-NOT-TEXT reads the JSON type of note, not its text). Adding a field is an edit to RECORD_FIELDS in this gate.',
     );
   }
   return found;
+}
+
+/**
+ * NOTE-NOT-TEXT (T-259, OD-353; T-258 QA D-NEST1/2/8, R2-NOTE-NUM/BOOL): `note`
+ * is prose or nothing. A `note` that is present and is neither a string nor
+ * `null` — an object, an array, a number, a boolean — is refused, at any
+ * status and on waived records too. Without this a sign-off nested in it
+ * (`note: {"signed_off_by": …}`) passed the flipped register and was counted
+ * "reviewed by nobody". An absent `note` is accepted (the field is optional).
+ * What this does NOT read: the TEXT of a string `note`. A sentence saying a
+ * review happened is still not refused here; review of the diff is the control
+ * for prose. Returns whether it refused.
+ */
+function noteNotText(
+  where: string,
+  record: Readonly<Record<string, unknown>>,
+  failures: string[],
+): boolean {
+  if (!Object.hasOwn(record, 'note')) return false;
+  const v = record['note'];
+  if (typeof v === 'string' || v === null) return false;
+  const kind = Array.isArray(v) ? 'an array' : typeof v === 'object' ? 'an object' : `a ${typeof v}`;
+  failures.push(
+    `NOTE-NOT-TEXT ${where}: note is ${v === undefined ? 'undefined' : JSON.stringify(v)} (${kind}), ` +
+      'not a string or null. A note is prose or nothing, so that a sign-off, an approval or a ' +
+      'review cannot be recorded as structured data inside it (OE-5: nothing may record or ' +
+      'claim one). This check reads the JSON type of note, not its text.',
+  );
+  return true;
 }
 
 /**
@@ -761,6 +790,8 @@ function checkPair(
   claimsReview(where, record as unknown as Record<string, unknown>, failures);
   // Whether it carries any field a record does not have (rework 1, QA-F1).
   undefinedFields(where, record as unknown as Record<string, unknown>, failures);
+  // Whether its note is anything but prose or nothing (T-259, OD-353).
+  noteNotText(where, record as unknown as Record<string, unknown>, failures);
 
   // Whether it is final, by a ruling the gate reads.
   if (record.status !== FINAL_STATUS) {
@@ -899,6 +930,8 @@ async function main(argv: readonly string[]): Promise<void> {
           claimsReview(where, record, failures);
           // Rework 1 (QA-F1): nor a field outside the record's closed set.
           undefinedFields(where, record, failures);
+          // T-259 (OD-353): nor a note that is not text.
+          noteNotText(where, record, failures);
           // Rework 1 (QA-F2): nor the BYTES. The waiver waives finality — the
           // status, the review ruling and the authorship — not currency or the
           // pin, so a catalogue edit plus a re-hashed record under a waiver
