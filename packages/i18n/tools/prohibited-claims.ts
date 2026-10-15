@@ -240,17 +240,21 @@ function readRegistry(
     return undefined;
   }
   const doc = r.value;
-  if (!isRecord(doc) || typeof doc.defaultLocale !== 'string' || !Array.isArray(doc.locales)) {
+  if (
+    !isRecord(doc) ||
+    typeof doc['defaultLocale'] !== 'string' ||
+    !Array.isArray(doc['locales'])
+  ) {
     failures.push('INPUT locale-registry.json has no `defaultLocale` string or `locales` array.');
     return undefined;
   }
   const enabled: string[] = [];
-  for (const row of doc.locales as unknown[]) {
-    if (isRecord(row) && row.enabled === true && typeof row.code === 'string') {
-      enabled.push(row.code);
+  for (const row of doc['locales'] as unknown[]) {
+    if (isRecord(row) && row['enabled'] === true && typeof row['code'] === 'string') {
+      enabled.push(row['code']);
     }
   }
-  return { enabled, defaultLocale: doc.defaultLocale };
+  return { enabled, defaultLocale: doc['defaultLocale'] };
 }
 
 /**
@@ -282,23 +286,23 @@ function readList(
     failures.push(`MALFORMED-LIST ${rel} is not a JSON object.`);
     return { phrases, permitted };
   }
-  if (doc.locale !== locale) {
+  if (doc['locale'] !== locale) {
     failures.push(
-      `LOCALE-MISMATCH ${rel} declares locale ${JSON.stringify(doc.locale)}, not '${locale}'.`,
+      `LOCALE-MISMATCH ${rel} declares locale ${JSON.stringify(doc['locale'])}, not '${locale}'.`,
     );
   }
 
   // Authorship — T-233 § Published contract §1's rule, applied to a list.
-  const ruling = LIST_RULINGS.find((x) => x.id === doc.ruling);
-  if (doc.provenance !== 'ai_authored' || doc.ruling === undefined) {
+  const ruling = LIST_RULINGS.find((x) => x.id === doc['ruling']);
+  if (doc['provenance'] !== 'ai_authored' || doc['ruling'] === undefined) {
     failures.push(
-      `UNRULED-AUTHOR ${rel}: provenance ${JSON.stringify(doc.provenance)}, ruling ` +
-        `${JSON.stringify(doc.ruling)}. A list is accepted only as \`ai_authored\` under a cited ` +
+      `UNRULED-AUTHOR ${rel}: provenance ${JSON.stringify(doc['provenance'])}, ruling ` +
+        `${JSON.stringify(doc['ruling'])}. A list is accepted only as \`ai_authored\` under a cited ` +
         `stakeholder ruling (known: ${LIST_RULINGS.map((x) => x.id).join(', ')}).`,
     );
   } else if (ruling === undefined) {
     failures.push(
-      `UNRULED-AUTHOR ${rel} cites ${JSON.stringify(doc.ruling)}, which is not a stakeholder ` +
+      `UNRULED-AUTHOR ${rel} cites ${JSON.stringify(doc['ruling'])}, which is not a stakeholder ` +
         `ruling that makes a model the author of a prohibited-claim list (known: ` +
         `${LIST_RULINGS.map((x) => x.id).join(', ')}).`,
     );
@@ -307,9 +311,9 @@ function readList(
       `UNRULED-AUTHOR ${rel} cites ${ruling.id}, which covers [${ruling.locales.join(', ')}], ` +
         `not '${locale}'.`,
     );
-  } else if (doc.authored_by !== ruling.author) {
+  } else if (doc['authored_by'] !== ruling.author) {
     failures.push(
-      `WRONG-AUTHOR ${rel}: authored_by is ${JSON.stringify(doc.authored_by)}, not the model ` +
+      `WRONG-AUTHOR ${rel}: authored_by is ${JSON.stringify(doc['authored_by'])}, not the model ` +
         `${ruling.id} names (${JSON.stringify(ruling.author)}), character for character. Record ` +
         'the model truthfully — never a human name, never another engine.',
     );
@@ -325,16 +329,20 @@ function readList(
 
   // The banned claims: exactly the ten PM claims, each with phrases.
   const expected = EN_CLAIMS.map(([c]) => c);
-  if (!Array.isArray(doc.banned)) {
+  if (!Array.isArray(doc['banned'])) {
     failures.push(`MALFORMED-LIST ${rel} has no \`banned\` array.`);
   } else {
     const seen = new Set<string>();
-    for (const [i, entry] of (doc.banned as unknown[]).entries()) {
-      if (!isRecord(entry) || typeof entry.claim !== 'string' || !Array.isArray(entry.phrases)) {
+    for (const [i, entry] of (doc['banned'] as unknown[]).entries()) {
+      if (
+        !isRecord(entry) ||
+        typeof entry['claim'] !== 'string' ||
+        !Array.isArray(entry['phrases'])
+      ) {
         failures.push(`MALFORMED-LIST ${rel} banned[${String(i)}] is not { claim, phrases[] }.`);
         continue;
       }
-      const claim = entry.claim;
+      const claim = entry['claim'];
       if (!expected.includes(claim)) {
         failures.push(
           `UNKNOWN-CLAIM ${rel} banned[${String(i)}].claim ${JSON.stringify(claim)} is not one of ` +
@@ -345,10 +353,10 @@ function readList(
         failures.push(`DUPLICATE-CLAIM ${rel} lists ${JSON.stringify(claim)} twice.`);
       }
       seen.add(claim);
-      if (entry.phrases.length === 0) {
+      if (entry['phrases'].length === 0) {
         failures.push(`EMPTY-CLAIM ${rel} ${JSON.stringify(claim)} has no phrases.`);
       }
-      for (const [j, p] of (entry.phrases as unknown[]).entries()) {
+      for (const [j, p] of (entry['phrases'] as unknown[]).entries()) {
         if (typeof p !== 'string' || fold(p) === '') {
           failures.push(
             `EMPTY-PHRASE ${rel} ${JSON.stringify(claim)} phrases[${String(j)}] is ` +
@@ -371,15 +379,16 @@ function readList(
   }
 
   // The permitted renderings: one per PM §MVP-S8 AC5 claim, keyed by its English.
-  if (!Array.isArray(doc.permitted)) {
+  if (!Array.isArray(doc['permitted'])) {
     failures.push(`MALFORMED-LIST ${rel} has no \`permitted\` array.`);
   } else {
     const ens: string[] = [];
-    for (const p of doc.permitted as unknown[]) {
-      if (isRecord(p) && typeof p.en === 'string') ens.push(p.en);
+    for (const p of doc['permitted'] as unknown[]) {
+      if (isRecord(p) && typeof p['en'] === 'string') ens.push(p['en']);
       const rendered = isRecord(p) ? p[locale] : undefined;
       if (typeof rendered === 'string' && fold(rendered) !== '') permitted.push(rendered);
-      else failures.push(`PERMITTED-SET ${rel} has a permitted entry with no '${locale}' rendering.`);
+      else
+        failures.push(`PERMITTED-SET ${rel} has a permitted entry with no '${locale}' rendering.`);
     }
     const missing = PERMITTED_S8.filter((e) => !ens.includes(e));
     const extra = ens.filter((e) => !PERMITTED_S8.includes(e));
