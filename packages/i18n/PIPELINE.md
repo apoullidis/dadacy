@@ -2,9 +2,9 @@
 
 **Owner:** `T-049` (front-end / i18n) · **Register:** [`review.json`](./review.json) `§ pipeline`
 **Specs:** SD §DH-5 external dependency 2 · SA §TS-12.4 · PM §MVP-L4 AC4, §MVP-L5 AC7, §MVP-IS5 AC7 · DV-7, DV-11 · SD Revision Log D8
-**Status on 2026-09-05:** engineering side complete; **external side not started, and blocked on a stakeholder.**
-**Status on 2026-09-28 (`T-233`):** the copy exists and is **AI-authored, not reviewed.** Stakeholder rulings **OE-66** (2026-09-27T18:54:51Z) and **OE-67** (2026-09-27T19:27:39Z) made an AI model — Claude Opus (`claude-opus-5-5`) — the **author** of all `el` and `ru` copy, the `el`/`ru` prohibited-claim lists, and the eight `en` `safety_critical` strings (`decisions.md` EV-16). **OE-68** kept the banned-claims list as it stands. **Nothing is signed off: the named human DSL and deputy review is unchanged by all three rulings, and neither person is named.** See §2 and §7.
-**Decision review date: 2026-12-05** (re-anchored once from 2026-10-17 — §5).
+**Status on 2026-09-05:** engineering side complete; external side not started, and blocked on a stakeholder. _(History: superseded by the two lines below.)_
+**Status on 2026-09-28 (`T-233`):** the copy exists and is **AI-authored, not reviewed.** Stakeholder rulings **OE-66** (2026-09-27T18:54:51Z) and **OE-67** (2026-09-27T19:27:39Z) made an AI model — Claude Opus (`claude-opus-5-5`) — the **author** of all `el` and `ru` copy, the `el`/`ru` prohibited-claim lists, and the eight `en` `safety_critical` strings (`decisions.md` EV-16). **OE-68** kept the banned-claims list as it stands. Nothing was signed off; at that time the human DSL and deputy review was still required, and neither person was named.
+**Status since 2026-10-11 (stakeholder ruling OE-5; `T-259`): no human reviews this copy.** OE-5 dropped the DSL and deputy review (EV-16 extended) and OE-81 makes AI-authored, unreviewed safety copy releasable. All 24 records are final with no review (`status: "unreviewed_by_ruling"`, `review_ruling: "OE-5"`, reviewer and date `null`), `pending_pipeline` is `null`, and **no date is in force** (§5). §0–§4, §7 and Appendices A–C still describe the human path the rulings removed; withdrawing them is `T-260`'s.
 
 ---
 
@@ -64,12 +64,20 @@ Straight from SA §TS-12.4, with the mechanism each step lands in.
         │                                │                                │
 ┌───────▼─────────┐        ┌─────────────▼──────────┐      ┌──────────────▼────────┐
 │ 4. DSL SIGN-OFF │        │ 5. IN-CONTEXT REVIEW   │      │ 6. READ-ALOUD PASS    │
-│    PER LOCALE   │        │    running product,    │      │    voice + spoken     │
-│    → review.json│        │    360 px Android      │      │    strings (DV-7)     │
+│    DROPPED by   │        │    running product,    │      │    voice + spoken     │
+│    OE-5         │        │    360 px Android      │      │    strings (DV-7)     │
 └─────────────────┘        └────────────────────────┘      └───────────────────────┘
         │
-        └──► gate:safety-review-currency (T-044) goes green for that key+locale
+        └──► no sign-off: gate:safety-review-currency passes a record only as
+             final with NO review under OE-5, and refuses one claiming a review
 ```
+
+**Since stakeholder ruling OE-5 (2026-10-11) step 4 does not happen.** No record
+is signed off; every record is `unreviewed_by_ruling` under `review_ruling:
+"OE-5"`, and the gate refuses a `signed_off` status (`CLAIMS-REVIEW`; NEG
+`T259-SIGNED-OFF`). Steps 5 and 6 are to become automated gates under OE-82
+(`T-263`, `T-264`, `T-265`); until `T-264` lands nothing enforces them. The
+paragraph below describes the pre-OE-5 rule and is `T-260`'s to withdraw.
 
 Steps 4, 5 and 6 are all **blocking** in `review.json § pipeline.stages`, and a
 record signed off while any of them is incomplete is reported as an
@@ -214,18 +222,22 @@ that the gate's `tools/rulings.ts` accepts for that locale, whose `status` is
 `unreviewed_by_ruling` with `review_ruling: "OE-5"`, and which claims no review
 (`status` never `signed_off`, no non-null field named with `review` other
 than `review_ruling`) and carries no field outside the nine a record defines
-(`UNDEFINED-FIELD`). When the key sits inside an unexpired `pending_pipeline`
-waiver, authorship and finality are not checked. The record's existence, the
-no-review-claim rule, the closed field set, currency and the pin still are
-(`T-258` rework 1). So since OE-5, the gate refuses a record whose `status` is
+(`UNDEFINED-FIELD`), and whose `note`, if present, is a string or `null`
+(`NOTE-NOT-TEXT`, `T-259`). When the key sits inside an unexpired
+`pending_pipeline` waiver — none is committed since `T-259`, and one re-added
+cannot outlive 2026-12-05 (`WAIVER-RENEWED`) — authorship and finality are not
+checked. The record's existence, the no-review-claim rule, the closed field set,
+the note type, currency and the pin still are (`T-258` rework 1, `T-259`). So since OE-5, the gate refuses a record whose `status` is
 `signed_off`, which carries a non-null `review`-named field, or which carries
 any field outside the nine (`signed_off_by`, `approved_by`, `dsl_signoff`, …),
 waived or not (the gate's Vitest _UNDEFINED-FIELD_ and _CLAIMS-REVIEW_ cases).
-Inside the waiver it does not judge the _values_ of `authored_by`, `ruling`,
-`review_ruling` or a `status` other than `signed_off`, and nowhere does it read
-`note`'s value, prose, object or array: a sign-off nested in `note` passes
-(closing that is `T-259`'s, OD-353). The rest of this document still describes the human sign-off
-path that OE-5 removed; `T-259` and `T-260` rewrite it.
+Inside a waiver it does not judge the _values_ of `authored_by`, `ruling`,
+`review_ruling` or a `status` other than `signed_off`. It refuses a `note` that
+is an object, an array, a number or a boolean, waived or not (the gate's Vitest
+_NOTE-NOT-TEXT_ cases; OD-353), but it never reads the **text** of a string
+`note`: a sentence saying a review happened passes. Apart from §1's step-4 note
+and §5, which `T-259` rewrote, this document still describes the human sign-off
+path that OE-5 removed; `T-260` withdraws it.
 
 ### What stops a record saying "reviewed" when nothing was reviewed
 
@@ -332,142 +344,71 @@ locale (SA §INT-5r), and whether this key rides that rung is `T-105`/`T-107`'s
 determination. Until it is made, a read-aloud pass may or may not be required —
 so the register refuses sign-off rather than dropping the question.
 
-## 5. What a human must do next — and by when
+## 5. The date — none is in force
 
-### What changed on 2026-09-05, and why
+### History, kept (2026-09-05)
 
-`T-040` opened the waiver with `opened_at 2026-09-05` → `expected_by 2026-10-17`.
-That interval is **exactly 42 days**, which is SD §DH-5's six-week external lead
-time verbatim. So:
+`T-040` opened the waiver with `opened_at 2026-09-05` → `expected_by 2026-10-17`,
+exactly 42 days — SD §DH-5's six-week external lead time — so the latest
+workable external start was the day the register was created and the window had
+zero slack on arrival (**OD-15**, escalated as **OE-5**). On 2026-09-05 the
+stakeholder re-anchored it to **2026-12-05** as a _decision review date_ (OE-5,
+first entry). Until `T-259`, `gate:safety-review-currency` went red on
+**2026-12-06** by itself: measured by `T-044`'s QA by bracketing the boundary,
+and again with the clock faked to 2026-12-06 at `main` `34aaadf` (`GATE FAIL …
+49 problem(s)`, `WAIVER-EXPIRED` then 24 `NOT-FINAL`; `state/EP-0/T-259.md`
+§ Evidence E9).
 
-```
-latest external start  =  deadline − lead time  =  2026-10-17 − 42 days  =  2026-09-05
-```
+### The decision the date was waiting for, and what `T-259` did with it
 
-— the day the register was created. **The window had zero slack on arrival.**
-Recorded as **OD-15** in `tasks/state/decisions.md` and escalated as **OE-5**.
+The date existed to force a decision on **human review**. Stakeholder ruling
+**OE-5** (2026-10-11T08:13:50Z; EV-16 extended) was that decision: AI agents
+author the copy, and the four-reviewer action is dropped, the DSL + deputy
+`reviewed_by` review (PM §MVP-L5 AC7) included. **OE-81** rules that this copy is
+releasable. So `T-259`:
 
-The conclusion the stakeholder drew is the right one: **2026-10-17 was never a
-forecast.** `T-040` wrote six weeks because the spec says six weeks, not because
-a clock had started — and no clock has started, because no engagement has begun.
-A date nobody ever committed to should not be allowed to expire into a build
-failure whose cheapest repair is deleting the waiver.
+- moved all 24 records to `status: "unreviewed_by_ruling"` with
+  `review_ruling: "OE-5"`, reviewer and date `null`, and reworded each `note` to
+  say no review happened and none will (`src/review.test.ts` _every
+  safety_critical record is final with no review under OE-5…_);
+- set `pending_pipeline` to `null`, which deletes its re-anchor chain
+  (`src/review.test.ts` _pending_pipeline is null…_);
+- deleted `pipeline.deadline`, `lead_time_days`, `latest_external_start`,
+  `external_start` and `blocked_on` with their notes (`src/pipeline.test.ts`
+  _the pipeline block exists, is loaded fail-closed, and carries no date in
+  force_), and the test-file anchors `ANCHOR`, `DEADLINE`, `LEAD_TIME_DAYS`,
+  `ORIGINAL_EXPECTED_BY` and `MAX_UNSTARTED_RE_ANCHORS` with the tests over them.
 
-**Decision: re-anchor honestly to `2026-12-05`, and redefine what the date
-means.**
+**This is not a renewal. No date moved**; the event the date waited for was
+ruled out by the stakeholder, on the record. **Measured, not argued:** the gate
+run on the committed tree with the clock faked to 2026-12-06 and to 2027-06-01
+is `GATE PASS` (NEG `T259-CLOCK-PAST-ANCHOR`, `T259-CLOCK-2027`), and so is the
+package's test suite with the clock at 2026-12-06 (`state/EP-0/T-259.md`
+§ Evidence E11).
 
-### `expected_by` is a decision review date, not a delivery date
+### The one anchor left — it bounds a waiver someone re-adds
 
-Nobody has promised safety copy by 2026-12-05. What must happen by it is a
-**decision**: either a real `external_start` is recorded and the date is
-re-anchored to _start + 42 days_, or it is re-anchored again with a stated
-reason. **The gate behaviour is unchanged** — after `expected_by`,
-`gate:safety-review-currency` fails the build on these keys exactly as on
-unwaived ones — so the self-closing property, which is the entire value of the
-mechanism, survives the change.
+`WAIVER_NOT_AFTER = '2026-12-05'` in `tools/safety-review-currency.ts`, and every
+`WAIVER-*` refusal, are unchanged. A `pending_pipeline` re-added with a later
+`expected_by` is `WAIVER-RENEWED` (NEG `WAIVER-RENEWED`, with 2027-01-01; Vitest
+_a waiver renewed past the anchor pinned in the gate is refused_), so no waiver
+can be in force after 2026-12-05 and none can be renewed by editing the field
+that expires it. Inside one that is in force the gate still checks each record's
+existence, review claims, closed field set, note type, currency and pin (the
+Vitest _… INSIDE the waiver …_ and _(waived)_ cases, run at a faked clock inside
+the rebuilt pre-`T-259` waiver).
 
-**This is not an open-ended waiver and it is prevented from becoming one**, by
-four things that all live _outside_ the register:
+### What is not claimed
 
-| Guard                                            | Where it lives                                                                      | What it stops                                                                                                                                                                        |
-| ------------------------------------------------ | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `expected_by ≤ 2026-12-05`                       | a literal in `src/review.test.ts`                                                   | The date drifting later without an edit to a test file                                                                                                                               |
-| `pipeline.deadline === '2026-12-05'`             | a literal in `src/pipeline.test.ts`                                                 | The date drifting _earlier_ in the register than the anchor, or the anchor moving without the register                                                                               |
-| **≤ 1 re-anchor while `external_start` is null** | `MAX_UNSTARTED_RE_ANCHORS` in `src/pipeline.test.ts`                                | Moving the date repeatedly while nothing is engaged. One has been used                                                                                                               |
-| `expected_by ≤ 2026-12-05`                       | `WAIVER_NOT_AFTER` in `tools/safety-review-currency.ts` (`T-044`, added 2026-09-20) | The same drift, in the gate that blocks the PR rather than in a test: a later `expected_by` is refused as `WAIVER-RENEWED`. Earlier is allowed — shortening a waiver cannot buy time |
-
-And one that lives inside, but is checkable: `pending_pipeline.re_anchors` is an
-**append-only chain**. Each row's `from` is the previous row's `to`, the first
-`from` is the original `2026-10-17`, and the last `to` must equal `expected_by`.
-**A date moved without a row explaining it is a red test**, even when every
-literal above is moved with it — demonstrated in `T-049`'s evidence, case C.
-
-> **The §5.1 question, asked of this record — and then asked again one level
-> down.** _Could it report "we are on track" while nothing has been engaged?_ On
-> its own, **yes** — append a row every time the date approaches, and the chain
-> stays perfectly coherent while nothing happens. That is why the _bound_ is a
-> literal in a test file rather than a field in the register: a register that
-> could raise its own limit would be measuring itself.
->
-> **The first version stopped there, and that was not far enough.** The bound was
-> outside, but the predicate deciding whether it _applied_ was inside: it
-> filtered on `external_start_at_decision`, a field each row writes **about
-> itself**, and never compared it against the waiver's actual `external_start`. A
-> date typed into that one field bought an exemption from a limit that was
-> otherwise unreachable. Exemption is now granted against the waiver's **actual**
-> state, and a row claiming a start the waiver does not have — or decided before
-> the start it invokes — is reported rather than silently declined.
-
-`external_start` is recorded as an **explicit `null`**, in both
-`pipeline` and `pending_pipeline`, and `loadCopyPipeline()` **refuses to load a
-pipeline whose `external_start` key is absent** — a null that means "has not
-happened" is checkable; a missing key reads identically to a field nobody
-thought to add.
-
-### What blocks, and what does not — say this plainly
-
-**The copy pipeline blocks a milestone, not the build.** Roughly 24 of 25 ready
-tickets are unaffected and the programme keeps moving. What is genuinely blocked,
-and stays blocked deliberately:
-
-- ~~`T-043` (`gate:prohibited-claims`)~~ — **not blocked any more.** Since
-  OE-66 the `el`/`ru` lists exist, AI-authored (§6), and `T-043` built the gate
-  over them; it no longer waits for native speakers.
-- **The M0 exit gate.** SD §DH-5 conditions it on native authorship **with named
-  authorship**. OE-66/OE-67 replaced that authorship with a named **model**
-  (EV-16), recorded truthfully; they did **not** replace the review. **M0 still
-  needs the named, stakeholder-confirmed human DSL and deputy, and their
-  per-locale sign-off**, and no re-anchoring of a date changes that.
-
-**The re-anchor does not make the dependency go away.** It replaces a date nobody
-committed to with a date somebody decided, and it makes the next move cost a
-decision instead of an edit.
-
-### The ask, in order
-
-> **Amended by `T-233` for OE-66 / OE-67 — steps 1 and 2 only.** The copy now
-> exists, AI-authored, so the practitioner and the translator are no longer on
-> the critical path for it. **Step 1 reduces to naming and confirming the DSL
-> and the deputy DSL** (the two authoring roles may stay `null`), and **step 2
-> becomes: send Appendix C to them**, not Appendices A and B. Steps 3–5 — the
-> `external_start` / `expected_by` / `WAIVER_NOT_AFTER` mechanics — are
-> **unchanged**, and they still govern the waiver's date. What `external_start`
-> should mean when no external author is being briefed is a question for the
-> stakeholder at the 2026-12-05 decision; `T-233` has not answered it and has
-> not recorded one.
-
-1. **Name the four people** in `review.json § pipeline.roles` and set
-   `confirmed_by_stakeholder_on`: the **Greek-authoring safeguarding
-   practitioner** — _the long pole, and the Cyprus constraint is not negotiable,
-   because the copy encodes the Cyprus reporting pathway_ — the **Russian
-   translator**, the **DSL** and the **deputy DSL**. PM §MVP-L5 AC7 requires the
-   DSL pair to cover English, Greek and Russian between them; verify that before
-   confirming them.
-2. **Send Appendix A** to the practitioner and **Appendix B** to the translator.
-   Both are complete as written. Appendix B must not go out with the strings
-   attached until the translator has acknowledged the brief — that
-   acknowledgement is the recorded stage `brief_ru_translator`, and it is the
-   stage that gets skipped.
-3. **Record `external_start`** on the day the brief is _actually_ delivered. Not
-   the day it is written, and not in advance.
-4. **Then re-anchor `expected_by` to `external_start + 42 days`**, appending a
-   `re_anchors` row with `external_start_at_decision` set — which is the moment
-   the date becomes a genuine forecast for the first time, and the moment the
-   unstarted-re-anchor bound stops applying. **If that lands after 2026-12-05,
-   move `WAIVER_NOT_AFTER` in `tools/safety-review-currency.ts` in the same
-   commit**, or `gate:safety-review-currency` refuses it as `WAIVER-RENEWED`.
-   That cost is the same cost the two test literals already carry, in the gate
-   that blocks a PR.
-5. **If 2026-12-05 arrives with `external_start` still null**, that is a second
-   unstarted re-anchor and it must be an explicit orchestrator decision against
-   BOARD **RK-2**, moving `pending_pipeline.expected_by`, the `2026-12-05`
-   literals in both test files, `WAIVER_NOT_AFTER` in
-   `tools/safety-review-currency.ts`, `MAX_UNSTARTED_RE_ANCHORS`, and a new
-   `re_anchors` row, plus `pipeline.deadline` and
-   `pipeline.latest_external_start` — **together**. That cost is the intended
-   mechanism. What must not happen is the date arriving unattended: the cheapest
-   repair under pressure is deleting the waiver, and deleting the waiver deletes
-   the only record saying this copy is unreviewed.
+- Nothing here makes the copy right or proves which model wrote it; an edit that
+  changes the catalogue, the record's hash and the gate's pin in one commit
+  passes, and review of the diff is the control (`T-258` § Published contract —
+  LIVE §7).
+- The 360 px in-context check and the read-aloud check are not enforced by any
+  gate until `T-264` lands (OD-323, OE-82).
+- The ask this section used to end with — name four people, send Appendices A,
+  B and C, record `external_start`, re-anchor — was **withdrawn by OE-5**. The
+  appendices are still below; withdrawing them is `T-260`'s.
 
 ## 6. Also on this engagement — `T-043`'s prohibited-claim lists
 
