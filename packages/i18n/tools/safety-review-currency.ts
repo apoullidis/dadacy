@@ -595,11 +595,9 @@ function undefinedFields(
     failures.push(
       `UNDEFINED-FIELD ${where}: ${field} is ${v === undefined ? 'undefined' : JSON.stringify(v)}, ` +
         `and ${JSON.stringify(field)} is not a field of a review record ` +
-        `(${RECORD_FIELDS.join(', ')}). The field set is closed so that a sign-off, an ` +
-        'approval or a review cannot be recorded under a field name outside it (OE-5: nothing ' +
-        'may record or claim one). This check reads field names, not the value of a defined ' +
-        'field: a sign-off nested in note is not refused by this gate. Adding a field is an ' +
-        'edit to RECORD_FIELDS in this gate.',
+        `(${RECORD_FIELDS.join(', ')}). The field set is closed so that a sign-off, an approval or a ` +
+        'review cannot be recorded under a field name outside it (OE-5: nothing may record or claim one). ' +
+        'This check reads field names, not the value of a defined field: a sign-off nested in note is not refused by this gate. Adding a field is an edit to RECORD_FIELDS in this gate.',
     );
   }
   return found;
