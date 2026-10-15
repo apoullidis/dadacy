@@ -515,9 +515,10 @@ const FINAL_STATUS = 'unreviewed_by_ruling';
 
 /**
  * CLAIMS-REVIEW, at ANY status and on waived records too (T-258; OE-5: nothing
- * may record or claim a human review). Each of the three fields is a claim on
- * its own, so one is enough; all of them are named on one line. Returns whether
- * a claim was found.
+ * may record or claim a human review). `status: "signed_off"` is a claim, and
+ * so is any non-null field whose name contains "review" other than
+ * `review_ruling`. Each is a claim on its own, so one is enough; all of them
+ * are named on one line. Returns whether a claim was found.
  */
 function claimsReview(
   where: string,
@@ -526,8 +527,12 @@ function claimsReview(
 ): boolean {
   const claims: string[] = [];
   if (record['status'] === 'signed_off') claims.push('status is "signed_off"');
-  for (const field of ['reviewed_by', 'reviewed_at'] as const) {
-    const v = record[field];
+  // `reviewed_by`, `reviewed_at` and ANY other field whose name contains
+  // "review" (a `review_date`, a `reviewer`, …), the rule T-043 applies to the
+  // prohibited-claim lists. `review_ruling` is the one exception: it names the
+  // ruling that REMOVED review, which is the opposite of a claim.
+  for (const [field, v] of Object.entries(record)) {
+    if (!/review/iu.test(field) || field === 'review_ruling') continue;
     if (v !== null && v !== undefined) claims.push(`${field} is ${JSON.stringify(v)}`);
   }
   if (claims.length === 0) return false;

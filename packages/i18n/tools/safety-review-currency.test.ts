@@ -435,6 +435,27 @@ test('CLAIMS-REVIEW — reviewed_at set alone, on a final record, is refused', (
   );
 });
 
+test('CLAIMS-REVIEW — a review claim in a field the register does not define (review_date, reviewer) is refused; review_ruling alone is not a claim', () => {
+  attack(
+    (root) => {
+      finalise(root);
+      editRecord(root, 'el', SAFETY_KEY, { review_date: '2026-10-12' });
+      editRecord(root, 'ru', SAFETY_KEY, { reviewer: REAL_LOOKING_REVIEWER });
+    },
+    (root) =>
+      recordOf(root, 'el', SAFETY_KEY)?.['review_date'] === '2026-10-12' &&
+      recordOf(root, 'ru', SAFETY_KEY)?.['reviewer'] === REAL_LOOKING_REVIEWER &&
+      recordOf(root, 'en', SAFETY_KEY)?.['review_ruling'] === 'OE-5',
+    'FAIL',
+    [
+      `CLAIMS-REVIEW '${SAFETY_KEY}' in el: review_date is "2026-10-12"`,
+      `CLAIMS-REVIEW '${SAFETY_KEY}' in ru: reviewer is "${REAL_LOOKING_REVIEWER}"`,
+    ],
+    othersThan('CLAIMS-REVIEW'),
+    { 'CLAIMS-REVIEW': 2 },
+  );
+});
+
 test('CLAIMS-REVIEW — status signed_off alone, with no reviewer and no date, is refused', () => {
   attack(
     (root) => {
