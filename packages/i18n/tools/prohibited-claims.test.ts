@@ -388,7 +388,7 @@ test(
 );
 
 test(
-  'NEGATIVE — every list applies to every locale: el and ru list phrases planted in the other locales are refused',
+  'NEGATIVE — every list applies to every locale: PM, DV-3, el and ru phrases planted in the other locales are refused',
   () => {
     // T-043 QA F2. Bare "24/7" in en copy is caught ONLY through the el/ru
     // lists — the PM en constants spell "24/7 support" / "24/7 staffed" — so
@@ -416,6 +416,28 @@ test(
           withString(locale, 'common.json', 'app.name', `Kinvara: ${phrase}.`),
           `${list} phrase in ${locale}`,
           `PROHIBITED ${locale}/common.app.name contains ${JSON.stringify(phrase)} — claim "continuously monitored", from prohibited/${list}.json`,
+        );
+      }
+    }
+    // The gate's own constants outside their own language: a PM English claim
+    // in el and ru copy, and each DV-3 term in the two other locales.
+    for (const locale of ['el', 'ru']) {
+      expectFail(
+        withString(locale, 'common.json', 'app.name', 'Kinvara: live monitoring.'),
+        `PM claim in ${locale}`,
+        `PROHIBITED ${locale}/common.app.name contains "live monitoring" — claim "live monitoring", from PM (en)`,
+      );
+    }
+    for (const [term, own] of [
+      ['escrow', 'en'],
+      ['μεσεγγύηση', 'el'],
+      ['эскроу', 'ru'],
+    ] as const) {
+      for (const locale of ['en', 'el', 'ru'].filter((l) => l !== own)) {
+        expectFail(
+          withString(locale, 'common.json', 'app.name', `Kinvara: ${term}.`),
+          `DV-3 ${term} in ${locale}`,
+          `PROHIBITED ${locale}/common.app.name contains ${JSON.stringify(term)} — claim "escrow (SA DV-3)", from SD (DV-3)`,
         );
       }
     }
