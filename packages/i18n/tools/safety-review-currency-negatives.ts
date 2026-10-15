@@ -1,5 +1,6 @@
 /**
- * `pnpm --filter @kinvara/i18n run gate:safety-review-currency:negatives` — T-044.
+ * `pnpm --filter @kinvara/i18n run gate:safety-review-currency:negatives` — T-044;
+ * T-258 (the OE-5 terminal state; cases from OE5-FINAL-CONTROL on).
  *
  * The committed negative cases for `gate:safety-review-currency` THAT CANNOT BE
  * RUN FROM A TEMPORARY ROOT, because they are about the COMMITTED artefacts of
@@ -17,6 +18,12 @@
  * pin is a subset check precisely so that partial delivery is free — T-040
  * QA-F4), and then staleness or absence is planted over the real (since T-233,
  * AI-authored and unreviewed) record.
+ *
+ * T-258's cases that need a TRACKED SOURCE FILE mutated — `tools/rulings.ts`,
+ * which the gate subprocess imports — or the full run (readings B and C) over
+ * a register in the terminal state live here too. They move the real register
+ * to that state in the working tree for the length of one run, which is
+ * exactly the edit T-259 commits, and restore it.
  *
  * Each case plants one edit in each of one or more TRACKED files, ASSERTS THE
  * EDITS LANDED, runs `node tools/safety-review-currency.ts` with no arguments
@@ -46,6 +53,7 @@ const TIERS = 'packages/i18n/tiers.json';
 const REGISTRY = 'packages/i18n/locale-registry.json';
 const CATALOGUE_RU = 'packages/i18n/catalogues/ru/session.json';
 const COMPILED = 'packages/i18n/compiled/index.ts';
+const RULINGS = 'packages/i18n/tools/rulings.ts';
 
 /** The waived `safety_critical` key these cases use. */
 const KEY = 'session.checkins_missed';
@@ -63,6 +71,8 @@ interface Case {
   readonly expect: 'PASS' | 'FAIL';
   readonly mustInclude: readonly string[];
   readonly mustExclude: readonly string[];
+  /** Exactly how many problem lines start with a refusal name. `n` may be `{PAIRS}` or `{KEYS}`. */
+  readonly mustCount?: readonly { readonly name: string; readonly n: string }[];
 }
 
 /** JSON in, JSON out — for plants that are easier to state as data than as text. */
@@ -80,6 +90,32 @@ function waiverOf(doc: Record<string, unknown>): Record<string, unknown> {
   return w as Record<string, unknown>;
 }
 
+/**
+ * T-258: the OE-5 terminal state, as T-259 will commit it — every record final
+ * with no review under OE-5, no waiver. Refuses to plant over a record that
+ * already claims a review, so a case can never start from a forged baseline.
+ */
+function finalise(doc: Record<string, unknown>): void {
+  doc['pending_pipeline'] = null;
+  const entries = doc['entries'] as Record<string, Record<string, Record<string, unknown>>>;
+  for (const [locale, perLocale] of Object.entries(entries)) {
+    for (const [key, record] of Object.entries(perLocale)) {
+      if (record['reviewed_by'] !== null || record['reviewed_at'] !== null) {
+        throw new Error(`${locale}/${key} already claims a review`);
+      }
+      record['status'] = 'unreviewed_by_ruling';
+      record['review_ruling'] = 'OE-5';
+    }
+  }
+}
+
+/** Replace exactly one occurrence, or refuse — a plant that matched nothing would judge nothing. */
+function once(s: string, from: string | RegExp, to: string): string {
+  const hits = typeof from === 'string' ? s.split(from).length - 1 : [...s.matchAll(from)].length;
+  if (hits !== 1) throw new Error(`expected exactly one match of ${String(from)}, found ${String(hits)}`);
+  return s.replace(from, to);
+}
+
 /** Take one key out of the waiver — the shape of T-049 delivering that key. */
 function unwaive(doc: Record<string, unknown>, key: string): void {
   const w = waiverOf(doc);
@@ -94,8 +130,8 @@ const CASES: readonly Case[] = [
     why:
       "T-044's acceptance criterion, half one: a `safety_critical` string with a STALE review " +
       'record fails the build. The key leaves the waiver (delivery) and the catalogue string is ' +
-      'then edited under its record, which is what editing reviewed safety copy looks like. No ' +
-      'record is signed off to reach this: the not-reviewed refusals fire alongside.',
+      'then edited under its record, which is what editing accepted safety copy looks like. No ' +
+      'record is moved to the terminal status to reach this: NOT-FINAL fires alongside (T-258).',
     edits: [
       { file: REVIEW, plant: json((doc) => unwaive(doc, KEY)) },
       {
@@ -109,7 +145,7 @@ const CASES: readonly Case[] = [
     mustInclude: [
       `STALE-RECORD '${KEY}' in ru`,
       'the catalogue string now hashes to sha256:',
-      `NOT-SIGNED-OFF '${KEY}' in ru`,
+      `NOT-FINAL '${KEY}' in ru`,
     ],
     mustExclude: ['GATE PASS', 'CRASH'],
   },
@@ -139,20 +175,31 @@ const CASES: readonly Case[] = [
     mustExclude: ['GATE PASS', 'CRASH'],
   },
   {
-    name: 'DELIVERED-STILL-UNREVIEWED',
+    name: 'DELIVERED-STILL-PENDING',
     why:
       'The state this repository is actually in, with the waiver taken off one key: the record ' +
-      'exists and its hash is current, and it is AI-authored copy (OE-66/OE-67, T-233) nobody ' +
-      'reviewed. Each conjunct of the rule reports separately, so the failure says which one is ' +
-      'missing — and `ai_authored` is never reported as malformed.',
+      'exists, its hash is current and pinned, and it is AI-authored copy (OE-66/OE-67, T-233) ' +
+      'still at pending_review. T-258: it is refused as NOT FINAL and as citing no review-dropping ' +
+      'ruling — and its authorship is ACCEPTED by this gate alone, reading tools/rulings.ts (OD-258).',
     edits: [{ file: REVIEW, plant: json((doc) => unwaive(doc, KEY)) }],
     expect: 'FAIL',
-    mustInclude: [
-      `NOT-SIGNED-OFF '${KEY}' in ru`,
-      `UNREVIEWED '${KEY}' in ru`,
-      `UNDATED '${KEY}' in ru`,
+    mustInclude: [`NOT-FINAL '${KEY}' in ru`, `UNRULED-NO-REVIEW '${KEY}' in ru`],
+    mustExclude: [
+      'GATE PASS',
+      'STALE-RECORD',
+      'CRASH',
+      'MALFORMED-RECORD',
+      'PLACEHOLDER',
+      'NOT-AI-AUTHORED',
+      'UNRULED-AUTHOR',
+      'WRONG-AUTHOR',
+      'CLAIMS-REVIEW',
+      'UNPINNED-CONTENT',
     ],
-    mustExclude: ['GATE PASS', 'STALE-RECORD', 'CRASH', 'MALFORMED-RECORD', 'PLACEHOLDER'],
+    mustCount: [
+      { name: 'NOT-FINAL', n: '3' },
+      { name: 'UNRULED-NO-REVIEW', n: '3' },
+    ],
   },
   {
     name: 'WAIVER-LAPSED',
@@ -172,10 +219,11 @@ const CASES: readonly Case[] = [
     mustInclude: [
       "WAIVER-EXPIRED the safety-copy waiver's DECISION REVIEW DATE 2026-09-19 has passed",
       'it is the decision that was due',
-      `NOT-SIGNED-OFF '${KEY}' in ru`,
-      "NOT-SIGNED-OFF 'safety.sos.confirm' in en",
+      `NOT-FINAL '${KEY}' in ru`,
+      "NOT-FINAL 'safety.sos.confirm' in en",
     ],
     mustExclude: ['GATE PASS', 'BECAUSE OF THE WAIVER', 'CRASH'],
+    mustCount: [{ name: 'NOT-FINAL', n: '{PAIRS}' }],
   },
   {
     name: 'WAIVER-RENEWED',
@@ -306,6 +354,112 @@ const CASES: readonly Case[] = [
     ],
     mustExclude: ['GATE PASS', 'CRASH'],
   },
+  {
+    name: 'WAIVED-CLAIMS-REVIEW',
+    why:
+      'T-258, cut §3 item 5: CLAIMS-REVIEW also applies to WAIVED records, so "nothing claims a ' +
+      'human" holds before T-259 as well. One waived record is signed off by a real-looking ' +
+      'reviewer on the real tree; the waiver stays in force.',
+    edits: [
+      {
+        file: REVIEW,
+        plant: json((doc) => {
+          const entries = doc['entries'] as Record<string, Record<string, Record<string, unknown>>>;
+          const record = entries['ru']?.[KEY];
+          if (record === undefined) throw new Error(`no ru record for ${KEY}`);
+          record['status'] = 'signed_off';
+          record['reviewed_by'] = 'Eleni Constantinou, Designated Safeguarding Lead';
+          record['reviewed_at'] = '2026-10-12T09:00:00Z';
+        }),
+      },
+    ],
+    expect: 'FAIL',
+    mustInclude: [
+      '(in force)',
+      '{PAIRS} waived, 0 with a record read',
+      `CLAIMS-REVIEW '${KEY}' in ru (waived): status is "signed_off"`,
+    ],
+    mustExclude: ['GATE PASS', 'CRASH', 'NOT-FINAL', 'UNRULED-NO-REVIEW'],
+    mustCount: [{ name: 'CLAIMS-REVIEW', n: '1' }],
+  },
+  {
+    name: 'OE5-FINAL-CONTROL',
+    why:
+      'T-258 CONTROL on the FULL run (readings A, B and C): the real register moved to the OE-5 ' +
+      'terminal state — the edit T-259 commits — passes with every pair accepted as AI-authored ' +
+      'and reviewed by nobody. Without this, every refusal below could be an always-failing gate.',
+    edits: [{ file: REVIEW, plant: json(finalise) }],
+    expect: 'PASS',
+    mustInclude: [
+      'waiver: none in force — every record is checked in full',
+      '0 waived, {PAIRS} with a record read',
+      'OE-5: {PAIRS} of {PAIRS} pair(s) accepted as AI-authored and reviewed by nobody',
+      'compiled artefact: {KEYS} key(s) needing a review record, locales [en, el, ru]',
+    ],
+    mustExclude: ['GATE FAIL', 'NOTE: all', 'CRASH'],
+  },
+  {
+    name: 'RULINGS-EMPTIED',
+    why:
+      'T-258, cut §2 item 3: the gate fails closed on its own rulings. Both literals in ' +
+      'tools/rulings.ts are emptied over the terminal-state register: every AI record must be ' +
+      'refused as unruled, for authorship and for the dropped review alike.',
+    edits: [
+      { file: REVIEW, plant: json(finalise) },
+      {
+        file: RULINGS,
+        plant: (s) =>
+          once(
+            once(
+              s,
+              /export const AI_RULINGS: readonly AiAuthorshipRuling\[\] = \[\n[\s\S]*?\n\];/gu,
+              'export const AI_RULINGS: readonly AiAuthorshipRuling[] = [];',
+            ),
+            /export const REVIEW_DROPPED_RULINGS: readonly ReviewDroppedRuling\[\] = \[\n[\s\S]*?\n\];/gu,
+            'export const REVIEW_DROPPED_RULINGS: readonly ReviewDroppedRuling[] = [];',
+          ),
+      },
+    ],
+    expect: 'FAIL',
+    mustInclude: [
+      `UNRULED-AUTHOR '${KEY}' in ru: cites "OE-66", which is not a stakeholder ruling that makes a model an author (known: none)`,
+      `UNRULED-NO-REVIEW '${KEY}' in ru: review_ruling is "OE-5"`,
+    ],
+    mustExclude: ['GATE PASS', 'CRASH', 'WRONG-AUTHOR', 'CLAIMS-REVIEW', 'UNPINNED-CONTENT'],
+    mustCount: [
+      { name: 'UNRULED-AUTHOR', n: '{PAIRS}' },
+      { name: 'UNRULED-NO-REVIEW', n: '{PAIRS}' },
+    ],
+  },
+  {
+    name: 'OE5-LOCALE-UNCOVERED',
+    why:
+      'T-258: UNRULED-NO-REVIEW checks the ruling covers the LOCALE, not only that it exists. ' +
+      "OE-5's locales are narrowed to en/el in tools/rulings.ts over the terminal-state register: " +
+      'the ru records, and only they, are refused.',
+    edits: [
+      { file: REVIEW, plant: json(finalise) },
+      {
+        file: RULINGS,
+        plant: (s) =>
+          once(
+            s,
+            "{ id: 'OE-5', decided_at: '2026-10-11T08:13:50Z', locales: ['en', 'el', 'ru'] }",
+            "{ id: 'OE-5', decided_at: '2026-10-11T08:13:50Z', locales: ['en', 'el'] }",
+          ),
+      },
+    ],
+    expect: 'FAIL',
+    mustInclude: [`UNRULED-NO-REVIEW '${KEY}' in ru: review_ruling is "OE-5"`],
+    mustExclude: [
+      'GATE PASS',
+      'CRASH',
+      `UNRULED-NO-REVIEW '${KEY}' in en`,
+      `UNRULED-NO-REVIEW '${KEY}' in el`,
+      'UNRULED-AUTHOR',
+    ],
+    mustCount: [{ name: 'UNRULED-NO-REVIEW', n: '{KEYS}' }],
+  },
 ];
 
 /* ------------------------------------------------------------------ driver */
@@ -369,10 +523,16 @@ if (pairsMatch?.[1] === undefined) {
   process.exit(1);
 }
 const PAIRS = pairsMatch[1];
-function fill(s: string): string {
-  return s.replaceAll('{PAIRS}', PAIRS);
+const keysMatch = /keys needing a review record \(tiers\.json\): ([0-9]+) of/.exec(control.out);
+if (keysMatch?.[1] === undefined) {
+  console.error('!! CONTROL printed no key count');
+  process.exit(1);
 }
-console.log(`  (expectations filled from CONTROL: ${PAIRS} pair(s))`);
+const KEYS = keysMatch[1];
+function fill(s: string): string {
+  return s.replaceAll('{PAIRS}', PAIRS).replaceAll('{KEYS}', KEYS);
+}
+console.log(`  (expectations filled from CONTROL: ${PAIRS} pair(s), ${KEYS} key(s))`);
 
 for (const c of CASES) {
   ran += 1;
@@ -401,6 +561,11 @@ for (const c of CASES) {
     }
     for (const s of c.mustExclude) {
       if (run.out.includes(s)) problems.push(`present but banned: ${s}`);
+    }
+    for (const { name, n } of c.mustCount ?? []) {
+      const want = Number(fill(n));
+      const got = run.out.split('\n').filter((l) => l.startsWith(`  - ${name} `)).length;
+      if (got !== want) problems.push(`${name} printed ${String(got)} time(s), expected ${String(want)}`);
     }
     if (problems.length > 0) {
       console.log(run.out.trimEnd());
