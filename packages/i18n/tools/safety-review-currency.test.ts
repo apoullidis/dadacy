@@ -1,6 +1,10 @@
 /**
  * `gate:safety-review-currency` — T-044, attacked rather than observed passing;
- * T-258, the OE-5 terminal state and the refusal of every human-review claim.
+ * T-258, the OE-5 terminal state and the review claims it refuses: a `signed_off`
+ * status, a non-null `review`-named field other than `review_ruling`, and a
+ * field outside the record's nine. It does not refuse every human-review claim:
+ * `note`'s value is never read, and inside a waiver the values of `authored_by`,
+ * `ruling`, `review_ruling` and a `status` other than `signed_off` are not judged.
  *
  * PROTOCOL §5.1: "Running your gate proves it executes. ATTACKING it proves
  * what it covers." Every case below builds a package root in a temporary
