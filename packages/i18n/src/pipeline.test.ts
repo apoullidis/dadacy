@@ -1704,17 +1704,34 @@ test('NEGATIVE — T-233: the citation must be a real ruling, covering this loca
     ['another version', 'Claude Opus (claude-opus-4-1), AI agent'],
     ['bare model family', 'Claude Opus'],
     ['Cyrillic С (U+0421) for Latin C', `С${MODEL.slice(1)}`],
+    // T-043 (T-233 QA-F4): invisible and compatibility characters. The first
+    // two are red under a strip-zero-width mutation of review.ts's comparison,
+    // the last two under an NFKC-normalise mutation (tools/review-citation-
+    // negatives.ts) — so "exact to the character" is tested, not only true.
+    ['zero-width space (U+200B)', `Claude\u200B Opus (claude-opus-5-5), AI agent`],
+    ['byte-order mark (U+FEFF)', `\uFEFF${MODEL}`],
+    ['no-break space (U+00A0)', `Claude\u00A0Opus (claude-opus-5-5), AI agent`],
+    ['fullwidth parenthesis (U+FF08)', `Claude Opus \uFF08claude-opus-5-5), AI agent`],
   ];
+  // Every near miss is judged before any assertion fails, so a run that lets
+  // several through names all of them (the mutation harness reads this list).
+  const accepted: string[] = [];
   for (const [label, name] of nearMisses) {
     assert.notEqual(name, MODEL, `${label}: the fixture must differ from the model`);
     const problems = pending({ authored_by: name });
-    assert.ok(
-      problems.some((x) =>
+    if (
+      !problems.some((x) =>
         /ai_authored under OE-66, but authored_by is .*, not the model OE-66 names/.test(x),
-      ),
-      `near miss '${label}' must be refused: ${JSON.stringify(problems)}`,
-    );
+      )
+    ) {
+      accepted.push(label);
+    }
   }
+  assert.deepEqual(
+    accepted,
+    [],
+    `near misses that must be refused were accepted: ${JSON.stringify(accepted)}`,
+  );
   // …and the exact name, on the same fixture, is accepted — so the refusals
   // above are about the name and nothing else.
   assert.deepEqual(pending({}), []);

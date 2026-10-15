@@ -16,7 +16,8 @@
     "test:negatives": "node tools/run-tests-negatives.ts",
     "gate:locale-completeness:negatives": "node tools/locale-completeness-negatives.ts",
     "gate:safety-review-currency:negatives": "node tools/safety-review-currency-negatives.ts",
-    "gate:sms-segments:negatives": "node tools/sms-segments-negatives.ts"
+    "gate:sms-segments:negatives": "node tools/sms-segments-negatives.ts",
+    "test:review-citation-mutations": "node tools/review-citation-negatives.ts"
   },
   "dependencies": {
     "@formatjs/icu-messageformat-parser": "3.5.17",
