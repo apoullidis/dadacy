@@ -31,7 +31,7 @@ Two things this document deliberately does **not** contain:
 2. **The Greek and Russian prohibited-claim lists.** They are in
    `prohibited/{el,ru}.json`, **AI-authored under OE-66** — a stakeholder-accepted
    deviation from PM §MVP-L4 AC6's "enumerated by a native speaker" (EV-16).
-   `T-043` builds the gate over them. See §6.
+   `gate:prohibited-claims` (`T-043`) reads them. See §6.
 
 ---
 
@@ -96,13 +96,13 @@ Each role carries `named` and `confirmed_by_stakeholder_on`, both `null` today.
 Stated plainly, because the table above describes the pipeline as specified
 and the rulings changed who did the first half of it:
 
-| What                                                                              | Author                                                                                   | Ruling                              | Reviewed by |
-| --------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- | ----------------------------------- | ----------- |
-| Every `el` catalogue key, safety and non-safety — written or retained (see below) | Claude Opus (`claude-opus-5-5`), AI agent                                                | OE-66 (EV-16), 2026-09-27T18:54:51Z | **nobody**  |
-| Every `ru` catalogue key, safety and non-safety — written or retained (see below) | Claude Opus (`claude-opus-5-5`), AI agent                                                | OE-66 (EV-16), 2026-09-27T18:54:51Z | **nobody**  |
-| `prohibited/el.json`, `prohibited/ru.json`                                        | Claude Opus (`claude-opus-5-5`), AI agent                                                | OE-66 (EV-16)                       | **nobody**  |
-| The eight `en` `safety_critical` keys, and their meaning contract                 | Claude Opus (`claude-opus-5-5`), AI agent                                                | OE-67, 2026-09-27T19:27:39Z         | **nobody**  |
-| Every other `en` key                                                              | unchanged by `T-233` (byte-identical to `main` at `3d52098`); `T-040`'s engineering copy | —                                   | **nobody**  |
+| What                                                                              | Author                                                                                                                                                                                | Ruling                              | Reviewed by |
+| --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- | ----------- |
+| Every `el` catalogue key, safety and non-safety — written or retained (see below) | Claude Opus (`claude-opus-5-5`), AI agent                                                                                                                                             | OE-66 (EV-16), 2026-09-27T18:54:51Z | **nobody**  |
+| Every `ru` catalogue key, safety and non-safety — written or retained (see below) | Claude Opus (`claude-opus-5-5`), AI agent                                                                                                                                             | OE-66 (EV-16), 2026-09-27T18:54:51Z | **nobody**  |
+| `prohibited/el.json`, `prohibited/ru.json`                                        | Claude Opus (`claude-opus-5-5`), AI agent                                                                                                                                             | OE-66 (EV-16)                       | **nobody**  |
+| The eight `en` `safety_critical` keys, and their meaning contract                 | Claude Opus (`claude-opus-5-5`), AI agent                                                                                                                                             | OE-67, 2026-09-27T19:27:39Z         | **nobody**  |
+| Every other `en` key                                                              | unchanged by `T-233` (byte-identical to `main` at `3d52098`); `T-040`'s engineering copy — except `common.marketing.tagline`, reworded by `T-043` (Claude Opus, AI agent) under OE-69 | —                                   | **nobody**  |
 
 - **"Written or retained."** The OE-66 drafts are the source of every `el`
   and `ru` value, but seven of those values are byte-identical to `T-040`'s
@@ -178,8 +178,14 @@ checked at **every** status, not only at sign-off:
 **`reviewed_by` is also checked at every status:** a model that a ruling names as
 an author is refused in it outright, and on a record that is not signed off only
 the named DSL or deputy may appear in it (a sign-off already requires that).
-Rule 4 is exact to the character: a trailing space, a different case, another
-model version, the bare family name or a look-alike letter is refused.
+Rule 4 is exact to the character — a raw string comparison with no
+normalisation. What is tested is ten near misses, each refused: a trailing or
+leading space, a different case, another model version, the bare family name, a
+Cyrillic look-alike letter, a zero-width space, a byte-order mark, a no-break
+space and a fullwidth parenthesis (`src/pipeline.test.ts`, the citation test).
+The last four are each red under an edit that would normalise the comparison
+(NFKC, or stripping zero-width characters) —
+`pnpm --filter @kinvara/i18n run test:review-citation-mutations` (T-043).
 
 An `ai_authored` record is **authored, never reviewed.** For it to become
 `signed_off`, everything in the table below that concerns the **review** still
@@ -388,9 +394,9 @@ thought to add.
 tickets are unaffected and the programme keeps moving. What is genuinely blocked,
 and stays blocked deliberately:
 
-- **`T-043` (`gate:prohibited-claims`).** Its gate requires **nine demonstrated
-  failures** over the `el`/`ru` lists. Since OE-66 those lists exist, AI-authored
-  (§6), so `T-043` no longer waits for native speakers to write them.
+- ~~`T-043` (`gate:prohibited-claims`)~~ — **not blocked any more.** Since
+  OE-66 the `el`/`ru` lists exist, AI-authored (§6), and `T-043` built the gate
+  over them; it no longer waits for native speakers.
 - **The M0 exit gate.** SD §DH-5 conditions it on native authorship **with named
   authorship**. OE-66/OE-67 replaced that authorship with a named **model**
   (EV-16), recorded truthfully; they did **not** replace the review. **M0 still
@@ -450,14 +456,15 @@ decision instead of an edit.
 ## 6. Also on this engagement — `T-043`'s prohibited-claim lists
 
 Not `T-049`'s deliverable. **Since `T-233` both lists exist:**
-`packages/i18n/prohibited/el.json` (10 claims, 597 phrases) and `ru.json` (10
-claims, 290 phrases), each with its locale's renderings of the three permitted
-claims. **Both are AI-authored under OE-66** (`"provenance": "ai_authored"`,
-`"authored_by": "Claude Opus (claude-opus-5-5), AI agent, under stakeholder
-ruling OE-66"` inside each file) — a stakeholder-accepted deviation (EV-16)
-from PM §MVP-L4 AC6, which asks for a native speaker. **Nothing reads them yet:**
-`gate:prohibited-claims` is still the `not-yet-supplied` stub (PENDING, owed by
-`T-043`), and no other code in the repository opens `prohibited/`. **OE-68
+`packages/i18n/prohibited/el.json` (10 claims; 598 phrases since `T-043` added
+bare "24/7") and `ru.json` (10 claims, 290 phrases), each with its locale's
+renderings of the three permitted claims. **Both are AI-authored under OE-66**
+(`"provenance": "ai_authored"`, `"ruling": "OE-66"`, `"authored_by": "Claude
+Opus (claude-opus-5-5), AI agent"` inside each file; reviewed by nobody, OE-5) —
+a stakeholder-accepted deviation (EV-16) from PM §MVP-L4 AC6, which asks for a
+native speaker. **`gate:prohibited-claims` (`T-043`, BLOCKING) reads them** —
+`tools/prohibited-claims.ts`; its contract is `tasks/state/EP-0/T-043.md`
+§ Published contract — LIVE, and the counts above are what its run prints. **OE-68
 (2026-09-27T19:27:39Z) ruled that the banned list stands**: "24/7 support" and
 "24/7 staffed" stay banned, the safety line is described without a staffing
 claim, and PM §MVP-IS5 AC6's "reachable 24/7" is superseded for all copy. The
@@ -467,7 +474,7 @@ English list is a fixed set of testable constants:
 >
 > Permitted, exactly: _"Re-verified every 12 months"_, _"Attested every 90 days"_, _"Re-checked immediately on any concern"_.
 
-> **Note for `T-043`, which will build `gate:prohibited-claims`:** this document
+> **Note on `gate:prohibited-claims` (`T-043`):** this document
 > quotes the banned English phrases verbatim, above. `T-040`'s contract scopes the
 > gate to `catalogues/**`, which excludes this file — **keep it scoped.** A gate
 > widened to `packages/i18n/**` would fail on the document that explains it, and
@@ -476,29 +483,35 @@ English list is a fixed set of testable constants:
 > themselves lists of banned phrases, so a gate that scanned them as copy would
 > fail on its own input. The gate must still **fail closed on the absent
 > `prohibited/{el,ru}.json` path**, which is a different rule and is not relaxed
-> by this one. **Now that the files exist, that rule can only be proven by
-> deleting one in a temporary root** — the committed tree no longer exercises
-> the absent path by itself.
+> by this one. It is proven by deleting one in a temporary root
+> (`tools/prohibited-claims.test.ts`), since the committed tree no longer
+> exercises the absent path by itself.
 
 What was asked of a native speaker — **the phrases a Greek or Russian copywriter
 would actually reach for, not translations of the English** — was asked of the
-OE-66 authors instead. Their own caveats, which `T-043` inherits
-(`tasks/state/EP-0/OE-66/{el,ru}/NOTES.md` §4):
+OE-66 authors instead. Their own caveats (`tasks/state/EP-0/OE-66/{el,ru}/NOTES.md`
+§4), each with what `T-043` did about it:
 
 - **Matching.** Both lists assume case-insensitive substring matching after
   NFC; `el` also assumes tonos/diaeresis stripped (every phrase is listed both
   ways), `ru` assumes ё→е folding (listed both ways only for the commonest).
+  The gate does exactly that, plus NFKC, both sigma forms, and invisible
+  characters removed; Greeklish is not folded (SD routes it through
+  `packages/text-normalise`, `T-065`, not built).
 - **Negation.** Substring matching flags honest negations («мы НЕ работаем
   круглосуточно»); the `ru` author asks for an explicit allow-list rather than
-  dropped phrases.
+  dropped phrases. Measured at `T-043`: no catalogue string is hit at all, so
+  there is no case to allow and the gate has no allow-list; one is added, as
+  narrow as the string, when real copy needs it.
 - **Deliberately not banned:** bare «присмотр», «в реальном времени» and
   «видеонаблюдение» (`ru`); bare «σε πραγματικό χρόνο», «κάθε λεπτό» and «πάντα»
   (`el`) — each because required or ordinary copy contains it.
-- **The two lists disagree on bare "24/7".** `ru` bans it; `el` left it off
-  because of the PM §MVP-IS5 AC6 conflict (OD-249) that **OE-68 has since
-  resolved**. `el`'s reason is gone; which way `T-043` goes is a decision, not a
-  drafting detail.
-- **"escrow"** (SA DV-3) is on neither list and not in the English one above.
+- **Bare "24/7".** `ru` banned it; `el` left it off because of the PM §MVP-IS5
+  AC6 conflict (OD-249) that **OE-68 has since resolved**. `T-043` added it to
+  `el` (OD-256).
+- **"escrow"** (SA DV-3) is on neither list and not in the English one above;
+  SD names it and its Greek and Russian forms for this gate, so the gate carries
+  "escrow", «μεσεγγύηση» and «эскроу» as constants of its own.
 - **Nobody has red-teamed either list.** Recall against real Greek or Russian
   marketing copy is unmeasured.
 
