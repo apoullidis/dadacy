@@ -9,22 +9,28 @@
  * The argument it implemented until stakeholder ruling OE-5 (2026-10-11), in
  * one line: *an MT engine cannot produce a DSL review record.* OE-5 removed
  * human review of this copy (EV-16 as extended), so that argument weakens, and
- * the weakening is inherent in the ruling: since T-258,
- * `gate:safety-review-currency` passes a `safety_critical` record outside the
- * dated waiver only when it is AI-authored under a ruling the GATE reads
- * (`tools/rulings.ts`), final with no review under OE-5, claims no review,
- * carries no field outside the record's nine, and carries the exact content
- * hash pinned in the gate's own source (`AUTHORED_CONTENT_PINNED`). The pin and
- * the currency check bind inside the waiver too (T-258 rework 1). So *a changed
- * or new `safety_critical` string cannot pass the gate without an edit to the
- * gate's pin* (the gate's Vitest *UNPINNED-CONTENT* cases, waived and not).
- * That makes a change VISIBLE in review of the diff. It does not prove that the
- * named model wrote the bytes, and copy below `safety_critical` is not
- * examined. Machine translation is
+ * the weakening is inherent in the ruling. Since T-258/T-259,
+ * `gate:safety-review-currency` passes a `safety_critical` record outside an
+ * unexpired `pending_pipeline` waiver (none is committed since T-259) only
+ * when: it is AI-authored under a ruling the GATE reads (`tools/rulings.ts`)
+ * with that ruling's exact model as `authored_by`; it is final with no review
+ * under OE-5 (`unreviewed_by_ruling`, `review_ruling: "OE-5"`); its `status`
+ * is not `signed_off` and no field whose name contains "review" other than
+ * `review_ruling` is non-null (the gate's `claimsReview()`); it carries no
+ * field outside the record's nine (`undefinedFields()`); its `note`, if
+ * present, is a string or null (`noteNotText()`, T-259) — the TEXT of a string
+ * note is not read, so a sentence claiming a review is not refused; and it
+ * carries the exact content hash pinned in the gate's own source
+ * (`AUTHORED_CONTENT_PINNED`). So *a changed or new `safety_critical` string
+ * cannot pass the gate without an edit to the gate's pin* (the gate's Vitest
+ * *UNPINNED-CONTENT* cases, waived and not). That makes a change VISIBLE in
+ * review of the diff. It does not prove that the named model wrote the bytes,
+ * and copy below `safety_critical` is not examined. Machine translation is
  * still prohibited for `safety_critical` and `transactional` copy (DV-11).
  *
- * `T-044` owns `gate:safety-review-currency` and reads this file.
- * `T-049`'s six-week external copy pipeline is what populates it.
+ * `T-044` owns `gate:safety-review-currency` and reads this file. Its records
+ * were written by `T-233` (OE-66/OE-67) and moved to the terminal state by
+ * `T-259` (OE-5); no external pipeline populates it any more.
  */
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -81,62 +87,40 @@ export interface ReviewRecord {
   readonly reviewed_by: string | null;
   /** ISO-8601 UTC. Same rule as `reviewed_by`: `null` on a `safety_critical` record since OE-5. */
   readonly reviewed_at: string | null;
-  readonly note?: string;
+  /**
+   * Prose, or nothing. `gate:safety-review-currency` refuses a present `note`
+   * that is neither a string nor `null` as NOTE-NOT-TEXT (T-259, OD-353), so a
+   * sign-off cannot be recorded as structured data inside it. The text of a
+   * string note is not read by the gate.
+   */
+  readonly note?: string | null;
 }
 
 /**
- * A dated, self-closing waiver for copy that is out at the external pipeline.
+ * A dated, self-closing waiver over `safety_critical` keys — `T-040`, `T-044`.
  *
- * This exists because SD §DH-5's trilingual safety-copy pipeline has a **six-week
- * external lead time** (`T-049`) and the engineering skeleton necessarily lands
- * first. It is a waiver and not an ignore-list, and the difference is the whole
- * point: it names an owner, it names the keys, and it **expires**. After
- * `expected_by`, `gate:safety-review-currency` fails on the waived keys exactly
- * as it would on unwaived ones. That is BOARD RK-2's standing escalation
- * expressed as a build failure with a date on it rather than as a reminder.
- */
-/**
- * One deliberate move of `expected_by`, with its reason. Append-only.
+ * **None is committed since T-259**: `pending_pipeline` is `null`. The waiver
+ * existed to force a decision on HUMAN review by a date; stakeholder ruling
+ * OE-5 (2026-10-11) was that decision — there is no human review — so T-259
+ * set it to null and deleted the re-anchor chain (`re_anchors`) and the
+ * `external_start` mirror. That is not a renewal: no date moved.
  *
- * The chain exists so that the date is not a single mutable field. Each row's
- * `from` is the previous row's `to`, the first `from` is the original date, and
- * the last `to` must equal `expected_by` — so editing the date without saying
- * why is a red test rather than a quiet edit.
+ * The type stays because a waiver can still be RE-ADDED, and the gate still
+ * bounds one: it names an owner, a ticket, a reason and its keys, and it
+ * expires; `expected_by` later than the gate's `WAIVER_NOT_AFTER` pin
+ * (`2026-12-05`) is WAIVER-RENEWED, so a re-added waiver cannot outlive that
+ * day, and after `expected_by` it waives nothing (WAIVER-EXPIRED). Inside one,
+ * the gate still checks a record's existence, review claims, closed field set,
+ * note type, currency and pin (T-258 LIVE §3).
  */
-export interface ReAnchor {
-  readonly from: string;
-  readonly to: string;
-  readonly decided_on: string;
-  readonly decided_by: string;
-  readonly reason: string;
-  /** `external_start` as it stood when this decision was made. `null` = nothing had begun. */
-  readonly external_start_at_decision: string | null;
-  readonly note?: string;
-}
-
 export interface PendingPipeline {
   readonly opened_at: string;
-  /**
-   * **A decision review date, not a delivery date.** Nobody has promised copy by
-   * it; no external engagement has begun, so there is nothing to promise. What
-   * must happen by it is a *decision* — record a real `external_start` and
-   * re-anchor to start + the lead time, or re-anchor again with a stated reason.
-   *
-   * The gate behaviour is unchanged and the self-closing property is unchanged:
-   * after this date `gate:safety-review-currency` fails on these keys exactly as
-   * on unwaived ones. **This is not an open-ended waiver.** Re-anchors made while
-   * `external_start` is null are bounded by a literal in `src/pipeline.test.ts`,
-   * deliberately outside this file — a register that could raise its own limit
-   * would be measuring itself (PROTOCOL §5.1).
-   */
+  /** The last day the waiver is in force, a `YYYY-MM-DD` day, never later than the gate's `WAIVER_NOT_AFTER`. */
   readonly expected_by: string;
-  /** Mirrors `pipeline.external_start`, which is the source of truth. Explicitly null, never absent. */
-  readonly external_start?: string | null;
   readonly owner: string;
   readonly ticket: string;
   readonly reason: string;
   readonly keys: readonly string[];
-  readonly re_anchors?: readonly ReAnchor[];
 }
 
 export interface ReviewRegister {
@@ -185,10 +169,14 @@ export function catalogueSource(
 // ─────────────────────────────────────────────────────────────────────────────
 // T-049 — the pipeline itself, as data.
 //
-// `entries` above records what HAS been reviewed. Everything below records what
-// MUST happen to each `safety_critical` string, by whom, in which language, and
-// by when — so that SD §DH-5's six-week external lead time can be measured
-// against a date rather than remembered.
+// `entries` above records who wrote each `safety_critical` string and, since
+// T-259, that it is final with no review under stakeholder ruling OE-5.
+// Everything below recorded what MUST happen to each string, by whom and in
+// which language, on the human path the rulings displaced (OE-66/OE-67) and
+// abolished (OE-5). T-259 deleted the dates that measured SD §DH-5's six-week
+// external lead time (`deadline`, `lead_time_days`, `latest_external_start`,
+// `external_start`, `blocked_on`); the roster and the human stages are
+// `T-260`'s to remove.
 //
 // **What this is not.** None of it asserts that any copy has been authored,
 // translated or reviewed, and none of it can. The honest limit is stated once,
@@ -269,20 +257,21 @@ export interface PipelineStage {
 
 export interface CopyPipeline {
   readonly opened_by: string;
-  /** The day engineering opened the pipeline. Real, and it is not the external start. */
+  /** The day engineering opened the pipeline (2026-09-05). A record of the past, not a date in force. */
   readonly engineering_kickoff: string;
-  /** The day the brief reaches a named practitioner. `null` until a stakeholder sets it. */
-  readonly external_start: string | null;
-  readonly lead_time_days: number;
-  readonly deadline: string;
-  readonly latest_external_start: string;
-  readonly blocked_on: string;
+  /**
+   * DELETED FROM THE REGISTER BY T-259, with `lead_time_days`, `deadline`,
+   * `latest_external_start` and `blocked_on`: they measured the time left for
+   * a human engagement that stakeholder ruling OE-5 abolished. Optional here
+   * only because the sign-off path of `pipelineIncoherences()` still applies
+   * T-049 § contract §4 rule 6 ("not before `external_start` when one is
+   * recorded") to a fixture that records one; that path is `T-260`'s to remove.
+   */
+  readonly external_start?: string | null;
   readonly roles: Readonly<Record<string, PipelineRole>>;
   readonly stages: readonly PipelineStage[];
   readonly assignments: Readonly<Record<string, PipelineAssignment>>;
 }
-
-const DAY_MS = 86_400_000;
 
 /** `YYYY-MM-DD` → epoch ms at end of that UTC day. Dates in this file are days, not instants. */
 export function endOfDay(isoDate: string): number {
@@ -296,26 +285,6 @@ export function isoDay(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10);
 }
 
-/**
- * The last day the external half can begin and still land by `deadline`.
- *
- * Deliberately a function of two inputs that come from OUTSIDE this file — the
- * waiver's fixed expiry and SD §DH-5's stated lead time — rather than of the
- * interval between two dates the file itself carries. That interval is exactly
- * what QA-F3 caught `T-040` doing: a check derived from the same reading as the
- * thing it checks can only ever confirm it (PROTOCOL §5.1).
- */
-export function latestExternalStart(deadline: string, leadTimeDays: number): string {
-  return isoDay(endOfDay(deadline) - leadTimeDays * DAY_MS);
-}
-
-/** Days of slack remaining before the deadline becomes unachievable, given today. */
-export function slackDays(pipeline: CopyPipeline, now: number): number {
-  const latest = endOfDay(latestExternalStart(pipeline.deadline, pipeline.lead_time_days));
-  const from = pipeline.external_start === null ? now : endOfDay(pipeline.external_start);
-  return Math.floor((latest - from) / DAY_MS);
-}
-
 export function loadCopyPipeline(root: string = PACKAGE_ROOT): CopyPipeline {
   const raw: unknown = JSON.parse(readFileSync(join(root, 'review.json'), 'utf8'));
   const obj = (raw ?? {}) as Record<string, unknown>;
@@ -326,15 +295,6 @@ export function loadCopyPipeline(root: string = PACKAGE_ROOT): CopyPipeline {
     // loader that returned a friendly empty object would restore exactly that.
     throw new TypeError(
       'review.json has no `pipeline` block. The trilingual safety-copy pipeline (SD §DH-5 external dependency 2) is what makes the six-week lead time measurable; without it the waiver expiry is a surprise rather than a schedule.',
-    );
-  }
-  if (!('external_start' in (pipeline as Record<string, unknown>))) {
-    // Point 3 of the re-anchor decision, as a refusal rather than a convention.
-    // `null` means "has not happened" and is checkable; an ABSENT key is
-    // ambiguous — it reads identically to a field nobody thought to add, and the
-    // whole value of this record is that the absence of a start is data.
-    throw new TypeError(
-      'review.json § pipeline has no `external_start` key. Record it explicitly as null — an absent key cannot be told apart from a field nobody added, and the absence of an external start is the fact this register exists to carry.',
     );
   }
   return pipeline as CopyPipeline;
@@ -668,6 +628,18 @@ export function pipelineIncoherences(
         }
       }
 
+      // T-259 (OE-5-cut §3 item 3). The terminal status means FINAL WITH NO
+      // REVIEW, by stakeholder ruling. It is accepted here, and refused if it
+      // carries a reviewer or a review date — a record cannot be both.
+      if (
+        record.status === 'unreviewed_by_ruling' &&
+        (record.reviewed_by !== null || record.reviewed_at !== null)
+      ) {
+        problems.push(
+          `${locale}/${key}: status 'unreviewed_by_ruling' (final with no review, OE-5) but reviewed_by is ${JSON.stringify(record.reviewed_by)} and reviewed_at is ${JSON.stringify(record.reviewed_at)}. A record reviewed by nobody names no reviewer and no review date.`,
+        );
+      }
+
       if (record.status !== 'signed_off') continue;
 
       // From here down: a record CLAIMS to be reviewed. Everything is checked.
@@ -774,7 +746,7 @@ export function pipelineIncoherences(
           );
         }
         if (
-          pipeline.external_start !== null &&
+          typeof pipeline.external_start === 'string' &&
           reviewedAt < endOfDay(pipeline.external_start) - 86_400_000
         ) {
           problems.push(
@@ -818,34 +790,6 @@ export function pipelineIncoherences(
 }
 
 /**
- * Whether the `expected_by` chain tells a coherent story. Empty means it does.
- *
- * **The question PROTOCOL §5.1 forces, asked of this record itself: could it
- * report "we are on track" while nothing has been engaged?** Yes — trivially, by
- * appending a re-anchor row every time the date approaches. The chain is
- * self-reported and every field in it is derived from the same file, so on its
- * own it can only ever confirm itself.
- *
- * So the bound is **not** here. `maxUnstartedReAnchors` is passed in, and its
- * only caller writes it as a literal in the test file: a register that could
- * raise its own limit would be measuring itself. Cumulative drift is bounded
- * separately and also from outside, by the dated anchor in `review.test.ts`.
- *
- * **And neither is the predicate that decides whether the bound applies** — which
- * is the same question one level down, and the first version of this function got
- * it wrong (QA round 1, F1). Exemption is granted against the waiver's **actual**
- * `external_start`, never against the row's own account of itself. A row cannot
- * certify its own exemption, and a row whose claim contradicts the waiver is
- * reported rather than silently declined.
- *
- * What this function checks, exactly: that the chain is *continuous*, that it
- * *agrees with* the date it claims to explain, and that every claimed exemption
- * is consistent with the one recorded start date — which is read from
- * `pipeline.external_start`, the declared source of truth, never from the
- * `pending_pipeline` mirror (R2-F3). It does **not** check that any of it is true
- * of the world — see `pipelineIncoherences`' own limit.
- */
-/**
  * Whether the stage list is the manifest it claims to be — the exact ids, in the
  * declared order, **every one of them blocking**.
  *
@@ -878,127 +822,6 @@ export function stageManifestProblems(
         `pipeline.stages['${stage.id}'].blocking is false. Every stage in this pipeline is blocking — \`blocking\` is the flag the sign-off rule reads, so clearing one silently removes that step from the requirement while every other check stays green.`,
       );
     }
-  }
-  return problems;
-}
-
-export function reAnchorProblems(
-  waiver: PendingPipeline,
-  pipeline: CopyPipeline,
-  originalExpectedBy: string,
-  maxUnstartedReAnchors: number,
-): string[] {
-  const problems: string[] = [];
-  const chain = waiver.re_anchors ?? [];
-
-  // R2-F3. `pipeline.external_start` is the declared source of truth and
-  // `pending_pipeline.external_start` is a mirror of it. This function read the
-  // MIRROR, which was harmless only for as long as both were separately asserted
-  // null — i.e. right up until the stakeholder records a real start in one of
-  // them. It reads the source now, and the mirror is checked against it, because
-  // two fields holding one fact will disagree eventually and the disagreement
-  // must be a finding rather than a silent choice of which to believe.
-  if ((waiver.external_start ?? null) !== pipeline.external_start) {
-    problems.push(
-      `pending_pipeline.external_start (${String(waiver.external_start ?? null)}) does not match pipeline.external_start (${String(pipeline.external_start)}). There is one external start; the second field mirrors it and is not a second opinion.`,
-    );
-  }
-
-  if (chain.length === 0) {
-    if (waiver.expected_by !== originalExpectedBy) {
-      problems.push(
-        `expected_by is ${waiver.expected_by} but there are no re_anchors rows explaining the move from ${originalExpectedBy}. A date without a recorded decision is an edit, not a schedule.`,
-      );
-    }
-    return problems;
-  }
-
-  if (chain[0]?.from !== originalExpectedBy) {
-    problems.push(
-      `re_anchors[0].from is ${String(chain[0]?.from)}, not the original ${originalExpectedBy}. The chain must start where the waiver did, or the earliest move is unaccounted for.`,
-    );
-  }
-  for (let i = 1; i < chain.length; i += 1) {
-    const prev = chain[i - 1];
-    const cur = chain[i];
-    if (prev === undefined || cur === undefined) continue;
-    if (cur.from !== prev.to) {
-      problems.push(
-        `re_anchors[${String(i)}].from (${cur.from}) does not continue from re_anchors[${String(i - 1)}].to (${prev.to}) — a gap here is a date that moved without a decision`,
-      );
-    }
-  }
-  const last = chain[chain.length - 1];
-  if (last !== undefined && last.to !== waiver.expected_by) {
-    problems.push(
-      `expected_by is ${waiver.expected_by} but the last re-anchor moved it to ${last.to}. The date was edited without recording why.`,
-    );
-  }
-  for (const [i, row] of chain.entries()) {
-    if (endOfDay(row.to) <= endOfDay(row.from)) {
-      problems.push(
-        `re_anchors[${String(i)}] does not move the date forward (${row.from} → ${row.to})`,
-      );
-    }
-    if (row.reason.trim() === '' || row.decided_by.trim() === '') {
-      problems.push(`re_anchors[${String(i)}] has no stated reason or no decider`);
-    }
-  }
-
-  // QA-F1. The bound was moved outside the register correctly, but the predicate
-  // deciding whether it APPLIES was still inside it: this filtered on
-  // `external_start_at_decision`, a field the row writes ABOUT ITSELF and which
-  // was never compared against the waiver's actual `external_start` — in scope,
-  // and `null`. Typing a date into that one field bought an exemption from a
-  // bound that was otherwise unreachable. The §5.1 question, one level down.
-  //
-  // The exemption's principle stays, because it is right: once the pipeline is
-  // genuinely running, moving a date is scheduling and not drift, and a bound
-  // that punished real scheduling would be worked around rather than obeyed. What
-  // changes is that a row can no longer certify its own exemption. It is granted
-  // against the waiver's ACTUAL state, and a row that disagrees with that state
-  // is reported rather than quietly declining the exemption — a wrong claim about
-  // provenance is a finding, not a no-op.
-  const actualStart = pipeline.external_start;
-  let unstarted = 0;
-  for (const [i, row] of chain.entries()) {
-    const claimed = row.external_start_at_decision;
-    if (actualStart === null) {
-      // Nothing has started, and a start cannot be un-started, so nothing had
-      // started at any earlier decision either. Every row is unstarted whatever
-      // it says about itself, and a row that says otherwise is making a false
-      // claim about a fact recorded elsewhere in the same file.
-      if (claimed !== null) {
-        problems.push(
-          `re_anchors[${String(i)}] claims external_start_at_decision '${claimed}', but the waiver's external_start is null — nothing has been engaged, and a start cannot be un-started. A re-anchor cannot certify its own exemption from the bound.`,
-        );
-      }
-      unstarted += 1;
-      continue;
-    }
-    if (claimed === null) {
-      unstarted += 1;
-      continue;
-    }
-    if (claimed !== actualStart) {
-      problems.push(
-        `re_anchors[${String(i)}] claims external_start_at_decision '${claimed}', but the waiver's external_start is '${actualStart}'. There is one start date, not one per row.`,
-      );
-      unstarted += 1;
-      continue;
-    }
-    if (endOfDay(row.decided_on) < endOfDay(actualStart)) {
-      problems.push(
-        `re_anchors[${String(i)}] was decided on ${row.decided_on}, before the external start it claims to be exempt under (${actualStart}). An exemption cannot be backdated to before the thing that grants it.`,
-      );
-      unstarted += 1;
-    }
-  }
-
-  if (unstarted > maxUnstartedReAnchors) {
-    problems.push(
-      `${String(unstarted)} re-anchors have been made with no external_start actually recorded, over a bound of ${String(maxUnstartedReAnchors)}. Repeatedly moving the date while nothing has been engaged is the shape of an open-ended waiver, which this mechanism exists to not become. Raising the bound is an orchestrator decision against BOARD RK-2 and must cost an edit to the literal in src/pipeline.test.ts.`,
-    );
   }
   return problems;
 }

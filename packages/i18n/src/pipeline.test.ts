@@ -3,14 +3,15 @@
  * T-049; SD §DH-5 external dependency 2; SA §TS-12.4; PM §MVP-L4 AC4,
  * §MVP-L5 AC7, §MVP-IS5 AC7; DV-7, DV-11.
  *
- * Two kinds of test here, and the difference matters.
+ * T-259 (stakeholder ruling OE-5, 2026-10-11) deleted the first of the two
+ * kinds of test this file had: the ANCHORED ARITHMETIC over the deadline, the
+ * lead time, the latest external start, the re-anchor chain and its bound
+ * (`DEADLINE`, `LEAD_TIME_DAYS`, `ORIGINAL_EXPECTED_BY`,
+ * `MAX_UNSTARTED_RE_ANCHORS`). Those dates measured the time left for a human
+ * engagement the ruling abolished, and the register no longer carries them;
+ * one test below asserts that it does not.
  *
- *  (a) **Anchored arithmetic.** The lead time and the deadline are written HERE
- *      as literals taken from the specification and from the waiver, and the
- *      value recorded in `review.json` is checked against them. Buying slack by
- *      editing the file therefore turns this suite red. This is the shape QA-F3
- *      asked for: a check must not be derived from the same reading as the thing
- *      it checks (PROTOCOL §5.1).
+ * What remains, and the difference still matters:
  *
  *  (b) **Coherence between the plan and the delivery.** Everything that would
  *      have to be true for a `signed_off` record to be believable. These pass
@@ -25,11 +26,7 @@ import { readFileSync } from 'node:fs';
 import {
   loadReviewRegister,
   loadCopyPipeline,
-  latestExternalStart,
-  slackDays,
-  endOfDay,
   pipelineIncoherences,
-  reAnchorProblems,
   stageManifestProblems,
   stageApplies,
 } from './review.ts';
@@ -41,39 +38,6 @@ import { MODEL, AI_RULINGS } from '../tools/rulings.ts';
 const LOCALES = enabledLocales().map((l) => l.code);
 const SAFETY_KEYS = [...keysAtTier('safety_critical')];
 
-/**
- * Written here, not read from review.json.
- *   - 2026-10-17 is the waiver expiry T-040 opened and the date T-044's gate
- *     starts failing on placeholder copy. Moving it is an orchestrator decision
- *     against BOARD RK-2 and must cost an edit to this line.
- *   - 42 days is SD §DH-5 external dependency 2's "six weeks of lead time".
- */
-const DEADLINE = '2026-12-05';
-const LEAD_TIME_DAYS = 42;
-
-/**
- * The date `T-040` opened the waiver with, before the 2026-09-05 re-anchor.
- * Written here so the re-anchor chain has something outside itself to start
- * from: a chain whose own first row supplied its origin could not detect a
- * rewritten origin.
- */
-const ORIGINAL_EXPECTED_BY = '2026-10-17';
-
-/**
- * How many times the date may be moved while **nothing has been engaged**.
- *
- * This is the bound that stops a self-closing waiver becoming an open-ended one,
- * and it lives HERE rather than in `review.json` on purpose: a register that
- * could raise its own limit would be measuring itself (PROTOCOL §5.1). One
- * re-anchor has been made — the honest 2026-09-05 one. A second, still with no
- * `external_start`, reds this suite and forces an orchestrator decision against
- * BOARD RK-2 rather than another quiet edit.
- *
- * Re-anchors made AFTER a real `external_start` is recorded are not counted:
- * once the pipeline is genuinely running, moving a date is scheduling, not drift.
- */
-const MAX_UNSTARTED_RE_ANCHORS = 1;
-
 /*
  * T-233's `MODEL` and `AI_RULINGS` — the model identity OE-66/OE-67 name and
  * the ONLY rulings that make a model an author — were written here as
@@ -83,324 +47,26 @@ const MAX_UNSTARTED_RE_ANCHORS = 1;
  * They are still never read from `review.json`; see that file's header.
  */
 
-/**
- * The pipeline whose `external_start` a given waiver is being checked against.
- * `pipeline.external_start` is the declared source of truth (R2-F3), so a test
- * that varies the waiver's mirror must vary the source with it — otherwise it is
- * testing the disagreement, not the rule.
- */
-function pipelineWith(waiver: { external_start?: string | null }): CopyPipeline {
-  return { ...loadCopyPipeline(), external_start: waiver.external_start ?? null };
-}
-
-test('the pipeline block exists and is loaded fail-closed', () => {
-  const pipeline: CopyPipeline = loadCopyPipeline();
-  assert.equal(pipeline.deadline, DEADLINE);
-  assert.equal(pipeline.lead_time_days, LEAD_TIME_DAYS);
-  assert.equal(pipeline.engineering_kickoff, '2026-09-05');
-});
-
-test('latest_external_start is the deadline minus the lead time, computed outside the file', () => {
-  // The whole risk of this ticket in one assertion. If the recorded value is
-  // ever nudged later to make the schedule look survivable, this reds.
-  const pipeline = loadCopyPipeline();
-  assert.equal(latestExternalStart(DEADLINE, LEAD_TIME_DAYS), '2026-10-24');
-  assert.equal(pipeline.latest_external_start, latestExternalStart(DEADLINE, LEAD_TIME_DAYS));
-
-  // And the arithmetic itself, against cases computed by hand rather than by
-  // the same expression: six weeks before 2026-10-17 is 2026-09-05, and one day
-  // less of lead time is one day more of slack.
-  assert.equal(latestExternalStart('2026-12-05', 42), '2026-10-24');
-  assert.equal(latestExternalStart('2026-12-05', 41), '2026-10-25');
-  assert.equal(latestExternalStart('2026-12-05', 0), '2026-12-05');
-  // and the original anchor, which is the OD-15 measurement itself
-  assert.equal(latestExternalStart('2026-10-17', 42), '2026-09-05');
-});
-
-test('the ORIGINAL waiver window was exactly the lead time — the OD-15 finding, kept', () => {
-  // Kept, not deleted, and deliberately re-expressed against the recorded
-  // origin rather than against the current `expected_by`. The finding is why the
-  // date moved; erasing it because the date moved would be exactly the
-  // delete-the-evidence pattern this build has been failed for twice.
-  //
-  // T-040 set expected_by = opened_at + six weeks because SD §DH-5 says six
-  // weeks, not because a clock had started. So the latest workable external
-  // start fell on the day the register was created, and slack was zero on
-  // arrival. That is what OD-15 reported and what OE-5 acted on.
-  const register = loadReviewRegister();
-  const waiver = register.pending_pipeline;
-  assert.ok(waiver !== null);
-  const originalWindow = (endOfDay(ORIGINAL_EXPECTED_BY) - endOfDay(waiver.opened_at)) / 86_400_000;
-  assert.equal(
-    originalWindow,
-    LEAD_TIME_DAYS,
-    'the waiver as opened had a window exactly equal to the lead time, i.e. zero slack',
-  );
-  assert.equal(latestExternalStart(ORIGINAL_EXPECTED_BY, LEAD_TIME_DAYS), waiver.opened_at);
-
-  // And the re-anchor bought back a real window rather than merely a later date.
-  const currentWindow = (endOfDay(DEADLINE) - endOfDay(waiver.opened_at)) / 86_400_000;
-  assert.ok(currentWindow > LEAD_TIME_DAYS, 'the re-anchored window must exceed the lead time');
-});
-
-test('expected_by is a DECISION REVIEW DATE and the chain says how it got there', () => {
-  const register = loadReviewRegister();
-  const waiver = register.pending_pipeline;
-  assert.ok(waiver !== null);
-  assert.equal(waiver.expected_by, DEADLINE);
-  assert.deepEqual(
-    reAnchorProblems(waiver, pipelineWith(waiver), ORIGINAL_EXPECTED_BY, MAX_UNSTARTED_RE_ANCHORS),
-    [],
-  );
-  // Every re-anchor so far was made with nothing engaged, and says so.
-  for (const row of waiver.re_anchors ?? []) {
-    assert.equal(row.external_start_at_decision, null);
-    assert.ok(row.reason.length > 0);
+test('the pipeline block exists, is loaded fail-closed, and carries no date in force (T-259, OE-5)', () => {
+  // T-259 deleted the five fields that put a date in force — they measured the
+  // time left for a human engagement that stakeholder ruling OE-5 abolished —
+  // and `pending_pipeline`'s re-anchor chain with them. Re-adding any of them
+  // turns this red. `engineering_kickoff` stays: it records a past day.
+  const pipeline = loadCopyPipeline() as unknown as Record<string, unknown>;
+  for (const gone of [
+    'deadline',
+    'lead_time_days',
+    'latest_external_start',
+    'external_start',
+    'blocked_on',
+  ]) {
+    assert.ok(!(gone in pipeline), `pipeline.${gone} is back; no date is in force since OE-5`);
   }
+  assert.equal(pipeline['engineering_kickoff'], '2026-09-05');
+  assert.equal(loadReviewRegister().pending_pipeline, null, 'pending_pipeline is null since T-259');
 });
 
-test('NEGATIVE — moving expected_by without recording why is caught', () => {
-  // A silent date edit: the field moves, the chain does not.
-  const register = loadReviewRegister();
-  const waiver = { ...register.pending_pipeline!, expected_by: '2027-03-01' };
-  const problems = reAnchorProblems(
-    waiver,
-    pipelineWith(waiver),
-    ORIGINAL_EXPECTED_BY,
-    MAX_UNSTARTED_RE_ANCHORS,
-  );
-  assert.ok(
-    problems.some((p) => /The date was edited without recording why/.test(p)),
-    JSON.stringify(problems, null, 2),
-  );
-});
-
-test('NEGATIVE — a chain with a gap in it is caught', () => {
-  const register = loadReviewRegister();
-  const base = register.pending_pipeline!;
-  const waiver = {
-    ...base,
-    expected_by: '2027-03-01',
-    re_anchors: [
-      ...(base.re_anchors ?? []),
-      {
-        from: '2027-01-01', // does not continue from 2026-12-05
-        to: '2027-03-01',
-        decided_on: '2026-12-05',
-        decided_by: 'x',
-        reason: 'y',
-        external_start_at_decision: null,
-      },
-    ],
-  };
-  const problems = reAnchorProblems(
-    waiver,
-    pipelineWith(waiver),
-    ORIGINAL_EXPECTED_BY,
-    MAX_UNSTARTED_RE_ANCHORS,
-  );
-  assert.ok(
-    problems.some((p) => /does not continue from/.test(p)),
-    JSON.stringify(problems, null, 2),
-  );
-});
-
-test('NEGATIVE — a second re-anchor with nothing engaged exceeds the bound', () => {
-  // The answer to "could this record report we are on track while nothing has
-  // been engaged". On its own, yes: append a row each time the date approaches.
-  // The bound is what stops it, and the bound is a literal in THIS file, not a
-  // field in the register — a register that could raise its own limit would be
-  // measuring itself.
-  const register = loadReviewRegister();
-  const base = register.pending_pipeline!;
-  const waiver = {
-    ...base,
-    expected_by: '2027-01-16',
-    re_anchors: [
-      ...(base.re_anchors ?? []),
-      {
-        from: DEADLINE,
-        to: '2027-01-16',
-        decided_on: '2026-12-05',
-        decided_by: 'whoever was editing',
-        reason: 'still nothing has started',
-        external_start_at_decision: null,
-      },
-    ],
-  };
-  const problems = reAnchorProblems(
-    waiver,
-    pipelineWith(waiver),
-    ORIGINAL_EXPECTED_BY,
-    MAX_UNSTARTED_RE_ANCHORS,
-  );
-  assert.ok(
-    problems.some((p) => /over a bound of 1/.test(p)),
-    JSON.stringify(problems, null, 2),
-  );
-  // And the same move, once the pipeline is GENUINELY running, is scheduling
-  // rather than drift — so it is permitted. Note what had to change for that to
-  // be true: the waiver's own `external_start`, not just the row's account of
-  // itself. The earlier version of this test set only the row, which is exactly
-  // the hole QA-F1 found: it asserted the exemption held while the waiver still
-  // said nothing had started, and it passed.
-  const started = {
-    ...waiver,
-    external_start: '2026-10-24',
-    re_anchors: waiver.re_anchors.map((r, i) =>
-      i === waiver.re_anchors.length - 1
-        ? { ...r, decided_on: '2026-12-05', external_start_at_decision: '2026-10-24' }
-        : { ...r, external_start_at_decision: '2026-10-24', decided_on: '2026-10-24' },
-    ),
-  };
-  assert.deepEqual(
-    reAnchorProblems(
-      started,
-      pipelineWith(started),
-      ORIGINAL_EXPECTED_BY,
-      MAX_UNSTARTED_RE_ANCHORS,
-    ),
-    [],
-  );
-});
-
-test('NEGATIVE — QA-F1: a re-anchor cannot certify its own exemption from the bound', () => {
-  // The forgery the first version of this mechanism allowed, and the reason it
-  // was a rework rather than a note: the BOUND was outside the register, but the
-  // predicate deciding whether it APPLIED was inside it. Filtering on
-  // `external_start_at_decision` — a field the row writes about itself — meant a
-  // date typed into that one field bought an exemption from a limit that was
-  // otherwise unreachable. Exemption is now granted against the waiver's actual
-  // `external_start`, which is null.
-  const register = loadReviewRegister();
-  const base = register.pending_pipeline!;
-  assert.equal(base.external_start, null, 'precondition: nothing has been engaged');
-  const forged = {
-    ...base,
-    expected_by: '2027-01-16',
-    re_anchors: [
-      ...(base.re_anchors ?? []),
-      {
-        from: DEADLINE,
-        to: '2027-01-16',
-        decided_on: '2026-12-05',
-        decided_by: 'whoever was editing',
-        reason: 'still nothing has started',
-        // The single field that used to buy the exemption.
-        external_start_at_decision: '2026-10-24',
-      },
-    ],
-  };
-  const problems = reAnchorProblems(
-    forged,
-    pipelineWith(forged),
-    ORIGINAL_EXPECTED_BY,
-    MAX_UNSTARTED_RE_ANCHORS,
-  );
-  assert.ok(
-    problems.some((p) => /cannot certify its own exemption from the bound/.test(p)),
-    JSON.stringify(problems, null, 2),
-  );
-  assert.ok(
-    problems.some((p) => /over a bound of 1/.test(p)),
-    'and it must still count against the bound',
-  );
-});
-
-test('NEGATIVE — an exemption cannot be backdated to before the start that grants it', () => {
-  const register = loadReviewRegister();
-  const base = register.pending_pipeline!;
-  const forged = {
-    ...base,
-    external_start: '2026-10-24',
-    expected_by: '2027-01-16',
-    re_anchors: [
-      { ...base.re_anchors![0]!, external_start_at_decision: '2026-10-24' }, // decided_on 2026-09-05
-      {
-        from: DEADLINE,
-        to: '2027-01-16',
-        decided_on: '2026-12-05',
-        decided_by: 'x',
-        reason: 'y',
-        external_start_at_decision: '2026-10-24',
-      },
-    ],
-  };
-  const problems = reAnchorProblems(
-    forged,
-    pipelineWith(forged),
-    ORIGINAL_EXPECTED_BY,
-    MAX_UNSTARTED_RE_ANCHORS,
-  );
-  assert.ok(
-    problems.some((p) => /before the external start it claims to be exempt under/.test(p)),
-    JSON.stringify(problems, null, 2),
-  );
-});
-
-test('NEGATIVE — a row claiming a start date the waiver does not have', () => {
-  const register = loadReviewRegister();
-  const base = register.pending_pipeline!;
-  const forged = {
-    ...base,
-    external_start: '2026-10-24',
-    re_anchors: (base.re_anchors ?? []).map((r) => ({
-      ...r,
-      external_start_at_decision: '2026-09-01',
-    })),
-  };
-  const problems = reAnchorProblems(
-    forged,
-    pipelineWith(forged),
-    ORIGINAL_EXPECTED_BY,
-    MAX_UNSTARTED_RE_ANCHORS,
-  );
-  assert.ok(
-    problems.some((p) => /There is one start date, not one per row/.test(p)),
-    JSON.stringify(problems, null, 2),
-  );
-});
-
-test('external_start is recorded as an explicit null, and an absent key fails closed', () => {
-  const pipeline = loadCopyPipeline();
-  assert.equal(pipeline.external_start, null);
-  assert.ok('external_start' in pipeline, 'the key must be PRESENT and null, never absent');
-  const register = loadReviewRegister();
-  assert.equal(register.pending_pipeline?.external_start, null);
-});
-
-test('slackDays measures from the recorded external start, or from today while it is null', () => {
-  const pipeline = loadCopyPipeline();
-  // Null start: slack is measured against the wall clock, which is what makes
-  // "nobody has started" visible rather than merely true.
-  assert.equal(slackDays(pipeline, endOfDay('2026-10-24')), 0);
-  assert.equal(slackDays(pipeline, endOfDay('2026-10-20')), 4);
-  assert.equal(slackDays(pipeline, endOfDay('2026-11-07')), -14);
-  // A recorded start pins it: the clock stops mattering and the recorded date does.
-  const started = { ...pipeline, external_start: '2026-11-07' };
-  assert.equal(slackDays(started, endOfDay('2026-10-20')), -14);
-});
-
-test('a recorded external_start may not already be past the last workable day', () => {
-  // The one date assertion that CAN fail today, and it fails on a lie rather
-  // than on the calendar: recording a start date that is already too late while
-  // leaving the deadline in place is an inconsistency, not a schedule.
-  //
-  // Deliberately NOT a test that reds when `external_start` is null and the date
-  // passes. That test's cheapest repair would be writing a start date that never
-  // happened, or deleting the test — pressure in exactly the wrong direction on
-  // the one file that records this copy is unreviewed (T-040 QA-F1/QA-F4, twice).
-  // The dated build failure this programme already owns is the waiver expiry, and
-  // one doomsday clock, owned and escalated, is worth more than two.
-  const pipeline = loadCopyPipeline();
-  if (pipeline.external_start === null) return;
-  assert.ok(
-    endOfDay(pipeline.external_start) <= endOfDay(pipeline.latest_external_start),
-    `external_start ${pipeline.external_start} is past ${pipeline.latest_external_start}, the last day compatible with a ${String(LEAD_TIME_DAYS)}-day lead time and a ${DEADLINE} deadline. Either the deadline moved (an orchestrator decision, BOARD RK-2) or this date is wrong.`,
-  );
-});
-
-test('nothing in the pipeline claims a person, a stage or a start that has happened', () => {
+test('nothing in the pipeline claims a person or a stage that has happened', () => {
   // The honest state on 2026-09-05, asserted so that it cannot drift into
   // optimism. This test EMPTIES ITSELF as the pipeline genuinely progresses —
   // it asserts over the roles and stages that are still unfilled, never over a
@@ -1089,62 +755,6 @@ test('NEGATIVE — R2-F1: "pending" is not a confirmation date', () => {
   );
 });
 
-test('NEGATIVE — R2-F3: the pending_pipeline mirror disagreeing with the source is a finding', () => {
-  // Harmless today only because both are separately asserted null. Live the
-  // moment a real start is recorded in one of them — which is a stakeholder
-  // action, in this file, with no ticket in between.
-  const register = loadReviewRegister();
-  const waiver = { ...register.pending_pipeline!, external_start: '2026-10-24' };
-  const pipeline = loadCopyPipeline(); // external_start still null
-  const problems = reAnchorProblems(
-    waiver,
-    pipeline,
-    ORIGINAL_EXPECTED_BY,
-    MAX_UNSTARTED_RE_ANCHORS,
-  );
-  assert.ok(
-    problems.some((x) => /does not match pipeline\.external_start/.test(x)),
-    JSON.stringify(problems, null, 2),
-  );
-  // And the exemption is decided from the SOURCE, not the mirror: the waiver's
-  // mirror claims a start, the source says null, so the row still counts.
-  const forged = {
-    ...waiver,
-    expected_by: '2027-01-16',
-    re_anchors: [
-      ...(waiver.re_anchors ?? []),
-      {
-        from: DEADLINE,
-        to: '2027-01-16',
-        decided_on: '2026-12-05',
-        decided_by: 'x',
-        reason: 'y',
-        external_start_at_decision: '2026-10-24',
-      },
-    ],
-  };
-  const p2 = reAnchorProblems(forged, pipeline, ORIGINAL_EXPECTED_BY, MAX_UNSTARTED_RE_ANCHORS);
-  assert.ok(
-    p2.some((x) => /over a bound of 1/.test(x)),
-    JSON.stringify(p2, null, 2),
-  );
-});
-
-test('the mirror and the source agree in the register as it actually stands', () => {
-  const register = loadReviewRegister();
-  const pipeline = loadCopyPipeline();
-  assert.equal(register.pending_pipeline?.external_start, pipeline.external_start);
-  assert.deepEqual(
-    reAnchorProblems(
-      register.pending_pipeline!,
-      pipeline,
-      ORIGINAL_EXPECTED_BY,
-      MAX_UNSTARTED_RE_ANCHORS,
-    ),
-    [],
-  );
-});
-
 // ─── §5.1 re-read: claims in the published contract that had no test ───
 
 test("T-040's published `entries` shape survives this ticket, field by field", () => {
@@ -1189,28 +799,6 @@ test("T-040's published `entries` shape survives this ticket, field by field", (
       }
     }
   }
-});
-
-test("T-040's published `pending_pipeline` fields all survive, and the additions are additive", () => {
-  const waiver = loadReviewRegister().pending_pipeline;
-  assert.ok(waiver !== null);
-  for (const f of ['opened_at', 'expected_by', 'owner', 'ticket', 'reason'] as const) {
-    assert.equal(typeof waiver[f], 'string', `T-040 field '${f}' must survive`);
-  }
-  assert.ok(Array.isArray(waiver.keys) && waiver.keys.length > 0);
-  // The additions T-049 made, as an EXACT key set. Round 3 found the contract's
-  // corrected header saying "three fields were added" six lines above §1 saying
-  // "two new optional fields", where the measurement is five keys — a sentence
-  // written to replace a false one, itself unpinned. Pinned now: the prose has to
-  // match this list or this test goes red.
-  const T040_KEYS = ['opened_at', 'expected_by', 'owner', 'ticket', 'reason', 'keys'];
-  const added = Object.keys(waiver).filter((k) => !T040_KEYS.includes(k));
-  assert.deepEqual(
-    added.sort(),
-    ['expected_by_means', 'external_start', 'external_start_note', 're_anchors', 're_anchors_note'],
-    'five keys were added; two of them (external_start, re_anchors) are typed on PendingPipeline and three are prose annotations',
-  );
-  assert.ok(Array.isArray(waiver.re_anchors));
 });
 
 test('the build-time review module is not reachable from the browser entry point', () => {
@@ -1463,7 +1051,7 @@ function aiProblems(
   );
 }
 
-test('T-233: every committed record is AI-authored under the ruling for its locale, and none is signed off', () => {
+test('every record is AI-authored and final under OE-5; none is signed off', () => {
   const register = loadReviewRegister();
   let n = 0;
   for (const locale of LOCALES) {
@@ -1473,13 +1061,45 @@ test('T-233: every committed record is AI-authored under the ruling for its loca
       assert.equal(r.provenance, 'ai_authored', `${locale}/${key}`);
       assert.equal(r.authored_by, MODEL, `${locale}/${key}: the model, truthfully`);
       assert.equal(r.ruling, locale === 'en' ? 'OE-67' : 'OE-66', `${locale}/${key}`);
-      assert.equal(r.status, 'pending_review', `${locale}/${key}: nothing is signed off`);
+      assert.equal(
+        r.status,
+        'unreviewed_by_ruling',
+        `${locale}/${key}: final with no review, by ruling — never signed off`,
+      );
+      assert.equal(r.review_ruling, 'OE-5', `${locale}/${key}: the ruling that dropped review`);
       assert.equal(r.reviewed_by, null, `${locale}/${key}: no reviewer exists`);
       assert.equal(r.reviewed_at, null, `${locale}/${key}`);
       n += 1;
     }
   }
   assert.equal(n, 24);
+});
+
+test('NEGATIVE — T-259: the terminal status is refused if it carries a reviewer or a review date, even one the roster names', () => {
+  // OE-5-cut §3 item 3. `unreviewed_by_ruling` means final with NO review; a
+  // record cannot be that and name a reviewer. The DSL pair is named and
+  // confirmed in this pipeline, so before T-259 a terminal record naming the
+  // DSL reported nothing here (the at-every-status reviewer rule admits the
+  // DSL pair).
+  const final = { status: 'unreviewed_by_ruling', review_ruling: 'OE-5' };
+  const both = aiProblems({ ...final, reviewed_by: DSL, reviewed_at: REVIEWED });
+  assert.ok(
+    both.some((p) =>
+      /ru\/safety\.sos\.confirm: status 'unreviewed_by_ruling' \(final with no review, OE-5\) but reviewed_by is "B\. Lead, DSL"/.test(
+        p,
+      ),
+    ),
+    JSON.stringify(both, null, 2),
+  );
+  const dateOnly = aiProblems({ ...final, reviewed_by: null, reviewed_at: REVIEWED });
+  assert.ok(
+    dateOnly.some((p) =>
+      /but reviewed_by is null and reviewed_at is "2026-12-02T09:00:00Z"/.test(p),
+    ),
+    JSON.stringify(dateOnly, null, 2),
+  );
+  // Not over-wide: the same record with neither is clean.
+  assert.deepEqual(aiProblems({ ...final, reviewed_by: null, reviewed_at: null }), []);
 });
 
 test('NEGATIVE — T-233: a caller that supplies no rulings refuses every AI-authored record (fail closed)', () => {

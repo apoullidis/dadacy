@@ -1,5 +1,6 @@
 /**
- * `gate:safety-review-currency` — T-044; T-258 (the OE-5 terminal state).
+ * `gate:safety-review-currency` — T-044; T-258 (the OE-5 terminal state);
+ * T-259 (the register flipped to it, the waiver retired, NOTE-NOT-TEXT).
  * SD §Revision Log D8, SA §TS-12.3, as departed from under EV-16 (extended by
  * stakeholder ruling OE-5, 2026-10-11) and OE-81.
  *
@@ -12,7 +13,8 @@
  * record claims no review — `status` is not `signed_off`, and no field whose
  * name contains "review" other than `review_ruling` is non-null, which
  * includes `reviewed_by` and `reviewed_at` (CLAIMS-REVIEW) AND it carries no
- * field outside the nine of `RECORD_FIELDS` (UNDEFINED-FIELD) AND `status` is
+ * field outside the nine of `RECORD_FIELDS` (UNDEFINED-FIELD) AND its `note`,
+ * if present, is a string or `null` (NOTE-NOT-TEXT; T-259) AND `status` is
  * `unreviewed_by_ruling` (NOT-FINAL) AND `review_ruling` is a ruling in
  * `REVIEW_DROPPED_RULINGS` covering L (UNRULED-NO-REVIEW) AND `content_hash`
  * equals `AUTHORED_CONTENT_PINNED[L][K]` in this file (UNPINNED-CONTENT).
@@ -20,18 +22,21 @@
  * finality conjuncts (PLACEHOLDER, NOT-AI-AUTHORED, UNRULED-AUTHOR,
  * WRONG-AUTHOR, NOT-FINAL, UNRULED-NO-REVIEW) are NOT checked. Everything else
  * still is: the record's existence (WAIVED-NO-RECORD), that it is an object
- * (MALFORMED-RECORD), CLAIMS-REVIEW, UNDEFINED-FIELD, and its bytes (NO-SOURCE,
- * STALE-RECORD, UNPINNED-CONTENT; T-258 rework 1). Inside the waiver the VALUES
- * of `authored_by`, `ruling`, `review_ruling` and of a `status` other than
- * `signed_off` are not judged here; `gate:unit-tests` judges some of them.
+ * (MALFORMED-RECORD), CLAIMS-REVIEW, UNDEFINED-FIELD, NOTE-NOT-TEXT, and its
+ * bytes (NO-SOURCE, STALE-RECORD, UNPINNED-CONTENT; T-258 rework 1). No waiver
+ * is committed since T-259; one can be re-added, bounded as below. Inside a
+ * waiver the VALUES of `authored_by`, `ruling`, `review_ruling` and of a
+ * `status` other than `signed_off` are not judged here; `gate:unit-tests`
+ * judges some of them.
  * This supersedes T-040 § contract §6's rule, which required `signed_off` and a
  * named reviewer: under OE-5 no human reviews this copy, so a review claim
  * is now the refusal, not the requirement. "A review claim" here means only
- * what CLAIMS-REVIEW and UNDEFINED-FIELD read: a `signed_off` status, a
- * non-null `review`-named field other than `review_ruling`, or a field outside
- * the record's nine. `note`'s value is never read, at any status, whatever its
- * JSON type: a sign-off nested in it passes (T-258 rework 2; closing that is
- * T-259's, OD-353).
+ * what CLAIMS-REVIEW, UNDEFINED-FIELD and NOTE-NOT-TEXT read: a `signed_off`
+ * status, a non-null `review`-named field other than `review_ruling`, a field
+ * outside the record's nine, or a `note` that is not a string or `null` (an
+ * object, an array, a number, a boolean — so a sign-off cannot be nested in it;
+ * T-259, OD-353). The TEXT of a string `note` is never read: a sentence saying
+ * a review happened passes. A duplicated JSON key is judged by its last value.
  *
  * WHAT THIS GATE IS THE OTHER HALF OF. `gate:locale-completeness` (T-042)
  * proves a `safety_critical` string is PRESENT and RENDERABLE; it states in its
@@ -43,16 +48,15 @@
  * edit that changes the catalogue, the record and the pin in one commit
  * passes, and review of the diff is the control for it.
  *
- * WHY IT IS GREEN TODAY, SAID OUT LOUD RATHER THAN DISCOVERED. All 24 committed
- * records are `ai_authored` (T-233, OE-66/OE-67) at `pending_review` — not yet
- * moved to the terminal status, which is T-259's change. Outside the waiver
- * each would be NOT-FINAL. The waiver is what carries them: T-040 published a
- * dated, self-closing waiver over exactly those keys, and T-049 re-anchored its
- * date to 2026-12-05 (stakeholder decision OE-5 of 2026-09-05). So the gate is
- * green BECAUSE OF THE WAIVER, it says so on stdout in those words, and it goes
- * RED of its own accord the day after `expected_by` unless T-259 has landed.
- * Every run also prints how many pairs it accepted as AI-authored and reviewed
- * by nobody, citing OE-5, so a green run never reads as "reviewed".
+ * WHY IT IS GREEN, SAID OUT LOUD RATHER THAN DISCOVERED. Since T-259 all 24
+ * committed records are `ai_authored` (T-233, OE-66/OE-67) and final with no
+ * review under OE-5, and `pending_pipeline` is null. Every pair is checked in
+ * full and accepted as AI-authored and REVIEWED BY NOBODY, and every run
+ * prints that count, citing OE-5, so a green run never reads as "reviewed".
+ * No date is in force: the T-040/T-049 waiver that turned this gate red on
+ * 2026-12-06 is gone, because the human review it waited for was ruled out
+ * (OE-5, 2026-10-11). Running this gate with the clock past 2026-12-05 is
+ * green (`state/EP-0/T-259.md` § Evidence, NEG `T259-CLOCK-PAST-ANCHOR`).
  *
  * THREE READINGS, FROM ARTEFACTS THAT ARE NOT EACH OTHER (PROTOCOL §5.1: "a
  * check must not be derived from the same reading as the thing it checks"):
@@ -196,16 +200,21 @@ const LOCALES_PINNED: readonly string[] = ['en', 'el', 'ru'];
  * therefore lives here, in the gate, and not in `review.json`.
  *
  * 2026-12-05 is `pending_pipeline.expected_by` after the ONE re-anchor the
- * register records: stakeholder decision OE-5, taken 2026-09-05 from T-049's
+ * register recorded: stakeholder decision OE-5, taken 2026-09-05 from T-049's
  * OD-15, moving 2026-10-17 -> 2026-12-05 because the original window was
  * exactly the lead time and so had zero slack on the day it opened.
  *
+ * KEPT BY T-259, which set `pending_pipeline` to null (OE-5-cut §2 item 4):
+ * with no waiver committed this pin bounds a waiver RE-ADDED later, so one
+ * cannot outlive this day and cannot be renewed silently (NEG `WAIVER-RENEWED`,
+ * a waiver re-added with `expected_by` 2027-01-01). `ANCHOR` in
+ * `src/review.test.ts` and `DEADLINE` in `src/pipeline.test.ts`, which moved
+ * with it until T-259, are deleted; this is the one anchor left.
+ *
  * EARLIER IS ALLOWED, LATER IS NOT. Shortening a waiver cannot buy time, so an
  * `expected_by` before this day is not a finding; one after it is
- * WAIVER-RENEWED. Moving this line is an orchestrator decision against BOARD
- * RK-2 (and moves `ANCHOR` in `src/review.test.ts` and `DEADLINE` in
- * `src/pipeline.test.ts` with it — T-049 § contract §4a), never a repair for a
- * red build.
+ * WAIVER-RENEWED. Moving this line is an orchestrator decision, never a repair
+ * for a red build.
  */
 const WAIVER_NOT_AFTER = '2026-12-05';
 
@@ -509,10 +518,9 @@ function readWaiver(
     failures.push(
       `WAIVER-EXPIRED the safety-copy waiver's DECISION REVIEW DATE ${expectedBy} has passed ` +
         `(today is ${isoDay(nowMs)}). Nobody promised copy by it (T-049 § contract §1), so this ` +
-        'is not "copy is late": it is the decision that was due — record a real ' +
-        '`external_start` and re-anchor to start + the lead time, or re-anchor again with a ' +
-        'stated reason. Until then every waived key is checked exactly as an unwaived one, ' +
-        'below.',
+        'is not "copy is late": it is the decision that was due — remove the waiver, or record ' +
+        'a new decision (a date later than the anchor in this gate is WAIVER-RENEWED). Until ' +
+        'then every waived key is checked exactly as an unwaived one, below.',
     );
   }
   return { keys: new Set(keys), expectedBy, expired };
@@ -627,7 +635,11 @@ function noteNotText(
   if (!Object.hasOwn(record, 'note')) return false;
   const v = record['note'];
   if (typeof v === 'string' || v === null) return false;
-  const kind = Array.isArray(v) ? 'an array' : typeof v === 'object' ? 'an object' : `a ${typeof v}`;
+  const kind = Array.isArray(v)
+    ? 'an array'
+    : typeof v === 'object'
+      ? 'an object'
+      : `a ${typeof v}`;
   failures.push(
     `NOTE-NOT-TEXT ${where}: note is ${v === undefined ? 'undefined' : JSON.stringify(v)} (${kind}), ` +
       'not a string or null. A note is prose or nothing, so that a sign-off, an approval or a ' +
@@ -985,8 +997,8 @@ async function main(argv: readonly string[]): Promise<void> {
       `${String(waived)} waived`,
   );
   if (waived === examined && examined > 0) {
-    // NOT a failure, and it is the honest state of this repository until T-259.
-    // It is PRINTED because a gate that is green while checking almost nothing
+    // NOT a failure; it was the state of this repository until T-259, and is
+    // the state under any waiver re-added over every key. It is PRINTED because a gate that is green while checking almost nothing
     // must say so (PROTOCOL §5.1) — and because the sentence names the date
     // that ends it.
     console.log(

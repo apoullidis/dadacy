@@ -12,20 +12,21 @@
  * `pnpm test` — and therefore `gate:unit-tests` and `gate:pr` — runs it on
  * every PR.
  *
- * TWO OF THESE ARE THE TICKET'S ACCEPTANCE CRITERION on the real tree: a
+ * TWO OF THESE ARE T-044'S ACCEPTANCE CRITERION on the real tree: a
  * `safety_critical` string with a STALE review record, and one with an ABSENT
- * one. Both are reached without inventing a review record and without moving
- * any entry to `signed_off`: the plant takes ONE key out of the waiver's `keys`
- * list, which is exactly the shape of `T-049` delivering that key (the waiver
- * pin is a subset check precisely so that partial delivery is free — T-040
- * QA-F4), and then staleness or absence is planted over the real (since T-233,
- * AI-authored and unreviewed) record.
+ * one. Since T-259 the committed register is final under OE-5 with no waiver,
+ * so both are planted directly over the real records.
  *
  * T-258's cases that need a TRACKED SOURCE FILE mutated — `tools/rulings.ts`,
- * which the gate subprocess imports — or the full run (readings B and C) over
- * a register in the terminal state live here too. They move the real register
- * to that state in the working tree for the length of one run, which is
- * exactly the edit T-259 commits, and restore it.
+ * which the gate subprocess imports — and the full run (readings B and C) over
+ * the terminal-state register live here too. Since T-259 that register is the
+ * committed one.
+ *
+ * T-259's six real-tree negatives (`OE-5-cut.md` §3) are the `T259-*` cases
+ * and `WAIVER-RENEWED`. Cases about the WAIVER path rebuild the pre-T-259
+ * register (`unflip`) and run the gate at a faked clock inside that waiver
+ * (`now`), so they mean the same thing after 2026-12-05; the driver asserts the
+ * gate printed the faked day.
  *
  * Each case plants one edit in each of one or more TRACKED files, ASSERTS THE
  * EDITS LANDED, runs `node tools/safety-review-currency.ts` with no arguments
@@ -55,6 +56,7 @@ const REVIEW = 'packages/i18n/review.json';
 const TIERS = 'packages/i18n/tiers.json';
 const REGISTRY = 'packages/i18n/locale-registry.json';
 const CATALOGUE_RU = 'packages/i18n/catalogues/ru/session.json';
+const CATALOGUE_EL = 'packages/i18n/catalogues/el/session.json';
 const COMPILED = 'packages/i18n/compiled/index.ts';
 const RULINGS = 'packages/i18n/tools/rulings.ts';
 
@@ -178,14 +180,6 @@ function once(s: string, from: string | RegExp, to: string): string {
   return s.replace(from, to);
 }
 
-/** Take one key out of the waiver — the shape of T-049 delivering that key. */
-function unwaive(doc: Record<string, unknown>, key: string): void {
-  const w = waiverOf(doc);
-  const keys = w['keys'] as string[];
-  if (!keys.includes(key)) throw new Error(`${key} is not in the waiver`);
-  w['keys'] = keys.filter((k) => k !== key);
-}
-
 /** Whether a waiver expiring on the 2026-12-05 anchor is still in force today (WAIVER-READDED-EDITED). */
 const READDED_IN_FORCE = Date.now() <= Date.parse('2026-12-05T23:59:59.999Z');
 
@@ -193,12 +187,10 @@ const CASES: readonly Case[] = [
   {
     name: 'DELIVERED-THEN-STALE',
     why:
-      "T-044's acceptance criterion, half one: a `safety_critical` string with a STALE review " +
-      'record fails the build. The key leaves the waiver (delivery) and the catalogue string is ' +
-      'then edited under its record, which is what editing accepted safety copy looks like. No ' +
-      'record is moved to the terminal status to reach this: NOT-FINAL fires alongside (T-258).',
+      "T-044's acceptance criterion, half one, on the committed (since T-259, final) register: " +
+      'a `safety_critical` string edited under its record is STALE. The record and the pin still ' +
+      'carry the old hash, so STALE-RECORD fires alone — editing accepted safety copy fails the build.',
     edits: [
-      { file: REVIEW, plant: json((doc) => unwaive(doc, KEY)) },
       {
         file: CATALOGUE_RU,
         plant: json((doc) => {
@@ -208,23 +200,23 @@ const CASES: readonly Case[] = [
     ],
     expect: 'FAIL',
     mustInclude: [
+      'waiver: none in force',
       `STALE-RECORD '${KEY}' in ru`,
       'the catalogue string now hashes to sha256:',
-      `NOT-FINAL '${KEY}' in ru`,
     ],
-    mustExclude: ['GATE PASS', 'CRASH'],
+    mustExclude: ['GATE PASS', 'CRASH', '  - NOT-FINAL ', '  - UNPINNED-CONTENT '],
+    mustCount: [{ name: 'STALE-RECORD', n: '1' }],
   },
   {
     name: 'DELIVERED-THEN-ABSENT',
     why:
       "T-044's acceptance criterion, half two: a `safety_critical` string with an ABSENT review " +
       'record fails the build. Absence must fail, or the gate could be satisfied by deleting ' +
-      'records (T-040 § contract §6).',
+      'records (T-040 § contract §6). Since T-259 there is no waiver to take the key out of.',
     edits: [
       {
         file: REVIEW,
         plant: json((doc) => {
-          unwaive(doc, KEY);
           const entries = doc['entries'] as Record<string, Record<string, unknown>>;
           for (const locale of Object.keys(entries)) delete entries[locale]?.[KEY];
         }),
@@ -242,11 +234,24 @@ const CASES: readonly Case[] = [
   {
     name: 'DELIVERED-STILL-PENDING',
     why:
-      'The state this repository is actually in, with the waiver taken off one key: the record ' +
-      'exists, its hash is current and pinned, and it is AI-authored copy (OE-66/OE-67, T-233) ' +
-      'still at pending_review. T-258: it is refused as NOT FINAL and as citing no review-dropping ' +
-      'ruling — and its authorship is ACCEPTED by this gate alone, reading tools/rulings.ts (OD-258).',
-    edits: [{ file: REVIEW, plant: json((doc) => unwaive(doc, KEY)) }],
+      'One key put back to the pre-T-259 state, with no waiver: AI-authored copy (OE-66/OE-67, ' +
+      'T-233), hash current and pinned, at pending_review with no review_ruling. It is refused ' +
+      'as NOT FINAL and as citing no review-dropping ruling, and its authorship is ACCEPTED by ' +
+      'this gate alone, reading tools/rulings.ts (OD-258).',
+    edits: [
+      {
+        file: REVIEW,
+        plant: json((doc) => {
+          const entries = doc['entries'] as Record<string, Record<string, Record<string, unknown>>>;
+          for (const perLocale of Object.values(entries)) {
+            const r = perLocale[KEY];
+            if (r === undefined) throw new Error(`no record for ${KEY}`);
+            r['status'] = 'pending_review';
+            delete r['review_ruling'];
+          }
+        }),
+      },
+    ],
     expect: 'FAIL',
     mustInclude: [`NOT-FINAL '${KEY}' in ru`, `UNRULED-NO-REVIEW '${KEY}' in ru`],
     mustExclude: [
@@ -269,13 +274,14 @@ const CASES: readonly Case[] = [
   {
     name: 'WAIVER-LAPSED',
     why:
-      'THE SELF-CLOSING PROPERTY, on the real tree. The waiver is the only reason this gate is ' +
-      'green today; move its decision review date into the past and every waived pair is ' +
-      'checked exactly as an unwaived one. This is what happens by itself on 2026-12-06.',
+      'THE SELF-CLOSING PROPERTY, kept (T-259): the pre-T-259 register is rebuilt, waiver and ' +
+      'all, with the decision review date in the past. Every waived pair is checked exactly as ' +
+      'an unwaived one. Before T-259 this is what happened by itself on 2026-12-06.',
     edits: [
       {
         file: REVIEW,
         plant: json((doc) => {
+          unflip(doc);
           waiverOf(doc)['expected_by'] = '2026-09-19';
         }),
       },
@@ -293,20 +299,24 @@ const CASES: readonly Case[] = [
   {
     name: 'WAIVER-RENEWED',
     why:
-      'T-040 QA-F3: a waiver policed only by its own dates can be renewed indefinitely by ' +
-      'moving them. The anchor is a literal in the gate, so a renewal is refused by a file the ' +
-      'register cannot edit.',
+      'T-259 (cut §3 negative 5; T-040 QA-F3): the anti-renewal bound survives the waiver being ' +
+      'retired. A `pending_pipeline` RE-ADDED to the flipped register with expected_by ' +
+      '2027-01-01 is refused by the anchor pinned in the gate, which the register cannot edit.',
     edits: [
       {
         file: REVIEW,
         plant: json((doc) => {
-          waiverOf(doc)['expected_by'] = '2027-06-01';
+          if (doc['pending_pipeline'] !== null) throw new Error('expected no committed waiver');
+          doc['pending_pipeline'] = { ...PRE_FLIP_WAIVER, expected_by: '2027-01-01' };
         }),
       },
     ],
     expect: 'FAIL',
-    mustInclude: ['WAIVER-RENEWED', 'later than the 2026-12-05 anchor pinned in this gate'],
+    mustInclude: [
+      'WAIVER-RENEWED `pending_pipeline.expected_by` is 2027-01-01, later than the 2026-12-05 anchor pinned in this gate',
+    ],
     mustExclude: ['GATE PASS', 'CRASH'],
+    mustCount: [{ name: 'WAIVER-RENEWED', n: '1' }],
   },
   {
     name: 'WAIVER-EXTENDED',
@@ -324,8 +334,10 @@ const CASES: readonly Case[] = [
       {
         file: REVIEW,
         plant: json((doc) => {
-          const w = waiverOf(doc);
-          w['keys'] = [...(w['keys'] as string[]), 'legal.terms.accept'];
+          doc['pending_pipeline'] = {
+            ...PRE_FLIP_WAIVER,
+            keys: [...PRE_FLIP_WAIVER.keys, 'legal.terms.accept'],
+          };
         }),
       },
     ],
@@ -352,11 +364,7 @@ const CASES: readonly Case[] = [
       },
     ],
     expect: 'FAIL',
-    mustInclude: [
-      `TIER-ESCAPE '${KEY}' was tiered safety_critical on 2026-09-20`,
-      `WAIVER-OVERREACH the waiver names '${KEY}'`,
-      'TIER-DRIFT',
-    ],
+    mustInclude: [`TIER-ESCAPE '${KEY}' was tiered safety_critical on 2026-09-20`, 'TIER-DRIFT'],
     mustExclude: ['GATE PASS', 'CRASH'],
   },
   {
@@ -392,11 +400,13 @@ const CASES: readonly Case[] = [
       {
         file: REVIEW,
         plant: json((doc) => {
+          unflip(doc);
           const entries = doc['entries'] as Record<string, Record<string, unknown>>;
           for (const locale of Object.keys(entries)) entries[locale] = {};
         }),
       },
     ],
+    now: WAIVER_DAY,
     expect: 'FAIL',
     mustInclude: [
       `WAIVED-NO-RECORD '${KEY}' in ru`,
@@ -429,6 +439,7 @@ const CASES: readonly Case[] = [
       {
         file: REVIEW,
         plant: json((doc) => {
+          unflip(doc);
           const entries = doc['entries'] as Record<string, Record<string, Record<string, unknown>>>;
           const record = entries['ru']?.[KEY];
           if (record === undefined) throw new Error(`no ru record for ${KEY}`);
@@ -438,6 +449,7 @@ const CASES: readonly Case[] = [
         }),
       },
     ],
+    now: WAIVER_DAY,
     expect: 'FAIL',
     mustInclude: [
       '(in force)',
@@ -450,10 +462,11 @@ const CASES: readonly Case[] = [
   {
     name: 'OE5-FINAL-CONTROL',
     why:
-      'T-258 CONTROL on the FULL run (readings A, B and C): the real register moved to the OE-5 ' +
-      'terminal state — the edit T-259 commits — passes with every pair accepted as AI-authored ' +
-      'and reviewed by nobody. Without this, every refusal below could be an always-failing gate.',
-    edits: [{ file: REVIEW, plant: json(finalise) }],
+      'T-258 CONTROL on the FULL run (readings A, B and C). Since T-259 the COMMITTED register is ' +
+      'the OE-5 terminal state, so this case plants nothing: it passes with every pair accepted as ' +
+      'AI-authored and reviewed by nobody. Without this, every refusal below could be an ' +
+      'always-failing gate.',
+    edits: [],
     expect: 'PASS',
     mustInclude: [
       'waiver: none in force — every record is checked in full',
@@ -470,7 +483,6 @@ const CASES: readonly Case[] = [
       'tools/rulings.ts are emptied over the terminal-state register: every AI record must be ' +
       'refused as unruled, for authorship and for the dropped review alike.',
     edits: [
-      { file: REVIEW, plant: json(finalise) },
       {
         file: RULINGS,
         plant: (s) =>
@@ -503,7 +515,6 @@ const CASES: readonly Case[] = [
       "OE-5's locales are narrowed to en/el in tools/rulings.ts over the terminal-state register: " +
       'the ru records, and only they, are refused.',
     edits: [
-      { file: REVIEW, plant: json(finalise) },
       {
         file: RULINGS,
         plant: (s) =>
@@ -535,6 +546,7 @@ const CASES: readonly Case[] = [
       {
         file: REVIEW,
         plant: json((doc) => {
+          unflip(doc);
           const entries = doc['entries'] as Record<string, Record<string, Record<string, unknown>>>;
           const ru = entries['ru']?.[KEY];
           const el = entries['el']?.[KEY];
@@ -544,6 +556,7 @@ const CASES: readonly Case[] = [
         }),
       },
     ],
+    now: WAIVER_DAY,
     expect: 'FAIL',
     mustInclude: [
       '(in force)',
@@ -590,7 +603,7 @@ const CASES: readonly Case[] = [
   {
     name: 'WAIVED-EDIT-REHASHED',
     why:
-      "T-258 rework 1 (QA-F2, P2): under TODAY'S waiver a safety string is edited and its " +
+      'T-258 rework 1 (QA-F2, P2): under the pre-T-259 waiver a safety string is edited and its ' +
       'record re-hashed, with no gate edit. The pin binds inside the waiver too.',
     edits: [
       {
@@ -602,13 +615,12 @@ const CASES: readonly Case[] = [
       {
         file: REVIEW,
         plant: json((doc) => {
-          const entries = doc['entries'] as Record<string, Record<string, Record<string, unknown>>>;
-          const ru = entries['ru']?.[KEY];
-          if (ru === undefined) throw new Error(`no ru record for ${KEY}`);
-          ru['content_hash'] = rehashRu();
+          unflip(doc);
+          ruRecord(doc)['content_hash'] = rehashRu();
         }),
       },
     ],
+    now: WAIVER_DAY,
     expect: 'FAIL',
     mustInclude: ['(in force)', `UNPINNED-CONTENT '${KEY}' in ru (waived)`],
     mustExclude: ['GATE PASS', 'CRASH', '  - STALE-RECORD ', '  - NOT-FINAL '],
@@ -617,7 +629,7 @@ const CASES: readonly Case[] = [
   {
     name: 'WAIVED-THEN-STALE',
     why:
-      "T-258 rework 1 (QA-F2): under today's waiver a safety string is edited under its record. " +
+      'T-258 rework 1 (QA-F2): under the pre-T-259 waiver a safety string is edited under its record. ' +
       'Currency is checked inside the waiver too.',
     edits: [
       {
@@ -626,7 +638,9 @@ const CASES: readonly Case[] = [
           doc['checkins_missed'] = `${String(doc['checkins_missed'])} !!`;
         }),
       },
+      { file: REVIEW, plant: json(unflip) },
     ],
+    now: WAIVER_DAY,
     expect: 'FAIL',
     mustInclude: ['(in force)', `STALE-RECORD '${KEY}' in ru (waived)`],
     mustExclude: ['GATE PASS', 'CRASH', '  - NOT-FINAL '],
@@ -722,7 +736,9 @@ const CASES: readonly Case[] = [
         file: REVIEW,
         plant: json((doc) => {
           finalise(doc);
-          ruRecord(doc)['note'] = ['Signed off by Eleni Constantinou, Designated Safeguarding Lead'];
+          ruRecord(doc)['note'] = [
+            'Signed off by Eleni Constantinou, Designated Safeguarding Lead',
+          ];
           const entries = doc['entries'] as Record<string, Record<string, Record<string, unknown>>>;
           const en = entries['en']?.['safety.sos.confirm'];
           if (en === undefined) throw new Error('no en record for safety.sos.confirm');
@@ -770,7 +786,134 @@ const CASES: readonly Case[] = [
     mustExclude: ['GATE PASS', 'CRASH', '  - NOT-FINAL '],
     mustCount: [{ name: 'NOTE-NOT-TEXT', n: '2' }],
   },
+  {
+    name: 'T259-SIGNED-OFF',
+    why:
+      'T-259 cut §3 negative 1, on the flipped register: one record moved to signed_off is a ' +
+      'review claim (CLAIMS-REVIEW), and is no longer final (NOT-FINAL).',
+    edits: [
+      {
+        file: REVIEW,
+        plant: json((doc) => {
+          ruRecord(doc)['status'] = 'signed_off';
+        }),
+      },
+    ],
+    expect: 'FAIL',
+    mustInclude: [
+      `CLAIMS-REVIEW '${KEY}' in ru: status is "signed_off"`,
+      `NOT-FINAL '${KEY}' in ru`,
+    ],
+    mustExclude: ['GATE PASS', 'CRASH', '  - UNPINNED-CONTENT ', '  - STALE-RECORD '],
+    mustCount: [{ name: 'CLAIMS-REVIEW', n: '1' }],
+  },
+  {
+    name: 'T259-REVIEWED-BY',
+    why:
+      'T-259 cut §3 negative 2, on the flipped register: one record names a reviewer and is ' +
+      'otherwise final — CLAIMS-REVIEW, and nothing else.',
+    edits: [
+      {
+        file: REVIEW,
+        plant: json((doc) => {
+          ruRecord(doc)['reviewed_by'] = 'Eleni Constantinou, Designated Safeguarding Lead';
+        }),
+      },
+    ],
+    expect: 'FAIL',
+    mustInclude: [
+      `CLAIMS-REVIEW '${KEY}' in ru: reviewed_by is "Eleni Constantinou, Designated Safeguarding Lead"`,
+    ],
+    mustExclude: ['GATE PASS', 'CRASH', '  - NOT-FINAL ', '  - UNDEFINED-FIELD '],
+    mustCount: [{ name: 'CLAIMS-REVIEW', n: '1' }],
+  },
+  {
+    name: 'T259-EL-EDIT-REHASHED',
+    why:
+      'T-259 cut §3 negative 3, on the flipped register: an el safety string edited and its ' +
+      'record re-hashed to match, with no edit to the gate. STALE-RECORD cannot fire; the pin ' +
+      'in the gate (UNPINNED-CONTENT) is what refuses it.',
+    edits: [
+      {
+        file: CATALOGUE_EL,
+        plant: json((doc) => {
+          doc['checkins_missed'] = `${String(doc['checkins_missed'])} !!`;
+        }),
+      },
+      {
+        file: REVIEW,
+        plant: json((doc) => {
+          const entries = doc['entries'] as Record<string, Record<string, Record<string, unknown>>>;
+          const el = entries['el']?.[KEY];
+          if (el === undefined) throw new Error(`no el record for ${KEY}`);
+          el['content_hash'] = rehash(CATALOGUE_EL);
+        }),
+      },
+    ],
+    expect: 'FAIL',
+    mustInclude: [`UNPINNED-CONTENT '${KEY}' in el:`, 'AUTHORED_CONTENT_PINNED'],
+    mustExclude: ['GATE PASS', 'CRASH', '  - STALE-RECORD '],
+    mustCount: [{ name: 'UNPINNED-CONTENT', n: '1' }],
+  },
+  {
+    name: 'T259-RECORD-DELETED',
+    why:
+      'T-259 cut §3 negative 4, on the flipped register: one record deleted. With no waiver ' +
+      'there is nothing to hide behind: MISSING-RECORD, for that pair only.',
+    edits: [
+      {
+        file: REVIEW,
+        plant: json((doc) => {
+          const entries = doc['entries'] as Record<string, Record<string, unknown>>;
+          if (entries['ru']?.[KEY] === undefined) throw new Error(`no ru record for ${KEY}`);
+          delete entries['ru'][KEY];
+        }),
+      },
+    ],
+    expect: 'FAIL',
+    mustInclude: [`MISSING-RECORD '${KEY}' in ru`],
+    mustExclude: ['GATE PASS', 'CRASH', 'WAIVED-NO-RECORD'],
+    mustCount: [{ name: 'MISSING-RECORD', n: '1' }],
+  },
+  {
+    name: 'T259-CLOCK-PAST-ANCHOR',
+    why:
+      'T-259 cut §3 negative 6: the date faked to just past the old waiver anchor (2026-12-06, ' +
+      "the first red day before T-259) on the committed tree, nothing else planted. The gate's " +
+      'own `today (UTC)` line proves the clock landed. Green: 12-06 no longer turns the build red.',
+    edits: [],
+    now: '2026-12-06T00:00:01Z',
+    expect: 'PASS',
+    mustInclude: [
+      'today (UTC): 2026-12-06',
+      'waiver: none in force — every record is checked in full',
+      'OE-5: {PAIRS} of {PAIRS} pair(s) accepted as AI-authored and reviewed by nobody',
+    ],
+    mustExclude: ['GATE FAIL', 'CRASH', 'WAIVER-EXPIRED', 'NOTE: all'],
+  },
+  {
+    name: 'T259-CLOCK-2027',
+    why:
+      'T-259 cut §3 negative 6, a second point: the clock a year and a half past the anchor ' +
+      '(2027-06-01). Still green, so the absence of a red day is not a one-day margin.',
+    edits: [],
+    now: '2027-06-01T12:00:00Z',
+    expect: 'PASS',
+    mustInclude: [
+      'today (UTC): 2027-06-01',
+      'OE-5: {PAIRS} of {PAIRS} pair(s) accepted as AI-authored and reviewed by nobody',
+    ],
+    mustExclude: ['GATE FAIL', 'CRASH', 'WAIVER-EXPIRED'],
+  },
 ];
+
+/** The NFC-sha256 of a catalogue's `checkins_missed` string as it is on disk now (the edit plants run first). */
+function rehash(file: string): string {
+  const doc = JSON.parse(readFileSync(join(REPO, file), 'utf8')) as Record<string, unknown>;
+  const str = String(doc['checkins_missed']);
+  if (!str.endsWith(' !!')) throw new Error('rehash ran before the catalogue edit landed');
+  return `sha256:${createHash('sha256').update(str.normalize('NFC'), 'utf8').digest('hex')}`;
+}
 
 /**
  * The NFC-sha256 of the ru catalogue string of KEY AS IT IS ON DISK NOW — the

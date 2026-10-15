@@ -61,8 +61,10 @@ test('negative — a blank string, and a blank plural branch, are refused (QA-F2
   // `""` is valid ICU. It parses, compiles, typechecks and renders `""`. The
   // strict-tier completeness type checks that a PROPERTY EXISTS, not that it has
   // content, so a blank Russian SOS confirmation would otherwise ship with every
-  // gate green — and `gate:safety-review-currency` would not see it either while
-  // the key sits inside the T-049 waiver. The compiler is the only layer that can
+  // gate green. `gate:safety-review-currency` sees a blank string only as an
+  // EDIT (STALE-RECORD / UNPINNED-CONTENT; there is no waiver since T-259), and
+  // a commit that also re-hashes the record and edits the gate's pin clears it:
+  // that gate does not judge content. The compiler is the only layer that can
   // tell presence from content.
   const problems = await compileFixture('blank-safety-string');
   assert.equal(problems.length, 2, JSON.stringify(problems, null, 2));

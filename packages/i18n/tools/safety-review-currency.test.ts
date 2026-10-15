@@ -460,16 +460,38 @@ test('CONTROL — the committed tree passes, and the pair count is the product o
   assert.ok(!run.out.includes('SOURCE READING ONLY'), run.out);
 });
 
-test('CONTROL — today the gate is green BECAUSE OF THE WAIVER, says so with the date that ends it, and accepts nothing under OE-5 yet', () => {
+test('CONTROL — the committed tree is final under OE-5 with nothing waived: every pair is accepted as reviewed by nobody, and no NOTE prints (T-259)', () => {
   const run = runGate([]);
   assert.equal(run.banner, 'PASS', run.out);
+  assert.equal(run.code, 0, run.out);
   const n = String(expectedPairs());
-  assert.ok(run.out.includes(`NOTE: all ${n} pair(s) are waived`), run.out);
-  assert.ok(run.out.includes('This gate is green BECAUSE OF THE WAIVER'), run.out);
-  assert.ok(run.out.includes('from the day after, every one of them fails here'), run.out);
+  assert.ok(run.out.includes('waiver: none in force — every record is checked in full'), run.out);
+  assert.ok(run.out.includes(`0 waived, ${n} with a record read`), run.out);
   assert.ok(
-    run.out.includes(`OE-5: 0 of ${n} pair(s) accepted as AI-authored and reviewed by nobody`),
+    run.out.includes(`OE-5: ${n} of ${n} pair(s) accepted as AI-authored and reviewed by nobody`),
     run.out,
+  );
+  assert.ok(!run.out.includes('NOTE: all'), run.out);
+  assert.ok(!run.out.includes('BECAUSE OF THE WAIVER'), run.out);
+});
+
+test('CONTROL — under the PRE-T-259 waiver the gate is green BECAUSE OF THE WAIVER, says so with the date that ends it, and accepts nothing under OE-5', () => {
+  const n = String(expectedPairs());
+  attack(
+    (root) => {
+      unflip(root);
+    },
+    unflipped,
+    'PASS',
+    [
+      `NOTE: all ${n} pair(s) are waived`,
+      'This gate is green BECAUSE OF THE WAIVER',
+      'from the day after, every one of them fails here',
+      `OE-5: 0 of ${n} pair(s) accepted as AI-authored and reviewed by nobody`,
+    ],
+    [],
+    {},
+    WAIVER_DAY,
   );
 });
 
@@ -538,6 +560,7 @@ test('CLAIMS-REVIEW — an AI record signed off by a real-looking reviewer is re
 test('CLAIMS-REVIEW — the same claim on a record INSIDE the waiver is refused too: the waiver never covers a review claim', () => {
   attack(
     (root) => {
+      unflip(root);
       editRecord(root, 'ru', SAFETY_KEY, {
         status: 'signed_off',
         reviewed_by: REAL_LOOKING_REVIEWER,
@@ -559,6 +582,7 @@ test('CLAIMS-REVIEW — the same claim on a record INSIDE the waiver is refused 
     ],
     othersThan('CLAIMS-REVIEW'),
     { 'CLAIMS-REVIEW': 1 },
+    WAIVER_DAY,
   );
 });
 
@@ -670,6 +694,7 @@ test('UNDEFINED-FIELD — a sign-off in a field named without "review" (signed_o
 test('UNDEFINED-FIELD — the same fields on records INSIDE the waiver are refused too: the waiver never covers an undefined field', () => {
   attack(
     (root) => {
+      unflip(root);
       editRecord(root, 'ru', SAFETY_KEY, { signed_off_by: REAL_LOOKING_REVIEWER });
       editRecord(root, 'el', SAFETY_KEY, { dsl_signoff: '2026-10-01' });
     },
@@ -690,6 +715,7 @@ test('UNDEFINED-FIELD — the same fields on records INSIDE the waiver are refus
     ],
     othersThan('UNDEFINED-FIELD'),
     { 'UNDEFINED-FIELD': 2 },
+    WAIVER_DAY,
   );
 });
 
@@ -824,6 +850,8 @@ test('OD-258 — the forgery T-233 QA measured, every AI record signed off with 
   const n = expectedPairs();
   attack(
     (root) => {
+      // Over the pre-T-259 records (no review_ruling), as T-233 QA measured it.
+      unflip(root);
       const register = readJson(root, 'review.json');
       register['pending_pipeline'] = null;
       for (const perLocale of Object.values(register['entries'] as Entries)) {
@@ -1077,9 +1105,10 @@ test('UNPINNED-CONTENT — a NEW safety_critical key, final, current and AI-auth
 
 /* ------ the content checks bind INSIDE the waiver too (rework 1, QA-F2) */
 
-test("UNPINNED-CONTENT (waived) — under TODAY'S waiver, a safety string edited with its record re-hashed and no gate edit is refused", () => {
+test('UNPINNED-CONTENT (waived) — under the pre-T-259 waiver, a safety string edited with its record re-hashed and no gate edit is refused', () => {
   attack(
     (root) => {
+      unflip(root);
       editAndRehash(root, ' (edited under the waiver)');
     },
     (root) => {
@@ -1093,12 +1122,14 @@ test("UNPINNED-CONTENT (waived) — under TODAY'S waiver, a safety string edited
     ['(in force)', `UNPINNED-CONTENT '${SAFETY_KEY}' in ru (waived)`, 'AUTHORED_CONTENT_PINNED'],
     ['  - STALE-RECORD ', ...othersThan('UNPINNED-CONTENT')],
     { 'UNPINNED-CONTENT': 1 },
+    WAIVER_DAY,
   );
 });
 
-test("STALE-RECORD (waived) — under today's waiver, a safety string edited under its record is refused", () => {
+test('STALE-RECORD (waived) — under the pre-T-259 waiver, a safety string edited under its record is refused', () => {
   attack(
     (root) => {
+      unflip(root);
       const doc = readJson(root, SAFETY_KEY_FILE);
       doc['checkins_missed'] = `${String(doc['checkins_missed'])} (edited, record untouched)`;
       writeJson(root, SAFETY_KEY_FILE, doc);
@@ -1116,21 +1147,24 @@ test("STALE-RECORD (waived) — under today's waiver, a safety string edited und
     [`STALE-RECORD '${SAFETY_KEY}' in ru (waived)`, 'the catalogue string now hashes to sha256:'],
     othersThan(),
     { 'STALE-RECORD': 1 },
+    WAIVER_DAY,
   );
 });
 
-test("NO-SOURCE (waived) — under today's waiver, a waived key whose catalogue string is deleted is refused: currency is unjudgeable", () => {
+test('NO-SOURCE (waived) — under the pre-T-259 waiver, a waived key whose catalogue string is deleted is refused: currency is unjudgeable', () => {
   attack(
     (root) => {
+      unflip(root);
       const doc = readJson(root, SAFETY_KEY_FILE);
       delete doc['checkins_missed'];
       writeJson(root, SAFETY_KEY_FILE, doc);
     },
-    (root) => !('checkins_missed' in readJson(root, SAFETY_KEY_FILE)),
+    (root) => unflipped(root) && !('checkins_missed' in readJson(root, SAFETY_KEY_FILE)),
     'FAIL',
     [`NO-SOURCE '${SAFETY_KEY}' in ru (waived)`, 'fails closed'],
     othersThan(),
     { 'NO-SOURCE': 1 },
+    WAIVER_DAY,
   );
 });
 
@@ -1248,28 +1282,32 @@ test('a final record for a key whose catalogue string has been deleted is refuse
 
 /* ----------------------------------------------------------- the waiver */
 
-test('WITH THE WAIVER IN FORCE the committed register passes, and that is the only reason it does', () => {
+test('WITH THE PRE-T-259 WAIVER IN FORCE the pre-T-259 register passes, and that is the only reason it does', () => {
   attack(
-    () => {
-      /* nothing: the copied root IS the committed register, waiver and all */
+    (root) => {
+      unflip(root);
     },
-    (root) =>
-      (readJson(root, 'review.json')['pending_pipeline'] as Record<string, unknown>) !== null,
+    unflipped,
     'PASS',
     ['This gate is green BECAUSE OF THE WAIVER'],
+    [],
+    {},
+    WAIVER_DAY,
   );
 });
 
-test('WITHOUT THE WAIVER the committed register is refused on every pair as NOT FINAL — and its OE-66/OE-67 authorship is accepted by this gate alone (OD-258)', () => {
+test('WITHOUT THE WAIVER the pre-T-259 register is refused on every pair as NOT FINAL — and its OE-66/OE-67 authorship is accepted by this gate alone (OD-258)', () => {
   const n = expectedPairs();
   attack(
     (root) => {
+      unflip(root);
       const register = readJson(root, 'review.json');
       register['pending_pipeline'] = null;
       writeJson(root, 'review.json', register);
     },
     (root) =>
       readJson(root, 'review.json')['pending_pipeline'] === null &&
+      recordOf(root, 'ru', SAFETY_KEY)?.['status'] === 'pending_review' &&
       recordOf(root, 'ru', SAFETY_KEY)?.['provenance'] === 'ai_authored',
     'FAIL',
     ['waiver: none in force', `NOT-FINAL '${SAFETY_KEY}' in ru`, `NOT-FINAL '${SAFETY_KEY}' in en`],
@@ -1290,6 +1328,7 @@ test('WITHOUT THE WAIVER the committed register is refused on every pair as NOT 
 test('AN EXPIRED WAIVER waives nothing: the same records are refused, and the reason names the decision review date', () => {
   attack(
     (root) => {
+      unflip(root);
       editWaiver(root, { expected_by: '2026-09-19' });
     },
     (root) =>
@@ -1310,6 +1349,7 @@ test('AN EXPIRED WAIVER waives nothing: the same records are refused, and the re
 test('a waiver renewed past the anchor pinned in the gate is refused — it cannot be renewed by editing the field that expires it', () => {
   attack(
     (root) => {
+      unflip(root);
       editWaiver(root, { expected_by: '2027-06-01' });
     },
     (root) =>
@@ -1324,6 +1364,7 @@ test('a waiver renewed past the anchor pinned in the gate is refused — it cann
 test('a waiver naming a key that needs no review record is refused as overreach', () => {
   attack(
     (root) => {
+      unflip(root);
       const register = readJson(root, 'review.json');
       const waiver = register['pending_pipeline'] as Record<string, unknown>;
       waiver['keys'] = [...(waiver['keys'] as string[]), 'common.marketing.tagline'];
@@ -1343,6 +1384,7 @@ test('a waiver naming a key that needs no review record is refused as overreach'
 test('a waiver with no owner is refused — a waiver names an owner, a ticket and a reason, or it is an ignore-list', () => {
   attack(
     (root) => {
+      unflip(root);
       const register = readJson(root, 'review.json');
       const waiver = { ...(register['pending_pipeline'] as Record<string, unknown>) };
       delete waiver['owner'];
@@ -1359,6 +1401,7 @@ test('a waiver with no owner is refused — a waiver names an owner, a ticket an
 test('a waiver with an undated expiry is refused — an undated waiver cannot self-close', () => {
   attack(
     (root) => {
+      unflip(root);
       editWaiver(root, { expected_by: 'when the copy arrives' });
     },
     (root) =>
@@ -1373,6 +1416,7 @@ test('a waiver with an undated expiry is refused — an undated waiver cannot se
 test('a waiver whose keys are not a list is refused rather than treated as waiving nothing or everything', () => {
   attack(
     (root) => {
+      unflip(root);
       editWaiver(root, { keys: 'all of them' });
     },
     (root) =>
@@ -1386,13 +1430,19 @@ test('a waiver whose keys are not a list is refused rather than treated as waivi
 test('WAIVED-NO-RECORD: deleting the records the waiver covers does not buy a pass', () => {
   attack(
     (root) => {
+      unflip(root);
       const register = readJson(root, 'review.json');
       register['entries'] = { en: {}, el: {}, ru: {} };
       writeJson(root, 'review.json', register);
     },
-    (root) => Object.keys(entriesOf(root)['ru'] ?? { x: 1 }).length === 0,
+    (root) =>
+      readJson(root, 'review.json')['pending_pipeline'] !== null &&
+      Object.keys(entriesOf(root)['ru'] ?? { x: 1 }).length === 0,
     'FAIL',
     [`WAIVED-NO-RECORD '${SAFETY_KEY}' in ru`, 'not the existence of the provenance row'],
+    [],
+    {},
+    WAIVER_DAY,
   );
 });
 
