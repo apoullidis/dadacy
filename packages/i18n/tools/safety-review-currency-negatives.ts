@@ -1,6 +1,8 @@
 /**
  * `pnpm --filter @kinvara/i18n run gate:safety-review-currency:negatives` — T-044;
- * T-258 (the OE-5 terminal state; cases from OE5-FINAL-CONTROL on).
+ * T-258 (the OE-5 terminal state; cases from OE5-FINAL-CONTROL on; rework 1,
+ * the closed record field set and the content checks inside the waiver, cases
+ * from WAIVED-UNDEFINED-FIELD on).
  *
  * The committed negative cases for `gate:safety-review-currency` THAT CANNOT BE
  * RUN FROM A TEMPORARY ROOT, because they are about the COMMITTED artefacts of
@@ -125,6 +127,9 @@ function unwaive(doc: Record<string, unknown>, key: string): void {
   if (!keys.includes(key)) throw new Error(`${key} is not in the waiver`);
   w['keys'] = keys.filter((k) => k !== key);
 }
+
+/** Whether a waiver expiring on the 2026-12-05 anchor is still in force today (WAIVER-READDED-EDITED). */
+const READDED_IN_FORCE = Date.now() <= Date.parse('2026-12-05T23:59:59.999Z');
 
 const CASES: readonly Case[] = [
   {
@@ -585,9 +590,17 @@ const CASES: readonly Case[] = [
       {
         file: REVIEW,
         plant: json((doc) => {
-          const w = { ...waiverOf(doc), keys: [KEY], expected_by: '2026-12-05' };
+          // A literal waiver, not the committed one, so the case survives T-259
+          // setting `pending_pipeline` to null.
           finalise(doc);
-          doc['pending_pipeline'] = w;
+          doc['pending_pipeline'] = {
+            opened_at: '2026-10-15',
+            expected_by: '2026-12-05',
+            owner: 'frontend-developer',
+            ticket: 'T-258 rework 1 fixture',
+            reason: 'a waiver re-added over one key, to edit its copy without a gate edit',
+            keys: [KEY],
+          };
           const entries = doc['entries'] as Record<string, Record<string, Record<string, unknown>>>;
           const ru = entries['ru']?.[KEY];
           if (ru === undefined) throw new Error(`no ru record for ${KEY}`);
@@ -596,17 +609,23 @@ const CASES: readonly Case[] = [
       },
     ],
     expect: 'FAIL',
-    mustInclude: [
-      'waiver: pending_pipeline expires 2026-12-05 (in force), naming 1 key(s)',
-      `UNPINNED-CONTENT '${KEY}' in ru (waived)`,
-    ],
+    // Up to and including the anchor day the re-added waiver is in force and
+    // the pair is refused as waived; from the day after it has expired and the
+    // pair is refused unwaived. Refused either way; the branch is chosen by the
+    // same clock the gate reads.
+    mustInclude: READDED_IN_FORCE
+      ? [
+          'waiver: pending_pipeline expires 2026-12-05 (in force), naming 1 key(s)',
+          `UNPINNED-CONTENT '${KEY}' in ru (waived)`,
+        ]
+      : ['  - WAIVER-EXPIRED ', `UNPINNED-CONTENT '${KEY}' in ru:`],
     mustExclude: [
       'GATE PASS',
       'CRASH',
       '  - STALE-RECORD ',
       '  - WAIVER-RENEWED ',
       '  - WAIVER-EXTENDED ',
-      '  - WAIVER-EXPIRED ',
+      ...(READDED_IN_FORCE ? ['  - WAIVER-EXPIRED '] : []),
     ],
     mustCount: [{ name: 'UNPINNED-CONTENT', n: '1' }],
   },
