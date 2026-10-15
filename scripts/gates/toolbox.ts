@@ -40,6 +40,8 @@
  *             deleting it, where the family's whole signature is that the two
  *             directions disagree.
  *   §6        stats the container this gate is running in.
+ *   §1b       (T-262) runs espeak-ng and reads its stdout and the WAV bytes
+ *             it writes — behavioural, not textual.
  *
  * If you add a check here that reads a file as text and requires something to
  * be present, anchor it or strip comments. That is the rule the other two gate
@@ -144,6 +146,18 @@ const PROBES: readonly Probe[] = [
       why: "the Semgrep venv is bound to bookworm's python3.11 and gate:semgrep is a PR-stage gate, not a heavy one (T-133)",
     },
   },
+  {
+    // T-262. `eSpeak NG text-to-speech: 1.51  Data at: /usr/lib/...` -> `1.51`.
+    // The voices it must carry are asserted in §1b, by listing AND speaking.
+    tool: 'espeak-ng',
+    pinKey: 'espeak-ng',
+    argv: ['espeak-ng', '--version'],
+    extract: (o) => /text-to-speech: (\S+)/.exec(first(o))?.[1] ?? first(o).trim(),
+    absentFrom: {
+      variant: 'toolbox-playwright',
+      why: 'gate:read-aloud (T-263) is a PR-stage gate, and the Playwright variant is Ubuntu noble; the heavy gate:safety-copy-render (T-265) renders, it does not speak (T-262)',
+    },
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -222,6 +236,122 @@ for (const [key] of pins) {
         'or record why one is not the right check.',
     );
     console.log(`  X  ${key.padEnd(12)} NOTHING ASSERTS THIS PIN`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 1b. VOICES — espeak-ng carries en, el and ru, and each one SPEAKS (T-262).
+//
+// gate:read-aloud (T-263) synthesises catalogue strings in the three locales
+// SA §TS-12.4 names, under stakeholder ruling OE-82. A version probe alone
+// cannot see a missing voice: the binary reports its version with no data at
+// all. So each locale is asserted three ways, every one of which a deletion
+// of that locale's data has been shown to break (scripts/negative-tests/
+// toolbox-espeak.sh, cases E2 and E3):
+//
+//   LISTED    `espeak-ng --voices=<lang>` exits 0 and lists the espeak-ng
+//             voice file `-v <lang>` resolves to (gmw/en, grk/el, zle/ru) —
+//             not an mbrola row, whose voice data is not installed.
+//   SPEAKS    `espeak-ng -v <lang> -w <wav> <fixed sentence>` exits 0 with
+//             EMPTY stderr and writes a RIFF/WAVE file carrying at least half
+//             a second of audio (22050 bytes of 16-bit mono at 22050 Hz).
+//   STABLE    the same synthesis run twice gives exit 0 both times AND
+//             byte-identical WAV files (PROTOCOL §5.1 — the status as well as
+//             the bytes). T-263's drift rule leans on this; measured
+//             byte-identical across separate containers in T-262 § Evidence 2.
+//
+// What this does NOT check, stated here because it is the point of use: that
+// the audio is intelligible or correctly pronounced (that is T-263's question,
+// if anyone's), and that the audio is the SAME as some earlier image's — the
+// two runs are compared with each other, never with a stored digest, so a
+// Debian-revision change to espeak-ng-data that alters the audio is not
+// detected by this gate.
+// ---------------------------------------------------------------------------
+console.log(`\n1b. VOICES — espeak-ng lists AND speaks en, el and ru (T-262)\n`);
+
+interface Voice {
+  readonly lang: string;
+  /** The espeak-ng voice file `-v <lang>` resolves to, as `--voices` prints it. */
+  readonly file: string;
+  readonly sentence: string;
+}
+const VOICES: readonly Voice[] = [
+  { lang: 'en', file: 'gmw/en', sentence: 'In an emergency, call 112.' },
+  { lang: 'el', file: 'grk/el', sentence: 'Σε περίπτωση έκτακτης ανάγκης, καλέστε το 112.' },
+  { lang: 'ru', file: 'zle/ru', sentence: 'В экстренной ситуации звоните 112.' },
+];
+const MIN_WAV_DATA = 22050;
+
+const espeakProbe = PROBES.find((p) => p.tool === 'espeak-ng');
+if (espeakProbe?.absentFrom !== undefined && espeakProbe.absentFrom.variant === VARIANT) {
+  console.log(`  -- espeak-ng  voices not checked: absent from the ${VARIANT} variant by design`);
+} else {
+  const wavDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kinvara-gate-toolbox-espeak-'));
+  try {
+    for (const v of VOICES) {
+      const problems: string[] = [];
+
+      const listed = capture('espeak-ng', [`--voices=${v.lang}`]);
+      const files = listed.stdout
+        .split('\n')
+        .slice(1)
+        .map((row) => row.trim().split(/\s+/)[4]);
+      if (listed.code !== 0) {
+        problems.push(`'espeak-ng --voices=${v.lang}' exited ${String(listed.code)}`);
+      } else if (!files.includes(v.file)) {
+        problems.push(
+          `'espeak-ng --voices=${v.lang}' does not list the voice file ${v.file} — the ${v.lang} voice definition is missing from espeak-ng-data`,
+        );
+      }
+
+      const wavs: Buffer[] = [];
+      const codes: string[] = [];
+      for (const run of ['a', 'b']) {
+        const wav = path.join(wavDir, `${v.lang}-${run}.wav`);
+        const r = capture('espeak-ng', ['-v', v.lang, '-w', wav, v.sentence]);
+        codes.push(String(r.code));
+        if (r.code !== 0) {
+          problems.push(`'espeak-ng -v ${v.lang} -w …' run ${run} exited ${String(r.code)}`);
+        }
+        if (r.stderr !== '') {
+          problems.push(
+            `'espeak-ng -v ${v.lang} -w …' run ${run} wrote to stderr: ${JSON.stringify(r.stderr.trim().slice(0, 160))}`,
+          );
+        }
+        wavs.push(fs.existsSync(wav) ? fs.readFileSync(wav) : Buffer.alloc(0));
+      }
+      const [wa, wb] = wavs;
+      const isWave =
+        wa !== undefined &&
+        wa.subarray(0, 4).toString('latin1') === 'RIFF' &&
+        wa.subarray(8, 12).toString('latin1') === 'WAVE';
+      if (!isWave) {
+        problems.push(`'espeak-ng -v ${v.lang}' wrote no RIFF/WAVE file`);
+      } else if (wa.length < 44 + MIN_WAV_DATA) {
+        problems.push(
+          `'espeak-ng -v ${v.lang}' wrote ${String(wa.length)} bytes — under half a second of audio for a ${String(v.sentence.length)}-character sentence`,
+        );
+      }
+      const stable = wa !== undefined && wb !== undefined && wa.equals(wb);
+      if (codes.join('/') === '0/0' && !stable) {
+        problems.push(
+          `'espeak-ng -v ${v.lang}' exit 0/0 but the two WAV files DIFFER — synthesis is not deterministic`,
+        );
+      }
+
+      if (problems.length === 0) {
+        console.log(
+          `  ok ${v.lang.padEnd(3)} listed (${v.file}); spoke exit 0/0, ${String(wa?.length ?? 0)} identical WAV bytes, empty stderr`,
+        );
+      } else {
+        console.log(
+          `  X  ${v.lang.padEnd(3)} ${problems.length === 1 ? problems[0] : `${String(problems.length)} problems`}`,
+        );
+        for (const p of problems) failures.push(`espeak-ng voice ${v.lang}: ${p}`);
+      }
+    }
+  } finally {
+    fs.rmSync(wavDir, { recursive: true, force: true });
   }
 }
 

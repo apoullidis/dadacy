@@ -230,8 +230,10 @@ RUN set -eux; \
 #      then installed, never "whatever is newest";
 #   2. the installed binary must report exactly the pin.
 # The Debian revision is NOT pinned — the same standing as every other apt
-# package in this stage (git, curl, python3, psql's minor). gate:toolbox's WAV
-# determinism check is what notices a data change that alters the audio.
+# package in this stage (git, curl, python3, psql's minor); 1.51+dfsg-10+deb12u2
+# was installed when T-262 built it. A revision whose espeak-ng-data alters the
+# audio is NOT detected by any check here: gate:toolbox §1b compares two runs of
+# ONE image with each other, never with a stored digest.
 # Default target only: gate:read-aloud is a PR-stage gate, and the --playwright
 # variant is Ubuntu noble (psql's and Semgrep's precedent). gate:toolbox reports
 # it absent-by-design there.
