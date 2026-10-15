@@ -487,7 +487,13 @@ const CASES: readonly Case[] = [
       `UNDEFINED-FIELD '${KEY}' in ru (waived): signed_off_by is "Eleni Constantinou, Designated Safeguarding Lead"`,
       `UNDEFINED-FIELD '${KEY}' in el (waived): dsl_signoff is "2026-10-01"`,
     ],
-    mustExclude: ['GATE PASS', 'CRASH', 'CLAIMS-REVIEW', 'NOT-FINAL', 'UNPINNED-CONTENT'],
+    mustExclude: [
+      'GATE PASS',
+      'CRASH',
+      '  - CLAIMS-REVIEW ',
+      '  - NOT-FINAL ',
+      '  - UNPINNED-CONTENT ',
+    ],
     mustCount: [{ name: 'UNDEFINED-FIELD', n: '2' }],
   },
   {
@@ -515,7 +521,7 @@ const CASES: readonly Case[] = [
       `UNDEFINED-FIELD '${KEY}' in ru: signed_off_by is`,
       "UNDEFINED-FIELD 'safety.sos.confirm' in en: approved_by is",
     ],
-    mustExclude: ['GATE PASS', 'CRASH', 'OE-5: {PAIRS} of {PAIRS}', 'NOT-FINAL'],
+    mustExclude: ['GATE PASS', 'CRASH', 'OE-5: {PAIRS} of {PAIRS}', '  - NOT-FINAL '],
     mustCount: [{ name: 'UNDEFINED-FIELD', n: '2' }],
   },
   {
@@ -542,7 +548,7 @@ const CASES: readonly Case[] = [
     ],
     expect: 'FAIL',
     mustInclude: ['(in force)', `UNPINNED-CONTENT '${KEY}' in ru (waived)`],
-    mustExclude: ['GATE PASS', 'CRASH', 'STALE-RECORD', 'NOT-FINAL'],
+    mustExclude: ['GATE PASS', 'CRASH', '  - STALE-RECORD ', '  - NOT-FINAL '],
     mustCount: [{ name: 'UNPINNED-CONTENT', n: '1' }],
   },
   {
@@ -560,7 +566,7 @@ const CASES: readonly Case[] = [
     ],
     expect: 'FAIL',
     mustInclude: ['(in force)', `STALE-RECORD '${KEY}' in ru (waived)`],
-    mustExclude: ['GATE PASS', 'CRASH', 'NOT-FINAL'],
+    mustExclude: ['GATE PASS', 'CRASH', '  - NOT-FINAL '],
     mustCount: [{ name: 'STALE-RECORD', n: '1' }],
   },
   {
@@ -597,10 +603,10 @@ const CASES: readonly Case[] = [
     mustExclude: [
       'GATE PASS',
       'CRASH',
-      'STALE-RECORD',
-      'WAIVER-RENEWED',
-      'WAIVER-EXTENDED',
-      'WAIVER-EXPIRED',
+      '  - STALE-RECORD ',
+      '  - WAIVER-RENEWED ',
+      '  - WAIVER-EXTENDED ',
+      '  - WAIVER-EXPIRED ',
     ],
     mustCount: [{ name: 'UNPINNED-CONTENT', n: '1' }],
   },

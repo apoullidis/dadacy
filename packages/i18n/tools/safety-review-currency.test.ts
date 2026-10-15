@@ -860,7 +860,7 @@ test("UNPINNED-CONTENT (waived) — under TODAY'S waiver, a safety string edited
     },
     'FAIL',
     ['(in force)', `UNPINNED-CONTENT '${SAFETY_KEY}' in ru (waived)`, 'AUTHORED_CONTENT_PINNED'],
-    ['STALE-RECORD', ...othersThan('UNPINNED-CONTENT')],
+    ['  - STALE-RECORD ', ...othersThan('UNPINNED-CONTENT')],
     { 'UNPINNED-CONTENT': 1 },
   );
 });
@@ -933,10 +933,10 @@ test('a waiver RE-ADDED after the flip with expected_by on or before 2026-12-05,
           `waiver: pending_pipeline expires ${expectedBy} (in force), naming 1 key(s)`,
           `UNPINNED-CONTENT '${SAFETY_KEY}' in ru (waived)`,
         ]
-      : ['WAIVER-EXPIRED', `UNPINNED-CONTENT '${SAFETY_KEY}' in ru:`],
+      : ['  - WAIVER-EXPIRED ', `UNPINNED-CONTENT '${SAFETY_KEY}' in ru:`],
     inForce
-      ? ['STALE-RECORD', 'WAIVER-RENEWED', 'WAIVER-EXPIRED', ...othersThan('UNPINNED-CONTENT')]
-      : ['STALE-RECORD', 'WAIVER-RENEWED', ...othersThan('UNPINNED-CONTENT')],
+      ? ['  - STALE-RECORD ', '  - WAIVER-RENEWED ', '  - WAIVER-EXPIRED ', ...othersThan('UNPINNED-CONTENT')]
+      : ['  - STALE-RECORD ', '  - WAIVER-RENEWED ', ...othersThan('UNPINNED-CONTENT')],
     { 'UNPINNED-CONTENT': 1 },
   );
 });

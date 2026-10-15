@@ -545,6 +545,97 @@ function claimsReview(
 }
 
 /**
+ * THE RECORD'S CLOSED FIELD SET (T-258 rework 1, QA-F1): exactly the fields
+ * `ReviewRecord` defines in `src/review.ts`. Any other field on a record is
+ * UNDEFINED-FIELD, at any status and on waived records too, whatever its name
+ * and even when it is null. CLAIMS-REVIEW reads field NAMES for "review", so
+ * without this a sign-off in `signed_off_by`, `approved_by` or `dsl_signoff`
+ * passed and was counted "reviewed by nobody" (QA A1-A4). A new field is an
+ * edit to this list, in gate source, in the same commit.
+ */
+const RECORD_FIELDS: readonly string[] = [
+  'content_hash',
+  'provenance',
+  'status',
+  'authored_by',
+  'ruling',
+  'review_ruling',
+  'reviewed_by',
+  'reviewed_at',
+  'note',
+];
+
+/** UNDEFINED-FIELD: one line per field outside RECORD_FIELDS. Returns whether any was found. */
+function undefinedFields(
+  where: string,
+  record: Readonly<Record<string, unknown>>,
+  failures: string[],
+): boolean {
+  let found = false;
+  for (const [field, v] of Object.entries(record)) {
+    if (RECORD_FIELDS.includes(field)) continue;
+    found = true;
+    failures.push(
+      `UNDEFINED-FIELD ${where}: ${field} is ${v === undefined ? 'undefined' : JSON.stringify(v)}, ` +
+        `and ${JSON.stringify(field)} is not a field of a review record ` +
+        `(${RECORD_FIELDS.join(', ')}). The field set is closed so that no field can carry a ` +
+        'sign-off, an approval or a review under another name (OE-5: nothing may record or ' +
+        'claim one). Adding a field is an edit to RECORD_FIELDS in this gate.',
+    );
+  }
+  return found;
+}
+
+/**
+ * The content checks, shared by a pair outside the waiver and a WAIVED pair
+ * (T-258 rework 1, QA-F2: the waiver waives finality, not the bytes). NO-SOURCE
+ * returns false and the caller stops; otherwise STALE-RECORD and
+ * UNPINNED-CONTENT are each judged.
+ */
+function noSource(where: string, failures: string[]): void {
+  failures.push(
+    `NO-SOURCE ${where}: the catalogue has no string for this key, so its review record cannot ` +
+      'be held against anything. gate:locale-completeness (T-042) names the same absence as ' +
+      'MISSING; here it means currency is unjudgeable, which fails closed.',
+  );
+}
+
+function staleRecord(
+  where: string,
+  record: ReviewRecord,
+  source: string,
+  failures: string[],
+): void {
+  const expected = contentHash(source);
+  if (record.content_hash !== expected) {
+    failures.push(
+      `STALE-RECORD ${where}: the record's content_hash is ` +
+        `${JSON.stringify(record.content_hash)} but the catalogue string now hashes to ` +
+        `${expected}. The recorded text and the shipped text are not the same text.`,
+    );
+  }
+}
+
+function unpinnedContent(
+  where: string,
+  locale: string,
+  key: string,
+  record: ReviewRecord,
+  failures: string[],
+): void {
+  const pinned = AUTHORED_CONTENT_PINNED[locale]?.[key];
+  if (record.content_hash !== pinned) {
+    failures.push(
+      `UNPINNED-CONTENT ${where}: content_hash ${JSON.stringify(record.content_hash)} is not the ` +
+        `hash pinned for it in AUTHORED_CONTENT_PINNED (${pinned === undefined ? 'none pinned' : pinned}) in ` +
+        'tools/safety-review-currency.ts. Under OE-5 nobody re-signs an edited safety string, so ' +
+        'an edit is accepted only when the same commit edits that pin — a change to gate source ' +
+        'that review of the diff can see.',
+    );
+  }
+}
+
+/**
  * The authorship half (T-233 § contract §1, read by the GATE since T-258 —
  * OD-258). `ruling` must be a ruling in `tools/rulings.ts` that covers this
  * locale, and `authored_by` must be exactly a model that ruling names: raw
@@ -606,11 +697,7 @@ function checkPair(
   const before = failures.length;
   const source = catalogueSource(locale, key, root);
   if (source === undefined) {
-    failures.push(
-      `NO-SOURCE ${where}: the catalogue has no string for this key, so its review record cannot ` +
-        'be held against anything. gate:locale-completeness (T-042) names the same absence as ' +
-        'MISSING; here it means currency is unjudgeable, which fails closed.',
-    );
+    noSource(where, failures);
     return false;
   }
   if (record === undefined) {
@@ -624,14 +711,7 @@ function checkPair(
     failures.push(`MALFORMED-RECORD ${where}: the review record is not an object.`);
     return false;
   }
-  const expected = contentHash(source);
-  if (record.content_hash !== expected) {
-    failures.push(
-      `STALE-RECORD ${where}: the record's content_hash is ` +
-        `${JSON.stringify(record.content_hash)} but the catalogue string now hashes to ` +
-        `${expected}. The recorded text and the shipped text are not the same text.`,
-    );
-  }
+  staleRecord(where, record, source, failures);
 
   // Who wrote it.
   if (record.provenance === 'placeholder') {
@@ -656,6 +736,8 @@ function checkPair(
 
   // Whether it claims a review it cannot have had.
   claimsReview(where, record as unknown as Record<string, unknown>, failures);
+  // Whether it carries any field a record does not have (rework 1, QA-F1).
+  undefinedFields(where, record as unknown as Record<string, unknown>, failures);
 
   // Whether it is final, by a ruling the gate reads.
   if (record.status !== FINAL_STATUS) {
@@ -678,16 +760,7 @@ function checkPair(
   }
 
   // Whether the bytes are the ones accepted, pinned outside the register.
-  const pinned = AUTHORED_CONTENT_PINNED[locale]?.[key];
-  if (record.content_hash !== pinned) {
-    failures.push(
-      `UNPINNED-CONTENT ${where}: content_hash ${JSON.stringify(record.content_hash)} is not the ` +
-        `hash pinned for it in AUTHORED_CONTENT_PINNED (${pinned === undefined ? 'none pinned' : pinned}) in ` +
-        'tools/safety-review-currency.ts. Under OE-5 nobody re-signs an edited safety string, so ' +
-        'an edit is accepted only when the same commit edits that pin — a change to gate source ' +
-        'that review of the diff can see.',
-    );
-  }
+  unpinnedContent(where, locale, key, record, failures);
   return failures.length === before;
 }
 
@@ -792,10 +865,28 @@ async function main(argv: readonly string[]): Promise<void> {
               'review.json has no record for it at all. The waiver waives the currency of a ' +
               'review, not the existence of the provenance row that the pipeline will fill.',
           );
-        } else if (isRecord(record)) {
+        } else if (!isRecord(record)) {
+          failures.push(
+            `MALFORMED-RECORD '${key}' in ${locale} (waived): the review record is not an object.`,
+          );
+        } else {
+          const where = `'${key}' in ${locale} (waived)`;
           // T-258: the waiver never covers a CLAIM of review. OE-5 forbids one
           // at any status, so the honesty property holds before T-259 too.
-          claimsReview(`'${key}' in ${locale} (waived)`, record, failures);
+          claimsReview(where, record, failures);
+          // Rework 1 (QA-F1): nor a field outside the record's closed set.
+          undefinedFields(where, record, failures);
+          // Rework 1 (QA-F2): nor the BYTES. The waiver waives finality — the
+          // status, the review ruling and the authorship — not currency or the
+          // pin, so a catalogue edit plus a re-hashed record under a waiver
+          // (today's, or one re-added later) still needs an edit to the pin.
+          const source = catalogueSource(locale, key, root);
+          if (source === undefined) {
+            noSource(where, failures);
+          } else {
+            staleRecord(where, record, source, failures);
+            unpinnedContent(where, locale, key, record, failures);
+          }
         }
         continue;
       }
@@ -843,8 +934,10 @@ async function main(argv: readonly string[]): Promise<void> {
     // must say so (PROTOCOL §5.1) — and because the sentence names the date
     // that ends it.
     console.log(
-      `  NOTE: all ${String(examined)} pair(s) are waived: each was checked only for a record ` +
-        'and for claiming no review (CLAIMS-REVIEW), and NONE was checked as final under OE-5. ' +
+      `  NOTE: all ${String(examined)} pair(s) are waived: each was checked only for a record, ` +
+        'for claiming no review (CLAIMS-REVIEW), for fields outside the record set ' +
+        '(UNDEFINED-FIELD) and for its bytes (NO-SOURCE, STALE-RECORD, UNPINNED-CONTENT), and ' +
+        'NONE was checked for authorship or as final under OE-5. ' +
         `This gate is green BECAUSE OF THE WAIVER, which expires ${String(
           waiver?.expectedBy,
         )}; from the day after, every one of them fails here unless it is final under OE-5.`,
