@@ -76,6 +76,12 @@ interface Case {
   readonly mustExclude: readonly string[];
   /** Exactly how many problem lines start with a refusal name. `n` may be `{PAIRS}` or `{KEYS}`. */
   readonly mustCount?: readonly { readonly name: string; readonly n: string }[];
+  /**
+   * T-259: run the gate with `Date.now` faked to this instant (a `--import`
+   * preload; the gate has no clock option). The driver asserts the gate printed
+   * that day, so a clock that did not land is a HARNESS ERROR, not a verdict.
+   */
+  readonly now?: string;
 }
 
 /** JSON in, JSON out — for plants that are easier to state as data than as text. */
@@ -110,6 +116,58 @@ function finalise(doc: Record<string, unknown>): void {
       record['review_ruling'] = 'OE-5';
     }
   }
+}
+
+/**
+ * T-259 committed the terminal state and `pending_pipeline: null`, so the cases
+ * that attack the WAIVER path rebuild the register as it stood before T-259
+ * (`main` `34aaadf`): this waiver — the six fields the gate reads, as committed
+ * then — over every record moved back to `pending_review` with no
+ * `review_ruling`. A literal, so the cases do not depend on a committed waiver.
+ */
+const PRE_FLIP_WAIVER = {
+  opened_at: '2026-09-05',
+  expected_by: '2026-12-05',
+  owner:
+    'frontend-developer (T-049) — Greek-authoring safeguarding practitioner + briefed Russian translator + DSL sign-off',
+  ticket: 'T-049',
+  reason: 'the pre-T-259 waiver, rebuilt as a fixture by tools/safety-review-currency-negatives.ts',
+  keys: [
+    'safety.emergency.address_prompt',
+    'safety.emergency.call_112.label',
+    'safety.emergency.call_112.script',
+    'safety.helpline.116111.label',
+    'safety.helpline.1466.label',
+    'safety.helpline.199.label',
+    'safety.sos.confirm',
+    'session.checkins_missed',
+  ],
+};
+
+/**
+ * A day on which PRE_FLIP_WAIVER is in force. Waiver-path cases run at it so
+ * they mean the same thing after 2026-12-05, when no waiver can be in force.
+ */
+const WAIVER_DAY = '2026-11-01T12:00:00Z';
+
+/** The pre-T-259 register: PRE_FLIP_WAIVER, every record at pending_review, no review_ruling. */
+function unflip(doc: Record<string, unknown>): void {
+  doc['pending_pipeline'] = { ...PRE_FLIP_WAIVER, keys: [...PRE_FLIP_WAIVER.keys] };
+  const entries = doc['entries'] as Record<string, Record<string, Record<string, unknown>>>;
+  for (const perLocale of Object.values(entries)) {
+    for (const record of Object.values(perLocale)) {
+      record['status'] = 'pending_review';
+      delete record['review_ruling'];
+    }
+  }
+}
+
+/** The ru record of KEY, or a refusal to plant. */
+function ruRecord(doc: Record<string, unknown>): Record<string, unknown> {
+  const entries = doc['entries'] as Record<string, Record<string, Record<string, unknown>>>;
+  const r = entries['ru']?.[KEY];
+  if (r === undefined) throw new Error(`no ru record for ${KEY}`);
+  return r;
 }
 
 /** Replace exactly one occurrence, or refuse — a plant that matched nothing would judge nothing. */
@@ -629,6 +687,89 @@ const CASES: readonly Case[] = [
     ],
     mustCount: [{ name: 'UNPINNED-CONTENT', n: '1' }],
   },
+  {
+    name: 'FINAL-NOTE-OBJECT',
+    why:
+      'T-259, OD-353 (T-258 QA D-NEST1): on the full run over the terminal-state register, a ' +
+      'sign-off nested in `note` as an object must not be counted "reviewed by nobody".',
+    edits: [
+      {
+        file: REVIEW,
+        plant: json((doc) => {
+          finalise(doc);
+          ruRecord(doc)['note'] = {
+            signed_off_by: 'Eleni Constantinou, Designated Safeguarding Lead',
+            signed_off_at: '2026-10-01',
+          };
+        }),
+      },
+    ],
+    expect: 'FAIL',
+    mustInclude: [
+      'waiver: none in force',
+      `NOTE-NOT-TEXT '${KEY}' in ru: note is {"signed_off_by":`,
+    ],
+    mustExclude: ['GATE PASS', 'CRASH', 'OE-5: {PAIRS} of {PAIRS}', '  - CLAIMS-REVIEW '],
+    mustCount: [{ name: 'NOTE-NOT-TEXT', n: '1' }],
+  },
+  {
+    name: 'FINAL-NOTE-ARRAY-NUMBER',
+    why:
+      'T-259, OD-353 (T-258 QA D-NEST2, R2-NOTE-NUM): an array and a number in `note` on the ' +
+      'terminal-state register, full run.',
+    edits: [
+      {
+        file: REVIEW,
+        plant: json((doc) => {
+          finalise(doc);
+          ruRecord(doc)['note'] = ['Signed off by Eleni Constantinou, Designated Safeguarding Lead'];
+          const entries = doc['entries'] as Record<string, Record<string, Record<string, unknown>>>;
+          const en = entries['en']?.['safety.sos.confirm'];
+          if (en === undefined) throw new Error('no en record for safety.sos.confirm');
+          en['note'] = 42;
+        }),
+      },
+    ],
+    expect: 'FAIL',
+    mustInclude: [
+      `NOTE-NOT-TEXT '${KEY}' in ru: note is ["Signed off by`,
+      "NOTE-NOT-TEXT 'safety.sos.confirm' in en: note is 42",
+    ],
+    mustExclude: ['GATE PASS', 'CRASH'],
+    mustCount: [{ name: 'NOTE-NOT-TEXT', n: '2' }],
+  },
+  {
+    name: 'WAIVED-NOTE-OBJECT-BOOL',
+    why:
+      'T-259, OD-353 (T-258 QA D-NEST8, R2-NOTE-BOOL): the same, on a record INSIDE a waiver in ' +
+      'force (the pre-T-259 register rebuilt, at a faked clock inside the waiver).',
+    edits: [
+      {
+        file: REVIEW,
+        plant: json((doc) => {
+          unflip(doc);
+          ruRecord(doc)['note'] = {
+            signed_off_by: 'Eleni Constantinou, Designated Safeguarding Lead',
+            signed_off_at: '2026-10-01',
+          };
+          const entries = doc['entries'] as Record<string, Record<string, Record<string, unknown>>>;
+          const el = entries['el']?.[KEY];
+          if (el === undefined) throw new Error(`no el record for ${KEY}`);
+          el['note'] = true;
+        }),
+      },
+    ],
+    now: WAIVER_DAY,
+    expect: 'FAIL',
+    mustInclude: [
+      '(in force)',
+      '{PAIRS} waived, 0 with a record read',
+      `NOTE-NOT-TEXT '${KEY}' in ru (waived): note is {`,
+      `NOTE-NOT-TEXT '${KEY}' in el (waived): note is true`,
+    ],
+    mustExclude: ['GATE PASS', 'CRASH', '  - NOT-FINAL '],
+    mustCount: [{ name: 'NOTE-NOT-TEXT', n: '2' }],
+  },
 ];
 
 /**
@@ -654,8 +795,15 @@ function git(args: readonly string[]): string {
   return r.stdout;
 }
 
-function runGate(): { code: number; out: string; banner: string } {
-  const r = spawnSync(process.execPath, [GATE_SCRIPT], {
+function runGate(now?: string): { code: number; out: string; banner: string } {
+  const pre =
+    now === undefined
+      ? []
+      : [
+          '--import',
+          `data:text/javascript,${encodeURIComponent(`Date.now = () => ${String(Date.parse(now))};`)}`,
+        ];
+  const r = spawnSync(process.execPath, [...pre, GATE_SCRIPT], {
     cwd: REPO,
     encoding: 'utf8',
     maxBuffer: 32 * 1024 * 1024,
@@ -732,7 +880,10 @@ for (const c of CASES) {
       if (readFileSync(abs, 'utf8') !== planted)
         throw new Error(`the plant is not on disk: ${edit.file}`);
     }
-    const run = runGate();
+    const run = runGate(c.now);
+    if (c.now !== undefined && !run.out.includes(`today (UTC): ${c.now.slice(0, 10)}`)) {
+      throw new Error(`the faked clock ${c.now} did not land`);
+    }
     if (run.banner !== c.expect) problems.push(`banner=${run.banner} expected=${c.expect}`);
     if (c.expect === 'PASS' ? run.code !== 0 : run.code === 0) {
       problems.push(`exit=${String(run.code)} expected ${c.expect === 'PASS' ? '0' : 'non-zero'}`);

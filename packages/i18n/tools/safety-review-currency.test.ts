@@ -86,8 +86,23 @@ interface GateRun {
   readonly banner: 'PASS' | 'FAIL' | 'NONE' | 'BOTH';
 }
 
-function runGate(args: readonly string[]): GateRun {
-  const r = spawnSync(process.execPath, [GATE_SCRIPT, ...args], {
+/**
+ * T-259: a clock for the gate subprocess, as a `--import` preload that replaces
+ * `Date.now` (the only clock the gate reads). Test-only: the committed
+ * `pnpm gate:safety-review-currency` passes no `--import`, and the gate has no
+ * clock option of its own, so nothing here can hold a waiver open on a real
+ * run. A case that sets it asserts the gate printed the faked day, so a clock
+ * that did not land cannot pass as one that did.
+ */
+function clockImport(nowIso: string): string {
+  const ms = Date.parse(nowIso);
+  assert.ok(Number.isFinite(ms), `not an instant: ${nowIso}`);
+  return `data:text/javascript,${encodeURIComponent(`Date.now = () => ${String(ms)};`)}`;
+}
+
+function runGate(args: readonly string[], nowIso?: string): GateRun {
+  const pre = nowIso === undefined ? [] : ['--import', clockImport(nowIso)];
+  const r = spawnSync(process.execPath, [...pre, GATE_SCRIPT, ...args], {
     encoding: 'utf8',
     maxBuffer: 32 * 1024 * 1024,
   });
@@ -257,12 +272,19 @@ function attack(
   reasons: readonly string[],
   absent: readonly string[] = [],
   counts: Readonly<Record<string, number>> = {},
+  nowIso?: string,
 ): void {
   const root = makeRoot();
   try {
     plant(root);
     assert.equal(landed(root), true, 'the mutation did not land; this case would judge nothing');
-    const run = runGate(['--root', root]);
+    const run = runGate(['--root', root], nowIso);
+    if (nowIso !== undefined) {
+      assert.ok(
+        run.out.includes(`today (UTC): ${nowIso.slice(0, 10)}`),
+        `the faked clock did not land\n${run.out}`,
+      );
+    }
     assert.equal(run.banner, expect, `banner was ${run.banner}, expected ${expect}\n${run.out}`);
     if (expect === 'PASS') assert.equal(run.code, 0, run.out);
     else assert.notEqual(run.code, 0, run.out);
@@ -288,8 +310,12 @@ function attack(
   }
 }
 
-/** Every refusal T-258 adds. A finalised fixture with one defect must print exactly the one it plants. */
+/**
+ * Every refusal T-258 adds, and T-259's NOTE-NOT-TEXT (OD-353). A finalised
+ * fixture with one defect must print exactly the one it plants.
+ */
 const T258_REFUSALS = [
+  'NOTE-NOT-TEXT',
   'NOT-AI-AUTHORED',
   'UNRULED-AUTHOR',
   'WRONG-AUTHOR',
@@ -354,6 +380,71 @@ function editedAndRehashed(root: string, suffix: string): boolean {
 
 function othersThan(...planted: readonly string[]): readonly string[] {
   return T258_REFUSALS.filter((r) => !planted.includes(r)).map((r) => `  - ${r} `);
+}
+
+/**
+ * T-259 committed `pending_pipeline: null` and moved every record to the
+ * terminal state, so the waiver path of this gate has no committed waiver to
+ * stand on any more. The cases that attack that path rebuild the register as
+ * it stood BEFORE T-259 (`main` `34aaadf`): the waiver below — the six fields
+ * the gate reads, as committed then, written here as a literal — over every
+ * record moved back to `pending_review` with no `review_ruling`. `WAIVER_NOT_AFTER`
+ * and every `WAIVER-*` refusal are unchanged (T-258 LIVE §3), so a waiver can
+ * still be re-added, and this is what one looks like.
+ */
+const PRE_FLIP_WAIVER = {
+  opened_at: '2026-09-05',
+  expected_by: '2026-12-05',
+  owner:
+    'frontend-developer (T-049) — Greek-authoring safeguarding practitioner + briefed Russian translator + DSL sign-off',
+  ticket: 'T-049',
+  reason: 'the pre-T-259 waiver, rebuilt as a fixture by tools/safety-review-currency.test.ts',
+  keys: [
+    'safety.emergency.address_prompt',
+    'safety.emergency.call_112.label',
+    'safety.emergency.call_112.script',
+    'safety.helpline.116111.label',
+    'safety.helpline.1466.label',
+    'safety.helpline.199.label',
+    'safety.sos.confirm',
+    'session.checkins_missed',
+  ],
+} as const;
+
+/**
+ * A day on which PRE_FLIP_WAIVER is in force. The waiver-path cases run the
+ * gate at this faked clock, because from 2026-12-06 no waiver can be in force
+ * (`WAIVER_NOT_AFTER`), and a case asserting "(in force)" against the real
+ * clock would turn `gate:unit-tests` red that day by itself — the date T-259
+ * exists to take out of the build.
+ */
+const WAIVER_DAY = '2026-11-01T12:00:00Z';
+
+/** Rebuild the pre-T-259 register in a root: PRE_FLIP_WAIVER over every record at pending_review. */
+function unflip(root: string): void {
+  const register = readJson(root, 'review.json');
+  const entries = register['entries'] as Entries;
+  for (const perLocale of Object.values(entries)) {
+    for (const [key, record] of Object.entries(perLocale)) {
+      const next: Record<string, unknown> = { ...record, status: 'pending_review' };
+      delete next['review_ruling'];
+      perLocale[key] = next;
+    }
+  }
+  register['pending_pipeline'] = { ...PRE_FLIP_WAIVER, keys: [...PRE_FLIP_WAIVER.keys] };
+  writeJson(root, 'review.json', register);
+}
+
+/** Whether a root carries PRE_FLIP_WAIVER over SAFETY_KEY with its records back at pending_review. */
+function unflipped(root: string): boolean {
+  const w = readJson(root, 'review.json')['pending_pipeline'] as Record<string, unknown> | null;
+  return (
+    w !== null &&
+    w['expected_by'] === PRE_FLIP_WAIVER.expected_by &&
+    (w['keys'] as string[]).includes(SAFETY_KEY) &&
+    recordOf(root, 'ru', SAFETY_KEY)?.['status'] === 'pending_review' &&
+    !('review_ruling' in (recordOf(root, 'ru', SAFETY_KEY) ?? {}))
+  );
 }
 
 /* ------------------------------------------------------------- the controls */
@@ -622,6 +713,110 @@ test('UNDEFINED-FIELD — a field outside the set is refused even when it is nul
     ],
     othersThan('UNDEFINED-FIELD', 'CLAIMS-REVIEW'),
     { 'UNDEFINED-FIELD': 3, 'CLAIMS-REVIEW': 1 },
+  );
+});
+
+/* ------------------- NOTE-NOT-TEXT: `note` is prose or nothing (T-259, OD-353) */
+
+/** The sign-off T-258's QA nested in `note` (D-NEST1, D-NEST8). */
+const NESTED_SIGNOFF = { signed_off_by: REAL_LOOKING_REVIEWER, signed_off_at: '2026-10-01' };
+
+test('NOTE-NOT-TEXT — a sign-off nested in note as an object, on a final record, is refused (OD-353; T-258 QA D-NEST1)', () => {
+  attack(
+    (root) => {
+      finalise(root);
+      editRecord(root, 'ru', SAFETY_KEY, { note: NESTED_SIGNOFF });
+    },
+    (root) =>
+      JSON.stringify(recordOf(root, 'ru', SAFETY_KEY)?.['note']) ===
+        JSON.stringify(NESTED_SIGNOFF) && recordOf(root, 'ru', SAFETY_KEY)?.['status'] === FINAL,
+    'FAIL',
+    [
+      'waiver: none in force',
+      `NOTE-NOT-TEXT '${SAFETY_KEY}' in ru: note is {"signed_off_by":"${REAL_LOOKING_REVIEWER}"`,
+      `OE-5: ${String(expectedPairs() - 1)} of ${String(expectedPairs())} pair(s)`,
+    ],
+    othersThan('NOTE-NOT-TEXT'),
+    { 'NOTE-NOT-TEXT': 1 },
+  );
+});
+
+test('NOTE-NOT-TEXT — a sign-off nested in note as an array, on a final record, is refused (OD-353; T-258 QA D-NEST2)', () => {
+  const nested = [`Signed off by ${REAL_LOOKING_REVIEWER}`];
+  attack(
+    (root) => {
+      finalise(root);
+      editRecord(root, 'el', SAFETY_KEY, { note: nested });
+    },
+    (root) =>
+      Array.isArray(recordOf(root, 'el', SAFETY_KEY)?.['note']) &&
+      recordOf(root, 'el', SAFETY_KEY)?.['status'] === FINAL,
+    'FAIL',
+    [`NOTE-NOT-TEXT '${SAFETY_KEY}' in el: note is ["Signed off by`, 'an array'],
+    othersThan('NOTE-NOT-TEXT'),
+    { 'NOTE-NOT-TEXT': 1 },
+  );
+});
+
+test('NOTE-NOT-TEXT — a number or a boolean in note, on a final record, is refused (OD-353; T-258 QA R2-NOTE-NUM)', () => {
+  attack(
+    (root) => {
+      finalise(root);
+      editRecord(root, 'ru', SAFETY_KEY, { note: 42 });
+      editRecord(root, 'en', SAFETY_KEY, { note: true });
+    },
+    (root) =>
+      recordOf(root, 'ru', SAFETY_KEY)?.['note'] === 42 &&
+      recordOf(root, 'en', SAFETY_KEY)?.['note'] === true,
+    'FAIL',
+    [
+      `NOTE-NOT-TEXT '${SAFETY_KEY}' in ru: note is 42`,
+      `NOTE-NOT-TEXT '${SAFETY_KEY}' in en: note is true`,
+    ],
+    othersThan('NOTE-NOT-TEXT'),
+    { 'NOTE-NOT-TEXT': 2 },
+  );
+});
+
+test('NOTE-NOT-TEXT — the same values on records INSIDE the waiver are refused too: the waiver never covers a note that is not text (T-258 QA D-NEST8, R2-NOTE-BOOL)', () => {
+  attack(
+    (root) => {
+      unflip(root);
+      editRecord(root, 'ru', SAFETY_KEY, { note: NESTED_SIGNOFF });
+      editRecord(root, 'el', SAFETY_KEY, { note: true });
+    },
+    (root) =>
+      unflipped(root) &&
+      typeof recordOf(root, 'ru', SAFETY_KEY)?.['note'] === 'object' &&
+      recordOf(root, 'el', SAFETY_KEY)?.['note'] === true,
+    'FAIL',
+    [
+      '(in force)',
+      `${String(expectedPairs())} waived, 0 with a record read`,
+      `NOTE-NOT-TEXT '${SAFETY_KEY}' in ru (waived): note is {`,
+      `NOTE-NOT-TEXT '${SAFETY_KEY}' in el (waived): note is true`,
+    ],
+    othersThan('NOTE-NOT-TEXT'),
+    { 'NOTE-NOT-TEXT': 2 },
+    WAIVER_DAY,
+  );
+});
+
+test('NOTE-NOT-TEXT is not over-wide — a note that is a string, null, or absent passes on a final record', () => {
+  const n = String(expectedPairs());
+  attack(
+    (root) => {
+      finalise(root);
+      editRecord(root, 'ru', SAFETY_KEY, { note: null });
+      editRecord(root, 'el', SAFETY_KEY, { note: undefined });
+    },
+    (root) =>
+      recordOf(root, 'ru', SAFETY_KEY)?.['note'] === null &&
+      !('note' in (recordOf(root, 'el', SAFETY_KEY) ?? { note: 1 })) &&
+      typeof recordOf(root, 'en', SAFETY_KEY)?.['note'] === 'string',
+    'PASS',
+    [`OE-5: ${n} of ${n} pair(s) accepted as AI-authored and reviewed by nobody`],
+    ['NOTE-NOT-TEXT'],
   );
 });
 
