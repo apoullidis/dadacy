@@ -318,13 +318,20 @@ export const ROSTER: readonly RosterEntry[] = [
   {
     // T-044 supplied it (frontend-developer), so this entry moved PENDING ->
     // BLOCKING and lost its owner/unblocks fields, as T-005 § Published
-    // contract §8 (as amended, OD-176) requires. It is green today BECAUSE OF
-    // the dated, self-closing T-049 waiver, which it prints and which expires
-    // 2026-12-05 — see packages/i18n/tools/safety-review-currency.ts.
+    // contract §8 (as amended, OD-176) requires. Since T-259 no waiver is
+    // committed (review.json `pending_pipeline: null`): it is green because
+    // every safety_critical record is AI-authored under a stakeholder ruling,
+    // final with no review under OE-5, current, and pinned in the gate, and
+    // every run prints `OE-5: <n> of <n> … 0 waived`. No review of this copy
+    // exists or is expected: a record claiming one in `status` or in a
+    // `review`-named field is refused (the TEXT of a string `note` is not
+    // read — T-259 § contract §4, §7). `why` restated by T-261 from
+    // state/EP-0/T-258.md and T-259.md § Published contract — LIVE — see
+    // packages/i18n/tools/safety-review-currency.ts.
     name: 'gate:safety-review-currency',
     spec: '`gate:safety-review-currency`',
     cls: 'BLOCKING',
-    why: 'a `safety_critical` string without a current DSL review record fails the build (SD §Revision Log D8, SA §TS-12.3)',
+    why: 'with no waiver committed, a `safety_critical` string fails the build unless its record is current, AI-authored under a stakeholder ruling, final with no review under OE-5, and pinned in the gate; a review claim (`signed_off`, or a non-null `review`-named field), a non-AI or unruled author, unpinned content or a non-text `note` fails it (SD §Revision Log D8 as narrowed by OE-5/EV-16, SA §TS-12.3)',
   },
   {
     name: 'gate:plural-completeness',

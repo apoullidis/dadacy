@@ -16,8 +16,9 @@
 #   `time`, the `total` column, on this host. The run is pasted in
 #   tasks/state/EP-1/T-005.md.
 #
-# So the 74 cases below would be most of a working day if each paid for a full
-# run. Three of the gates therefore take a cheap entry point — `pr.ts --roster-only` / `--only=`, `unit-tests.ts --dry-run`, and
+# So the 80 cases below (counted at 11e590d by T-261; the footer prints the
+# count every run and gate:pr-gate-suite pins it as CASES) would be most of a
+# working day if each paid for a full run. Three of the gates therefore take a cheap entry point — `pr.ts --roster-only` / `--only=`, `unit-tests.ts --dry-run`, and
 # `KINVARA_NEG_SUITES_TABLE` — each of which PRINTS what it did IN ITS OWN
 # BANNER LINE, so a run through one can never be pasted as a full run. For
 # `pr.ts` that placement is rework 1's and cases A10/A11 assert it: before then

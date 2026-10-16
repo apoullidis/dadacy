@@ -103,8 +103,10 @@ jobs:
   #
   #   gate:locale-completeness was here until 2026-09-20; T-042 supplied it and
   #   it is in the `blocking` matrix above. gate:safety-review-currency was here
-  #   until later the same day; T-044 supplied it and it is there too — green
-  #   while the dated T-049 copy waiver holds, red from 2026-12-06.
+  #   until later the same day; T-044 supplied it and it is there too. Since
+  #   T-259 no copy waiver is committed: it is green because every
+  #   safety_critical record is AI-authored and final with no review under
+  #   stakeholder ruling OE-5, and pinned (T-259 § Published contract — LIVE).
   #   gate:sms-segments was here until 2026-09-21; T-046 supplied it and it is
   #   there too. gate:prohibited-claims was here until 2026-10-15; T-043
   #   supplied it and it is there too. W4 compares both matrices with the
