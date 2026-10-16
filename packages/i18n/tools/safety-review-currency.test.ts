@@ -3,7 +3,7 @@
  * T-258, the OE-5 terminal state and the review claims it refuses: a `signed_off`
  * status, a non-null `review`-named field other than `review_ruling`, and a
  * field outside the record's nine. It does not refuse every human-review claim:
- * `note`'s value is never read, and inside a waiver the values of `authored_by`,
+ * the text of a string `note` is never read, and inside a waiver the values of `authored_by`,
  * `ruling`, `review_ruling` and a `status` other than `signed_off` are not judged.
  *
  * PROTOCOL §5.1: "Running your gate proves it executes. ATTACKING it proves
@@ -57,7 +57,24 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { keysAtTier, enabledLocales, TIER_POLICY } from '../src/index.ts';
 import type { Tier } from '../src/types.ts';
-import { contentHash, catalogueSource } from '../src/review.ts';
+import { contentHash, catalogueSource, loadCopyPipeline } from '../src/review.ts';
+import {
+  AWAITING_SURFACE,
+  CHECK_TOOLS,
+  CHECKED_BY,
+  READ_ALOUD_KEYS_PINNED,
+  RENDER_CHECKED_BY,
+  RENDER_KEYS_PINNED,
+} from './automated-checks.ts';
+import {
+  assessPair,
+  fileLevelProblems,
+  isTestPath,
+  loadCheckFiles,
+  renderedUnchecked,
+  trackedAppSources,
+} from './automated-check-currency.ts';
+import type { AutomatedCheckPins } from './automated-check-currency.ts';
 
 const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const GATE_SCRIPT = join(PACKAGE_ROOT, 'tools', 'safety-review-currency.ts');
@@ -133,6 +150,8 @@ function makeRoot(): string {
     cpSync(join(PACKAGE_ROOT, entry), join(root, entry));
   }
   cpSync(join(PACKAGE_ROOT, 'catalogues'), join(root, 'catalogues'), { recursive: true });
+  // T-264: the two automated-check records the gate reads at the terminal status.
+  cpSync(join(PACKAGE_ROOT, 'checks'), join(root, 'checks'), { recursive: true });
   return root;
 }
 
@@ -1554,4 +1573,527 @@ test('an unrecognised argument exits 2 before any reading, with no banner at all
   assert.equal(run.code, 2, run.out);
   assert.equal(run.banner, 'NONE', run.out);
   assert.ok(run.out.includes('unrecognised argument "--skip-waiver"'), run.out);
+});
+
+/* ============================================================================
+ * T-264 — the automated checks (OE-82; `state/EP-0/OE-82-cut.md` §3 T-264).
+ *
+ * Two halves. The `attack()` cases run the GATE under `--root` over a copy of
+ * the committed `checks/` directory and plant one defect in a record file or
+ * in `review.json`. The pure cases call `tools/automated-check-currency.ts`
+ * with MUTATED COPIES of the pins — the only way a pin mutation (a key removed
+ * from AWAITING_SURFACE, an empty ticket id, the AUTHORED_CONTENT_PINNED
+ * branch) is falsified on every run, because the gate subprocess imports the
+ * committed pins. The NEG suite plants the same mutations in the committed
+ * files (NEG `T264-*`), and is run by no gate (OD-57).
+ * ========================================================================== */
+
+const READ_ALOUD_REL = join('checks', 'read-aloud.json');
+const RENDER_REL = join('checks', 'render-360.json');
+
+/** The automated-checks literals, written HERE so a change to the gate's are judged rather than agreed with. */
+const READ_ALOUD_CHECKED_BY_LITERAL = 'automation:gate:read-aloud';
+const RENDER_CHECKED_BY_LITERAL = 'automation:gate:safety-copy-render';
+
+type CheckDoc = { records: Record<string, Record<string, Record<string, unknown>>> };
+
+function checkDoc(root: string, rel: string): CheckDoc {
+  return readJson(root, rel) as unknown as CheckDoc;
+}
+
+/** The counts OE-82-cut §3 T-264's CONTROL names, from PACKAGE EXPORTS — never from gate output. */
+function expectedAutomated(root: string = PACKAGE_ROOT): {
+  readAloud: number;
+  render: number;
+  checked: number;
+} {
+  const assignments = loadCopyPipeline(root).assignments;
+  const locales = enabledLocales().map((d) => d.code);
+  const readAloudKeys = Object.keys(assignments).filter(
+    (k) => assignments[k]?.channel !== 'screen',
+  );
+  const renderKeys = Object.keys(assignments).filter((k) => assignments[k]?.channel !== 'voice');
+  const render = checkDoc(root, RENDER_REL);
+  let checked = 0;
+  for (const l of locales)
+    for (const k of renderKeys) if (render.records[l]?.[k] !== undefined) checked += 1;
+  return {
+    readAloud: readAloudKeys.length * locales.length,
+    render: renderKeys.length * locales.length,
+    checked,
+  };
+}
+
+function automatedLine(e: { readAloud: number; render: number; checked: number }): string {
+  return (
+    `automated checks: read-aloud ${String(e.readAloud)}/${String(e.readAloud)} pairs current; ` +
+    `render-360 ${String(e.checked)} checked, ${String(e.render - e.checked)} awaiting surface (`
+  );
+}
+
+/** A render record in T-265's schema, bound to the fixture register's hash for the pair. */
+function renderRecord(
+  root: string,
+  locale: string,
+  key: string,
+  checkedBy: string,
+): Record<string, unknown> {
+  return {
+    content_hash: recordOf(root, locale, key)?.['content_hash'],
+    surface: '/fixture/sos',
+    viewport: 'android-360',
+    assertions: ['NOT-VISIBLE', 'TEXT-MISMATCH', 'CLIPPED'],
+    result: 'pass',
+    tool: 'playwright 1.62.0 chromium',
+    checked_by: checkedBy,
+  };
+}
+
+/** The gate's pins, copied so a case can mutate one. */
+function pinsCopy(): {
+  readAloudKeys: Record<string, string>;
+  renderKeys: Record<string, string>;
+  awaiting: Record<string, string>;
+  readAloudTool: string;
+  readAloudCheckedBy: string;
+  renderCheckedBy: string;
+} {
+  return {
+    readAloudKeys: { ...READ_ALOUD_KEYS_PINNED },
+    renderKeys: { ...RENDER_KEYS_PINNED },
+    awaiting: { ...AWAITING_SURFACE },
+    readAloudTool: `espeak-ng ${CHECK_TOOLS['espeak-ng']}`,
+    readAloudCheckedBy: CHECKED_BY,
+    renderCheckedBy: RENDER_CHECKED_BY,
+  };
+}
+
+/** The committed register's hash for a pair. */
+function committedHash(locale: string, key: string): string {
+  const register = JSON.parse(readFileSync(join(PACKAGE_ROOT, 'review.json'), 'utf8')) as {
+    entries: Entries;
+  };
+  return String(register.entries[locale]?.[key]?.['content_hash']);
+}
+
+const T264_REFUSALS = [
+  'NO-READ-ALOUD-CHECK',
+  'STALE-READ-ALOUD-CHECK',
+  'READ-ALOUD-FAILED',
+  'UNPINNED-CHECK-TOOL',
+  'NO-RENDER-CHECK',
+  'STALE-RENDER-CHECK',
+  'RENDER-FAILED',
+  'AWAITING-AND-CHECKED',
+  'RENDERED-UNCHECKED',
+  'CLAIMS-HUMAN-CHECK',
+  'CHANNEL-DRIFT',
+  'MALFORMED-AWAITING',
+] as const;
+
+/** Every T-264 refusal except the named ones — the "and nothing else" half of a case. */
+function otherT264(...except: string[]): string[] {
+  return T264_REFUSALS.filter((r) => !except.includes(r)).map((r) => `  - ${r} `);
+}
+
+test('T-264 CONTROL — the committed tree prints the automated-checks line, every count computed from package exports, not from gate output', () => {
+  const e = expectedAutomated();
+  // The cut's own numbers, as a measurement of today's tree: 3 spoken keys and 8 shown keys x 3 locales.
+  assert.deepEqual(e, { readAloud: 9, render: 24, checked: 0 });
+  const run = runGate([]);
+  assert.equal(run.banner, 'PASS', run.out);
+  assert.equal(run.code, 0, run.out);
+  assert.ok(run.out.includes(automatedLine(e)), `expected ${automatedLine(e)}\n${run.out}`);
+  assert.ok(run.out.includes('awaiting surface (T-110: 21, T-107: 3)'), run.out);
+  assert.ok(run.out.includes('app source scan:'), run.out);
+});
+
+test('T-264 CONTROL — under --root the committed records pass, the same line prints, and the app-source scan is said not to run', () => {
+  const e = expectedAutomated();
+  attack(
+    () => {},
+    (root) =>
+      checkDoc(root, READ_ALOUD_REL).records['ru']?.['safety.emergency.address_prompt'] !==
+      undefined,
+    'PASS',
+    [automatedLine(e), 'nor the app-source scan (RENDERED-UNCHECKED)'],
+    otherT264(),
+  );
+});
+
+test('NO-READ-ALOUD-CHECK — the ru address_prompt read-aloud record deleted is refused at the terminal status, and nothing else is (T-264)', () => {
+  attack(
+    (root) => {
+      const doc = checkDoc(root, READ_ALOUD_REL);
+      delete doc.records['ru']?.['safety.emergency.address_prompt'];
+      writeJson(root, READ_ALOUD_REL, doc);
+    },
+    (root) =>
+      checkDoc(root, READ_ALOUD_REL).records['ru']?.['safety.emergency.address_prompt'] ===
+      undefined,
+    'FAIL',
+    ["NO-READ-ALOUD-CHECK 'safety.emergency.address_prompt' in ru"],
+    [...otherT264('NO-READ-ALOUD-CHECK'), ...T258_REFUSALS.map((r) => `  - ${r} `)],
+    { 'NO-READ-ALOUD-CHECK': 1 },
+  );
+});
+
+test('NO-READ-ALOUD-CHECK binds only at the terminal status — the same deletion on a pair at pending_review is NOT-FINAL, not a missing check (T-264)', () => {
+  attack(
+    (root) => {
+      const doc = checkDoc(root, READ_ALOUD_REL);
+      delete doc.records['ru']?.['safety.emergency.address_prompt'];
+      writeJson(root, READ_ALOUD_REL, doc);
+      editRecord(root, 'ru', 'safety.emergency.address_prompt', {
+        status: 'pending_review',
+        review_ruling: undefined,
+      });
+    },
+    (root) =>
+      checkDoc(root, READ_ALOUD_REL).records['ru']?.['safety.emergency.address_prompt'] ===
+        undefined &&
+      recordOf(root, 'ru', 'safety.emergency.address_prompt')?.['status'] === 'pending_review',
+    'FAIL',
+    ["NOT-FINAL 'safety.emergency.address_prompt' in ru"],
+    ['NO-READ-ALOUD-CHECK'],
+    { 'NOT-FINAL': 1 },
+  );
+});
+
+test("STALE-READ-ALOUD-CHECK — a read-aloud record whose content_hash is not the register entry's is refused (T-264)", () => {
+  attack(
+    (root) => {
+      const doc = checkDoc(root, READ_ALOUD_REL);
+      const r = doc.records['el']?.['safety.emergency.call_112.script'];
+      assert.ok(r !== undefined);
+      r['content_hash'] = contentHash('some other text');
+      writeJson(root, READ_ALOUD_REL, doc);
+    },
+    (root) =>
+      checkDoc(root, READ_ALOUD_REL).records['el']?.['safety.emergency.call_112.script']?.[
+        'content_hash'
+      ] === contentHash('some other text'),
+    'FAIL',
+    ["STALE-READ-ALOUD-CHECK 'safety.emergency.call_112.script' in el: its content_hash"],
+    otherT264('STALE-READ-ALOUD-CHECK'),
+    { 'STALE-READ-ALOUD-CHECK': 1 },
+  );
+});
+
+test('READ-ALOUD-FAILED — a read-aloud record with result "fail" is refused (T-264)', () => {
+  attack(
+    (root) => {
+      const doc = checkDoc(root, READ_ALOUD_REL);
+      doc.records['el']!['safety.emergency.call_112.script']!['result'] = 'fail';
+      writeJson(root, READ_ALOUD_REL, doc);
+    },
+    (root) =>
+      checkDoc(root, READ_ALOUD_REL).records['el']?.['safety.emergency.call_112.script']?.[
+        'result'
+      ] === 'fail',
+    'FAIL',
+    ['READ-ALOUD-FAILED \'safety.emergency.call_112.script\' in el: result is "fail"'],
+    otherT264('READ-ALOUD-FAILED'),
+    { 'READ-ALOUD-FAILED': 1 },
+  );
+});
+
+test('UNPINNED-CHECK-TOOL — a read-aloud record whose tool is not the pinned espeak-ng version is refused (T-264)', () => {
+  attack(
+    (root) => {
+      const doc = checkDoc(root, READ_ALOUD_REL);
+      doc.records['en']!['session.checkins_missed']!['tool'] = 'espeak-ng 1.52';
+      writeJson(root, READ_ALOUD_REL, doc);
+    },
+    (root) =>
+      checkDoc(root, READ_ALOUD_REL).records['en']?.['session.checkins_missed']?.['tool'] ===
+      'espeak-ng 1.52',
+    'FAIL',
+    ['UNPINNED-CHECK-TOOL \'session.checkins_missed\' in en: tool is "espeak-ng 1.52"'],
+    otherT264('UNPINNED-CHECK-TOOL'),
+    { 'UNPINNED-CHECK-TOOL': 1 },
+  );
+});
+
+test('AWAITING-AND-CHECKED — a render record added for a key still in AWAITING_SURFACE is refused (T-264)', () => {
+  attack(
+    (root) => {
+      const doc = checkDoc(root, RENDER_REL);
+      doc.records['en'] = {
+        'safety.sos.confirm': renderRecord(
+          root,
+          'en',
+          'safety.sos.confirm',
+          RENDER_CHECKED_BY_LITERAL,
+        ),
+      };
+      writeJson(root, RENDER_REL, doc);
+    },
+    (root) => checkDoc(root, RENDER_REL).records['en']?.['safety.sos.confirm'] !== undefined,
+    'FAIL',
+    ["AWAITING-AND-CHECKED 'safety.sos.confirm' in en"],
+    otherT264('AWAITING-AND-CHECKED'),
+    { 'AWAITING-AND-CHECKED': 1 },
+  );
+});
+
+test('CLAIMS-HUMAN-CHECK — checked_by "A. Person" is refused in either record file, and so is a review-named field beside the automation literal (T-264)', () => {
+  attack(
+    (root) => {
+      const ra = checkDoc(root, READ_ALOUD_REL);
+      ra.records['ru']!['safety.emergency.address_prompt']!['checked_by'] = 'A. Person';
+      ra.records['en']!['safety.emergency.address_prompt']!['reviewed_by'] = 'A. Person';
+      writeJson(root, READ_ALOUD_REL, ra);
+      const rd = checkDoc(root, RENDER_REL);
+      rd.records['el'] = {
+        'safety.sos.confirm': renderRecord(root, 'el', 'safety.sos.confirm', 'A. Person'),
+      };
+      writeJson(root, RENDER_REL, rd);
+    },
+    (root) =>
+      checkDoc(root, READ_ALOUD_REL).records['ru']?.['safety.emergency.address_prompt']?.[
+        'checked_by'
+      ] === 'A. Person' &&
+      checkDoc(root, RENDER_REL).records['el']?.['safety.sos.confirm']?.['checked_by'] ===
+        'A. Person',
+    'FAIL',
+    [
+      'CLAIMS-HUMAN-CHECK checks/read-aloud.json \'safety.emergency.address_prompt\' in ru: checked_by is "A. Person"',
+      'CLAIMS-HUMAN-CHECK checks/read-aloud.json \'safety.emergency.address_prompt\' in en: it carries a field named "reviewed_by"',
+      'CLAIMS-HUMAN-CHECK checks/render-360.json \'safety.sos.confirm\' in el: checked_by is "A. Person"',
+      "AWAITING-AND-CHECKED 'safety.sos.confirm' in el",
+    ],
+    otherT264('CLAIMS-HUMAN-CHECK', 'AWAITING-AND-CHECKED'),
+    { 'CLAIMS-HUMAN-CHECK': 3 },
+  );
+});
+
+test('CHANNEL-DRIFT — call_112.script flipped to screen in review.json, no pin moved, is refused once per pin set (T-264)', () => {
+  attack(
+    (root) => {
+      const register = readJson(root, 'review.json');
+      const a = (register['pipeline'] as { assignments: Record<string, Record<string, unknown>> })
+        .assignments;
+      a['safety.emergency.call_112.script']!['channel'] = 'screen';
+      writeJson(root, 'review.json', register);
+    },
+    (root) =>
+      loadCopyPipeline(root).assignments['safety.emergency.call_112.script']?.channel === 'screen',
+    'FAIL',
+    [
+      'CHANNEL-DRIFT \'safety.emergency.call_112.script\': READ_ALOUD_KEYS_PINNED pins it as "spoken_by_user", and review.json gives it channel "screen"',
+      'CHANNEL-DRIFT \'safety.emergency.call_112.script\': review.json\'s channel is "screen", and RENDER_KEYS_PINNED pins it as "spoken_by_user"',
+    ],
+    otherT264('CHANNEL-DRIFT'),
+    { 'CHANNEL-DRIFT': 2 },
+  );
+});
+
+test('INPUT — both record files deleted: each is an INPUT failure, and every spoken pair is NO-READ-ALOUD-CHECK; an absent render file refuses nothing while every key awaits (T-264)', () => {
+  const e = expectedAutomated();
+  attack(
+    (root) => {
+      rmSync(join(root, READ_ALOUD_REL));
+      rmSync(join(root, RENDER_REL));
+    },
+    (root) => {
+      try {
+        readFileSync(join(root, READ_ALOUD_REL));
+        return false;
+      } catch {
+        return true;
+      }
+    },
+    'FAIL',
+    ['INPUT checks/read-aloud.json is absent', 'INPUT checks/render-360.json is absent'],
+    ['NO-RENDER-CHECK'],
+    { 'NO-READ-ALOUD-CHECK': e.readAloud, INPUT: 2 },
+  );
+});
+
+/* ------------------------------- the pins, mutated, against the pure functions */
+
+test('NO-RENDER-CHECK — safety.sos.confirm removed from AWAITING_SURFACE with no render record is refused in every enabled locale (T-264, pure)', () => {
+  const pins = pinsCopy();
+  delete pins.awaiting['safety.sos.confirm'];
+  const files = loadCheckFiles(PACKAGE_ROOT, []);
+  const lines: string[] = [];
+  for (const locale of enabledLocales().map((d) => d.code)) {
+    const a = assessPair(
+      pins,
+      files,
+      locale,
+      'safety.sos.confirm',
+      committedHash(locale, 'safety.sos.confirm'),
+      committedHash(locale, 'safety.sos.confirm'),
+      `'safety.sos.confirm' in ${locale}`,
+    );
+    lines.push(...a.problems);
+    assert.equal(a.render, 'unchecked');
+  }
+  assert.equal(lines.length, enabledLocales().length, JSON.stringify(lines));
+  assert.ok(
+    lines.every((l) => l.startsWith("NO-RENDER-CHECK 'safety.sos.confirm' in ")),
+    JSON.stringify(lines),
+  );
+  // and with the committed pins it awaits, refusing nothing
+  const committed = assessPair(
+    pinsCopy(),
+    files,
+    'en',
+    'safety.sos.confirm',
+    committedHash('en', 'safety.sos.confirm'),
+    committedHash('en', 'safety.sos.confirm'),
+    'x',
+  );
+  assert.deepEqual([committed.problems, committed.render], [[], 'awaiting']);
+});
+
+test('STALE-RENDER-CHECK, RENDER-FAILED — a non-awaiting key with a stale or failed render record is refused; a current passing one is checked (T-264, pure)', () => {
+  const pins = pinsCopy();
+  delete pins.awaiting['safety.sos.confirm'];
+  const h = committedHash('en', 'safety.sos.confirm');
+  const rec = (patch: Record<string, unknown>) => ({
+    readAloud: {},
+    render: {
+      en: {
+        'safety.sos.confirm': {
+          content_hash: h,
+          result: 'pass',
+          checked_by: RENDER_CHECKED_BY_LITERAL,
+          ...patch,
+        },
+      },
+    },
+  });
+  const ok = assessPair(pins, rec({}), 'en', 'safety.sos.confirm', h, h, 'w');
+  assert.deepEqual([ok.problems, ok.render], [[], 'checked']);
+  const stale = assessPair(
+    pins,
+    rec({ content_hash: contentHash('other') }),
+    'en',
+    'safety.sos.confirm',
+    h,
+    h,
+    'w',
+  );
+  assert.ok(
+    stale.problems.length === 1 && stale.problems[0]!.startsWith('STALE-RENDER-CHECK w:'),
+    JSON.stringify(stale.problems),
+  );
+  const failed = assessPair(pins, rec({ result: 'fail' }), 'en', 'safety.sos.confirm', h, h, 'w');
+  assert.ok(
+    failed.problems.length === 1 &&
+      failed.problems[0]!.startsWith('RENDER-FAILED w: result is "fail"'),
+    JSON.stringify(failed.problems),
+  );
+  // a person in checked_by is not counted as checked (its refusal is CLAIMS-HUMAN-CHECK, file-level)
+  assert.equal(
+    assessPair(pins, rec({ checked_by: 'A. Person' }), 'en', 'safety.sos.confirm', h, h, 'w')
+      .render,
+    'unchecked',
+  );
+});
+
+test('STALE-READ-ALOUD-CHECK — a read-aloud record equal to the register entry but not to AUTHORED_CONTENT_PINNED is refused (T-264, pure; the pin cannot be edited under --root)', () => {
+  const files = loadCheckFiles(PACKAGE_ROOT, []);
+  const key = 'safety.emergency.call_112.script';
+  const h = committedHash('el', key);
+  assert.deepEqual(assessPair(pinsCopy(), files, 'el', key, h, h, 'w').problems, []);
+  const p = assessPair(pinsCopy(), files, 'el', key, h, contentHash('the pin moved'), 'w').problems;
+  assert.ok(
+    p.length === 1 &&
+      p[0]!.startsWith('STALE-READ-ALOUD-CHECK w: its content_hash') &&
+      p[0]!.includes('AUTHORED_CONTENT_PINNED'),
+    JSON.stringify(p),
+  );
+  const unpinned = assessPair(pinsCopy(), files, 'el', key, h, undefined, 'w').problems;
+  assert.ok(
+    unpinned.length === 1 && unpinned[0]!.includes('(none pinned)'),
+    JSON.stringify(unpinned),
+  );
+});
+
+test('MALFORMED-AWAITING — an empty ticket id, and an awaiting key that is not render-pinned, are refused (T-264, pure)', () => {
+  const files = loadCheckFiles(PACKAGE_ROOT, []);
+  const assignments = loadCopyPipeline().assignments;
+  const clean: string[] = [];
+  fileLevelProblems(pinsCopy(), files, assignments, clean);
+  assert.deepEqual(clean, [], 'the committed pins and records refuse nothing');
+  const pins = pinsCopy();
+  pins.awaiting['session.checkins_missed'] = '';
+  pins.awaiting['legal.terms.accept'] = 'T-999';
+  const out: string[] = [];
+  fileLevelProblems(pins, files, assignments, out);
+  assert.deepEqual(
+    out.map((l) => l.slice(0, l.indexOf(':'))),
+    ["MALFORMED-AWAITING 'session.checkins_missed'", "MALFORMED-AWAITING 'legal.terms.accept'"],
+    JSON.stringify(out),
+  );
+});
+
+test('CHANNEL-DRIFT fails closed — an emptied pin, and an absent pipeline.assignments, are each refused (T-264, pure)', () => {
+  const files = loadCheckFiles(PACKAGE_ROOT, []);
+  const pins = pinsCopy();
+  pins.readAloudKeys = {};
+  const a: string[] = [];
+  fileLevelProblems(pins, files, loadCopyPipeline().assignments, a);
+  assert.ok(
+    a.some((l) => l.startsWith('CHANNEL-DRIFT READ_ALOUD_KEYS_PINNED is empty')),
+    JSON.stringify(a),
+  );
+  const b: string[] = [];
+  fileLevelProblems(pinsCopy(), files, undefined, b);
+  assert.deepEqual(
+    b.map((l) => l.slice(0, 40)),
+    ['CHANNEL-DRIFT review.json has no `pipelin'],
+    JSON.stringify(b),
+  );
+});
+
+test('RENDERED-UNCHECKED — an awaiting key named in app source is refused, raw substring, one line per key naming each file (T-264, pure)', () => {
+  const out: string[] = [];
+  renderedUnchecked(
+    pinsCopy(),
+    [
+      { path: 'apps/web/src/sos-confirm.tsx', text: "return t('safety.sos.confirm');" },
+      { path: 'apps/admin/src/x.ts', text: 'const k = "safety.sos.confirm";' },
+      { path: 'apps/web/src/other.tsx', text: "t('safety.sos.confirmation_banner')" },
+      { path: 'apps/web/src/split.tsx', text: "t(`safety.sos.${'confirm'}`)" },
+    ],
+    out,
+  );
+  assert.equal(out.length, 1, JSON.stringify(out));
+  assert.ok(
+    out[0]!.startsWith(
+      "RENDERED-UNCHECKED 'safety.sos.confirm': it is in AWAITING_SURFACE (against T-110), and tracked app source names it: apps/web/src/sos-confirm.tsx, apps/admin/src/x.ts, apps/web/src/other.tsx",
+    ),
+    out[0],
+  );
+  // The bound, pinned: a key assembled from pieces at run time is not seen.
+  assert.ok(!out[0]!.includes('split.tsx'), out[0]);
+});
+
+test('RENDERED-UNCHECKED reads the tracked, non-test app files of the real repository — the scan is not vacuous, and test files are skipped (T-264)', () => {
+  const listed = trackedAppSources(join(PACKAGE_ROOT, '..', '..'));
+  assert.ok('files' in listed, JSON.stringify(listed));
+  const paths = listed.files.map((f) => f.path);
+  assert.ok(
+    paths.includes('apps/web/package.json') && paths.includes('apps/admin/package.json'),
+    JSON.stringify(paths),
+  );
+  assert.ok(
+    paths.every((p) => p.startsWith('apps/web/') || p.startsWith('apps/admin/')),
+    JSON.stringify(paths),
+  );
+  for (const p of [
+    'apps/web/src/a.test.tsx',
+    'apps/web/src/a.spec.ts',
+    'apps/admin/src/__tests__/b.ts',
+  ]) {
+    assert.equal(isTestPath(p), true, p);
+  }
+  for (const p of ['apps/web/src/a.tsx', 'apps/web/src/testing.ts', 'apps/web/src/latest.ts']) {
+    assert.equal(isTestPath(p), false, p);
+  }
 });
