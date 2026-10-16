@@ -74,7 +74,6 @@ import {
   renderedUnchecked,
   trackedAppSources,
 } from './automated-check-currency.ts';
-import type { AutomatedCheckPins } from './automated-check-currency.ts';
 
 const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const GATE_SCRIPT = join(PACKAGE_ROOT, 'tools', 'safety-review-currency.ts');
@@ -1700,6 +1699,9 @@ test('T-264 CONTROL — the committed tree prints the automated-checks line, eve
   const e = expectedAutomated();
   // The cut's own numbers, as a measurement of today's tree: 3 spoken keys and 8 shown keys x 3 locales.
   assert.deepEqual(e, { readAloud: 9, render: 24, checked: 0 });
+  // The gate's automation literals equal this file's independent copies.
+  assert.equal(CHECKED_BY, READ_ALOUD_CHECKED_BY_LITERAL);
+  assert.equal(RENDER_CHECKED_BY, RENDER_CHECKED_BY_LITERAL);
   const run = runGate([]);
   assert.equal(run.banner, 'PASS', run.out);
   assert.equal(run.code, 0, run.out);
@@ -2047,7 +2049,7 @@ test('CHANNEL-DRIFT fails closed — an emptied pin, and an absent pipeline.assi
   assert.equal(b.length, 1, JSON.stringify(b));
   assert.ok(
     b[0]!.startsWith('CHANNEL-DRIFT review.json has no `pipeline.assignments` object'),
-    b[0],
+    String(b[0]),
   );
 });
 
@@ -2068,10 +2070,10 @@ test('RENDERED-UNCHECKED — an awaiting key named in app source is refused, raw
     out[0]!.startsWith(
       "RENDERED-UNCHECKED 'safety.sos.confirm': it is in AWAITING_SURFACE (against T-110), and tracked app source names it: apps/web/src/sos-confirm.tsx, apps/admin/src/x.ts, apps/web/src/other.tsx",
     ),
-    out[0],
+    String(out[0]),
   );
   // The bound, pinned: a key assembled from pieces at run time is not seen.
-  assert.ok(!out[0]!.includes('split.tsx'), out[0]);
+  assert.ok(!out[0]!.includes('split.tsx'), String(out[0]));
 });
 
 test('RENDERED-UNCHECKED reads the tracked, non-test app files of the real repository — the scan is not vacuous, and test files are skipped (T-264)', () => {
