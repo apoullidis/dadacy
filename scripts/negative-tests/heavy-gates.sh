@@ -348,7 +348,7 @@ run_case "C0 no receipts at all: NOT RUN is not PASSED" FAIL \
   'NOT RUN is not PASSED' 'there is no receipt at .cache/gate-heavy/socket.json' \
   './scripts/dev --docker pnpm -w gate:heavy' \
   './scripts/svc run <ticket> -- pnpm -w gate:heavy' \
-  'accounted for 3 of 7 rostered sub-gate(s)' -- node "$HEAVY"
+  'accounted for 4 of 7 rostered sub-gate(s)' -- node "$HEAVY"
 
 CASE="C1"
 receipt socket "$FP" "$OK_SOCKET"; receipt service "$FP" "$OK_SERVICE"
