@@ -1,21 +1,21 @@
 # The trilingual safety-copy pipeline
 
 **Owner:** `T-049` (front-end / i18n) · **Register:** [`review.json`](./review.json) `§ pipeline`
-**Specs:** SD §DH-5 external dependency 2 · SA §TS-12.4 · PM §MVP-L4 AC4, §MVP-L5 AC7, §MVP-IS5 AC7 · DV-7, DV-11 · SD Revision Log D8
-**Status on 2026-09-05:** engineering side complete; external side not started, and blocked on a stakeholder. _(History: superseded by the two lines below.)_
-**Status on 2026-09-28 (`T-233`):** the copy exists and is **AI-authored, not reviewed.** Stakeholder rulings **OE-66** (2026-09-27T18:54:51Z) and **OE-67** (2026-09-27T19:27:39Z) made an AI model — Claude Opus (`claude-opus-5-5`) — the **author** of all `el` and `ru` copy, the `el`/`ru` prohibited-claim lists, and the eight `en` `safety_critical` strings (`decisions.md` EV-16). **OE-68** kept the banned-claims list as it stands. Nothing was signed off; at that time the human DSL and deputy review was still required, and neither person was named.
-**Status since 2026-10-11 (stakeholder ruling OE-5; `T-259`): no human reviews this copy.** OE-5 dropped the DSL and deputy review (EV-16 extended) and OE-81 makes AI-authored, unreviewed safety copy releasable. All 24 records are final with no review (`status: "unreviewed_by_ruling"`, `review_ruling: "OE-5"`, reviewer and date `null`), `pending_pipeline` is `null`, and **no date is in force** (§5). §0–§4, §7 and Appendices A–C still describe the human path the rulings removed; withdrawing them is `T-260`'s.
+**Specs:** SD §DH-5 external dependency 2 · SA §TS-12.4 · PM §MVP-L4 AC4, §MVP-L5 AC7, §MVP-IS5 AC7 · DV-7, DV-11 · SD Revision Log D8 — **as departed from under EV-16** (stakeholder rulings OE-66, OE-67, OE-5, OE-81, OE-82)
+**Status on 2026-09-05:** engineering side complete; external side not started, and blocked on a stakeholder. _(History: superseded by the lines below.)_
+**Status on 2026-09-28 (`T-233`):** the copy exists and is **AI-authored, not reviewed.** Stakeholder rulings **OE-66** (2026-09-27T18:54:51Z) and **OE-67** (2026-09-27T19:27:39Z) made an AI model — Claude Opus (`claude-opus-5-5`) — the **author** of all `el` and `ru` copy, the `el`/`ru` prohibited-claim lists, and the eight `en` `safety_critical` strings (`decisions.md` EV-16). **OE-68** kept the banned-claims list as it stands.
+**Status since 2026-10-11 (stakeholder ruling OE-5; `T-259`, `T-264`, `T-260`): no human authors or reviews this copy.** OE-5 dropped the DSL and deputy review (EV-16 extended) and OE-81 makes AI-authored, unreviewed safety copy releasable. All 24 records are final with no review (`status: "unreviewed_by_ruling"`, `review_ruling: "OE-5"`, reviewer and date `null`), `pending_pipeline` is `null`, and **no date is in force** (§5). Under **OE-82** the 360 px in-context check and the read-aloud check are automated gates (§1). **`T-260` removed the human path from the register:** `review.json § pipeline` carries no roster of people (`roles`), no steps a person completes (`stages`) and no per-locale authoring method, and `src/pipeline.test.ts` refuses any of them coming back (§3). The briefs that were Appendices A–C are withdrawn (end of this file).
 
 ---
 
 ## 0. Read this first
 
-This document describes how a `safety_critical` string gets from _authored_ to
-_signed off_, and **who must exist for each step**. It exists because SD §DH-5
-identifies this pipeline as one of the two external dependencies that can slip
-the whole programme:
-
-> **Six weeks of lead time on a path that has no engineering dependency and therefore gets scheduled last by default.**
+This document describes how a `safety_critical` string is produced, recorded
+and checked, now that no person does any of it. It began as T-049's account of
+one of the two external dependencies SD §DH-5 says can slip the programme — a
+six-week engagement of named humans — and the stakeholder ruled that
+engagement out (OE-66/OE-67, then OE-5). What is left is a register, the gates
+that read it, and the limits of both.
 
 Two things this document deliberately does **not** contain:
 
@@ -39,33 +39,25 @@ Two things this document deliberately does **not** contain:
 
 ## 1. The flow
 
-Straight from SA §TS-12.4, with the mechanism each step lands in.
+SA §TS-12.4 specified a human pipeline: a Cyprus safeguarding practitioner
+authoring English and Greek in parallel, a briefed professional translator for
+Russian, a DSL sign-off per locale, an in-context review at 360 px and a
+read-aloud pass. Under EV-16 as extended, each step is either done by a model,
+dropped, or done by a gate:
 
 ```
                  ┌──────────────────────────────────────────────────────┐
-                 │  1. AUTHOR — English and Greek IN PARALLEL           │
-                 │     Greek-authoring safeguarding practitioner        │
-                 │     NOT English-then-translate.                      │
-                 └───────────────────────┬──────────────────────────────┘
-                                         │
-                 ┌───────────────────────▼──────────────────────────────┐
-                 │  2. BRIEF the Russian translator on the              │
-                 │     SAFEGUARDING CONTEXT — before translating        │
-                 │     (a translator who does not know a string is an   │
-                 │      escalation message will produce a grammatically │
-                 │      perfect, operationally useless one)             │
-                 └───────────────────────┬──────────────────────────────┘
-                                         │
-                 ┌───────────────────────▼──────────────────────────────┐
-                 │  3. TRANSLATE ru — briefed professional human.       │
-                 │     Machine translation is prohibited outright at    │
-                 │     this tier (DV-11) and cannot produce a record.   │
+                 │  1. AUTHOR — en, el, ru: an AI model                 │
+                 │     Claude Opus (claude-opus-5-5), under OE-67 (en)  │
+                 │     and OE-66 (el, ru). el/ru written to the en      │
+                 │     meaning contract, not translated from it.        │
+                 │     Machine translation stays prohibited (DV-11).    │
                  └───────────────────────┬──────────────────────────────┘
                                          │
         ┌────────────────────────────────┼────────────────────────────────┐
         │                                │                                │
 ┌───────▼─────────┐        ┌─────────────▼──────────┐      ┌──────────────▼────────┐
-│ 4. DSL SIGN-OFF │        │ 5. 360 px RENDER CHECK │      │ 6. READ-ALOUD CHECK   │
+│ 2. REVIEW       │        │ 3. 360 px RENDER CHECK │      │ 4. READ-ALOUD CHECK   │
 │    DROPPED by   │        │    a gate (OE-82):     │      │    a gate (OE-82):    │
 │    OE-5         │        │    gate:safety-copy-   │      │    gate:read-aloud,   │
 │                 │        │    render (T-265),     │      │    espeak-ng, record  │
@@ -74,21 +66,24 @@ Straight from SA §TS-12.4, with the mechanism each step lands in.
         │                                │                                │
         └──► gate:safety-review-currency passes a record only as final with NO
              review under OE-5, and, since T-264, only with a current passing
-             check record for 5 (or its key listed in AWAITING_SURFACE) and 6
+             check record for 3 (or its key listed in AWAITING_SURFACE) and 4
 ```
 
-**Since stakeholder ruling OE-5 (2026-10-11) step 4 does not happen.** No record
+**The practitioner and the translator were replaced by the model** (OE-66,
+OE-67). A record names the model in `authored_by` and cites the ruling in
+`ruling`; a person's name there is refused (§3).
+
+**Since stakeholder ruling OE-5 (2026-10-11) step 2 does not happen.** No record
 is signed off; every record is `unreviewed_by_ruling` under `review_ruling:
 "OE-5"`, and the gate refuses a `signed_off` status (`CLAIMS-REVIEW`; NEG
 `T259-SIGNED-OFF`).
 
-**Since stakeholder ruling OE-82, steps 5 and 6 are automated gates, not
-people, and not stages.** `review.json § pipeline.stages` no longer carries
-them (`T-264`); `pipeline.automated_checks` names the two gates and their
-records. Step 6 is `gate:read-aloud` (`T-263`): every spoken safety string
+**Since stakeholder ruling OE-82, steps 3 and 4 are automated gates, not
+people, and not stages.** `pipeline.automated_checks` names the two gates and
+their records. Step 4 is `gate:read-aloud` (`T-263`): every spoken safety string
 (`READ_ALOUD_KEYS_PINNED`, `tools/automated-checks.ts`) is synthesised in every
 enabled locale and plural form, and `checks/read-aloud.json` records the
-result. Step 5 is `gate:safety-copy-render` (`T-265`, not yet built): every
+result. Step 3 is `gate:safety-copy-render` (`T-265`, not yet built): every
 shown safety string (`RENDER_KEYS_PINNED`) is rendered at a pinned 360 px
 Android viewport, into `checks/render-360.json`. A key whose surface does not
 exist yet is listed in `AWAITING_SURFACE` against the ticket that builds it
@@ -104,29 +99,32 @@ render-360 <c> checked, <d> awaiting surface (…)`. What a check does not show
 is stated in `state/EP-0/T-263.md` § Published contract — LIVE §6 (espeak-ng
 is a formant synthesiser; pronunciation is not checked).
 
-The paragraph below describes the pre-OE-5 rule for step 4 and is `T-260`'s to
-withdraw. Step 4 is **blocking** in `review.json § pipeline.stages`, and a
-record signed off while it is incomplete is reported as an incoherence by
-`pipelineIncoherences()`.
+**There are no stages.** T-049 recorded the human steps as `pipeline.stages`,
+each with a `who` naming a role and a `completed_at`; `T-264` removed the two
+checks from that list and `T-260` removed the other four (`author_en_el`,
+`brief_ru_translator`, `translate_ru`, `dsl_signoff`) and the list itself. A
+`stages` block re-added to `review.json` is refused, naming each stage and its
+`who` (`src/pipeline.test.ts` _NEGATIVE — T-260: a roles or stages block
+re-added, naming a person or a human role, is refused_, and _the coherence
+predicates are silent on the register as it actually stands_ over the real
+file; NEG `T264-STAGE-READDED-DSL`).
 
-## 2. Who must exist
+## 2. Who must exist — nobody
 
-There is no way to do this without these people. Naming them is a stakeholder
-act — no agent in this programme can engage a practitioner or contract a
-translator, and none has tried.
-
-| Role in `pipeline.roles`                    | Who                                                                      | Why this specific person, and not a substitute                                                                                                                                                                                                                                                                   |
-| ------------------------------------------- | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `greek_authoring_safeguarding_practitioner` | A safeguarding practitioner working **in Cyprus**                        | The copy encodes the **Cyprus** reporting pathway — 112, 199, 116 111, 1466, Social Welfare Services — not a UK one. A translator, however good, cannot author a safeguarding instruction; and PM §MVP-L4 AC4 and §MVP-S7 AC1 both require Greek **authorship**, in parallel with English, not Greek translation |
-| `russian_translator_briefed`                | A professional translator, **briefed on the safeguarding context first** | The brief is a separate, separately-recorded stage precisely because it is the step that gets skipped. SA §TS-12.4 states the failure in these words: _a translator who does not know a string is an escalation message will produce a grammatically perfect, operationally useless one_                         |
-| `dsl` + `dsl_deputy`                        | The Designated Safeguarding Lead and deputy                              | Only these two names may appear in `reviewed_by`. **Between them they must cover English, Greek and Russian** (PM §MVP-L5 AC7): a DSL who cannot read Russian cannot sign off Russian copy, and the deputy is how that is covered. This is why the roster has four rows and not three                            |
-
-Each role carries `named` and `confirmed_by_stakeholder_on`, both `null` today.
+SA §TS-12.4, PM §MVP-L4 AC4, §MVP-S7 AC1 and §MVP-L5 AC7 required four people
+here: a Greek-authoring safeguarding practitioner working in Cyprus, a briefed
+professional Russian translator, and a DSL and deputy who between them read
+English, Greek and Russian and signed off each locale. `review.json` carried
+them as `pipeline.roles`, each with `named` and `confirmed_by_stakeholder_on`,
+and naming them was the stakeholder's open action. **OE-66/OE-67 replaced the
+two authors with an AI model and OE-5 dropped the DSL and deputy review, so the
+action was withdrawn and `T-260` deleted the roster.** EV-16 (as extended)
+records each spec clause this departs from. A `roles` block re-added to
+`review.json` is refused, naming whom it names (`src/pipeline.test.ts`
+_NEGATIVE — T-260: a roles or stages block re-added…_; NEG
+`T260-ROLES-READDED-PERSON`).
 
 ### Who actually authored the copy now in the catalogues — OE-66 / OE-67
-
-Stated plainly, because the table above describes the pipeline as specified
-and the rulings changed who did the first half of it:
 
 | What                                                                              | Author                                                                                                                                                                                | Ruling                              | Reviewed by |
 | --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- | ----------- |
@@ -143,41 +141,24 @@ and the rulings changed who did the first half of it:
   `common.locale.switch_prompt`; `ru` `booking.count.upcoming`,
   `common.app.name`, `common.dossier.verified`. None is `safety_critical`.
   OE-66 makes the model responsible for all of it either way.
-- **The practitioner and the translator are displaced for this copy, not
-  abolished.** Their roles and stages stay in the register: if the stakeholder
-  later engages humans to author or re-author, that is the path, and it is
-  unchanged.
-- **The DSL and the deputy are NOT displaced.** OE-66 says so in terms: the
-  DSL + deputy review (`reviewed_by`, PM §MVP-L5 AC7) is unchanged — still
-  humans, still unnamed. **The milestone still needs both named and confirmed**
-  (`pipeline.roles.dsl`, `pipeline.roles.dsl_deputy`), and it still needs their
-  per-locale sign-off, the 360 px in-context review and the read-aloud pass.
-  No AI agent can do any of those, and the register refuses a model in
-  `reviewed_by` (§3).
 - The drafts, their authors' notes and the meaning contract the `el`/`ru`
   safety strings were aligned to are in
   `tasks/state/EP-0/OE-66/{en,el,ru}/` (`en/MEANING.md` is the contract). They
   are inputs to this package, not part of it.
+- **Nobody reviewed any of it, and nobody will** (OE-5). OE-81 makes it
+  releasable as it stands. No AI agent stands in for the review either: the
+  register refuses a model in `reviewed_by` (§3).
 
-## 3. How a sign-off is recorded, and what un-does it
+## 3. How a record is kept, and what refuses one
 
 One record per `safety_critical` key **per locale**, in `review.json § entries`
-(shape published by `T-040`; `T-049` left it unchanged; **`T-233` widened it
-additively** — one provenance value, `ai_authored`, and one optional field,
-`ruling`, present exactly when that value is):
+(shape published by `T-040`; widened additively by `T-233` — the provenance
+value `ai_authored` and the field `ruling`, present exactly when that value
+is — and by `T-258` — the status `unreviewed_by_ruling` and the field
+`review_ruling`, present exactly when that status is; `src/pipeline.test.ts`
+_T-040's published `entries` shape survives this ticket, field by field_).
 
-```jsonc
-"safety.sos.confirm": {
-  "content_hash": "sha256:…",              // over the NFC-normalised UTF-8 source
-  "provenance":   "authored",              // or "translated_professional"
-  "status":       "signed_off",
-  "authored_by":  "Name, role",
-  "reviewed_by":  "Name, role (DSL)",
-  "reviewed_at":  "2026-10-14T09:00:00Z"
-}
-```
-
-What every one of the 24 records actually says today (`T-233`, flipped by `T-259`):
+What every one of the 24 records says (`T-233`, flipped by `T-259`):
 
 ```jsonc
 "safety.sos.confirm": {
@@ -193,25 +174,36 @@ What every one of the 24 records actually says today (`T-233`, flipped by `T-259
 }
 ```
 
-**The provenance rule for a model author (OE-66 / OE-67).** A record may name
-an AI model as `authored_by` only when **all** of these hold, and each is
-checked at **every** status, not only at sign-off:
+**The provenance rule (OE-66 / OE-67, as narrowed by OE-5).** A record may name
+an author only when **all** of these hold, at **every** status:
 
 1. `provenance` is `"ai_authored"` and `ruling` is present — both or neither;
 2. `ruling` is a stakeholder ruling that makes a model an author. The rulings
-   are **not** in `review.json`: they are a literal in `src/pipeline.test.ts`
-   (`AI_RULINGS`, transcribed from `decisions.md`) passed into
+   are **not** in `review.json`: they are the literal `AI_RULINGS` in
+   `tools/rulings.ts` (transcribed from `decisions.md`; `T-258`), which the
+   gate imports and `src/pipeline.test.ts` passes into
    `pipelineIncoherences()`, whose default is **no rulings**, so any other
-   caller refuses every `ai_authored` record. A register that listed its own
-   authority could widen it in the same commit as the record that needs it;
+   caller refuses every `ai_authored` record (_NEGATIVE — T-233: a caller that
+   supplies no rulings refuses every AI-authored record (fail closed)_). A
+   register that listed its own authority could widen it in the same commit as
+   the record that needs it;
 3. the ruling covers the record's locale (OE-66: `el`, `ru`; OE-67: `en`);
 4. `authored_by` is **exactly** the model the ruling names — never a human
-   name, never another engine; and
-5. that model is not a named person in `pipeline.roles`.
+   name, never another engine.
 
-**`reviewed_by` is also checked at every status:** a model that a ruling names as
-an author is refused in it outright, and on a record that is not signed off only
-the named DSL or deputy may appear in it (a sign-off already requires that).
+**No human route remains (`T-260`).** A non-null `authored_by` on a record that
+is not `ai_authored` is refused, and so is a provenance claiming a human
+(`authored`, `translated_professional`, `legal_review`), whoever is named or
+nobody (_NEGATIVE — T-260: a person as author is refused at every status, and
+so is any human provenance_; _NEGATIVE — QA-F2 / T-233: a machine author
+WITHOUT an OE-66/67 citation is still refused_). **No review exists (OE-5):**
+`status: "signed_off"` is refused whoever is named as reviewer, or nobody
+(_NEGATIVE — T-260: nothing is signed off under OE-5…_), and so is a non-null
+`reviewed_by` or `reviewed_at` at any status (_NEGATIVE — T-233 rework (QA O2):
+reviewed_by is checked at EVERY status_; _NEGATIVE — T-259/T-260: the terminal
+status is refused if it carries a reviewer or a review date, whoever it
+names_); a model that a ruling names as an author is refused there by name.
+
 Rule 4 is exact to the character — a raw string comparison with no
 normalisation. What is tested is ten near misses, each refused: a trailing or
 leading space, a different case, another model version, the bare family name, a
@@ -221,23 +213,19 @@ The last four are each red under an edit that would normalise the comparison
 (NFKC, or stripping zero-width characters) —
 `pnpm --filter @kinvara/i18n run test:review-citation-mutations` (T-043).
 
-An `ai_authored` record is **authored, never reviewed.** For it to become
-`signed_off`, everything in the table below that concerns the **review** still
-applies unchanged: a named, stakeholder-confirmed DSL or deputy in
-`reviewed_by`, a `reviewed_at` in range, every review stage complete, and a
-decided channel. Two things are different, and only two: the ruling stands in
-for "provenance equals the method" and for the author-role rows (the model has
-no roster role — rule 5 keeps it out of the roster entirely), and the three
-**authoring** stages (`author_en_el`, `brief_ru_translator`, `translate_ru`,
-selected by their `who` being an authoring role) are not demanded of an
-AI-authored record, because they describe events the ruling displaced and
-demanding a date for them would manufacture pressure to write a false one.
-They are still demanded of every human-path record. One date rule is added:
-`reviewed_at` may not precede the ruling's own timestamp.
+**The plan's shape is closed.** `review.json § pipeline` carries exactly
+`opened_by`, `engineering_kickoff`, `automated_checks` and `assignments` (and a
+`//` comment), and each assignment exactly `emergency_panel`, `channel`,
+`channel_note`, `machine_translation` and `runtime_translation`
+(_T-260: the pipeline names no person and no human step — no roles, no stages,
+no per-locale method_). `pipelineIncoherences()` refuses any other field,
+naming whom a `roles` block names and each stage's `who`, a channel that is
+not one of `screen`, `spoken_by_user`, `voice`, `undetermined`, and a
+translation that is not prohibited. The sets are written in `src/review.ts`
+and `src/pipeline.test.ts`, never read from `review.json`.
 
-**Editing a safety string changes its hash and therefore un-signs it. That is the
-mechanism, not a side effect.** A reviewed Greek string cannot vouch for an
-unreviewed Russian one, because the register is keyed by locale as well as key.
+**Editing a safety string changes its hash.** The register is keyed by locale
+as well as key, so a Greek record cannot vouch for a Russian string.
 
 `gate:safety-review-currency` (`T-044`; rule replaced by `T-258` under
 stakeholder ruling OE-5) fails unless, for every `safety_critical` key and
@@ -262,9 +250,7 @@ Inside a waiver it does not judge the _values_ of `authored_by`, `ruling`,
 `review_ruling` or a `status` other than `signed_off`. It refuses a `note` that
 is an object, an array, a number or a boolean, waived or not (the gate's Vitest
 _NOTE-NOT-TEXT_ cases; OD-353), but it never reads the **text** of a string
-`note`: a sentence saying a review happened passes. Apart from §1's step-4 note
-and §5, which `T-259` rewrote, this document still describes the human sign-off
-path that OE-5 removed; `T-260` withdraws it.
+`note`: a sentence saying a review happened passes.
 
 ### What stops a record saying "reviewed" when nothing was reviewed
 
@@ -272,68 +258,26 @@ Asked and answered as directly as it can be, because the honest answer is not
 "nothing".
 
 **It cannot be prevented outright.** This register lives in the same repository
-as the copy it vouches for, so a determined edit can write a sign-off that never
-happened. `content_hash` binds a record to the _current_ source — it proves
-**currency, not review**. Nothing here is a cryptographic countersignature from
-an external party, and this document does not claim one.
+as the copy it describes, so a determined edit can write anything into it.
+`content_hash` binds a record to the _current_ source — it proves **currency,
+not authorship and not correctness**. Nothing here is a cryptographic
+countersignature from an external party, and this document does not claim one.
 
-What the predicates in `pipelineIncoherences()` buy is exactly this list, and no
-more than this list. Each row is proven in `src/pipeline.test.ts` by
-**constructing** the record it refuses and asserting the problem comes back —
-and, because several of these were tightened at once, by proving that a
-_coherent_ delivery reports nothing, so the set is not vacuous.
+What does refuse a review claim in a committed register:
 
-| Predicate                                                                                                                                               | The forgery it refuses                                                                                                           |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `provenance` equals the method the assignment required _(or, for `ai_authored`, the five-part ruling rule above)_                                       | Greek produced by translating the English and recorded as if authored                                                            |
-| **`authored_by` resolves to a named person in the roster, or to the model a cited OE-66/OE-67 ruling names — at every status**                          | `authored_by: "DeepL Pro v3 (machine)"` with no citation — a machine, on a register whose whole subject is that MT is prohibited |
-| **the author's role is the one the method calls for**                                                                                                   | The practitioner recorded as having produced the Russian, or the translator the Greek                                            |
-| **the author's role is not a reviewer role, and differs from the reviewer's**                                                                           | One human filling both sides of a four-eyes check                                                                                |
-| `authored_by ≠ reviewed_by` as strings, _as well_                                                                                                       | _(kept, but the role comparison is what carries the weight — see below)_                                                         |
-| `reviewed_by` ∈ the named DSL or deputy                                                                                                                 | A sign-off by whoever happened to be editing                                                                                     |
-| that person carries `confirmed_by_stakeholder_on`                                                                                                       | A DSL invented in the same commit                                                                                                |
-| **`reviewed_at` is not in the future, not before the latest completed blocking stage, not before the pipeline opened, and not before `external_start`** | A 2019 sign-off; a sign-off dated before the translator was briefed                                                              |
-| every **blocking** stage `completed_at` is set                                                                                                          | Russian translated by a competent professional who was **never briefed** — the most likely real-world version of this            |
-| `channel ≠ "undetermined"`                                                                                                                              | A string signed off before anyone decided whether it is spoken aloud, so the read-aloud pass silently did not apply              |
+- `gate:safety-review-currency` (BLOCKING in `gate:pr`): `CLAIMS-REVIEW` on a
+  `signed_off` status or a non-null `review`-named field other than
+  `review_ruling`; `UNDEFINED-FIELD` on any field outside the nine; and
+  `NOTE-NOT-TEXT` on a `note` that is structured data — waived or not
+  (`state/EP-0/T-258.md`, `T-259.md` § Published contract — LIVE).
+- `pipelineIncoherences()`, run over the committed register by
+  `src/pipeline.test.ts` in `gate:unit-tests`: everything in this section's
+  rules above, including the cases the gate does not judge inside a waiver
+  (the values of `authored_by`, `ruling` and a non-`signed_off` `status`).
 
-> **Why the role comparison and not the string comparison.** The first version of
-> this table claimed `authored_by ≠ reviewed_by` enforced "a different reviewer".
-> It did not: it was string inequality over unconstrained free text, so
-> `"B. Lead"` and `"B. Lead, DSL"` are one human and passed silently. Both fields
-> now resolve against the roster — a closed, stakeholder-confirmed set — so
-> distinctness is between two identified _roles_, and a name that resolves to
-> nothing is refused outright.
-
-Each row is still proven by a constructed forgery in `src/pipeline.test.ts`,
-now with the rulings in force; the AI route's own cases are the `T-233` block at
-the end of that file: a machine author without a citation refused (pending and
-signed off), an OE-66 record accepted as authored and refused as signed off
-without a human DSL/deputy, every review predicate refusing its forgery on an
-AI-authored record, the citation refused when it is missing, unknown, for the
-wrong locale, on a human provenance, or naming a human, and the model refused
-if it is ever named into the roster.
-
-**Four roles must be four people, and that is checked the moment they are named
-— not at sign-off.** Nothing previously required it: `dsl` and `dsl_deputy` could
-be one human and every predicate above stayed silent, which defeats the reason
-both roles exist. PM §MVP-L5 AC7 makes trilingual coverage a property of the
-**pair**, so a pair of one covers whatever that one person covers, and a
-Russian-speaking sitter's copy would be signed off by nobody who reads Russian.
-
-| Roster rule                                                   | What it stops                                                         |
-| ------------------------------------------------------------- | --------------------------------------------------------------------- |
-| `dsl` ≠ `dsl_deputy`                                          | The pair of one, above                                                |
-| No person holds both an authoring and a reviewing role        | Four eyes, caught at naming time rather than months later at sign-off |
-| A duplicated name is a finding, resolved by declaration order | Behaviour that depended on JSON key order                             |
-| `confirmed_by_stakeholder_on` must parse as a date            | `"pending"`, which satisfied "has a value" and nothing else           |
-| Stage `completed_at` values must not go backwards             | Russian translated before its translator was briefed                  |
-
-**Deliberately not a rule:** the practitioner and the translator may be the same
-person. A trilingual safeguarding practitioner authoring all three locales
-natively is _better_ than a translation, and a rule against it would enforce a
-staffing shape the specs do not require. What is refused is **calling it a
-translation** — there is nobody to brief and no brief to acknowledge. Re-declare
-`ru` as `method: "authored"` and the same roster is clean.
+What does **not**: the **text** of a string `note` is read by nothing, so a
+sentence saying a review happened passes both; and a duplicated JSON key is
+judged by its last value (`JSON.parse`).
 
 ## 4. The strings — eight keys, three locales, 24 records
 
@@ -369,8 +313,13 @@ Two constraints that bind the authors, not just the engineers:
 `session.checkins_missed`'s channel is **`undetermined` on purpose and fails
 closed.** DV-7 adds an automated **voice** rung with pre-recorded audio per
 locale (SA §INT-5r), and whether this key rides that rung is `T-105`/`T-107`'s
-determination. Until it is made, a read-aloud pass may or may not be required —
-so the register refuses sign-off rather than dropping the question.
+determination. Until it is made, the key is treated as both spoken and shown:
+it is pinned in `READ_ALOUD_KEYS_PINNED`, so `gate:read-aloud` checks it in
+every enabled locale, and in `RENDER_KEYS_PINNED`, awaiting its surface
+(`T-107`) — since `T-264` the read-aloud check is required of it, not optional
+(`state/EP-0/T-264.md` § Published contract — LIVE §2). Deciding the channel
+means changing it here and both pins in the same commit, or the gate refuses
+it as `CHANNEL-DRIFT`.
 
 ## 5. The date — none is in force
 
@@ -437,8 +386,8 @@ the rebuilt pre-`T-259` waiver).
   No key is render-checked yet: all eight await a surface (`AWAITING_SURFACE`),
   so nothing has been rendered at 360 px.
 - The ask this section used to end with — name four people, send Appendices A,
-  B and C, record `external_start`, re-anchor — was **withdrawn by OE-5**. The
-  appendices are still below; withdrawing them is `T-260`'s.
+  B and C, record `external_start`, re-anchor — was **withdrawn by OE-5**, and
+  `T-260` withdrew the appendices (end of this file).
 
 ## 6. Also on this engagement — `T-043`'s prohibited-claim lists
 
@@ -507,9 +456,10 @@ OE-66 authors instead. Their own caveats (`tasks/state/EP-0/OE-66/{el,ru}/NOTES.
 - **No copy is reviewed here**, and none can be from inside this repository.
   The copy that exists was **authored by an AI model** under OE-66/OE-67; that
   is a statement of who wrote it, not of whether it is right.
-- **The register cannot prove review, only currency and coherence** (§3). It
-  can now also not prove that the model named in `authored_by` wrote the string
-  — only that the record cites a ruling permitting that author for that locale.
+- **The register cannot prove authorship or correctness, only currency and
+  coherence** (§3). It cannot prove that the model named in `authored_by`
+  wrote the string — only that the record cites a ruling permitting that
+  author for that locale — and nothing here reviews it (OE-5).
 - **Step 5, the 360 px render check (`gate:safety-copy-render`, `T-265`),
   has nothing to render yet**: no app surface shows these strings, and every
   key is in `AWAITING_SURFACE` against `T-110` or `T-107`. **Nothing has been
@@ -526,11 +476,11 @@ OE-66 authors instead. Their own caveats (`tasks/state/EP-0/OE-66/{el,ru}/NOTES.
   espeak-ng does not check pronunciation (`T-263` § Published contract — LIVE
   §6).
 - **`session.checkins_missed`'s channel is undetermined** and depends on
-  `T-105`/`T-107`; its recipient is undetermined too. The register refuses
-  sign-off until the channel is decided.
+  `T-105`/`T-107`; its recipient is undetermined too. Until it is decided
+  the key is held to both automated checks (§4).
 - **`safety.helpline.1466.label`'s labelling is unverified** (PM §Q16) and must
-  be confirmed with Hope For Children before launch — a copy review cannot
-  settle it. OE-67 fixed the placeholder's wrong organisation (OD-247); it did
+  be confirmed with Hope For Children before launch — no check of the copy
+  can settle it. OE-67 fixed the placeholder's wrong organisation (OD-247); it did
   not verify the right one.
 - **The 112 language is unverified.** Every word of the 112 script and the
   address prompt is in the reader's own language (MEANING.md's spoken-language
@@ -548,215 +498,26 @@ OE-66 authors instead. Their own caveats (`tasks/state/EP-0/OE-66/{el,ru}/NOTES.
   - **OD-249** — ruled by OE-68 (above, §6).
   - **OD-250** — ruled by OE-67: `el` and `ru` were re-authored to the one
     meaning contract (their `validate.py` §8/§2 conformance checks are
-    mechanical; the argued check is in each NOTES.md; **the real check is the
-    DSL's**).
+    mechanical; the argued check is in each NOTES.md; **no human check
+    exists** — OE-5 dropped the DSL review).
   - **OD-251** — _open._ The SOS gesture (PM "one tap, confirm" vs "hold to
     send"), whether the confirmation should say the other party and the
     emergency contacts are notified (AC4 c/d), and the absence of any specified
     callback. The copy is gesture-neutral and silent on both until decided; if
     the control ships as hold-to-send, `safety.sos.confirm` changes in all three
-    locales and its hash un-signs it.
+    locales, and the gate refuses it until the same commit moves each record's
+    hash and `AUTHORED_CONTENT_PINNED` (`STALE-RECORD`, `UNPINNED-CONTENT`).
 
 ---
 
-# Appendix A — brief for the Greek-authoring safeguarding practitioner
+# Appendices A, B and C — withdrawn under OE-5
 
-> **SUPERSEDED FOR THE CURRENT COPY by OE-66 / OE-67 (2026-09-27). Do not send
-> it as a brief for the copy now in the catalogues** — that copy was authored by
-> an AI model, and the stakeholder chose that route over human authorship. It is
-> kept as the brief for the human authoring path, which the rulings displaced but
-> did not abolish, and it must be corrected before any use: items 5 and 7 below
-> repeat two placeholder assumptions the meaning contract
-> (`tasks/state/EP-0/OE-66/en/MEANING.md`) rejects — a 1466 scope list, and "holds
-> it … an operator calls them back" (OD-251); and the note introducing "The
-> eight strings" was written when the English was `T-040`'s engineering
-> placeholder — since `T-233` it is the OE-67 AI-authored copy (corrected in
-> place below). **The brief that applies now is Appendix C.**
->
-> _Original instruction:_ Send as it stands. Fill the bracketed fields.
-
-**Engagement.** Author the safety-critical user-facing copy for a Cyprus
-childcare-booking platform, **in English and Greek in parallel**, for eight
-strings. Six of them are the in-app emergency panel.
-
-**The single most important instruction: do not write English and then have it
-translated into Greek.** Greek is authored, not translated. A Greek translation
-of an English safeguarding instruction is a different artefact from a Greek
-safeguarding instruction, and the platform's build rules record which one it
-received.
-
-**Context you need in order to write these.**
-
-- The product is used by parents and by sitters during a booked childcare
-  session in the **Republic of Cyprus**. Users are English-, Greek- or
-  Russian-speaking, and they receive **identical safeguarding**, not a
-  translated veneer.
-- **112** is the single emergency number this product dials, for police,
-  ambulance and fire. **199** is a documented alternative feeding the same
-  dispatch, shown as a labelled entry only. **116 111** is the pan-EU child and
-  adolescent helpline; **1466** is the Hope For Children line. UK numbers —
-  999, 101, NHS 111 — and UK bodies — MASH, LADO, NSPCC — are **not in this
-  product** and must not appear.
-- These strings are read by a frightened adult, on a phone, possibly with a
-  child present, possibly with no network. Two of them are **read aloud to a
-  112 operator**.
-- Several are shown on a **360 px-wide** Android screen. Length is a safety
-  property, not a style preference.
-
-**The eight strings**, with what each is for. _(The English shown in the
-codebase today is the AI-authored copy landed under stakeholder ruling OE-67
-(`T-233`). It is not reviewed and not approved copy, and you are not editing
-it — please write these fresh.)_
-
-1. `safety.emergency.call_112.label` — the label on the button that dials 112.
-2. `safety.emergency.call_112.script` — **what the caller says aloud** to the
-   112 operator. The booking address is substituted into it as `{address}`.
-3. `safety.emergency.address_prompt` — tells the caller to read the address to
-   the operator; `{address}` is substituted. This is the string that renders at
-   display size when the network is gone.
-4. `safety.helpline.116111.label` — label for the child and adolescent helpline.
-5. `safety.helpline.1466.label` — label for the Hope For Children line, covering
-   abuse, neglect, bullying, cyberbullying and grooming. _(Please flag if the
-   relationship between 1466 and 116 111 as stated here is wrong; we have not
-   been able to confirm it with the operator.)_
-6. `safety.helpline.199.label` — label for the alternative emergency number.
-7. `safety.sos.confirm` — the SOS control on the session screen: the user holds
-   it to send an alert, and a trained operator calls them back.
-8. `session.checkins_missed` — an escalation message sent when a sitter has
-   missed _N_ scheduled check-ins. It takes a count, so it needs the correct
-   plural forms.
-
-**Two further asks while we have you.**
-
-- **A Greek prohibited-claims list.** We are forbidden from claiming continuous
-  or 24/7 supervision, and a build check enforces it in every language. In
-  English the banned phrases are _"24/7 support"_, _"24/7 staffed"_, _"always
-  on"_, _"round-the-clock team"_, _"someone is always watching"_, _"continuously
-  monitored"_, _"live monitoring"_, _"real-time checks"_, _"always up to date"_,
-  _"we check daily/weekly"_; the only permitted claims are _"Re-verified every
-  12 months"_, _"Attested every 90 days"_ and _"Re-checked immediately on any
-  concern"_. **We do not want these translated.** We want the phrases a Greek
-  copywriter would actually reach for to make the same over-claim — which are
-  usually not translations of ours.
-- **A read-aloud check** on strings 2 and 3, spoken by someone who has not read
-  them, to confirm they survive being said under stress.
-
-**Deliverable and timing.** Eight English strings, eight Greek strings, the
-Greek prohibited-claims list, and your name and role as they should be recorded
-against the copy. Lead time budgeted: **six weeks** from the day you receive
-this. **Please confirm the date you received it**, because the platform's build
-records that date and measures against it.
-
-**Sign-off.** Your copy is reviewed and signed off separately by the platform's
-Designated Safeguarding Lead. Sign-off by the author is not accepted, and the
-system enforces that.
-
----
-
-# Appendix B — brief for the Russian translator
-
-> **SUPERSEDED FOR THE CURRENT COPY by OE-66 (2026-09-27). Do not send it as a
-> brief for the copy now in the catalogues** — the Russian was authored by an AI
-> model, aligned to the OE-67 meaning contract, not translated by a briefed
-> human. Kept for the human path only. **The brief that applies now is
-> Appendix C.**
->
-> _Original instruction:_ Send as it stands. **Do not send the strings until the
-> translator has acknowledged this brief** — the acknowledgement is a recorded
-> stage, and it is the stage that gets skipped.
-
-**Engagement.** Translate eight safety-critical strings from the authored
-English and Greek into Russian, for a childcare-booking platform used in the
-Republic of Cyprus.
-
-**Why you are being briefed before you see the strings.** These are not product
-copy. Each one is part of an emergency or escalation pathway, and a translation
-that is grammatically perfect but operationally wrong is worse than no
-translation, because it succeeds silently — it renders, it passes every check,
-and it fails at the only moment it matters. You need to know what each string
-_does_, and the list below tells you.
-
-**Context.**
-
-- The reader is a Russian-speaking parent or sitter in Cyprus, on a phone,
-  during or around a childcare session, often under stress.
-- **112** is the emergency number. **199**, **116 111** and **1466** are labelled
-  entries and are _not_ dialled by the product. UK numbers and UK bodies do not
-  appear.
-- Two strings are **read aloud by the user to a 112 operator**. They must be
-  sayable, not merely readable.
-- **Machine translation is prohibited outright for these strings** and the
-  platform cannot record a machine-produced translation as reviewed. This is a
-  rule about the artefact, not a comment on quality.
-- Several are shown on a **360 px-wide** Android screen. Russian expands
-  relative to English; where a shorter form is safe, prefer it, and where it is
-  not, say so rather than truncating meaning.
-
-**The eight strings and what each does** — the same list as Appendix A, items
-1–8, supplied with the authored English and Greek.
-
-**Plurals — the one technical constraint.** `session.checkins_missed` takes a
-count. **Russian uses four plural categories: `one`, `few`, `many`, `other`.**
-Supplying only two is a common failure and the result is silently wrong on 2, 3,
-4, 5, 11, 22, 111 and many other counts. All four forms are required.
-
-**Also.** A **Russian prohibited-claims list** — the phrases a Russian
-copywriter would reach for to claim continuous or 24/7 supervision. Please do
-**not** translate our English list; we need the phrases that would actually be
-used, which are usually different.
-
-**Deliverable and timing.** Eight Russian strings with all four plural forms
-where required, the Russian prohibited-claims list, notes on anything you could
-not render safely, and your name and role as they should be recorded against the
-copy. Lead time budgeted: **six weeks**.
-
-**Sign-off.** Your translation is reviewed and signed off by the platform's
-Designated Safeguarding Lead or deputy, who reads Russian. Sign-off by the
-translator is not accepted, and the system enforces that.
-
----
-
-# Appendix C — brief for the DSL and the deputy DSL (added by `T-233`)
-
-> **This is the brief that applies to the copy now in the catalogues.** It can
-> be sent only once the stakeholder has named both people in
-> `review.json § pipeline.roles` (`dsl`, `dsl_deputy`) with a
-> `confirmed_by_stakeholder_on` date. Between them they must read English,
-> Greek and Russian (PM §MVP-L5 AC7).
-
-**What you are reviewing, and who wrote it.** Safety-critical copy for a Cyprus
-childcare-booking platform, in English, Greek and Russian — **written by an AI
-model** (Claude Opus), not by a person. The platform's stakeholder chose that
-deliberately (rulings OE-66 and OE-67). **No human has authored or reviewed any
-of it.** You are the first.
-
-- **All three locales**: the eight safety-critical strings (six emergency-panel
-  entries, the SOS confirmation, the missed check-in message).
-- **Greek and Russian**: every other user-facing string as well.
-- **Greek and Russian prohibited-claim lists**: the phrases a copywriter would
-  use to over-claim supervision, which a build check will forbid.
-
-**What to read first.** The meaning contract
-(`tasks/state/EP-0/OE-66/en/MEANING.md`): for each safety string, the claims it
-must make and the claims it must not. The Greek and Russian strings were written
-to that contract, not translated from the English. Then each author's notes
-(`…/OE-66/{en,el,ru}/NOTES.md`), which list their own uncertainties.
-
-**What only you can settle, per locale:**
-
-1. **Sign-off** of each string, per locale. Your name and the date are recorded
-   against the exact text; any later edit un-signs it automatically.
-2. **The 360 px in-context review** in the running product — not possible until
-   the screens exist (`T-050`/`T-051`).
-3. **The read-aloud pass** on the 112 script and the address prompt, spoken by
-   someone who has not read them.
-4. **The open questions** in §7: the 1466 labelling (confirm with Hope For
-   Children), whether Cyprus 112 takes a call in Russian, which script the
-   address is shown in (OD-248), the SOS gesture and whether the confirmation
-   should say who else is notified (OD-251), and the missed-check-in message's
-   channel and recipient.
-
-**What you may not do.** Sign off copy you have not read in context, or sign
-off a locale neither of you reads. The system refuses a sign-off by anyone who
-is not the named DSL or deputy, and refuses one recorded before the ruling that
-made the copy exist.
+Until `T-260` this file ended with three briefs: **A** for the Greek-authoring
+safeguarding practitioner, **B** for the briefed Russian translator, and **C**
+(added by `T-233`) for the DSL and deputy DSL — including Appendix C's asks for
+a per-locale sign-off, the 360 px in-context review and the read-aloud pass.
+Stakeholder rulings OE-66/OE-67 made an AI model the author of this copy, OE-5
+(2026-10-11) dropped the DSL and deputy review, and OE-82 made the two checks
+automated gates (§1), so no brief has anyone to go to. They were withdrawn by
+`T-260`; their text survives in git (`git show a84c47f:packages/i18n/PIPELINE.md`,
+from the line `# Appendix A`).
