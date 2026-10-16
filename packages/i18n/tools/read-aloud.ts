@@ -14,7 +14,8 @@
  *   R1 UNSPEAKABLE-CHAR   template text ({param} and # inert) and the spoken
  *                         text: a character that is not a letter of the
  *                         locale's script, a decimal digit, a space or one of
- *                         SPEAKABLE_PUNCTUATION. Leftover ICU syntax is caught
+ *                         SPEAKABLE_PUNCTUATION — or a U+002D that is not
+ *                         between two letters of one script (OD-356). Leftover ICU syntax is caught
  *                         here, in the spoken text, when a fixture is missing.
  *   R2 MIXED-SCRIPT-WORD  a word with letters from two scripts.
  *   R3 UNLISTED-NUMBER    a digit run (inner spaces allowed) not in SPOKEN_NUMBERS.
@@ -332,13 +333,26 @@ const ALLOWED_TOKEN_RE = new RegExp(
   'gu',
 );
 
+/**
+ * OD-356 (ruled 2026-10-16T08:48:17Z; stated in tools/automated-checks.ts): a U+002D is speakable
+ * only between two letters of the same script. Inert tokens and allowed tokens
+ * have already become spaces, so a hyphen next to `{param}` or `#` is refused.
+ */
+function wordInternalHyphen(prev: string | undefined, next: string | undefined): boolean {
+  if (prev === undefined || next === undefined) return false;
+  if (!/\p{L}/u.test(prev) || !/\p{L}/u.test(next)) return false;
+  return scriptOf(prev) === scriptOf(next) && scriptOf(prev) !== 'Other';
+}
+
 /** R1 over one text: the distinct characters that are not speakable in `locale`. */
 function unspeakable(locale: string, text: string): string[] {
   const script = LOCALE_SCRIPT[locale];
   const stripped = text.replace(INERT, ' ').replace(ALLOWED_TOKEN_RE, ' ');
   const bad = new Set<string>();
-  for (const ch of stripped) {
+  const chars = Array.from(stripped);
+  for (const [i, ch] of chars.entries()) {
     if (ch === ' ' || (ch >= '0' && ch <= '9') || SPEAKABLE_PUNCTUATION.includes(ch)) continue;
+    if (ch === '-' && wordInternalHyphen(chars[i - 1], chars[i + 1])) continue;
     if (/\p{L}/u.test(ch) && script !== undefined && scriptOf(ch) === script) continue;
     bad.add(ch);
   }
@@ -348,8 +362,8 @@ function unspeakable(locale: string, text: string): string[] {
 function words(text: string): string[] {
   return text
     .replace(INERT, ' ')
-    .split(/[^\p{L}\p{M}\p{N}'’]+/u)
-    .map((w) => w.replace(/^['’]+|['’]+$/gu, ''))
+    .split(/[^\p{L}\p{M}\p{N}'’-]+/u)
+    .map((w) => w.replace(/^['’-]+|['’-]+$/gu, ''))
     .filter((w) => w !== '');
 }
 
@@ -377,7 +391,9 @@ function lint(locale: string, form: string, r: Rendered, where: string): string[
       p.push(
         `MIXED-SCRIPT-WORD ${at}: ${JSON.stringify(w)} mixes ${[...scripts].sort().join(' + ')}`,
       );
-    if (/\p{Lu}{2,}/u.test(w)) p.push(`UNLISTED-ACRONYM ${at}: ${JSON.stringify(w)}`);
+    for (const part of w.split('-'))
+      if (!allowed.has(part) && /\p{Lu}{2,}/u.test(part))
+        p.push(`UNLISTED-ACRONYM ${at}: ${JSON.stringify(part)}`);
   }
   const bare = r.template.replace(INERT, ' ');
   for (const m of bare.matchAll(/\d+(?: \d+)*/gu))

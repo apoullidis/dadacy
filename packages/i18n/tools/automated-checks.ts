@@ -65,9 +65,21 @@ export const MAX_WORDS_PER_SENTENCE = 20;
  * R1's speakable punctuation, for every locale: `. , ; : ? ! — – ' ’ " “ ” « » ( )`
  * plus U+037E GREEK QUESTION MARK, exactly the cut's list. Letters of the
  * locale's script, decimal digits and U+0020 SPACE are speakable as well.
- * U+002D HYPHEN-MINUS is NOT in the list.
+ * U+002D HYPHEN-MINUS is NOT in the list: it is admitted only by the OD-356 rule below.
  */
 export const SPEAKABLE_PUNCTUATION = '.,;:?!—–\'’"“”«»();';
+
+/**
+ * OD-356 (ruled 2026-10-16T08:48:17Z, orchestrator: option (b), narrowly).
+ * R1 admits U+002D HYPHEN-MINUS ONLY WORD-INTERNALLY: immediately between two
+ * letters of the same script, as in `check-in`. Everywhere else it stays
+ * UNSPEAKABLE-CHAR: standalone, leading or trailing a word, doubled (`--`),
+ * next to a digit (`112-199`, `-5`), next to a `{param}` or `#` inert token,
+ * or between letters of two scripts (which R2 refuses as well). Measured, in
+ * state/EP-0/T-263.md: espeak-ng 1.51 voices no phoneme for the word-internal
+ * hyphen of `check-in`, and reads `112-199` with a spoken "dash".
+ * Implemented in tools/read-aloud.ts `wordInternalHyphen()`.
+ */
 
 /** The script whose letters a locale's copy is written in (Unicode `Script=` value). */
 export const LOCALE_SCRIPT: Readonly<Record<string, 'Latin' | 'Greek' | 'Cyrillic'>> = {
