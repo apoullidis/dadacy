@@ -178,6 +178,9 @@ run_case() {
   done
   if [ ${#problems[@]} -eq 0 ]; then
     printf '   %-58s %s\n' "$label" "ok  (exit=$code banner=$banner)"
+    # The gate's own reasons, so the record shows WHY it refused, not only
+    # that it did.
+    [ "$banner" = FAIL ] && printf '%s\n' "$out" | grep '^  - ' | sed 's/^/       | /'
   else
     bad=$((bad + 1))
     printf '!! %-58s %s\n' "$label" "MISBEHAVED"
