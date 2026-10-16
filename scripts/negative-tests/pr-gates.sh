@@ -287,7 +287,7 @@ mut "$ROSTER" "    cls: 'BLOCKING'," "    cls: 'PENDING',
     owner: 'nobody',
     unblocks: 'never'," &&
   run_case "A6 one BLOCKING gate demoted: the floor bites" FAIL \
-    'the floor is 27' 'A gate was demoted or deleted' -- node "$PR" --roster-only
+    'the floor is 28' 'A gate was demoted or deleted' -- node "$PR" --roster-only
 
 echo
 echo "=== A(bis). the CLASS assertion — a hook cannot pass, or fail wrongly ==="
@@ -321,19 +321,11 @@ run_case "A11 --only= says so IN the GATE PASS banner, with the count" PASS \
   'GATE PASS  gate:pr  [--only=gate:pii-canary: 1 of' 'rostered gate(s) executed — NOT a full' \
   -- node "$PR" --only=gate:pii-canary
 
-# T-262: gate:read-aloud, the PROGRAMME gate OE-82 added (owner T-263). A12 is
-# its control — rostered PENDING and refusing with its own banner; A13 is the
-# cut's "a gate:read-aloud roster row with no owner -> the roster check red".
-CASE="A12"
-run_case "A12 CONTROL: gate:read-aloud is PENDING and refuses as such" PASS \
-  'NOT YET SUPPLIED' 'gate:read-aloud' 'T-263 — frontend-developer' \
-  -- node "$PR" --only=gate:read-aloud
-
-CASE="A13"
-mut "$ROSTER" "    owner: 'T-263 — frontend-developer'," "    xwner: 'T-263 — frontend-developer'," &&
-  run_case "A13 the gate:read-aloud row with no owner" FAIL \
-    'gate:read-aloud is PENDING with no owner — a class with no owner is a silent skip' \
-    -- node "$PR" --roster-only
+# A12 and A13 (added by T-262: gate:read-aloud's PENDING control and its roster
+# row with no owner) were RETIRED on 2026-10-16 by T-263, which promoted
+# gate:read-aloud to BLOCKING: both were cases of the PENDING state by name, and
+# that state no longer exists (decisions.md OD-355). The promoted gate's own
+# negatives are packages/i18n/tools/read-aloud.test.ts, run by gate:unit-tests.
 
 echo
 echo "=== B. gate:negative-suites — how a suite's verdict is judged ==="
@@ -724,6 +716,8 @@ wf() { node scripts/gates/workflow.ts; }
 # gate:read-aloud to pr.yml's advisory matrix (27 + 4) and
 # gate:safety-copy-render to heavy.yml's (3 + 4) — so the pin moved 36 -> 38.
 # heavy-gates.sh case W0 quotes the same number and moved with it.
+# T-263 (2026-10-16) promoted gate:read-aloud: 27 + 4 became 28 + 3 in
+# pr.yml, the total unchanged, so this line moved and the pin did not.
 CASE="F0"
 run_case "F0 CONTROL: pr.yml is structurally valid and mirrors the roster" PASS \
   'GATE PASS' 'W7: 38 concrete' -- wf

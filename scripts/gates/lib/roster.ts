@@ -412,11 +412,8 @@ export const ROSTER: readonly RosterEntry[] = [
     // MIN_BLOCKING raised, the name moved between pr.yml's two matrices.
     name: 'gate:read-aloud',
     spec: PROGRAMME,
-    cls: 'PENDING',
+    cls: 'BLOCKING',
     why: 'SA §TS-12.4 read-aloud check, automated under OE-82',
-    owner: 'T-263 — frontend-developer',
-    unblocks:
-      'T-263 supplies the automated read-aloud/TTS pass and its record as scoped in tasks/state/EP-0/OE-82-cut.md § T-263, on espeak-ng in the toolbox (T-262), and promotes this entry to BLOCKING.',
   },
 ];
 

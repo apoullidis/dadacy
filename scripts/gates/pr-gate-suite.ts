@@ -31,7 +31,9 @@ const SUITE = 'scripts/negative-tests/pr-gates.sh';
 // unclassifiable line), each red with the classifier's REMEDY line in the gate's failure text.
 // 77 -> 80, 2026-10-16, T-262: A12 (gate:read-aloud's PENDING control), A13 (its roster row with
 // no owner) and F9 (it removed from pr.yml's advisory matrix).
-const CASES = 80;
+// 80 -> 78, 2026-10-16, T-263 (decisions.md OD-355): A12 and A13 RETIRED — both were cases of
+// gate:read-aloud's PENDING state by name, and T-263 promoted it to BLOCKING. F9 stays.
+const CASES = 78;
 
 const failures: string[] = [];
 const abs = path.join(REPO_ROOT, SUITE);

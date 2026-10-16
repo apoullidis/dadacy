@@ -84,8 +84,15 @@ const RULE = '='.repeat(78);
  * plus heavy.yml's 3 + 3). Measured in both directions in
  * tasks/state/EP-0/T-043.md § Evidence: at floor 26, A6's own mutation is a
  * GATE PASS and the refusal is silently lost.
+ *
+ * 27 -> 28 on 2026-10-16 (T-263), when gate:read-aloud was supplied and
+ * promoted PENDING -> BLOCKING (OD-176). Case A6's expected reason moved with
+ * it; F0's `W7: 38 concrete` pin did NOT — a promotion moves a gate between
+ * the two matrices (pr.yml 28 blocking + 3 advisory). Measured in both
+ * directions in tasks/state/EP-0/T-263.md § Evidence: at floor 27, A6's own
+ * mutation is a GATE PASS and the refusal is silently lost.
  */
-const MIN_BLOCKING = 27;
+const MIN_BLOCKING = 28;
 
 /**
  * Two flags, and they exist so this program can be ATTACKED cheaply rather than
