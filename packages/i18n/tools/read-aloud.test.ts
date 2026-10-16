@@ -1200,3 +1200,72 @@ test(
     assert.match(x('112-199'), /d'aS/);
   },
 );
+
+/* ------------------------------ OD-356 and allowed tokens (rework 1, QA F1) */
+
+test(
+  'OD-356 — SOS-ready is admitted by R1: the hyphen sits between S and r, both Latin',
+  { timeout: T },
+  () => {
+    const { run, r1 } = withHyphen(
+      'en',
+      'safety.json',
+      'emergency.call_112.script',
+      'Say: “The address is {address}.” Say SOS-ready. Do not hang up.',
+    );
+    assertFail(run);
+    assert.deepEqual(r1, [], run.out);
+    assert.ok(!run.problems.some((p) => /^(MIXED-SCRIPT-WORD|UNLISTED-ACRONYM)/.test(p)), run.out);
+    assert.deepEqual(
+      run.problems.map((p) => p.split(':')[0]),
+      ['RECORD-DRIFT en.safety.emergency.call_112.script.forms[0].text_sha256'],
+      run.out,
+    );
+  },
+);
+
+test(
+  'OD-356 — Kinvara-ready is admitted by R1, and in el the Latin token still may not join a Greek letter',
+  { timeout: T },
+  () => {
+    const en = withHyphen(
+      'en',
+      'safety.json',
+      'emergency.call_112.script',
+      'Say: “The address is {address}.” Kinvara-ready. Do not hang up.',
+    );
+    assertFail(en.run);
+    assert.deepEqual(en.r1, [], en.run.out);
+    const el = withHyphen(
+      'el',
+      'safety.json',
+      'emergency.call_112.script',
+      'Πείτε: «Η διεύθυνση είναι {address}.» Kinvara-έτοιμη. Μην κλείσετε το τηλέφωνο.',
+    );
+    assertFail(el.run);
+    assert.ok(
+      el.r1.includes(`UNSPEAKABLE-CHAR el safety.emergency.call_112.script [base]: ${HYPHEN}`),
+      el.run.out,
+    );
+  },
+);
+
+test(
+  'OD-356 — an allowed token with an acronym-shaped part after the hyphen is still judged by R4 per part',
+  { timeout: T },
+  () => {
+    const { run, r1 } = withHyphen(
+      'en',
+      'safety.json',
+      'emergency.call_112.script',
+      'Say: “The address is {address}.” Say SOS-ASAP. Do not hang up.',
+    );
+    assertFail(run);
+    assert.deepEqual(r1, [], run.out);
+    assert.deepEqual(
+      run.problems.filter((p) => p.startsWith('UNLISTED-ACRONYM')),
+      ['UNLISTED-ACRONYM en safety.emergency.call_112.script [base]: "ASAP"'],
+      run.out,
+    );
+  },
+);

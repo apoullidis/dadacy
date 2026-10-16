@@ -347,12 +347,21 @@ function wordInternalHyphen(prev: string | undefined, next: string | undefined):
 /** R1 over one text: the distinct characters that are not speakable in `locale`. */
 function unspeakable(locale: string, text: string): string[] {
   const script = LOCALE_SCRIPT[locale];
-  const stripped = text.replace(INERT, ' ').replace(ALLOWED_TOKEN_RE, ' ');
+  // Inert tokens become ONE space in both readings, so a hyphen beside `{param}`
+  // or `#` has a space for a neighbour and is refused (OD-356). Allowed tokens
+  // are blanked for the script test only, and padded to their own length, so
+  // the hyphen test reads the ORIGINAL letters on both sides: `SOS-ready` has
+  // S and r, both Latin, and is admitted, as the ruling says (T-263 rework 1, QA F1).
+  const withInert = Array.from(text.replace(INERT, ' '));
+  const chars = Array.from(
+    text.replace(INERT, ' ').replace(ALLOWED_TOKEN_RE, (m) => ' '.repeat(Array.from(m).length)),
+  );
+  if (chars.length !== withInert.length)
+    throw new Error('allowed-token blanking changed the text length');
   const bad = new Set<string>();
-  const chars = Array.from(stripped);
   for (const [i, ch] of chars.entries()) {
     if (ch === ' ' || (ch >= '0' && ch <= '9') || SPEAKABLE_PUNCTUATION.includes(ch)) continue;
-    if (ch === '-' && wordInternalHyphen(chars[i - 1], chars[i + 1])) continue;
+    if (ch === '-' && wordInternalHyphen(withInert[i - 1], withInert[i + 1])) continue;
     if (/\p{L}/u.test(ch) && script !== undefined && scriptOf(ch) === script) continue;
     bad.add(ch);
   }
