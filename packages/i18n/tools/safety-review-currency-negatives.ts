@@ -70,9 +70,14 @@ const CATALOGUE_EL_SAFETY = 'packages/i18n/catalogues/el/safety.json';
 const APP_PLANT = 'apps/web/src/sos-confirm.tsx';
 const APP_PLANT_TEST = 'apps/web/src/sos-confirm.test.tsx';
 const PIPELINE_TEST = 'src/pipeline.test.ts';
-/** The R3-F1 stage-manifest test, as T-264 titles it. */
-const MANIFEST_TITLE =
-  'R3-F1: four stage ids, that order, ALL BLOCKING (T-264: the 360 px and read-aloud checks are gates, not stages)';
+/**
+ * T-260: the run of `pipelineIncoherences()` over the committed register. It
+ * replaces T-264's R3-F1 stage-manifest test as the case that refuses a
+ * re-added `stages` block (and a re-added `roles` block): since T-260 the
+ * pipeline has no stages to manifest, and any field outside its closed set is
+ * refused naming what it names.
+ */
+const COHERENCE_TITLE = 'the coherence predicates are silent on the register as it actually stands';
 /** The paths the driver requires clean before it starts and after it ends. */
 const WATCHED = ['packages/i18n', 'apps/web', 'apps/admin'];
 
@@ -1275,36 +1280,56 @@ const CASES: readonly Case[] = [
   {
     name: 'T264-STAGE-READDED-DSL',
     why:
-      'Cut negative 10: in_context_screenshot_review re-added to pipeline.stages with who "dsl". ' +
-      'The R3-F1 stage-manifest test in src/pipeline.test.ts (a literal manifest of four stages since ' +
-      'T-264) is red. Red-first is the cfe0886 tree itself, which carries this stage and whose ' +
-      'six-stage manifest test passes (the plant changes nothing there, so this case is a HARNESS ' +
-      'ERROR at cfe0886 by construction).',
+      'Cut negative 10, replaced by T-260 (T-264 LIVE §8): a `stages` block re-added to the pipeline, ' +
+      'holding in_context_screenshot_review with who "dsl". Until T-260 this ran the R3-F1 ' +
+      'stage-manifest test; T-260 deleted pipeline.stages and that test, so it now runs the coherence ' +
+      "run over the committed register, which refuses any field outside the pipeline's closed set " +
+      'and says which stage and which who it names. Red-first is a84c47f, where the same title PASSES ' +
+      'on this plant (harness case T260-STAGES-READDED-HUMAN, .cache/T-260/).',
     edits: [
       {
         file: REVIEW,
         plant: json((doc) => {
-          const stages = (doc['pipeline'] as Record<string, unknown>)['stages'] as Record<
-            string,
-            unknown
-          >[];
-          if (stages.some((st) => st['id'] === 'in_context_screenshot_review')) return;
-          const at = stages.findIndex((st) => st['id'] === 'dsl_signoff');
-          if (at < 0) throw new Error('no dsl_signoff stage to re-add after');
-          stages.splice(at + 1, 0, {
-            id: 'in_context_screenshot_review',
-            blocking: true,
-            who: 'dsl',
-            what: 'In-context review in the running product at the target locale, on a 360 px Android viewport.',
-            output: 'Screenshots per locale.',
-            completed_at: null,
-          });
+          (doc['pipeline'] as Record<string, unknown>)['stages'] = [
+            {
+              id: 'in_context_screenshot_review',
+              blocking: true,
+              who: 'dsl',
+              what: 'In-context review in the running product at the target locale, on a 360 px Android viewport.',
+              output: 'Screenshots per locale.',
+              completed_at: null,
+            },
+          ];
         }),
       },
     ],
-    vitest: { file: PIPELINE_TEST, title: MANIFEST_TITLE },
+    vitest: { file: PIPELINE_TEST, title: COHERENCE_TITLE },
     expect: 'FAIL',
-    mustInclude: ['in_context_screenshot_review', 'is a change to the pipeline, not to a list'],
+    mustInclude: [
+      'pipeline.stages is not a field of the pipeline',
+      'in_context_screenshot_review (who: ',
+    ],
+    mustExclude: [],
+  },
+  {
+    name: 'T260-ROLES-READDED-PERSON',
+    why:
+      'T-260: a `roles` block re-added naming a person as the DSL. Refused by the coherence run over ' +
+      'the committed register. Red-first is a84c47f, where naming a person in the roster PASSES the ' +
+      'same title (harness case T260-ROLES-NAMED-PERSON, .cache/T-260/).',
+    edits: [
+      {
+        file: REVIEW,
+        plant: json((doc) => {
+          (doc['pipeline'] as Record<string, unknown>)['roles'] = {
+            dsl: { named: 'B. Lead', confirmed_by_stakeholder_on: '2026-10-20' },
+          };
+        }),
+      },
+    ],
+    vitest: { file: PIPELINE_TEST, title: COHERENCE_TITLE },
+    expect: 'FAIL',
+    mustInclude: ['pipeline.roles is not a field of the pipeline', 'naming dsl = '],
     mustExclude: [],
   },
 ];

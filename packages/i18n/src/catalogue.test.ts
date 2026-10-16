@@ -107,14 +107,15 @@ test('QA-F5 — every key in the `safety` namespace is safety_critical', () => {
   assert.deepEqual(misfiled, [], 'keys in the `safety` namespace tiered below safety_critical');
 });
 
-test('QA-F5 — a key with a DSL review record may not be tiered below safety_critical', () => {
+test('QA-F5 — a key with a review.json record may not be tiered below safety_critical', () => {
   // The durable half, and the one that survives T-049.
   //
-  // `review.json` is written by humans — a DSL, a safeguarding author, a
-  // translator — and is a genuinely different source from `tiers.json`. A key
-  // that has review records is a key somebody signed off as safety copy, so
-  // lowering its tier without also removing those records is a contradiction
-  // between two independently-maintained files, and that is what is detected.
+  // `review.json` is a genuinely different source from `tiers.json`. A key that
+  // has records there is a key registered as safety copy — since OE-5 (T-259)
+  // AI-authored and final with no review, never a DSL review record (T-260) —
+  // so lowering its tier without also removing those records is a
+  // contradiction between two independently-maintained files, and that is
+  // what is detected.
   //
   // This catches `session.checkins_missed`, which lives outside the `safety`
   // namespace and was previously guarded only by the literal list below and by

@@ -108,18 +108,19 @@
  * above loads the register through `loadReviewRegister()`, which projects
  * `version`, `pending_pipeline` and `entries` and nothing else. Since T-264
  * one field of `pipeline` IS read, raw: `assignments[*].channel`, for
- * CHANNEL-DRIFT only. Nothing else of `pipeline` (roles, stages, methods).
+ * CHANNEL-DRIFT only. Nothing else of `pipeline` (since T-260 it holds no
+ * roles, stages or methods; `automated_checks` is not read).
  * T-049 § contract §1 says a gate implementing T-040 §6 verbatim needs no
  * change for it, and says explicitly that that is a reading of the rule and not
  * a measurement. The measurement is in `state/EP-0/T-044.md` § Evidence 3.
  * `pipelineIncoherences()` is deliberately NOT wired in — T-049 offers it and
- * does not require it, and wiring it would couple this gate to a block that
- * still models the human roster T-260 removes. What T-258 takes from it is the
+ * does not require it; it runs over the committed register in
+ * `src/pipeline.test.ts` (gate:unit-tests). What T-258 takes from it is the
  * authorship rule alone, applied here against the same rulings literal
  * (`tools/rulings.ts`), which closes OD-258: this gate run alone now refuses an
- * AI record signed off by anyone, the model included. The one T-233 authorship
- * rule NOT applied here is "the model is not a named person in
- * `pipeline.roles`", because this gate does not read the roster.
+ * AI record signed off by anyone, the model included. T-233's rule "the model
+ * is not a named person in `pipeline.roles`" was never applied here, and since
+ * T-260 there is no roster: `pipelineIncoherences()` refuses a `roles` block.
  *
  * USAGE:  node packages/i18n/tools/safety-review-currency.ts [--root <dir>]
  *
