@@ -1,6 +1,7 @@
 /**
  * `gate:safety-review-currency` — T-044; T-258 (the OE-5 terminal state);
- * T-259 (the register flipped to it, the waiver retired, NOTE-NOT-TEXT).
+ * T-259 (the register flipped to it, the waiver retired, NOTE-NOT-TEXT);
+ * T-264 (the automated checks of OE-82, at the terminal status).
  * SD §Revision Log D8, SA §TS-12.3, as departed from under EV-16 (extended by
  * stakeholder ruling OE-5, 2026-10-11) and OE-81.
  *
@@ -37,6 +38,26 @@
  * object, an array, a number, a boolean — so a sign-off cannot be nested in it;
  * T-259, OD-353). The TEXT of a string `note` is never read: a sentence saying
  * a review happened passes. A duplicated JSON key is judged by its last value.
+ *
+ * THE AUTOMATED CHECKS SINCE T-264 (OE-82; `tools/automated-check-currency.ts`).
+ * Under OE-82 the read-aloud pass and the 360 px in-context review are gates,
+ * not people. For a pair whose record is at the terminal status, waived or
+ * not: a key in READ_ALOUD_KEYS_PINNED needs a `checks/read-aloud.json`
+ * record (NO-READ-ALOUD-CHECK) whose `content_hash` equals the register's and
+ * AUTHORED_CONTENT_PINNED's (STALE-READ-ALOUD-CHECK), `result` is "pass"
+ * (READ-ALOUD-FAILED) and `tool` is the CHECK_TOOLS version
+ * (UNPINNED-CHECK-TOOL); a key in RENDER_KEYS_PINNED and not in
+ * AWAITING_SURFACE needs the same of a `checks/render-360.json` record
+ * (NO-RENDER-CHECK, STALE-RENDER-CHECK, RENDER-FAILED). At ANY status: every
+ * record in either file carries its automation `checked_by` and no
+ * `review`-named field (CLAIMS-HUMAN-CHECK); `review.json`'s channels equal
+ * both pins (CHANNEL-DRIFT); every AWAITING_SURFACE entry names a ticket and a
+ * render key (MALFORMED-AWAITING); no awaiting key has a render record
+ * (AWAITING-AND-CHECKED); and, on the full run only, no awaiting key is named
+ * in tracked non-test source under apps/web or apps/admin (RENDERED-UNCHECKED).
+ * This gate reads the committed records; the producer gates re-derive them.
+ * Nothing here shows the copy is speakable or fits: that is what the producers
+ * measure, within their own stated bounds.
  *
  * WHAT THIS GATE IS THE OTHER HALF OF. `gate:locale-completeness` (T-042)
  * proves a `safety_critical` string is PRESENT and RENDERABLE; it states in its
@@ -83,9 +104,11 @@
  *      named as open after T-049 clears the suite's own waiver assertions.
  *
  * WHAT THIS GATE DOES NOT READ, MEASURED RATHER THAN ASSERTED. `review.json`'s
- * `pipeline` block (T-049) is a SIBLING key of `pending_pipeline` and nothing
- * here reads it: this gate loads the register through `loadReviewRegister()`,
- * which projects `version`, `pending_pipeline` and `entries` and nothing else.
+ * `pipeline` block (T-049) is a SIBLING key of `pending_pipeline`. The rule
+ * above loads the register through `loadReviewRegister()`, which projects
+ * `version`, `pending_pipeline` and `entries` and nothing else. Since T-264
+ * one field of `pipeline` IS read, raw: `assignments[*].channel`, for
+ * CHANNEL-DRIFT only. Nothing else of `pipeline` (roles, stages, methods).
  * T-049 § contract §1 says a gate implementing T-040 §6 verbatim needs no
  * change for it, and says explicitly that that is a reading of the rule and not
  * a measurement. The measurement is in `state/EP-0/T-044.md` § Evidence 3.
@@ -123,9 +146,48 @@ import type { ReviewRecord, PendingPipeline } from '../src/review.ts';
 import { TIER_POLICY } from '../src/tiers.ts';
 import type { Tier } from '../src/types.ts';
 import { AI_RULINGS, REVIEW_DROPPED_RULINGS } from './rulings.ts';
+import {
+  AWAITING_SURFACE,
+  CHECK_TOOLS,
+  CHECKED_BY,
+  READ_ALOUD_KEYS_PINNED,
+  RENDER_CHECKED_BY,
+  RENDER_KEYS_PINNED,
+} from './automated-checks.ts';
+import {
+  APP_DIRS,
+  assessPair,
+  countsLine,
+  fileLevelProblems,
+  loadCheckFiles,
+  newCounts,
+  renderedUnchecked,
+  tally,
+  trackedAppSources,
+} from './automated-check-currency.ts';
+import type {
+  AutomatedCheckPins,
+  CheckFiles,
+  AutomatedCounts,
+} from './automated-check-currency.ts';
 
 const GATE = 'gate:safety-review-currency';
 const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+/** The repository root, whose tracked app source the RENDERED-UNCHECKED scan reads (full run only). */
+const REPO_ROOT = join(PACKAGE_ROOT, '..', '..');
+
+/**
+ * T-264 (OE-82): the automated-check pins, from `tools/automated-checks.ts`,
+ * never from `review.json`. `tools/automated-check-currency.ts` applies them.
+ */
+const AUTOMATED_PINS: AutomatedCheckPins = {
+  readAloudKeys: READ_ALOUD_KEYS_PINNED,
+  renderKeys: RENDER_KEYS_PINNED,
+  awaiting: AWAITING_SURFACE,
+  readAloudTool: `espeak-ng ${CHECK_TOOLS['espeak-ng']}`,
+  readAloudCheckedBy: CHECKED_BY,
+  renderCheckedBy: RENDER_CHECKED_BY,
+};
 
 /* ------------------------------------------------------------------- pins */
 
@@ -832,6 +894,36 @@ function checkPair(
   return failures.length === before;
 }
 
+/**
+ * T-264 (OE-82). The automated checks for one pair: assessed for every pair
+ * (the counts line), REFUSED only when the register record is at the terminal
+ * status `unreviewed_by_ruling` — waived or not, because a record claiming to
+ * be final must carry its checks whatever covers it. `suffix` is ` (waived)`
+ * for a waived pair.
+ */
+function automatedChecks(
+  files: CheckFiles,
+  counts: AutomatedCounts,
+  locale: string,
+  key: string,
+  record: unknown,
+  suffix: string,
+  failures: string[],
+): void {
+  const r = isRecord(record) ? record : undefined;
+  const a = assessPair(
+    AUTOMATED_PINS,
+    files,
+    locale,
+    key,
+    r?.['content_hash'],
+    AUTHORED_CONTENT_PINNED[locale]?.[key],
+    `'${key}' in ${locale}${suffix}`,
+  );
+  tally(AUTOMATED_PINS, counts, key, a);
+  if (r?.['status'] === FINAL_STATUS) failures.push(...a.problems);
+}
+
 /* ------------------------------------------------------------------- main */
 
 async function main(argv: readonly string[]): Promise<void> {
@@ -903,6 +995,20 @@ async function main(argv: readonly string[]): Promise<void> {
   }
   const waiverActive = waiver !== undefined && !waiver.expired;
 
+  // T-264 (OE-82): the two automated-check records, from this root, and the
+  // channels `review.json` assigns. Read raw: `loadReviewRegister()` does not
+  // project `pipeline`, and an absent block must be a refusal, not a throw.
+  const checkFiles = loadCheckFiles(root, failures);
+  const counts = newCounts(AUTOMATED_PINS);
+  let assignments: unknown;
+  try {
+    const raw = JSON.parse(readFileSync(join(root, 'review.json'), 'utf8')) as unknown;
+    const pipeline = isRecord(raw) ? raw['pipeline'] : undefined;
+    assignments = isRecord(pipeline) ? pipeline['assignments'] : undefined;
+  } catch {
+    assignments = undefined; // loadReviewRegister() above already refused an unreadable file
+  }
+
   // ------------------------------------------ A. every key, in every locale
   let examined = 0;
   let waived = 0;
@@ -923,7 +1029,8 @@ async function main(argv: readonly string[]): Promise<void> {
         localeWaived += 1;
         // The waiver waives the CURRENCY OF A REVIEW, not the existence of a
         // provenance record. Without this, deleting all 24 records would be
-        // green today, and "delete the thing being checked" is the first move
+        // green under a waiver over every key (the pre-T-259 state, or one
+        // re-added), and "delete the thing being checked" is the first move
         // anyone makes against a gate. T-040 § contract §8 describes a waived
         // key as skipped entirely; this is narrower than the waiver it
         // describes, never wider, and a placeholder record satisfies it.
@@ -958,9 +1065,11 @@ async function main(argv: readonly string[]): Promise<void> {
             unpinnedContent(where, locale, key, record, failures);
           }
         }
+        automatedChecks(checkFiles, counts, locale, key, record, ' (waived)', failures);
         continue;
       }
       if (checkPair(root, locale, key, record, failures)) accepted += 1;
+      automatedChecks(checkFiles, counts, locale, key, record, '', failures);
       if (record !== undefined) {
         verified += 1;
         localeVerified += 1;
@@ -1014,15 +1123,37 @@ async function main(argv: readonly string[]): Promise<void> {
     );
   }
 
+  // --------------------------------------- T-264: the automated checks (OE-82)
+  fileLevelProblems(AUTOMATED_PINS, checkFiles, assignments, failures);
+  // OE-82-cut §3 T-264 item 10: EVERY run prints these, each count computed.
+  console.log(`  ${countsLine(counts)}`);
+
   // -------------------------------------------------- B and C: the anchors
   if (explicitRoot) {
     console.log(
       '  READINGS B AND C NOT RUN: --root was given. The compiled artefact reachable from this ' +
         'script belongs to packages/i18n, and the key, locale and waiver pins are about that ' +
         'package. Reading A only — which still applies the rulings and AUTHORED_CONTENT_PINNED ' +
-        'to every record.',
+        'to every record, and the automated-check records of that root — nor the app-source ' +
+        'scan (RENDERED-UNCHECKED), which reads this repository.',
     );
     finish(banner, failures);
+  }
+
+  // T-264: RENDERED-UNCHECKED, over this repository's tracked app source.
+  const app = trackedAppSources(REPO_ROOT);
+  if ('error' in app) {
+    failures.push(
+      `APP-SOURCE-UNREADABLE the tracked app source under ${APP_DIRS.join(', ')} could not be read — ` +
+        `${app.error}. RENDERED-UNCHECKED cannot be judged, which fails closed.`,
+    );
+  } else {
+    const before = failures.length;
+    renderedUnchecked(AUTOMATED_PINS, app.files, failures);
+    console.log(
+      `  app source scan: ${String(app.files.length)} tracked non-test file(s) under ` +
+        `${APP_DIRS.join(', ')}; ${String(failures.length - before)} awaiting key(s) named in them`,
+    );
   }
 
   checkPins(safetyKeys, enabled, waiver, failures);

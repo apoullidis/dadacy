@@ -2044,10 +2044,10 @@ test('CHANNEL-DRIFT fails closed — an emptied pin, and an absent pipeline.assi
   );
   const b: string[] = [];
   fileLevelProblems(pinsCopy(), files, undefined, b);
-  assert.deepEqual(
-    b.map((l) => l.slice(0, 40)),
-    ['CHANNEL-DRIFT review.json has no `pipelin'],
-    JSON.stringify(b),
+  assert.equal(b.length, 1, JSON.stringify(b));
+  assert.ok(
+    b[0]!.startsWith('CHANNEL-DRIFT review.json has no `pipeline.assignments` object'),
+    b[0],
   );
 });
 
