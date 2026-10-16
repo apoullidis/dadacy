@@ -1463,7 +1463,15 @@ function runGate(now?: string): { code: number; out: string; banner: string } {
 function runVitest(file: string, title: string): { code: number; out: string; ran: boolean } {
   const r = spawnSync(
     process.execPath,
-    [join(PKG, 'node_modules', 'vitest', 'vitest.mjs'), 'run', file, '-t', title, '--no-color'],
+    [
+      join(PKG, 'node_modules', 'vitest', 'vitest.mjs'),
+      'run',
+      file,
+      // `-t` is a regular expression: the title is escaped so it matches itself only.
+      '-t',
+      `^${title.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}$`,
+      '--no-color',
+    ],
     { cwd: PKG, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 },
   );
   const out = `${r.stdout ?? ''}${r.stderr ?? ''}`;
