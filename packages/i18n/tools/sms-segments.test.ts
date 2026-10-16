@@ -1229,6 +1229,9 @@ test('T-176: a parameter branched on as BOTH a plural and a select is refused ra
   );
 });
 
+// T-263 (decisions.md OD-357): an explicit 30 s timeout, the trailing argument below. This case
+// is CPU-bound (~2.85 s in a full package run at main 1207b64) and ran on Vitest's 5000 ms
+// default; the parallel load of tools/read-aloud.test.ts took it to ~5.05 s.
 test('T-176: a declared domain too large to check the candidate set against ICU is REFUSED, never sampled', () => {
   attack(
     (root) => {
@@ -1248,7 +1251,7 @@ test('T-176: a declared domain too large to check the candidate set against ICU 
     'FAIL',
     ['VERIFICATION-EXPLOSION', 'over the 250000 cap', 'refuses rather than sampling'],
   );
-});
+}, 30_000);
 
 test('T-176: a parameter reachable only inside an ICU tag is SEEN — T-046`s shape did not traverse tag children', () => {
   attack(

@@ -842,3 +842,142 @@ test(
     assert.equal(run.problems.filter((p) => p.startsWith('EXTRA-RECORD')).length, 9, run.out);
   },
 );
+
+/* ------------------------------------------- inputs the gate fails closed on */
+
+test(
+  'UNSUPPORTED-ICU — a {n, number} argument in a pinned string is refused, not skipped',
+  { timeout: T },
+  () => {
+    const root = freshRoot();
+    plantJson(join(root, 'catalogues', 'en', 'safety.json'), (d) => {
+      d['emergency.address_prompt'] =
+        'Read this address to the 112 operator, {n, number}: {address}';
+    });
+    const run = runGate(root);
+    assertFail(run);
+    assert.ok(
+      run.problems.includes(
+        'UNSUPPORTED-ICU en safety.emergency.address_prompt: element type 2 is not modelled',
+      ),
+      run.out,
+    );
+    assert.match(run.out, /^read-aloud: 9 pairs, 13 forms/m);
+  },
+);
+
+test('NO-SOURCE — a pinned key deleted from a catalogue is refused', { timeout: T }, () => {
+  const root = freshRoot();
+  plantJson(join(root, 'catalogues', 'ru', 'session.json'), (d) => {
+    delete d['checkins_missed'];
+  });
+  const run = runGate(root);
+  assertFail(run);
+  assert.ok(
+    run.problems.includes(
+      'NO-SOURCE ru session.checkins_missed: no catalogue string in catalogues/ru/session.json',
+    ),
+    run.out,
+  );
+});
+
+test(
+  'NO-REGISTER-RECORD — a pinned pair with no review.json content_hash is refused',
+  { timeout: T },
+  () => {
+    const root = freshRoot();
+    plantJson(join(root, 'review.json'), (d) => {
+      const el = (d['entries'] as Record<string, Record<string, unknown>>)['el'];
+      assert.ok(el !== undefined);
+      delete el['safety.emergency.call_112.script'];
+    });
+    const run = runGate(root);
+    assertFail(run);
+    assert.ok(
+      run.problems.includes(
+        'NO-REGISTER-RECORD el safety.emergency.call_112.script: review.json has no content_hash for this pair',
+      ),
+      run.out,
+    );
+  },
+);
+
+test(
+  'RECORD-DRIFT — the register content_hash changed under an unchanged record is refused',
+  { timeout: T },
+  () => {
+    const root = freshRoot();
+    plantJson(join(root, 'review.json'), (d) => {
+      const r = (d['entries'] as Record<string, Record<string, Record<string, unknown>>>)['en']?.[
+        'session.checkins_missed'
+      ];
+      assert.ok(r !== undefined);
+      r['content_hash'] = `sha256:${'0'.repeat(64)}`;
+    });
+    const run = runGate(root);
+    assertFail(run);
+    assert.equal(run.problems.length, 1, run.out);
+    assert.ok(
+      run.problems[0]?.startsWith(
+        'RECORD-DRIFT en.session.checkins_missed.content_hash: committed "sha256:',
+      ),
+      run.out,
+    );
+  },
+);
+
+test(
+  'FIXTURE-WRONG-CATEGORY — a plural fixture count Intl.PluralRules puts in another category is refused',
+  { timeout: T },
+  () => {
+    const root = freshRoot();
+    const tool = copyTool(root);
+    plantText(
+      join(root, 'tools', 'automated-checks.ts'),
+      'ru: { one: 1, few: 3, many: 5, other: 1.5 },',
+      'ru: { one: 1, few: 5, many: 5, other: 1.5 },',
+    );
+    const run = runScript(tool, ['--root', root]);
+    assertFail(run);
+    assert.ok(
+      run.problems.includes("FIXTURE-WRONG-CATEGORY ru: count 5 is 'many', pinned as 'few'"),
+      run.out,
+    );
+  },
+);
+
+test('NO-FIXTURE — a plural category with no fixture count is refused', { timeout: T }, () => {
+  const root = freshRoot();
+  const tool = copyTool(root);
+  plantText(
+    join(root, 'tools', 'automated-checks.ts'),
+    'ru: { one: 1, few: 3, many: 5, other: 1.5 },',
+    'ru: { one: 1, few: 3, other: 1.5 },',
+  );
+  const run = runScript(tool, ['--root', root]);
+  assertFail(run);
+  assert.ok(
+    run.problems.includes(
+      "NO-FIXTURE no plural count for category 'many' in ru (ru session.checkins_missed [count=many])",
+    ),
+    run.out,
+  );
+});
+
+test(
+  'NO-VOICE — an enabled locale with no pinned espeak-ng voice is refused, and nothing is synthesised for it',
+  { timeout: T },
+  () => {
+    const root = freshRoot();
+    const tool = copyTool(root);
+    plantText(
+      join(root, 'tools', 'automated-checks.ts'),
+      "{ en: 'en', el: 'el', ru: 'ru' }",
+      "{ en: 'en', ru: 'ru' }",
+    );
+    const run = runScript(tool, ['--root', root]);
+    assertFail(run);
+    assert.equal(run.problems.filter((p) => p.startsWith('NO-VOICE el ')).length, 3, run.out);
+    assert.ok(!/^ {2}(ok|!!) el /m.test(run.out), run.out);
+  },
+);
