@@ -108,3 +108,59 @@ export const FIXTURE_PLURAL_COUNTS: Readonly<Record<string, Readonly<Record<stri
   el: { one: 1, other: 3 },
   ru: { one: 1, few: 3, many: 5, other: 1.5 },
 };
+
+/* ------------------------------------------------- T-264: the render-360 pins */
+
+/** The channels a 360 px render check applies to: every channel a screen shows. */
+export type RenderChannel = 'screen' | 'spoken_by_user' | 'undetermined';
+
+/**
+ * T-264 (OE-82-cut §3 item 2). Every key whose copy-review channel is shown on a
+ * screen, with that channel, as `review.json` stood on 2026-10-16 (`main`
+ * cfe0886): `screen`, `spoken_by_user` (the user reads it off the screen to a
+ * 112 operator) and `undetermined` (fails closed). Only `voice` is not here: a
+ * prompt the voice rung plays is heard, not shown. 8 keys x 3 enabled locales =
+ * 24 pairs. Moves in the SAME commit as a `review.json` channel change, or
+ * `gate:safety-review-currency` is red `CHANNEL-DRIFT`.
+ */
+export const RENDER_KEYS_PINNED: Readonly<Record<string, RenderChannel>> = {
+  'safety.emergency.address_prompt': 'spoken_by_user',
+  'safety.emergency.call_112.label': 'screen',
+  'safety.emergency.call_112.script': 'spoken_by_user',
+  'safety.helpline.116111.label': 'screen',
+  'safety.helpline.1466.label': 'screen',
+  'safety.helpline.199.label': 'screen',
+  'safety.sos.confirm': 'screen',
+  'session.checkins_missed': 'undetermined',
+};
+
+/**
+ * T-264 (OE-82-cut §3 item 1). A render-applicable key that NO app surface
+ * renders yet, mapped to the ticket that builds its surface. A key listed here
+ * needs no `checks/render-360.json` record; a key NOT listed here needs a
+ * current, passing one at the terminal status (`NO-RENDER-CHECK`). A key may
+ * not be both (`AWAITING-AND-CHECKED`), and a listed key whose id appears in
+ * tracked app source is `RENDERED-UNCHECKED`. The surface ticket REMOVES its
+ * keys from here in the commit that declares the surface (T-265 § contract).
+ * The list must be EMPTY for production readiness (OE-82-cut §4b item 6, `T-019`).
+ *
+ * The mapping, checked against PM §MVP-IS5 AC4/AC7 and the BOARD rows on
+ * 2026-10-16: the six emergency-panel keys (the number labels, the 112 script
+ * and the address-reading prompt; `emergency_panel: true` in `review.json`)
+ * and the SOS confirmation (AC4, "one tap, confirm") are `T-110`'s ("SOS —
+ * `tel:112` offline", whose row names "the seven `T-110` keys"); the missed
+ * check-in message is `T-107`'s (check-ins and the Quiet Check-in ladder).
+ */
+export const AWAITING_SURFACE: Readonly<Record<string, string>> = {
+  'safety.emergency.address_prompt': 'T-110',
+  'safety.emergency.call_112.label': 'T-110',
+  'safety.emergency.call_112.script': 'T-110',
+  'safety.helpline.116111.label': 'T-110',
+  'safety.helpline.1466.label': 'T-110',
+  'safety.helpline.199.label': 'T-110',
+  'safety.sos.confirm': 'T-110',
+  'session.checkins_missed': 'T-107',
+};
+
+/** The literal every `checks/render-360.json` record's `checked_by` must carry (T-265). Never a person. */
+export const RENDER_CHECKED_BY = 'automation:gate:safety-copy-render';
