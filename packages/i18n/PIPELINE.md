@@ -271,9 +271,29 @@ What does refuse a review claim in a committed register:
   `NOTE-NOT-TEXT` on a `note` that is structured data — waived or not
   (`state/EP-0/T-258.md`, `T-259.md` § Published contract — LIVE).
 - `pipelineIncoherences()`, run over the committed register by
-  `src/pipeline.test.ts` in `gate:unit-tests`: everything in this section's
-  rules above, including the cases the gate does not judge inside a waiver
-  (the values of `authored_by`, `ruling` and a non-`signed_off` `status`).
+  `src/pipeline.test.ts` in `gate:unit-tests` (_the coherence predicates are
+  silent on the register as it actually stands_). It is not passed the waiver,
+  so a waiver changes nothing it reports. It refuses: an `ai_authored` record
+  whose `ruling` is missing, unknown or not for its locale, or whose
+  `authored_by` is not exactly the model that ruling names; a `ruling` on any
+  other provenance; a non-null `authored_by` on a record that is not
+  `ai_authored`; a human provenance; a `signed_off` status; and a non-null
+  `reviewed_by` or `reviewed_at`, at any status. It does **not** judge any
+  other `status` value: a waived record at `pending_review`, or at a value
+  outside the enum, gets no line from it.
+- The other `status` values, and the waiver itself, are refused over the
+  committed register by other `gate:unit-tests` cases. In
+  `src/pipeline.test.ts`, the shape test _T-040's published `entries` shape
+  survives this ticket, field by field_ refuses a `status` outside
+  `signed_off`, `pending_review` and `unreviewed_by_ruling`. Two `T-259` cases
+  refuse any `status` other than `unreviewed_by_ruling`: _every record is
+  AI-authored and final under OE-5; none is signed off_ (`src/pipeline.test.ts`)
+  and _every safety_critical record is final with no review under OE-5, with
+  a null reviewer and date (T-259)_ (`src/review.test.ts`). Two more refuse any
+  waiver: _the pipeline block exists, is loaded fail-closed, and carries no
+  date in force (T-259, OE-5)_ (`src/pipeline.test.ts`) and _pending_pipeline
+  is null: the waiver waited for a human review that OE-5 ruled out (T-259)_
+  (`src/review.test.ts`).
 
 What does **not**: the **text** of a string `note` is read by nothing, so a
 sentence saying a review happened passes both; and a duplicated JSON key is
