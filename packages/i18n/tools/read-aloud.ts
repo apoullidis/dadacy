@@ -251,7 +251,10 @@ function renderForm(locale: string, ast: readonly MessageFormatElement[], c: Com
   const values: Record<string, string | number> = {};
   let complete = true;
 
-  const walk = (els: readonly MessageFormatElement[], count: number | undefined): [string, string] => {
+  const walk = (
+    els: readonly MessageFormatElement[],
+    count: number | undefined,
+  ): [string, string] => {
     let t = '';
     let s = '';
     for (const el of els) {
@@ -283,7 +286,7 @@ function renderForm(locale: string, ast: readonly MessageFormatElement[], c: Com
           }
         }
         if (n !== undefined) values[el.value] = n;
-        const opt = el.options[key] ?? el.options.other;
+        const opt = el.options[key] ?? el.options['other'];
         if (opt === undefined) throw new UnsupportedIcu(`plural {${el.value}} has no other`);
         const [tt, ss] = walk(opt.value, n);
         t += tt;
@@ -291,7 +294,7 @@ function renderForm(locale: string, ast: readonly MessageFormatElement[], c: Com
       } else if (el.type === TYPE.select) {
         const key = chosen.get(el.value) ?? 'other';
         values[el.value] = key;
-        const opt = el.options[key] ?? el.options.other;
+        const opt = el.options[key] ?? el.options['other'];
         if (opt === undefined) throw new UnsupportedIcu(`select {${el.value}} has no other`);
         const [tt, ss] = walk(opt.value, count);
         t += tt;
@@ -358,30 +361,39 @@ const DEFAULT_SENTENCE_END = /[.!?]+/u;
 function lint(locale: string, form: string, r: Rendered, where: string): string[] {
   const p: string[] = [];
   const at = `${where} [${form}]`;
-  if (LOCALE_SCRIPT[locale] === undefined) p.push(`UNSPEAKABLE-CHAR ${at}: no script is pinned for '${locale}'`);
+  if (LOCALE_SCRIPT[locale] === undefined)
+    p.push(`UNSPEAKABLE-CHAR ${at}: no script is pinned for '${locale}'`);
   for (const ch of unspeakable(locale, r.template))
     p.push(`UNSPEAKABLE-CHAR ${at}: ${codePoint(ch)} ${JSON.stringify(ch)} in the template text`);
   for (const ch of unspeakable(locale, r.spoken))
-    p.push(`UNSPEAKABLE-CHAR ${at}: ${codePoint(ch)} ${JSON.stringify(ch)} in the spoken text ${JSON.stringify(r.spoken)}`);
+    p.push(
+      `UNSPEAKABLE-CHAR ${at}: ${codePoint(ch)} ${JSON.stringify(ch)} in the spoken text ${JSON.stringify(r.spoken)}`,
+    );
   const allowed = new Set(SPOKEN_TOKENS_ALLOWED);
   for (const w of words(r.template)) {
     if (allowed.has(w)) continue;
     const scripts = new Set([...w].filter((ch) => /\p{L}/u.test(ch)).map(scriptOf));
     if (scripts.size > 1)
-      p.push(`MIXED-SCRIPT-WORD ${at}: ${JSON.stringify(w)} mixes ${[...scripts].sort().join(' + ')}`);
+      p.push(
+        `MIXED-SCRIPT-WORD ${at}: ${JSON.stringify(w)} mixes ${[...scripts].sort().join(' + ')}`,
+      );
     if (/\p{Lu}{2,}/u.test(w)) p.push(`UNLISTED-ACRONYM ${at}: ${JSON.stringify(w)}`);
   }
   const bare = r.template.replace(INERT, ' ');
   for (const m of bare.matchAll(/\d+(?: \d+)*/gu))
     if (!SPOKEN_NUMBERS.includes(m[0]))
-      p.push(`UNLISTED-NUMBER ${at}: ${JSON.stringify(m[0])} is not one of ${SPOKEN_NUMBERS.join(', ')}`);
+      p.push(
+        `UNLISTED-NUMBER ${at}: ${JSON.stringify(m[0])} is not one of ${SPOKEN_NUMBERS.join(', ')}`,
+      );
   const ends = SENTENCE_END[locale] ?? DEFAULT_SENTENCE_END;
   for (const sentence of r.template.split(ends)) {
     const n = sentence
       .split(/\s+/u)
       .filter((tok) => /[\p{L}\p{N}]/u.test(tok) || tok.includes(INERT_OPEN)).length;
     if (n > MAX_WORDS_PER_SENTENCE)
-      p.push(`SENTENCE-TOO-LONG ${at}: ${String(n)} words > ${String(MAX_WORDS_PER_SENTENCE)} in ${JSON.stringify(sentence.trim())}`);
+      p.push(
+        `SENTENCE-TOO-LONG ${at}: ${String(n)} words > ${String(MAX_WORDS_PER_SENTENCE)} in ${JSON.stringify(sentence.trim())}`,
+      );
   }
   return p;
 }
@@ -394,13 +406,25 @@ function probeTool(): Probe {
   const r = spawnSync(TOOL, ['--version'], { encoding: 'utf8' });
   if (r.error !== undefined) {
     const code = (r.error as NodeJS.ErrnoException).code;
-    return { ok: false, unavailable: code === 'ENOENT', why: `${TOOL} --version: ${r.error.message}` };
+    return {
+      ok: false,
+      unavailable: code === 'ENOENT',
+      why: `${TOOL} --version: ${r.error.message}`,
+    };
   }
   if (r.status !== 0)
-    return { ok: false, unavailable: false, why: `${TOOL} --version exited ${String(r.status)}: ${r.stderr.trim()}` };
+    return {
+      ok: false,
+      unavailable: false,
+      why: `${TOOL} --version exited ${String(r.status)}: ${r.stderr.trim()}`,
+    };
   const m = /text-to-speech:\s+(\S+)/u.exec(r.stdout);
   if (m?.[1] === undefined)
-    return { ok: false, unavailable: false, why: `${TOOL} --version printed no version: ${JSON.stringify(r.stdout.trim())}` };
+    return {
+      ok: false,
+      unavailable: false,
+      why: `${TOOL} --version printed no version: ${JSON.stringify(r.stdout.trim())}`,
+    };
   return { ok: true, version: m[1] };
 }
 
@@ -412,7 +436,11 @@ interface Synth {
 
 /** WAV duration in ms from the RIFF header, or a reason it cannot be read. */
 function wavDuration(buf: Buffer): number | string {
-  if (buf.length < 12 || buf.toString('ascii', 0, 4) !== 'RIFF' || buf.toString('ascii', 8, 12) !== 'WAVE')
+  if (
+    buf.length < 12 ||
+    buf.toString('ascii', 0, 4) !== 'RIFF' ||
+    buf.toString('ascii', 8, 12) !== 'WAVE'
+  )
     return 'not a RIFF/WAVE file';
   if (buf.readUInt32LE(4) !== buf.length - 8)
     return `RIFF size ${String(buf.readUInt32LE(4))} != file size ${String(buf.length)} - 8`;
@@ -447,14 +475,25 @@ function synthesise(dir: string, voice: string, text: string): SynthResult {
     return { ok: false, unavailable: code === 'ENOENT', why: r.error.message };
   }
   if (r.status !== 0)
-    return { ok: false, unavailable: false, why: `exited ${String(r.status)}; stderr ${JSON.stringify(r.stderr.trim())}` };
+    return {
+      ok: false,
+      unavailable: false,
+      why: `exited ${String(r.status)}; stderr ${JSON.stringify(r.stderr.trim())}`,
+    };
   if (r.stderr.trim() !== '')
-    return { ok: false, unavailable: false, why: `exited 0 but wrote to stderr: ${JSON.stringify(r.stderr.trim())}` };
+    return {
+      ok: false,
+      unavailable: false,
+      why: `exited 0 but wrote to stderr: ${JSON.stringify(r.stderr.trim())}`,
+    };
   if (!existsSync(wav)) return { ok: false, unavailable: false, why: 'exited 0 and wrote no WAV' };
   const buf = readFileSync(wav);
   const d = wavDuration(buf);
   if (typeof d === 'string') return { ok: false, unavailable: false, why: `WAV unreadable: ${d}` };
-  return { ok: true, s: { duration_ms: d, audio_sha256: sha256(buf), phonemes_sha256: sha256(r.stdout) } };
+  return {
+    ok: true,
+    s: { duration_ms: d, audio_sha256: sha256(buf), phonemes_sha256: sha256(r.stdout) },
+  };
 }
 
 /* ------------------------------------------------------------ the record */
@@ -531,35 +570,50 @@ function main(argv: readonly string[]): never {
 
   // ---- the locale set and the register
   const registry = readJson(join(args.root, 'locale-registry.json'));
-  const locales = isRecord(registry) && Array.isArray(registry.locales)
-    ? registry.locales
-        .filter((l): l is Record<string, unknown> => isRecord(l) && l.enabled === true)
-        .map((l) => String(l.code))
-    : [];
+  const locales =
+    isRecord(registry) && Array.isArray(registry['locales'])
+      ? registry['locales']
+          .filter((l): l is Record<string, unknown> => isRecord(l) && l['enabled'] === true)
+          .map((l) => String(l['code']))
+      : [];
   const review = readJson(join(args.root, 'review.json'));
-  const pipeline = isRecord(review) && isRecord(review.pipeline) ? review.pipeline : undefined;
-  const assignments = pipeline !== undefined && isRecord(pipeline.assignments) ? pipeline.assignments : undefined;
-  const entries = isRecord(review) && isRecord(review.entries) ? review.entries : {};
+  const pipeline =
+    isRecord(review) && isRecord(review['pipeline']) ? review['pipeline'] : undefined;
+  const assignments =
+    pipeline !== undefined && isRecord(pipeline['assignments'])
+      ? pipeline['assignments']
+      : undefined;
+  const entries = isRecord(review) && isRecord(review['entries']) ? review['entries'] : {};
 
   // ---- CHANNEL-DRIFT: review.json's spoken set against the pin, both directions
   if (assignments === undefined) {
-    failures.push('CHANNEL-DRIFT review.json has no pipeline.assignments: the spoken key set cannot be read');
+    failures.push(
+      'CHANNEL-DRIFT review.json has no pipeline.assignments: the spoken key set cannot be read',
+    );
   } else {
     const spoken = new Map<string, string>();
     for (const [key, a] of Object.entries(assignments)) {
-      const ch = isRecord(a) ? a.channel : undefined;
+      const ch = isRecord(a) ? a['channel'] : undefined;
       if (ch !== 'screen') spoken.set(key, typeof ch === 'string' ? ch : String(ch));
     }
     for (const [key, ch] of spoken)
       if (READ_ALOUD_KEYS_PINNED[key] === undefined)
-        failures.push(`CHANNEL-DRIFT ${key}: channel '${ch}' in review.json, but not in READ_ALOUD_KEYS_PINNED`);
+        failures.push(
+          `CHANNEL-DRIFT ${key}: channel '${ch}' in review.json, but not in READ_ALOUD_KEYS_PINNED`,
+        );
       else if (READ_ALOUD_KEYS_PINNED[key] !== ch)
-        failures.push(`CHANNEL-DRIFT ${key}: channel '${ch}' in review.json, pinned '${String(READ_ALOUD_KEYS_PINNED[key])}'`);
+        failures.push(
+          `CHANNEL-DRIFT ${key}: channel '${ch}' in review.json, pinned '${String(READ_ALOUD_KEYS_PINNED[key])}'`,
+        );
     for (const key of Object.keys(READ_ALOUD_KEYS_PINNED))
       if (!spoken.has(key))
-        failures.push(`CHANNEL-DRIFT ${key}: pinned as spoken, but review.json's channel is 'screen' or the key is absent`);
+        failures.push(
+          `CHANNEL-DRIFT ${key}: pinned as spoken, but review.json's channel is 'screen' or the key is absent`,
+        );
     if (Object.keys(READ_ALOUD_KEYS_PINNED).length === 0)
-      failures.push('CHANNEL-DRIFT READ_ALOUD_KEYS_PINNED is empty: nothing would be checked (fails closed)');
+      failures.push(
+        'CHANNEL-DRIFT READ_ALOUD_KEYS_PINNED is empty: nothing would be checked (fails closed)',
+      );
   }
 
   // ---- the tool
@@ -569,14 +623,18 @@ function main(argv: readonly string[]): never {
   if (!probe.ok) {
     if (probe.unavailable) {
       ttsUnavailable = true;
-      failures.push(`TTS-UNAVAILABLE ${TOOL} is not on PATH (${probe.why}). Nothing was synthesised; this is NOT a pass.`);
+      failures.push(
+        `TTS-UNAVAILABLE ${TOOL} is not on PATH (${probe.why}). Nothing was synthesised; this is NOT a pass.`,
+      );
     } else {
       ttsBroken = true;
       failures.push(`TTS-FAILED ${probe.why}`);
     }
   } else if (probe.version !== CHECK_TOOLS[TOOL]) {
     ttsBroken = true;
-    failures.push(`TTS-FAILED ${TOOL} reports '${probe.version}', CHECK_TOOLS pins '${CHECK_TOOLS[TOOL]}'`);
+    failures.push(
+      `TTS-FAILED ${TOOL} reports '${probe.version}', CHECK_TOOLS pins '${CHECK_TOOLS[TOOL]}'`,
+    );
   }
   const toolLabel = probe.ok ? `${TOOL} ${probe.version}` : `${TOOL} UNAVAILABLE`;
   const canSynth = !ttsUnavailable && !ttsBroken;
@@ -587,7 +645,9 @@ function main(argv: readonly string[]): never {
     for (const cat of pr.resolvedOptions().pluralCategories) {
       const n = FIXTURE_PLURAL_COUNTS[locale]?.[cat];
       if (n !== undefined && pr.select(n) !== cat)
-        failures.push(`FIXTURE-WRONG-CATEGORY ${locale}: count ${String(n)} is '${pr.select(n)}', pinned as '${cat}'`);
+        failures.push(
+          `FIXTURE-WRONG-CATEGORY ${locale}: count ${String(n)} is '${pr.select(n)}', pinned as '${cat}'`,
+        );
     }
   }
 
@@ -609,24 +669,33 @@ function main(argv: readonly string[]): never {
         const cat = existsSync(file) ? readJson(file) : undefined;
         const source = isRecord(cat) ? cat[key.slice(dot + 1)] : undefined;
         if (typeof source !== 'string') {
-          failures.push(`NO-SOURCE ${pair}: no catalogue string in catalogues/${locale}/${key.slice(0, dot)}.json`);
+          failures.push(
+            `NO-SOURCE ${pair}: no catalogue string in catalogues/${locale}/${key.slice(0, dot)}.json`,
+          );
           continue;
         }
-        const reg = isRecord(entries[locale]) ? (entries[locale] as Record<string, unknown>)[key] : undefined;
-        const contentHash = isRecord(reg) ? reg.content_hash : undefined;
+        const reg = isRecord(entries[locale])
+          ? (entries[locale] as Record<string, unknown>)[key]
+          : undefined;
+        const contentHash = isRecord(reg) ? reg['content_hash'] : undefined;
         if (typeof contentHash !== 'string') {
-          failures.push(`NO-REGISTER-RECORD ${pair}: review.json has no content_hash for this pair`);
+          failures.push(
+            `NO-REGISTER-RECORD ${pair}: review.json has no content_hash for this pair`,
+          );
           continue;
         }
         const voice = VOICES[locale];
-        if (voice === undefined) failures.push(`NO-VOICE ${pair}: no espeak-ng voice is pinned for '${locale}'`);
+        if (voice === undefined)
+          failures.push(`NO-VOICE ${pair}: no espeak-ng voice is pinned for '${locale}'`);
         let ast: MessageFormatElement[];
         let args2: Map<string, Branching>;
         try {
           ast = parse(source, { requiresOtherClause: true });
           args2 = branchingArgs(ast);
         } catch (err) {
-          failures.push(`UNSUPPORTED-ICU ${pair}: ${err instanceof Error ? err.message : String(err)}`);
+          failures.push(
+            `UNSUPPORTED-ICU ${pair}: ${err instanceof Error ? err.message : String(err)}`,
+          );
           continue;
         }
         const expanded = combos(locale, args2);
@@ -650,7 +719,9 @@ function main(argv: readonly string[]): never {
           try {
             r = renderForm(locale, ast, c);
           } catch (err) {
-            failures.push(`UNSUPPORTED-ICU ${pair} [${form}]: ${err instanceof Error ? err.message : String(err)}`);
+            failures.push(
+              `UNSUPPORTED-ICU ${pair} [${form}]: ${err instanceof Error ? err.message : String(err)}`,
+            );
             pairOk = false;
             continue;
           }
@@ -658,14 +729,18 @@ function main(argv: readonly string[]): never {
           if (r.values !== undefined) {
             const icu = new IntlMessageFormat(source, locale).format(r.values);
             if (typeof icu !== 'string' || icu.normalize('NFC') !== r.spoken)
-              failures.push(`RENDER-MISMATCH ${pair} [${form}]: this walker ${JSON.stringify(r.spoken)}, intl-messageformat ${JSON.stringify(icu)}`);
+              failures.push(
+                `RENDER-MISMATCH ${pair} [${form}]: this walker ${JSON.stringify(r.spoken)}, intl-messageformat ${JSON.stringify(icu)}`,
+              );
           }
           failures.push(...lint(locale, form, r, pair));
           if (!canSynth || voice === undefined) continue;
           const s = synthesise(dir, voice, r.spoken);
           if (!s.ok) {
             pairOk = false;
-            failures.push(`${s.unavailable ? 'TTS-UNAVAILABLE' : 'TTS-FAILED'} ${pair} [${form}]: ${s.why}`);
+            failures.push(
+              `${s.unavailable ? 'TTS-UNAVAILABLE' : 'TTS-FAILED'} ${pair} [${form}]: ${s.why}`,
+            );
             continue;
           }
           const within = s.s.duration_ms <= budget;
@@ -673,7 +748,9 @@ function main(argv: readonly string[]): never {
             `  ${within ? 'ok' : '!!'} ${pair} [${form}] ${String(s.s.duration_ms)} ms of ${String(budget)} ms (${channel})`,
           );
           if (!within)
-            failures.push(`TOO-LONG-SPOKEN ${pair} [${form}]: ${String(s.s.duration_ms)} ms > ${String(budget)} ms (${channel})`);
+            failures.push(
+              `TOO-LONG-SPOKEN ${pair} [${form}]: ${String(s.s.duration_ms)} ms > ${String(budget)} ms (${channel})`,
+            );
           formRecords.push({
             form,
             text_sha256: sha256(r.spoken),
@@ -716,23 +793,31 @@ function main(argv: readonly string[]): never {
       committed = readJson(recordFile);
     } catch (err) {
       committed = undefined;
-      failures.push(`RECORD-DRIFT ${RECORD_PATH} is not JSON: ${err instanceof Error ? err.message : String(err)}`);
+      failures.push(
+        `RECORD-DRIFT ${RECORD_PATH} is not JSON: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
     if (committed !== undefined) {
-      const recs = isRecord(committed) && isRecord(committed.records) ? committed.records : {};
+      const recs =
+        isRecord(committed) && isRecord(committed['records']) ? committed['records'] : {};
       let pairDrift = false;
       for (const [locale, byKey] of Object.entries(recs)) {
         if (!isRecord(byKey)) continue;
         for (const [key, rec] of Object.entries(byKey)) {
-          if (!computed.get(locale)?.has(key) && !(locales.includes(locale) && key in READ_ALOUD_KEYS_PINNED)) {
-            failures.push(`EXTRA-RECORD ${locale} ${key}: a record for a pair this gate does not check`);
+          if (
+            !computed.get(locale)?.has(key) &&
+            !(locales.includes(locale) && key in READ_ALOUD_KEYS_PINNED)
+          ) {
+            failures.push(
+              `EXTRA-RECORD ${locale} ${key}: a record for a pair this gate does not check`,
+            );
             pairDrift = true;
           }
           if (!isRecord(rec)) continue;
           const reviewish = Object.keys(rec).filter((f) => /review/iu.test(f));
-          if (rec.checked_by !== CHECKED_BY || reviewish.length > 0)
+          if (rec['checked_by'] !== CHECKED_BY || reviewish.length > 0)
             failures.push(
-              `CLAIMS-HUMAN-CHECK ${locale} ${key}: checked_by ${JSON.stringify(rec.checked_by)}` +
+              `CLAIMS-HUMAN-CHECK ${locale} ${key}: checked_by ${JSON.stringify(rec['checked_by'])}` +
                 (reviewish.length > 0 ? `, field(s) ${reviewish.join(', ')}` : '') +
                 `; only ${JSON.stringify(CHECKED_BY)} is accepted — nobody reviews this copy (OE-5, OE-82)`,
             );
@@ -740,7 +825,9 @@ function main(argv: readonly string[]): never {
       }
       for (const locale of locales)
         for (const key of Object.keys(READ_ALOUD_KEYS_PINNED)) {
-          const rec = isRecord(recs[locale]) ? (recs[locale] as Record<string, unknown>)[key] : undefined;
+          const rec = isRecord(recs[locale])
+            ? (recs[locale] as Record<string, unknown>)[key]
+            : undefined;
           if (rec === undefined) {
             failures.push(`MISSING-RECORD ${locale} ${key}: no entry in ${RECORD_PATH}`);
             pairDrift = true;
@@ -757,7 +844,9 @@ function main(argv: readonly string[]): never {
           }
         }
       if (!pairDrift && readFileSync(recordFile, 'utf8') !== generated)
-        failures.push(`RECORD-DRIFT ${RECORD_PATH}: its bytes differ from what --write would write`);
+        failures.push(
+          `RECORD-DRIFT ${RECORD_PATH}: its bytes differ from what --write would write`,
+        );
     }
   }
   if (ttsUnavailable) console.log('  record NOT verified against synthesis: TTS unavailable');
