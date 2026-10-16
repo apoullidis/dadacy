@@ -45,9 +45,11 @@
  */
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { loadCopyPipeline } from '../src/review.ts';
+import { enabledLocales } from '../src/index.ts';
 
 const PKG = join(dirname(fileURLToPath(import.meta.url)), '..');
 const GATE_SCRIPT = join(PKG, 'tools', 'safety-review-currency.ts');
@@ -59,6 +61,20 @@ const CATALOGUE_RU = 'packages/i18n/catalogues/ru/session.json';
 const CATALOGUE_EL = 'packages/i18n/catalogues/el/session.json';
 const COMPILED = 'packages/i18n/compiled/index.ts';
 const RULINGS = 'packages/i18n/tools/rulings.ts';
+// T-264
+const READ_ALOUD = 'packages/i18n/checks/read-aloud.json';
+const RENDER = 'packages/i18n/checks/render-360.json';
+const PINS = 'packages/i18n/tools/automated-checks.ts';
+const GATE_SRC = 'packages/i18n/tools/safety-review-currency.ts';
+const CATALOGUE_EL_SAFETY = 'packages/i18n/catalogues/el/safety.json';
+const APP_PLANT = 'apps/web/src/sos-confirm.tsx';
+const APP_PLANT_TEST = 'apps/web/src/sos-confirm.test.tsx';
+const PIPELINE_TEST = 'src/pipeline.test.ts';
+/** The R3-F1 stage-manifest test, as T-264 titles it. */
+const MANIFEST_TITLE =
+  'R3-F1: four stage ids, that order, ALL BLOCKING (T-264: the 360 px and read-aloud checks are gates, not stages)';
+/** The paths the driver requires clean before it starts and after it ends. */
+const WATCHED = ['packages/i18n', 'apps/web', 'apps/admin'];
 
 /** The waived `safety_critical` key these cases use. */
 const KEY = 'session.checkins_missed';
@@ -67,6 +83,13 @@ interface Edit {
   /** Repository-relative path, as git prints it. */
   readonly file: string;
   readonly plant: (s: string) => string;
+  /**
+   * T-264: the file does NOT exist before the case. The plant receives `''`,
+   * the driver asserts the file was absent, and the restore deletes it.
+   */
+  readonly create?: boolean;
+  /** T-264: after writing a created file, `git add --intent-to-add` it so it is tracked; the restore un-adds it. */
+  readonly track?: boolean;
 }
 
 interface Case {
@@ -84,6 +107,13 @@ interface Case {
    * that day, so a clock that did not land is a HARNESS ERROR, not a verdict.
    */
   readonly now?: string;
+  /**
+   * T-264: instead of the gate, run ONE Vitest case of this package by its
+   * title and judge it: exactly one test ran, it FAILED (`expect: 'FAIL'`) or
+   * passed, and `mustInclude`/`mustExclude` are read from Vitest's output.
+   * There is no banner; a filter that matched nothing is a misbehaviour.
+   */
+  readonly vitest?: { readonly file: string; readonly title: string };
 }
 
 /** JSON in, JSON out — for plants that are easier to state as data than as text. */
@@ -395,7 +425,7 @@ const CASES: readonly Case[] = [
     why:
       'The waiver waives the CURRENCY of a review, not the EXISTENCE of the provenance row. ' +
       'Without this the first move anyone makes against a gate — delete what it reads — would ' +
-      'be green today, because every key is waived.',
+      'be green under a waiver covering every key, as the pre-T-259 one did (rebuilt here by unflip).',
     edits: [
       {
         file: REVIEW,
@@ -928,6 +958,355 @@ const CASES: readonly Case[] = [
     ],
     mustExclude: ['GATE FAIL', 'CRASH', 'WAIVER-EXPIRED'],
   },
+  // ───────────────────────────── T-264: the automated checks (OE-82) ─────────────────────────────
+  // Every case below is one of `OE-82-cut.md` §3 T-264's negatives, red-first: the gate at `main`
+  // `cfe0886` (which reads neither record file nor the app source) PASSES every one of them.
+  {
+    name: 'T264-AUTOMATED-CONTROL',
+    why:
+      'T-264 CONTROL: the committed tree passes, and the automated-checks line it prints equals ' +
+      'the counts computed HERE from package exports (`loadCopyPipeline()` channels x ' +
+      '`enabledLocales()`, and the committed render-360.json), never from gate output.',
+    edits: [],
+    expect: 'PASS',
+    mustInclude: ['{AUTOMATED_LINE}'],
+    mustExclude: ['GATE FAIL', 'CRASH'],
+  },
+  {
+    name: 'T264-READ-ALOUD-RU-DELETED',
+    why:
+      'Cut negative 1: the ru address_prompt read-aloud record deleted. Its register record is ' +
+      'terminal, so the pair is NO-READ-ALOUD-CHECK, and nothing else.',
+    edits: [
+      {
+        file: READ_ALOUD,
+        plant: json((doc) => {
+          const ru = (doc['records'] as Record<string, Record<string, unknown>>)['ru'];
+          if (ru?.['safety.emergency.address_prompt'] === undefined)
+            throw new Error('no ru address_prompt record');
+          delete ru['safety.emergency.address_prompt'];
+        }),
+      },
+    ],
+    expect: 'FAIL',
+    mustInclude: ["NO-READ-ALOUD-CHECK 'safety.emergency.address_prompt' in ru"],
+    mustExclude: ['GATE PASS', 'CRASH'],
+    mustCount: [
+      { name: 'NO-READ-ALOUD-CHECK', n: '1' },
+      { name: '*', n: '1' },
+    ],
+  },
+  {
+    name: 'T264-READ-ALOUD-EL-STALE',
+    why:
+      'Cut negative 2: el call_112.script edited, with the register hash AND AUTHORED_CONTENT_PINNED ' +
+      'updated to match (so STALE-RECORD and UNPINNED-CONTENT cannot fire), but the read-aloud ' +
+      'record not re-written. STALE-READ-ALOUD-CHECK alone.',
+    edits: [
+      {
+        file: CATALOGUE_EL_SAFETY,
+        plant: json((doc) => {
+          doc['emergency.call_112.script'] = `${String(doc['emergency.call_112.script'])} !!`;
+        }),
+      },
+      {
+        file: REVIEW,
+        plant: json((doc) => {
+          const entries = doc['entries'] as Record<string, Record<string, Record<string, unknown>>>;
+          const el = entries['el']?.['safety.emergency.call_112.script'];
+          if (el === undefined) throw new Error('no el call_112.script record');
+          el['content_hash'] = rehashKey(CATALOGUE_EL_SAFETY, 'emergency.call_112.script');
+        }),
+      },
+      {
+        file: GATE_SRC,
+        plant: (s) =>
+          once(
+            s,
+            "'sha256:5f5e2816b748dd4fa2153bd83b1d002a955aaa4ec43aa3e26100df3d802978b6'",
+            `'${rehashKey(CATALOGUE_EL_SAFETY, 'emergency.call_112.script')}'`,
+          ),
+      },
+    ],
+    expect: 'FAIL',
+    mustInclude: ["STALE-READ-ALOUD-CHECK 'safety.emergency.call_112.script' in el"],
+    mustExclude: ['GATE PASS', 'CRASH', '  - STALE-RECORD ', '  - UNPINNED-CONTENT '],
+    mustCount: [
+      { name: 'STALE-READ-ALOUD-CHECK', n: '1' },
+      { name: '*', n: '1' },
+    ],
+  },
+  {
+    name: 'T264-READ-ALOUD-FAILED',
+    why: 'Cut negative 3: a read-aloud record with result "fail".',
+    edits: [
+      {
+        file: READ_ALOUD,
+        plant: json((doc) => {
+          checkRecord(doc, 'el', 'safety.emergency.call_112.script')['result'] = 'fail';
+        }),
+      },
+    ],
+    expect: 'FAIL',
+    mustInclude: ['READ-ALOUD-FAILED \'safety.emergency.call_112.script\' in el: result is "fail"'],
+    mustExclude: ['GATE PASS', 'CRASH'],
+    mustCount: [
+      { name: 'READ-ALOUD-FAILED', n: '1' },
+      { name: '*', n: '1' },
+    ],
+  },
+  {
+    name: 'T264-UNPINNED-CHECK-TOOL',
+    why: "Cut negative 4: a read-aloud record's tool version changed from the CHECK_TOOLS pin.",
+    edits: [
+      {
+        file: READ_ALOUD,
+        plant: json((doc) => {
+          checkRecord(doc, 'en', 'session.checkins_missed')['tool'] = 'espeak-ng 1.52';
+        }),
+      },
+    ],
+    expect: 'FAIL',
+    mustInclude: [
+      'UNPINNED-CHECK-TOOL \'session.checkins_missed\' in en: tool is "espeak-ng 1.52"',
+    ],
+    mustExclude: ['GATE PASS', 'CRASH'],
+    mustCount: [
+      { name: 'UNPINNED-CHECK-TOOL', n: '1' },
+      { name: '*', n: '1' },
+    ],
+  },
+  {
+    name: 'T264-AWAITING-REMOVED',
+    why:
+      'Cut negative 5: safety.sos.confirm removed from AWAITING_SURFACE with no render record — ' +
+      'NO-RENDER-CHECK in each of the three locales, and nothing else.',
+    edits: [{ file: PINS, plant: (s) => once(s, "  'safety.sos.confirm': 'T-110',\n", '') }],
+    expect: 'FAIL',
+    mustInclude: [
+      "NO-RENDER-CHECK 'safety.sos.confirm' in en",
+      "NO-RENDER-CHECK 'safety.sos.confirm' in el",
+      "NO-RENDER-CHECK 'safety.sos.confirm' in ru",
+    ],
+    mustExclude: ['GATE PASS', 'CRASH'],
+    mustCount: [
+      { name: 'NO-RENDER-CHECK', n: '3' },
+      { name: '*', n: '3' },
+    ],
+  },
+  {
+    name: 'T264-RENDERED-UNCHECKED',
+    why:
+      "Cut negative 6: `t('safety.sos.confirm')` planted in a TRACKED file under apps/web/src/ " +
+      '(created and added to the index with --intent-to-add; no tracked file exists there today) ' +
+      'while the key is still in AWAITING_SURFACE.',
+    edits: [{ file: APP_PLANT, create: true, track: true, plant: () => APP_SOURCE }],
+    expect: 'FAIL',
+    mustInclude: [
+      `RENDERED-UNCHECKED 'safety.sos.confirm': it is in AWAITING_SURFACE (against T-110), and tracked app source names it: ${APP_PLANT}`,
+    ],
+    mustExclude: ['GATE PASS', 'CRASH'],
+    mustCount: [
+      { name: 'RENDERED-UNCHECKED', n: '1' },
+      { name: '*', n: '1' },
+    ],
+  },
+  {
+    name: 'T264-BOUND-UNTRACKED-APP-FILE',
+    why:
+      'The bound of RENDERED-UNCHECKED, measured rather than argued: the same file, NOT added to ' +
+      'the index, is not read (`git ls-files`), so the gate passes.',
+    edits: [{ file: APP_PLANT, create: true, plant: () => APP_SOURCE }],
+    expect: 'PASS',
+    mustInclude: ['{AUTOMATED_LINE}'],
+    mustExclude: ['GATE FAIL', 'CRASH', 'RENDERED-UNCHECKED'],
+  },
+  {
+    name: 'T264-BOUND-TRACKED-TEST-FILE',
+    why:
+      'The other bound: a TRACKED *.test.tsx file under apps/web/src naming the key is a test ' +
+      'file and is not read, so the gate passes.',
+    edits: [{ file: APP_PLANT_TEST, create: true, track: true, plant: () => APP_SOURCE }],
+    expect: 'PASS',
+    mustInclude: ['{AUTOMATED_LINE}'],
+    mustExclude: ['GATE FAIL', 'CRASH', 'RENDERED-UNCHECKED'],
+  },
+  {
+    name: 'T264-AWAITING-AND-CHECKED',
+    why:
+      'Cut negative 7 (on the real tree; the --root case is in the Vitest file): a passing, current ' +
+      'render record added for safety.sos.confirm in en, which is still in AWAITING_SURFACE.',
+    edits: [
+      {
+        file: RENDER,
+        plant: json((doc) => {
+          addRenderRecord(doc, 'en', 'safety.sos.confirm', RENDER_CHECKED_BY_LITERAL);
+        }),
+      },
+    ],
+    expect: 'FAIL',
+    mustInclude: ["AWAITING-AND-CHECKED 'safety.sos.confirm' in en"],
+    mustExclude: ['GATE PASS', 'CRASH', 'CLAIMS-HUMAN-CHECK'],
+    mustCount: [
+      { name: 'AWAITING-AND-CHECKED', n: '1' },
+      { name: '*', n: '1' },
+    ],
+  },
+  {
+    name: 'T264-CLAIMS-HUMAN-CHECK-READ-ALOUD',
+    why: 'Cut negative 8, first file: checked_by "A. Person" on a read-aloud record.',
+    edits: [
+      {
+        file: READ_ALOUD,
+        plant: json((doc) => {
+          checkRecord(doc, 'ru', 'safety.emergency.address_prompt')['checked_by'] = 'A. Person';
+        }),
+      },
+    ],
+    expect: 'FAIL',
+    mustInclude: [
+      'CLAIMS-HUMAN-CHECK checks/read-aloud.json \'safety.emergency.address_prompt\' in ru: checked_by is "A. Person"',
+    ],
+    mustExclude: ['GATE PASS', 'CRASH'],
+    mustCount: [
+      { name: 'CLAIMS-HUMAN-CHECK', n: '1' },
+      { name: '*', n: '1' },
+    ],
+  },
+  {
+    name: 'T264-CLAIMS-HUMAN-CHECK-RENDER',
+    why:
+      'Cut negative 8, second file: a render record whose checked_by is "A. Person". The key is ' +
+      'still awaiting, so AWAITING-AND-CHECKED fires beside it.',
+    edits: [
+      {
+        file: RENDER,
+        plant: json((doc) => {
+          addRenderRecord(doc, 'el', 'safety.sos.confirm', 'A. Person');
+        }),
+      },
+    ],
+    expect: 'FAIL',
+    mustInclude: [
+      'CLAIMS-HUMAN-CHECK checks/render-360.json \'safety.sos.confirm\' in el: checked_by is "A. Person"',
+      "AWAITING-AND-CHECKED 'safety.sos.confirm' in el",
+    ],
+    mustExclude: ['GATE PASS', 'CRASH'],
+    mustCount: [
+      { name: 'CLAIMS-HUMAN-CHECK', n: '1' },
+      { name: 'AWAITING-AND-CHECKED', n: '1' },
+      { name: '*', n: '2' },
+    ],
+  },
+  {
+    name: 'T264-CHANNEL-DRIFT',
+    why:
+      "Cut negative 9: call_112.script's channel flipped to screen in review.json, no pin moved. It " +
+      'leaves the read-aloud set and changes channel in the render set: one CHANNEL-DRIFT per pin.',
+    edits: [
+      {
+        file: REVIEW,
+        plant: json((doc) => {
+          const a = (doc['pipeline'] as Record<string, Record<string, Record<string, unknown>>>)[
+            'assignments'
+          ]?.['safety.emergency.call_112.script'];
+          if (a === undefined) throw new Error('no call_112.script assignment');
+          a['channel'] = 'screen';
+        }),
+      },
+    ],
+    expect: 'FAIL',
+    mustInclude: [
+      'CHANNEL-DRIFT \'safety.emergency.call_112.script\': READ_ALOUD_KEYS_PINNED pins it as "spoken_by_user", and review.json gives it channel "screen"',
+      'CHANNEL-DRIFT \'safety.emergency.call_112.script\': review.json\'s channel is "screen", and RENDER_KEYS_PINNED pins it as "spoken_by_user"',
+    ],
+    mustExclude: ['GATE PASS', 'CRASH'],
+    mustCount: [
+      { name: 'CHANNEL-DRIFT', n: '2' },
+      { name: '*', n: '2' },
+    ],
+  },
+  {
+    name: 'T264-CHANNEL-DRIFT-VOICE',
+    why:
+      'CHANNEL-DRIFT, the render half alone: sos.confirm moved to voice. It joins the read-aloud ' +
+      'set and leaves the render set — one line per pin.',
+    edits: [
+      {
+        file: REVIEW,
+        plant: json((doc) => {
+          const a = (doc['pipeline'] as Record<string, Record<string, Record<string, unknown>>>)[
+            'assignments'
+          ]?.['safety.sos.confirm'];
+          if (a === undefined) throw new Error('no sos.confirm assignment');
+          a['channel'] = 'voice';
+        }),
+      },
+    ],
+    expect: 'FAIL',
+    mustInclude: [
+      "CHANNEL-DRIFT 'safety.sos.confirm': review.json's channel is \"voice\", and READ_ALOUD_KEYS_PINNED does not list it",
+      'CHANNEL-DRIFT \'safety.sos.confirm\': RENDER_KEYS_PINNED pins it as "screen", and review.json gives it channel "voice"',
+    ],
+    mustExclude: ['GATE PASS', 'CRASH'],
+    mustCount: [
+      { name: 'CHANNEL-DRIFT', n: '2' },
+      { name: '*', n: '2' },
+    ],
+  },
+  {
+    name: 'T264-MALFORMED-AWAITING',
+    why: 'Cut negative 11: an AWAITING_SURFACE entry with an empty ticket id.',
+    edits: [
+      {
+        file: PINS,
+        plant: (s) =>
+          once(s, "  'session.checkins_missed': 'T-107',\n", "  'session.checkins_missed': '',\n"),
+      },
+    ],
+    expect: 'FAIL',
+    mustInclude: ['MALFORMED-AWAITING \'session.checkins_missed\': owning ticket is ""'],
+    mustExclude: ['GATE PASS', 'CRASH'],
+    mustCount: [
+      { name: 'MALFORMED-AWAITING', n: '1' },
+      { name: '*', n: '1' },
+    ],
+  },
+  {
+    name: 'T264-STAGE-READDED-DSL',
+    why:
+      'Cut negative 10: in_context_screenshot_review re-added to pipeline.stages with who "dsl". ' +
+      'The R3-F1 stage-manifest test in src/pipeline.test.ts (a literal manifest of four stages since ' +
+      'T-264) is red. Red-first is the cfe0886 tree itself, which carries this stage and whose ' +
+      'six-stage manifest test passes (the plant changes nothing there, so this case is a HARNESS ' +
+      'ERROR at cfe0886 by construction).',
+    edits: [
+      {
+        file: REVIEW,
+        plant: json((doc) => {
+          const stages = (doc['pipeline'] as Record<string, unknown>)['stages'] as Record<
+            string,
+            unknown
+          >[];
+          if (stages.some((st) => st['id'] === 'in_context_screenshot_review')) return;
+          const at = stages.findIndex((st) => st['id'] === 'dsl_signoff');
+          if (at < 0) throw new Error('no dsl_signoff stage to re-add after');
+          stages.splice(at + 1, 0, {
+            id: 'in_context_screenshot_review',
+            blocking: true,
+            who: 'dsl',
+            what: 'In-context review in the running product at the target locale, on a 360 px Android viewport.',
+            output: 'Screenshots per locale.',
+            completed_at: null,
+          });
+        }),
+      },
+    ],
+    vitest: { file: PIPELINE_TEST, title: MANIFEST_TITLE },
+    expect: 'FAIL',
+    mustInclude: ['in_context_screenshot_review', 'is a change to the pipeline, not to a list'],
+    mustExclude: [],
+  },
 ];
 
 /** The NFC-sha256 of a catalogue's `checkins_missed` string as it is on disk now (the edit plants run first). */
@@ -949,6 +1328,102 @@ function rehashRu(): string {
   const s = String(doc['checkins_missed']);
   if (!s.endsWith(' !!')) throw new Error('rehashRu ran before the catalogue edit landed');
   return `sha256:${createHash('sha256').update(s.normalize('NFC'), 'utf8').digest('hex')}`;
+}
+
+/* ------------------------------------------------------- T-264 helpers */
+
+/** The app-source plant: a component naming an awaiting key the way a surface would. */
+const APP_SOURCE =
+  "import { t } from '@kinvara/i18n';\n\n" +
+  '// T-264 NEG fixture: planted and removed by tools/safety-review-currency-negatives.ts.\n' +
+  "export function SosConfirm(): string {\n  return t('safety.sos.confirm');\n}\n";
+
+/** `checks/render-360.json`'s checked_by literal, written HERE rather than imported (T-265 owns it). */
+const RENDER_CHECKED_BY_LITERAL = 'automation:gate:safety-copy-render';
+
+/** The NFC-sha256 of one catalogue string as it is on disk NOW (plants run in order). */
+function rehashKey(file: string, localKey: string): string {
+  const doc = JSON.parse(readFileSync(join(REPO, file), 'utf8')) as Record<string, unknown>;
+  const str = doc[localKey];
+  if (typeof str !== 'string' || !str.endsWith(' !!')) {
+    throw new Error(`rehashKey ran before the catalogue edit landed (${file} ${localKey})`);
+  }
+  return `sha256:${createHash('sha256').update(str.normalize('NFC'), 'utf8').digest('hex')}`;
+}
+
+/** One record of a check-record file, or a refusal to plant. */
+function checkRecord(
+  doc: Record<string, unknown>,
+  locale: string,
+  key: string,
+): Record<string, unknown> {
+  const r = (doc['records'] as Record<string, Record<string, Record<string, unknown>>>)[locale]?.[
+    key
+  ];
+  if (r === undefined) throw new Error(`no check record for ${key} in ${locale}`);
+  return r;
+}
+
+/** A render-360 record in T-265's schema, bound to the register's current hash for the pair. */
+function addRenderRecord(
+  doc: Record<string, unknown>,
+  locale: string,
+  key: string,
+  checkedBy: string,
+): void {
+  const review = JSON.parse(readFileSync(join(REPO, REVIEW), 'utf8')) as Record<string, unknown>;
+  const entry = (review['entries'] as Record<string, Record<string, Record<string, unknown>>>)[
+    locale
+  ]?.[key];
+  if (entry === undefined) throw new Error(`no register record for ${key} in ${locale}`);
+  const records = doc['records'] as Record<string, Record<string, unknown>>;
+  records[locale] = {
+    ...(records[locale] ?? {}),
+    [key]: {
+      content_hash: entry['content_hash'],
+      surface: '/fixture/sos',
+      viewport: 'android-360',
+      assertions: [
+        'NOT-VISIBLE',
+        'TEXT-MISMATCH',
+        'CLIPPED',
+        'TRUNCATED',
+        'OFF-VIEWPORT',
+        'HORIZONTAL-SCROLL',
+        'TAP-TARGET-SMALL',
+      ],
+      result: 'pass',
+      tool: 'playwright 1.62.0 chromium',
+      checked_by: checkedBy,
+    },
+  };
+}
+
+/**
+ * The automated-checks line the CONTROL must print, computed from PACKAGE
+ * EXPORTS and the committed record — never from the gate's output: read-aloud
+ * pairs = keys whose `review.json` channel is not `screen` x enabled locales;
+ * render pairs = keys whose channel is not `voice` x enabled locales, of which
+ * those with a `checks/render-360.json` record are "checked" and the rest
+ * "awaiting". (OE-82-cut §3 T-264 CONTROL.) The per-ticket split is not
+ * re-derived here; it lives only in AWAITING_SURFACE.
+ */
+function expectedAutomatedLine(): string {
+  const assignments = loadCopyPipeline().assignments;
+  const locales = enabledLocales().map((d) => d.code);
+  const readAloudKeys = Object.keys(assignments).filter(
+    (k) => assignments[k]?.channel !== 'screen',
+  );
+  const renderKeys = Object.keys(assignments).filter((k) => assignments[k]?.channel !== 'voice');
+  const render = JSON.parse(readFileSync(join(REPO, RENDER), 'utf8')) as {
+    records: Record<string, Record<string, unknown>>;
+  };
+  let checked = 0;
+  for (const l of locales)
+    for (const k of renderKeys) if (render.records[l]?.[k] !== undefined) checked += 1;
+  const ra = readAloudKeys.length * locales.length;
+  const rp = renderKeys.length * locales.length;
+  return `automated checks: read-aloud ${String(ra)}/${String(ra)} pairs current; render-360 ${String(checked)} checked, ${String(rp - checked)} awaiting surface (`;
 }
 
 /* ------------------------------------------------------------------ driver */
@@ -984,20 +1459,38 @@ function runGate(now?: string): { code: number; out: string; banner: string } {
   return { code: r.status ?? -1, out, banner };
 }
 
+/** T-264: one Vitest case of this package, by title. Judged by the caller. */
+function runVitest(file: string, title: string): { code: number; out: string; ran: boolean } {
+  const r = spawnSync(
+    process.execPath,
+    [join(PKG, 'node_modules', 'vitest', 'vitest.mjs'), 'run', file, '-t', title, '--no-color'],
+    { cwd: PKG, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 },
+  );
+  const out = `${r.stdout ?? ''}${r.stderr ?? ''}`;
+  // Exactly one test ran, whatever its result: a filter that matched nothing
+  // (a renamed title) must not read as a verdict.
+  return { code: r.status ?? -1, out, ran: /Tests\s+1 (?:failed|passed)\b/u.test(out) };
+}
+
 if (process.argv.length > 2) {
   console.error('safety-review-currency-negatives: takes no arguments');
   process.exit(2);
 }
 
-const dirty = git(['status', '--porcelain', 'packages/i18n']).trim();
+const dirty = git(['status', '--porcelain', '--', ...WATCHED]).trim();
 if (dirty !== '') {
-  console.error('REFUSED: packages/i18n is not clean. Commit first — this script mutates it.');
+  console.error(
+    `REFUSED: ${WATCHED.join(', ')} is not clean. Commit first — this script mutates it.`,
+  );
   console.error(dirty);
   process.exit(2);
 }
 
 let unexpected = 0;
 let ran = 0;
+
+/** Thrown after a Vitest-judged case, so the gate-judging half of the loop body is skipped. */
+class SkipGate extends Error {}
 
 console.log('CONTROL — the committed tree');
 const control = runGate();
@@ -1025,18 +1518,41 @@ if (keysMatch?.[1] === undefined) {
   process.exit(1);
 }
 const KEYS = keysMatch[1];
+const AUTOMATED_LINE = expectedAutomatedLine();
 function fill(s: string): string {
-  return s.replaceAll('{PAIRS}', PAIRS).replaceAll('{KEYS}', KEYS);
+  return s
+    .replaceAll('{PAIRS}', PAIRS)
+    .replaceAll('{KEYS}', KEYS)
+    .replaceAll('{AUTOMATED_LINE}', AUTOMATED_LINE);
 }
 console.log(`  (expectations filled from CONTROL: ${PAIRS} pair(s), ${KEYS} key(s))`);
+console.log(`  (automated-checks line expected from package exports: ${AUTOMATED_LINE}…)`);
 
 for (const c of CASES) {
   ran += 1;
   const originals = new Map<string, string>();
+  const created: { file: string; tracked: boolean }[] = [];
   const problems: string[] = [];
   try {
     for (const edit of c.edits) {
       const abs = join(REPO, edit.file);
+      if (edit.create === true) {
+        if (existsSync(abs))
+          throw new Error(`${edit.file} exists; a created plant must start absent`);
+        const planted = edit.plant('');
+        writeFileSync(abs, planted, 'utf8');
+        created.push({ file: edit.file, tracked: false });
+        if (readFileSync(abs, 'utf8') !== planted)
+          throw new Error(`the plant is not on disk: ${edit.file}`);
+        if (edit.track === true) {
+          git(['add', '--intent-to-add', '--', edit.file]);
+          created[created.length - 1] = { file: edit.file, tracked: true };
+          if (git(['ls-files', '--', edit.file]).trim() !== edit.file) {
+            throw new Error(`${edit.file} is not tracked after --intent-to-add`);
+          }
+        }
+        continue;
+      }
       const before = readFileSync(abs, 'utf8');
       originals.set(edit.file, before);
       const planted = edit.plant(before);
@@ -1045,6 +1561,25 @@ for (const c of CASES) {
       // The mutation is asserted from disk, not from the variable above.
       if (readFileSync(abs, 'utf8') !== planted)
         throw new Error(`the plant is not on disk: ${edit.file}`);
+    }
+    if (c.vitest !== undefined) {
+      const v = runVitest(c.vitest.file, c.vitest.title);
+      if (!v.ran) problems.push(`vitest: no single case ran for ${JSON.stringify(c.vitest.title)}`);
+      if (c.expect === 'FAIL' ? v.code === 0 : v.code !== 0) {
+        problems.push(
+          `vitest exit=${String(v.code)} expected ${c.expect === 'PASS' ? '0' : 'non-zero'}`,
+        );
+      }
+      for (const raw of c.mustInclude)
+        if (!v.out.includes(fill(raw))) problems.push(`missing: ${fill(raw)}`);
+      for (const raw of c.mustExclude)
+        if (v.out.includes(fill(raw))) problems.push(`present but banned: ${fill(raw)}`);
+      if (problems.length > 0) console.log(v.out.trimEnd());
+      else
+        console.log(
+          `   ${c.name.padEnd(28)} ok  vitest exit=${String(v.code)}  ${c.expect === 'FAIL' ? 'Tests 1 failed' : 'Tests 1 passed'}`,
+        );
+      throw new SkipGate();
     }
     const run = runGate(c.now);
     if (c.now !== undefined && !run.out.includes(`today (UTC): ${c.now.slice(0, 10)}`)) {
@@ -1064,7 +1599,10 @@ for (const c of CASES) {
     }
     for (const { name, n } of c.mustCount ?? []) {
       const want = Number(fill(n));
-      const got = run.out.split('\n').filter((l) => l.startsWith(`  - ${name} `)).length;
+      // T-264: `*` counts EVERY problem line, so a case can say "this, and nothing else".
+      const got = run.out
+        .split('\n')
+        .filter((l) => (name === '*' ? l.startsWith('  - ') : l.startsWith(`  - ${name} `))).length;
       if (got !== want)
         problems.push(`${name} printed ${String(got)} time(s), expected ${String(want)}`);
     }
@@ -1075,12 +1613,25 @@ for (const c of CASES) {
       console.log(`   ${c.name.padEnd(28)} ok  exit=${String(run.code)}  ${line}`);
     }
   } catch (err) {
-    problems.push(`HARNESS ERROR: ${err instanceof Error ? err.message : String(err)}`);
+    if (!(err instanceof SkipGate)) {
+      problems.push(`HARNESS ERROR: ${err instanceof Error ? err.message : String(err)}`);
+    }
   } finally {
     for (const [file, before] of originals) {
       const abs = join(REPO, file);
       writeFileSync(abs, before, 'utf8');
       if (readFileSync(abs, 'utf8') !== before) problems.push(`RESTORE FAILED: ${file}`);
+    }
+    for (const { file, tracked } of created) {
+      try {
+        if (tracked) git(['rm', '--cached', '--quiet', '--', file]);
+        unlinkSync(join(REPO, file));
+      } catch (err) {
+        problems.push(
+          `RESTORE FAILED: ${file} — ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      if (existsSync(join(REPO, file))) problems.push(`RESTORE FAILED: ${file} still exists`);
     }
   }
   if (problems.length > 0) {
@@ -1091,7 +1642,7 @@ for (const c of CASES) {
   }
 }
 
-const after = git(['status', '--porcelain', 'packages/i18n']).trim();
+const after = git(['status', '--porcelain', '--', ...WATCHED]).trim();
 if (after !== '') {
   unexpected += 1;
   console.error('!! the working tree was not restored:');

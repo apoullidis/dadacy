@@ -78,7 +78,9 @@ function loadOne(root: string, rel: string, failures: string[]): CheckRecords {
   }
   const records = isRecord(raw) ? raw['records'] : undefined;
   if (!isRecord(records)) {
-    failures.push(`INPUT ${rel} has no \`records\` object. Every pair that needs a record from it is refused below.`);
+    failures.push(
+      `INPUT ${rel} has no \`records\` object. Every pair that needs a record from it is refused below.`,
+    );
     return {};
   }
   const out: Record<string, Readonly<Record<string, unknown>>> = {};
@@ -89,7 +91,10 @@ function loadOne(root: string, rel: string, failures: string[]): CheckRecords {
 }
 
 export function loadCheckFiles(root: string, failures: string[]): CheckFiles {
-  return { readAloud: loadOne(root, READ_ALOUD_FILE, failures), render: loadOne(root, RENDER_FILE, failures) };
+  return {
+    readAloud: loadOne(root, READ_ALOUD_FILE, failures),
+    render: loadOne(root, RENDER_FILE, failures),
+  };
 }
 
 function recordAt(records: CheckRecords, locale: string, key: string): Rec | undefined {
@@ -101,7 +106,9 @@ function recordAt(records: CheckRecords, locale: string, key: string): Rec | und
 function humanClaims(record: Rec, checkedBy: string): string[] {
   const claims: string[] = [];
   if (record['checked_by'] !== checkedBy) {
-    claims.push(`checked_by is ${record['checked_by'] === undefined ? 'absent' : JSON.stringify(record['checked_by'])}`);
+    claims.push(
+      `checked_by is ${record['checked_by'] === undefined ? 'absent' : JSON.stringify(record['checked_by'])}`,
+    );
   }
   for (const field of Object.keys(record)) {
     if (/review/iu.test(field)) claims.push(`it carries a field named ${JSON.stringify(field)}`);
@@ -183,7 +190,7 @@ export function fileLevelProblems(
 function channelDrift(pins: AutomatedCheckPins, assignments: unknown, failures: string[]): void {
   if (!isRecord(assignments)) {
     failures.push(
-      'CHANNEL-DRIFT review.json has no `pipeline.assignments` object, so no key\'s channel can be ' +
+      "CHANNEL-DRIFT review.json has no `pipeline.assignments` object, so no key's channel can be " +
         'held against READ_ALOUD_KEYS_PINNED or RENDER_KEYS_PINNED. Fails closed.',
     );
     return;
@@ -195,7 +202,9 @@ function channelDrift(pins: AutomatedCheckPins, assignments: unknown, failures: 
     ['RENDER_KEYS_PINNED', pins.renderKeys, 'voice'],
   ] as const) {
     if (Object.keys(pin).length === 0) {
-      failures.push(`CHANNEL-DRIFT ${pinName} is empty. An empty pin would check nothing; fails closed.`);
+      failures.push(
+        `CHANNEL-DRIFT ${pinName} is empty. An empty pin would check nothing; fails closed.`,
+      );
       continue;
     }
     const derived = new Map<string, string>();
@@ -294,7 +303,9 @@ export function assessPair(
         );
       }
       if (r['result'] !== 'pass') {
-        problems.push(`READ-ALOUD-FAILED ${where}: result is ${JSON.stringify(r['result'])}, not "pass".`);
+        problems.push(
+          `READ-ALOUD-FAILED ${where}: result is ${JSON.stringify(r['result'])}, not "pass".`,
+        );
       }
       if (r['tool'] !== pins.readAloudTool) {
         problems.push(
@@ -330,7 +341,9 @@ export function assessPair(
           );
         }
         if (r['result'] !== 'pass') {
-          problems.push(`RENDER-FAILED ${where}: result is ${JSON.stringify(r['result'])}, not "pass".`);
+          problems.push(
+            `RENDER-FAILED ${where}: result is ${JSON.stringify(r['result'])}, not "pass".`,
+          );
         }
         render =
           problems.length === before && humanClaims(r, pins.renderCheckedBy).length === 0
@@ -369,7 +382,9 @@ export function trackedAppSources(repoRoot: string): { files: SourceFile[] } | {
     maxBuffer: 64 * 1024 * 1024,
   });
   if (r.status !== 0) {
-    return { error: `git ls-files exited ${String(r.status)}: ${(r.stderr ?? '').trim() || String(r.error)}` };
+    return {
+      error: `git ls-files exited ${String(r.status)}: ${(r.stderr ?? '').trim() || String(r.error)}`,
+    };
   }
   const files: SourceFile[] = [];
   for (const path of r.stdout.split('\0')) {
@@ -377,7 +392,9 @@ export function trackedAppSources(repoRoot: string): { files: SourceFile[] } | {
     try {
       files.push({ path, text: readFileSync(join(repoRoot, path), 'utf8') });
     } catch (err) {
-      return { error: `${path} is tracked but cannot be read — ${err instanceof Error ? err.message : String(err)}` };
+      return {
+        error: `${path} is tracked but cannot be read — ${err instanceof Error ? err.message : String(err)}`,
+      };
     }
   }
   return { files };
@@ -432,7 +449,12 @@ export function newCounts(pins: AutomatedCheckPins): AutomatedCounts {
   };
 }
 
-export function tally(pins: AutomatedCheckPins, counts: AutomatedCounts, key: string, a: PairAssessment): void {
+export function tally(
+  pins: AutomatedCheckPins,
+  counts: AutomatedCounts,
+  key: string,
+  a: PairAssessment,
+): void {
   if (a.readAloudCurrent !== null) {
     counts.readAloudPairs += 1;
     if (a.readAloudCurrent) counts.readAloudCurrent += 1;
@@ -449,8 +471,12 @@ export function tally(pins: AutomatedCheckPins, counts: AutomatedCounts, key: st
 /** `automated checks: read-aloud <a>/<b> pairs current; render-360 <c> checked, <d> awaiting surface (T-110: <x>, T-107: <y>)` */
 export function countsLine(counts: AutomatedCounts): string {
   const byTicket = [...counts.awaitingByTicket].filter(([, n]) => n > 0);
-  const tickets = byTicket.length === 0 ? 'none' : byTicket.map(([t, n]) => `${t}: ${String(n)}`).join(', ');
-  const unchecked = counts.renderUnchecked === 0 ? '' : `, ${String(counts.renderUnchecked)} with no current record`;
+  const tickets =
+    byTicket.length === 0 ? 'none' : byTicket.map(([t, n]) => `${t}: ${String(n)}`).join(', ');
+  const unchecked =
+    counts.renderUnchecked === 0
+      ? ''
+      : `, ${String(counts.renderUnchecked)} with no current record`;
   return (
     `automated checks: read-aloud ${String(counts.readAloudCurrent)}/${String(counts.readAloudPairs)} pairs current; ` +
     `render-360 ${String(counts.renderChecked)} checked, ${String(counts.renderAwaiting)} awaiting surface ` +
