@@ -45,7 +45,7 @@
  */
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadCopyPipeline } from '../src/review.ts';
@@ -1532,6 +1532,7 @@ for (const c of CASES) {
   ran += 1;
   const originals = new Map<string, string>();
   const created: { file: string; tracked: boolean }[] = [];
+  const createdDirs: string[] = [];
   const problems: string[] = [];
   try {
     for (const edit of c.edits) {
@@ -1540,6 +1541,12 @@ for (const c of CASES) {
         if (existsSync(abs))
           throw new Error(`${edit.file} exists; a created plant must start absent`);
         const planted = edit.plant('');
+        // `apps/web/src/` does not exist at cfe0886: create the missing parents
+        // and remove exactly those again on restore, deepest first.
+        const madeDirs: string[] = [];
+        for (let d = dirname(abs); !existsSync(d); d = dirname(d)) madeDirs.unshift(d);
+        for (const d of madeDirs) mkdirSync(d);
+        createdDirs.push(...madeDirs.reverse());
         writeFileSync(abs, planted, 'utf8');
         created.push({ file: edit.file, tracked: false });
         if (readFileSync(abs, 'utf8') !== planted)
@@ -1632,6 +1639,15 @@ for (const c of CASES) {
         );
       }
       if (existsSync(join(REPO, file))) problems.push(`RESTORE FAILED: ${file} still exists`);
+    }
+    for (const d of createdDirs) {
+      try {
+        rmdirSync(d);
+      } catch (err) {
+        problems.push(
+          `RESTORE FAILED: directory ${d} — ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     }
   }
   if (problems.length > 0) {
