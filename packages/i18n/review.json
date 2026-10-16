@@ -33,7 +33,7 @@
       "safety.emergency.call_112.label": {
         "emergency_panel": true,
         "channel": "screen",
-        "channel_note": "Rendered on screen only. No voice channel carries this string today; if one ever does, this field changes and the read-aloud stage becomes blocking for it.",
+        "channel_note": "Rendered on screen only. No voice channel carries this string today; if one ever does, this field changes in the same commit as READ_ALOUD_KEYS_PINNED and RENDER_KEYS_PINNED in tools/automated-checks.ts (a channel the pins do not match is refused as CHANNEL-DRIFT), and that pin puts the key under gate:read-aloud.",
         "machine_translation": "prohibited",
         "runtime_translation": "prohibited"
       },
@@ -47,35 +47,35 @@
       "safety.helpline.116111.label": {
         "emergency_panel": true,
         "channel": "screen",
-        "channel_note": "Rendered on screen only. No voice channel carries this string today; if one ever does, this field changes and the read-aloud stage becomes blocking for it.",
+        "channel_note": "Rendered on screen only. No voice channel carries this string today; if one ever does, this field changes in the same commit as READ_ALOUD_KEYS_PINNED and RENDER_KEYS_PINNED in tools/automated-checks.ts (a channel the pins do not match is refused as CHANNEL-DRIFT), and that pin puts the key under gate:read-aloud.",
         "machine_translation": "prohibited",
         "runtime_translation": "prohibited"
       },
       "safety.helpline.1466.label": {
         "emergency_panel": true,
         "channel": "screen",
-        "channel_note": "Rendered on screen only. No voice channel carries this string today; if one ever does, this field changes and the read-aloud stage becomes blocking for it.",
+        "channel_note": "Rendered on screen only. No voice channel carries this string today; if one ever does, this field changes in the same commit as READ_ALOUD_KEYS_PINNED and RENDER_KEYS_PINNED in tools/automated-checks.ts (a channel the pins do not match is refused as CHANNEL-DRIFT), and that pin puts the key under gate:read-aloud.",
         "machine_translation": "prohibited",
         "runtime_translation": "prohibited"
       },
       "safety.helpline.199.label": {
         "emergency_panel": true,
         "channel": "screen",
-        "channel_note": "Rendered on screen only. No voice channel carries this string today; if one ever does, this field changes and the read-aloud stage becomes blocking for it.",
+        "channel_note": "Rendered on screen only. No voice channel carries this string today; if one ever does, this field changes in the same commit as READ_ALOUD_KEYS_PINNED and RENDER_KEYS_PINNED in tools/automated-checks.ts (a channel the pins do not match is refused as CHANNEL-DRIFT), and that pin puts the key under gate:read-aloud.",
         "machine_translation": "prohibited",
         "runtime_translation": "prohibited"
       },
       "safety.sos.confirm": {
         "emergency_panel": false,
         "channel": "screen",
-        "channel_note": "Rendered on screen only. No voice channel carries this string today; if one ever does, this field changes and the read-aloud stage becomes blocking for it.",
+        "channel_note": "Rendered on screen only. No voice channel carries this string today; if one ever does, this field changes in the same commit as READ_ALOUD_KEYS_PINNED and RENDER_KEYS_PINNED in tools/automated-checks.ts (a channel the pins do not match is refused as CHANNEL-DRIFT), and that pin puts the key under gate:read-aloud.",
         "machine_translation": "prohibited",
         "runtime_translation": "prohibited"
       },
       "session.checkins_missed": {
         "emergency_panel": false,
         "channel": "undetermined",
-        "channel_note": "UNDETERMINED, and fail-closed on purpose. This is an escalation-ladder message, and DV-7 adds an automated VOICE rung with pre-recorded audio per locale (SA §INT-5r). Whether this key is rendered on that rung is T-105/T-107’s determination, not this ticket’s. A record may not be signed off while its channel is undetermined, because the read-aloud pass would silently not apply.",
+        "channel_note": "UNDETERMINED, and fail-closed on purpose. This is an escalation-ladder message, and DV-7 adds an automated VOICE rung with pre-recorded audio per locale (SA §INT-5r). Whether this key is rendered on that rung is T-105/T-107’s determination, not this ticket’s. Until it is decided, the key is held to both automated checks: READ_ALOUD_KEYS_PINNED and RENDER_KEYS_PINNED in tools/automated-checks.ts pin it as undetermined (a channel change that does not move both pins is refused as CHANNEL-DRIFT), gate:read-aloud checks it in every locale, and its 360 px render check awaits its surface (AWAITING_SURFACE, T-107).",
         "machine_translation": "prohibited",
         "runtime_translation": "prohibited"
       }
