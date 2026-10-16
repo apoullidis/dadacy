@@ -842,21 +842,26 @@ test('NEGATIVE — the stage list is a SEQUENCE, which the contract claimed and 
 });
 
 /**
- * R3-F1. The six stages SA §TS-12.4 defines, in its order. Written HERE, never
+ * R3-F1. The stages SA §TS-12.4 defines, in its order. Written HERE, never
  * read from `review.json` — a register supplying the list it is checked against
  * would be checking that it equals itself, which is how `blocking` came to be
  * flippable with the suite green.
+ *
+ * T-264 (OE-82): FOUR, not six. `in_context_screenshot_review` and
+ * `read_aloud_voice` were `who: "dsl"` stages; under OE-82 they are automated
+ * gates (`gate:safety-copy-render`, `gate:read-aloud`) enforced by
+ * gate:safety-review-currency at the terminal status, and `pipeline.stages`
+ * may not carry them back: re-adding either, with any `who`, is red here (NEG
+ * `T264-STAGE-READDED-DSL`). The four left are the human path T-260 deletes.
  */
 const STAGE_MANIFEST: readonly string[] = [
   'author_en_el',
   'brief_ru_translator',
   'translate_ru',
   'dsl_signoff',
-  'in_context_screenshot_review',
-  'read_aloud_voice',
 ];
 
-test('R3-F1: six stage ids, that order, ALL BLOCKING', () => {
+test('R3-F1: four stage ids, that order, ALL BLOCKING (T-264: the 360 px and read-aloud checks are gates, not stages)', () => {
   assert.deepEqual(stageManifestProblems(loadCopyPipeline(), STAGE_MANIFEST), []);
 });
 
@@ -899,6 +904,23 @@ test('NEGATIVE — R3-F1: adding, removing or reordering a stage goes red', () =
       ),
       `${label} must be caught`,
     );
+  }
+});
+
+test('T-264: pipeline.automated_checks names the two gates and their records, and carries no who, no completed_at and no applicability', () => {
+  const checks = loadCopyPipeline().automated_checks;
+  assert.ok(checks !== undefined, 'pipeline.automated_checks is absent');
+  assert.deepEqual(
+    checks.map((c) => [c.id, c.gate, c.ticket, c.record]),
+    [
+      ['read_aloud', 'gate:read-aloud', 'T-263', 'packages/i18n/checks/read-aloud.json'],
+      ['render_360', 'gate:safety-copy-render', 'T-265', 'packages/i18n/checks/render-360.json'],
+    ],
+  );
+  for (const c of checks) {
+    // Descriptive only: a person, a date or a key list here would be a stage
+    // under another name, and applicability lives in gate source.
+    assert.deepEqual(Object.keys(c).sort(), ['gate', 'id', 'record', 'ticket', 'what'], c.id);
   }
 });
 
@@ -994,7 +1016,7 @@ test('NEGATIVE — R3: a stage that could not have happened may not be dated', (
 });
 
 test('the register as it stands: every stage applies, and none is dated', () => {
-  // The real file uses `translated_briefed` for `ru`, so all six stages apply —
+  // The real file uses `translated_briefed` for `ru`, so all four stages apply —
   // the exemption above is reachable only by a roster that does not exist yet.
   const p = loadCopyPipeline();
   for (const id of STAGE_MANIFEST) assert.equal(stageApplies(id, p), true, id);
@@ -1022,7 +1044,8 @@ const AI_SIGNED = {
 };
 
 const AUTHORING_STAGES = ['author_en_el', 'brief_ru_translator', 'translate_ru'];
-const REVIEW_STAGES = ['dsl_signoff', 'in_context_screenshot_review', 'read_aloud_voice'];
+// T-264: the 360 px and read-aloud checks are gates, not stages (OE-82).
+const REVIEW_STAGES = ['dsl_signoff'];
 
 /** A delivered pipeline in which nobody authored anything: the three authoring stages honestly null. */
 function aiDeliveredPipeline(): CopyPipeline {

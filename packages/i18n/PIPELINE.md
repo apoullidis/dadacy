@@ -65,27 +65,49 @@ Straight from SA §TS-12.4, with the mechanism each step lands in.
         ┌────────────────────────────────┼────────────────────────────────┐
         │                                │                                │
 ┌───────▼─────────┐        ┌─────────────▼──────────┐      ┌──────────────▼────────┐
-│ 4. DSL SIGN-OFF │        │ 5. IN-CONTEXT REVIEW   │      │ 6. READ-ALOUD PASS    │
-│    DROPPED by   │        │    running product,    │      │    voice + spoken     │
-│    OE-5         │        │    360 px Android      │      │    strings (DV-7)     │
+│ 4. DSL SIGN-OFF │        │ 5. 360 px RENDER CHECK │      │ 6. READ-ALOUD CHECK   │
+│    DROPPED by   │        │    a gate (OE-82):     │      │    a gate (OE-82):    │
+│    OE-5         │        │    gate:safety-copy-   │      │    gate:read-aloud,   │
+│                 │        │    render (T-265),     │      │    espeak-ng, record  │
+│                 │        │    checks/render-360   │      │    checks/read-aloud  │
 └─────────────────┘        └────────────────────────┘      └───────────────────────┘
-        │
-        └──► no sign-off: gate:safety-review-currency passes a record only as
-             final with NO review under OE-5, and refuses one claiming a review
+        │                                │                                │
+        └──► gate:safety-review-currency passes a record only as final with NO
+             review under OE-5, and, since T-264, only with a current passing
+             check record for 5 (or its key listed in AWAITING_SURFACE) and 6
 ```
 
 **Since stakeholder ruling OE-5 (2026-10-11) step 4 does not happen.** No record
 is signed off; every record is `unreviewed_by_ruling` under `review_ruling:
 "OE-5"`, and the gate refuses a `signed_off` status (`CLAIMS-REVIEW`; NEG
-`T259-SIGNED-OFF`). Steps 5 and 6 are to become automated gates under OE-82
-(`T-263`, `T-264`, `T-265`); until `T-264` lands nothing enforces them. The
-paragraph below describes the pre-OE-5 rule and is `T-260`'s to withdraw.
+`T259-SIGNED-OFF`).
 
-Steps 4, 5 and 6 are all **blocking** in `review.json § pipeline.stages`, and a
-record signed off while any of them is incomplete is reported as an
-incoherence by `pipelineIncoherences()`. Step 5 needs `T-050`/`T-051`'s surfaces
-to exist; it cannot complete before they do, and it must not be recorded as
-though it had.
+**Since stakeholder ruling OE-82, steps 5 and 6 are automated gates, not
+people, and not stages.** `review.json § pipeline.stages` no longer carries
+them (`T-264`); `pipeline.automated_checks` names the two gates and their
+records. Step 6 is `gate:read-aloud` (`T-263`): every spoken safety string
+(`READ_ALOUD_KEYS_PINNED`, `tools/automated-checks.ts`) is synthesised in every
+enabled locale and plural form, and `checks/read-aloud.json` records the
+result. Step 5 is `gate:safety-copy-render` (`T-265`, not yet built): every
+shown safety string (`RENDER_KEYS_PINNED`) is rendered at a pinned 360 px
+Android viewport, into `checks/render-360.json`. A key whose surface does not
+exist yet is listed in `AWAITING_SURFACE` against the ticket that builds it
+(today all eight: seven `T-110`, one `T-107`), and that list must be empty for
+production readiness. **`gate:safety-review-currency` enforces both at the
+terminal status** (`T-264`): a record there whose read-aloud check is absent,
+stale, failed or made with another tool is refused, and so is one whose key is
+neither awaiting nor carries a current passing render record; a check record
+naming a person, a channel that disagrees with the pins, and an awaiting key
+that has a render record or is named in tracked app source are refused at any
+status. Every run prints `automated checks: read-aloud <a>/<b> pairs current;
+render-360 <c> checked, <d> awaiting surface (…)`. What a check does not show
+is stated in `state/EP-0/T-263.md` § Published contract — LIVE §6 (espeak-ng
+is a formant synthesiser; pronunciation is not checked).
+
+The paragraph below describes the pre-OE-5 rule for step 4 and is `T-260`'s to
+withdraw. Step 4 is **blocking** in `review.json § pipeline.stages`, and a
+record signed off while it is incomplete is reported as an incoherence by
+`pipelineIncoherences()`.
 
 ## 2. Who must exist
 
@@ -232,7 +254,8 @@ than `review_ruling`) and carries no field outside the nine a record defines
 cannot outlive 2026-12-05 (`WAIVER-RENEWED`) — authorship and finality are not
 checked. The record's existence, the no-review-claim rule, the closed field set,
 the note type, currency and the pin still are (`T-258` rework 1, `T-259`). So since OE-5, the gate refuses a record whose `status` is
-`signed_off`, which carries a non-null `review`-named field, or which carries
+`signed_off`, which carries a non-null `review`-named field other than
+`review_ruling`, or which carries
 any field outside the nine (`signed_off_by`, `approved_by`, `dsl_signoff`, …),
 waived or not (the gate's Vitest _UNDEFINED-FIELD_ and _CLAIMS-REVIEW_ cases).
 Inside a waiver it does not judge the _values_ of `authored_by`, `ruling`,
@@ -409,8 +432,10 @@ the rebuilt pre-`T-259` waiver).
   changes the catalogue, the record's hash and the gate's pin in one commit
   passes, and review of the diff is the control (`T-258` § Published contract —
   LIVE §7).
-- The 360 px in-context check and the read-aloud check are not enforced by any
-  gate until `T-264` lands (OD-323, OE-82).
+- The 360 px in-context check and the read-aloud check are enforced since
+  `T-264` by `gate:safety-review-currency` reading their committed records (§1).
+  No key is render-checked yet: all eight await a surface (`AWAITING_SURFACE`),
+  so nothing has been rendered at 360 px.
 - The ask this section used to end with — name four people, send Appendices A,
   B and C, record `external_start`, re-anchor — was **withdrawn by OE-5**. The
   appendices are still below; withdrawing them is `T-260`'s.
@@ -485,17 +510,21 @@ OE-66 authors instead. Their own caveats (`tasks/state/EP-0/OE-66/{el,ru}/NOTES.
 - **The register cannot prove review, only currency and coherence** (§3). It
   can now also not prove that the model named in `authored_by` wrote the string
   — only that the record cites a ruling permitting that author for that locale.
-- **Stage 5, the in-context screenshot review, cannot begin** until `T-050` /
-  `T-051` render these strings in a running product at 360 px. **Nothing has
-  been measured at 360 px.** What has been measured is length in code points
+- **Step 5, the 360 px render check (`gate:safety-copy-render`, `T-265`),
+  has nothing to render yet**: no app surface shows these strings, and every
+  key is in `AWAITING_SURFACE` against `T-110` or `T-107`. **Nothing has been
+  measured at 360 px.** What has been measured is length in code points
   (Python `len()` over the catalogue value, `{address}` counted as its nine
   source characters, `T-233` at the landed copy): `call_112.script` `en` 94,
   `el` 106, `ru` 101; `sos.confirm` `en` 94, `el` 116, `ru` 117. Both are
-  expected to wrap at 360 px; whether they wrap cleanly is what stage 5 is for.
+  expected to wrap at 360 px; whether they wrap cleanly is what step 5 is for.
   (The `el` author's own note gives 111 for `sos.confirm`; the value in the
   catalogue measures 116.)
-- **Stage 6, the read-aloud pass, has not happened** for the two
-  `spoken_by_user` keys in any locale.
+- **Step 6, the read-aloud check, is automated** (`gate:read-aloud`, `T-263`)
+  and passes for the two `spoken_by_user` keys and `session.checkins_missed`
+  in all three locales (9 pairs). No person has read any of them aloud, and
+  espeak-ng does not check pronunciation (`T-263` § Published contract — LIVE
+  §6).
 - **`session.checkins_missed`'s channel is undetermined** and depends on
   `T-105`/`T-107`; its recipient is undetermined too. The register refuses
   sign-off until the channel is decided.

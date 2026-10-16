@@ -270,7 +270,23 @@ export interface CopyPipeline {
   readonly external_start?: string | null;
   readonly roles: Readonly<Record<string, PipelineRole>>;
   readonly stages: readonly PipelineStage[];
+  /**
+   * T-264 (OE-82): the two checks SA §TS-12.4 asked a person to make, as the
+   * gates that make them. DESCRIPTIVE ONLY: no `who`, no `completed_at`, and no
+   * applicability — which keys each applies to is pinned in gate source
+   * (`tools/automated-checks.ts`), never read from here.
+   */
+  readonly automated_checks?: readonly AutomatedCheckEntry[];
   readonly assignments: Readonly<Record<string, PipelineAssignment>>;
+}
+
+/** One entry of `pipeline.automated_checks` (T-264). */
+export interface AutomatedCheckEntry {
+  readonly id: string;
+  readonly gate: string;
+  readonly ticket: string;
+  readonly record: string;
+  readonly what: string;
 }
 
 /** `YYYY-MM-DD` → epoch ms at end of that UTC day. Dates in this file are days, not instants. */
@@ -356,7 +372,8 @@ const NO_AI_RULINGS: readonly AiAuthorshipRuling[] = [];
  * which is the exact pattern this whole register exists to prevent.
  *
  * `blocking` and applicability are different questions and both are kept:
- * `blocking` says *when this applies, it gates* — all six are, and R3-F1 asserts
+ * `blocking` says *when this applies, it gates* — all four are (since T-264
+ * the 360 px and read-aloud checks are gates, not stages), and R3-F1 asserts
  * it. Applicability says *does it apply*, and it is **derived from the
  * assignments**, never a flag someone can clear.
  */
@@ -367,11 +384,6 @@ export function stageApplies(stageId: string, pipeline: CopyPipeline): boolean {
     case 'translate_ru':
       // No locale is being translated ⇒ there is no translator to brief.
       return locales.some((l) => l.method === 'translated_briefed');
-    case 'read_aloud_voice':
-      // SA §TS-12.4's read-aloud pass covers strings that are heard rather than
-      // read. `undetermined` counts as applying: fail closed, because a stage
-      // that might be needed must not be skipped by a question nobody answered.
-      return Object.values(pipeline.assignments).some((a) => a.channel !== 'screen');
     default:
       return true;
   }
@@ -775,8 +787,10 @@ export function pipelineIncoherences(
         // AUTHORING role (derived from AUTHORING_ROLE_FOR_METHOD, not listed)
         // describe events the ruling displaced: no practitioner authored it and
         // no translator was briefed. Demanding a date for them would manufacture
-        // pressure to write a false one — R3's lesson. Every REVIEW stage
-        // (DSL sign-off, 360 px in-context review, read-aloud) still applies.
+        // pressure to write a false one — R3's lesson. The REVIEW stage (DSL
+        // sign-off) still applies. Since T-264 the 360 px in-context review and
+        // the read-aloud check are not stages: they are automated gates (OE-82),
+        // enforced by gate:safety-review-currency at the terminal status.
         if (aiRuling !== undefined && authoringRoles.has(stage.who)) continue;
         if (stage.completed_at === null) {
           problems.push(

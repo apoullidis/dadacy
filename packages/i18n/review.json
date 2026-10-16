@@ -3,7 +3,7 @@
   "version": 1,
   "pending_pipeline": null,
   "pipeline": {
-    "//": "THE PIPELINE AS DATA — T-049, SA §TS-12.4, as departed from under EV-16. Since stakeholder ruling OE-5 (2026-10-11; EV-16 extended) no human authors or reviews this copy: OE-66/OE-67 made an AI model its author and OE-5 dropped the DSL + deputy review. NO DATE IS IN FORCE HERE. T-259 deleted the deadline, the lead time, the latest external start, the external start and `blocked_on`, with their notes, because they measured the time left for a human engagement that the ruling abolished. `roles` and `stages` below still describe that human path: nobody is named, nothing is completed, and removing them is T-260's. The 360 px in-context check and the read-aloud check (`in_context_screenshot_review`, `read_aloud_voice`) are to become automated gates under OE-82 (T-263, T-264, T-265); until T-264 lands nothing enforces them. `assignments` (the emergency-panel flag, the channel, the machine- and runtime-translation bans) is unchanged.",
+    "//": "THE PIPELINE AS DATA — T-049, SA §TS-12.4, as departed from under EV-16. Since stakeholder ruling OE-5 (2026-10-11; EV-16 extended) no human authors or reviews this copy: OE-66/OE-67 made an AI model its author and OE-5 dropped the DSL + deputy review. NO DATE IS IN FORCE HERE. T-259 deleted the deadline, the lead time, the latest external start, the external start and `blocked_on`, with their notes, because they measured the time left for a human engagement that the ruling abolished. `roles` and `stages` below still describe that human path: nobody is named, nothing is completed, and removing them is T-260's. The 360 px in-context check and the read-aloud check are NOT stages: under OE-82 they are automated gates (`automated_checks` below), and since T-264 gate:safety-review-currency refuses a record at the terminal status whose check is absent, stale or failed. `assignments` (the emergency-panel flag, the channel, the machine- and runtime-translation bans) is unchanged.",
     "opened_by": "T-049 (frontend-developer)",
     "engineering_kickoff": "2026-09-05",
     "roles": {
@@ -64,23 +64,22 @@
         "what": "DSL review and sign-off, PER LOCALE. This is the step that writes `entries[<locale>][<key>]` with a real `reviewed_by` and `reviewed_at`, and it is the only step that can make gate:safety-review-currency pass.",
         "output": "`status: signed_off` per locale per key.",
         "completed_at": null
+      }
+    ],
+    "automated_checks": [
+      {
+        "id": "read_aloud",
+        "gate": "gate:read-aloud",
+        "ticket": "T-263",
+        "record": "packages/i18n/checks/read-aloud.json",
+        "what": "SA §TS-12.4's read-aloud check, made by a gate under OE-82: every spoken safety string, in every enabled locale and every plural form, is synthesised with espeak-ng and checked for speakable tokens, sentence length and duration; the record binds each pair's content_hash. Which keys it applies to is pinned in tools/automated-checks.ts (READ_ALOUD_KEYS_PINNED), not here. Nothing it synthesises ships (DV-7)."
       },
       {
-        "id": "in_context_screenshot_review",
-        "blocking": true,
-        "who": "dsl",
-        "what": "In-context review in the running product at the target locale, on a 360 px Android viewport. A string that is correct and overflows its container is a failed safety string.",
-        "output": "Screenshots per locale. Needs T-050/T-051 surfaces to exist; until then this stage cannot complete, and it must not be recorded as though it had.",
-        "completed_at": null
-      },
-      {
-        "id": "read_aloud_voice",
-        "blocking": true,
-        "applies_to": "assignments whose `channel` is `voice` or `spoken_by_user`",
-        "who": "dsl",
-        "what": "Read-aloud pass. Copy that scans well on screen frequently does not survive being spoken — which is why SA §INT-5r specifies PRE-RECORDED audio per locale rather than runtime TTS (DV-7).",
-        "output": "A dated read-aloud confirmation per locale for the affected keys.",
-        "completed_at": null
+        "id": "render_360",
+        "gate": "gate:safety-copy-render",
+        "ticket": "T-265",
+        "record": "packages/i18n/checks/render-360.json",
+        "what": "SA §TS-12.4's in-context check, made by a gate under OE-82: every shown safety string is rendered in the running product at a pinned 360 px Android viewport in every enabled locale, and refused if it is not visible, differs from the catalogue, clips, truncates, overflows or is a tap target under 44x44. Which keys it applies to is pinned in tools/automated-checks.ts (RENDER_KEYS_PINNED); a key whose surface does not exist yet is listed in AWAITING_SURFACE against the ticket that builds it, and that list must be empty for production readiness."
       }
     ],
     "assignments": {
