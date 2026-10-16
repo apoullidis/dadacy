@@ -176,6 +176,24 @@ export const HEAVY_ROSTER: readonly HeavyEntry[] = [
     owner: 'T-120 — qa-verification (blocked_by T-115, T-052)',
     unblocks: `T-120 supplies the four journeys once apps/web has a journey to drive. ${WEB_IS_A_PLACEHOLDER}`,
   },
+  // ------------------------------------------- OE-82's automated checks (T-262)
+  {
+    // T-262 added it, a PROGRAMME gate: SD §QD-4's heavy row does not name it.
+    // Stakeholder ruling OE-82 (2026-10-11) kept SA §TS-12.4's 360 px in-context
+    // review as an AUTOMATED render check enforced by a gate, in place of the DSL
+    // stage (state/EP-0/OE-82-cut.md). It is heavy because a render needs the
+    // --playwright toolbox. When T-265 supplies it, it is a complete promotion
+    // under T-006 § contract §8: PENDING -> BLOCKING with an anchors: array,
+    // MIN_HEAVY_BLOCKING raised, the name moved between heavy.yml's matrices.
+    name: 'gate:safety-copy-render',
+    spec: PROGRAMME,
+    cls: 'PENDING',
+    segment: 'any',
+    why: 'SA §TS-12.4 360 px in-context render check, automated under OE-82',
+    owner: 'T-265 — frontend-developer',
+    unblocks:
+      'T-265 supplies the automated 360 px in-context render check as scoped in tasks/state/EP-0/OE-82-cut.md § T-265, and promotes this entry to BLOCKING.',
+  },
   {
     name: 'gate:constraint-suite',
     spec: 'Testcontainers constraint suite',

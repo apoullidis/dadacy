@@ -50,10 +50,12 @@
     "gate:plural-completeness": "node scripts/gates/not-yet-supplied.ts gate:plural-completeness",
     "gate:sms-segments": "node packages/i18n/tools/sms-segments.ts",
     "gate:pii-canary": "node scripts/gates/not-yet-supplied.ts gate:pii-canary",
+    "gate:read-aloud": "node scripts/gates/not-yet-supplied.ts gate:read-aloud",
     "gate:pr": "node scripts/gates/pr.ts",
     "gate:lighthouse": "node scripts/gates/not-yet-supplied.ts gate:lighthouse",
     "gate:axe": "node scripts/gates/not-yet-supplied.ts gate:axe",
     "gate:playwright-journeys": "node scripts/gates/not-yet-supplied.ts gate:playwright-journeys",
+    "gate:safety-copy-render": "node scripts/gates/not-yet-supplied.ts gate:safety-copy-render",
     "gate:db-introspect-suite": "node scripts/gates/db-introspect-suite.ts",
     "gate:heavy": "node scripts/gates/heavy.ts"
   },

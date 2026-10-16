@@ -392,6 +392,25 @@ export const ROSTER: readonly RosterEntry[] = [
     unblocks:
       'T-119 supplies the pattern set; each pattern is demonstrated catching a planted value in a log line, the cross-script canary catching «Χριστοδούλου».',
   },
+
+  // --------------------------------------------- OE-82's automated checks (T-262)
+  {
+    // T-262 added it, a PROGRAMME gate: SD §QD-4's PR row does not name it.
+    // Stakeholder ruling OE-82 (2026-10-11) kept SA §TS-12.4's read-aloud pass
+    // as an AUTOMATED check enforced by a gate, in place of the DSL stage
+    // (state/EP-0/OE-82-cut.md). Its tool, espeak-ng with en/el/ru voices, is
+    // in the default toolbox target and gate:toolbox §1b asserts it. When
+    // T-263 supplies it, it is a complete promotion under T-005 § contract §8
+    // (as amended, OD-176): PENDING -> BLOCKING, owner/unblocks dropped,
+    // MIN_BLOCKING raised, the name moved between pr.yml's two matrices.
+    name: 'gate:read-aloud',
+    spec: PROGRAMME,
+    cls: 'PENDING',
+    why: 'SA §TS-12.4 read-aloud check, automated under OE-82',
+    owner: 'T-263 — frontend-developer',
+    unblocks:
+      'T-263 supplies the automated read-aloud/TTS pass and its record as scoped in tasks/state/EP-0/OE-82-cut.md § T-263, on espeak-ng in the toolbox (T-262), and promotes this entry to BLOCKING.',
+  },
 ];
 
 /** Entries needing an owner + unblock condition, by class. */

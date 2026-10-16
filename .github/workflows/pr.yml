@@ -109,6 +109,10 @@ jobs:
   #   there too. gate:prohibited-claims was here until 2026-10-15; T-043
   #   supplied it and it is there too. W4 compares both matrices with the
   #   roster's classes, so a promotion is two edits or gate:workflow reds.
+  #
+  #   gate:read-aloud             T-263 — added by T-262: OE-82's automated
+  #                               read-aloud pass (SA §TS-12.4), a PROGRAMME
+  #                               gate SD §QD-4's PR row does not name.
   advisory:
     name: gate (not yet supplied)
     runs-on: ubuntu-latest
@@ -120,6 +124,7 @@ jobs:
           - gate:drizzle-parity
           - gate:plural-completeness
           - gate:pii-canary
+          - gate:read-aloud
     steps:
       - uses: actions/checkout@v4
         with:

@@ -29,7 +29,9 @@ const SUITE = 'scripts/negative-tests/pr-gates.sh';
 /** Raise this in the same change set that adds a case. */
 // 74 -> 77, 2026-10-04, T-237: B18-B20 (TL-F1's glued spelling, O3's rebinding block_count, an
 // unclassifiable line), each red with the classifier's REMEDY line in the gate's failure text.
-const CASES = 77;
+// 77 -> 80, 2026-10-16, T-262: A12 (gate:read-aloud's PENDING control), A13 (its roster row with
+// no owner) and F9 (it removed from pr.yml's advisory matrix).
+const CASES = 80;
 
 const failures: string[] = [];
 const abs = path.join(REPO_ROOT, SUITE);

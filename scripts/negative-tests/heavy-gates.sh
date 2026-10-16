@@ -348,16 +348,16 @@ run_case "C0 no receipts at all: NOT RUN is not PASSED" FAIL \
   'NOT RUN is not PASSED' 'there is no receipt at .cache/gate-heavy/socket.json' \
   './scripts/dev --docker pnpm -w gate:heavy' \
   './scripts/svc run <ticket> -- pnpm -w gate:heavy' \
-  'accounted for 3 of 6 rostered sub-gate(s)' -- node "$HEAVY"
+  'accounted for 3 of 7 rostered sub-gate(s)' -- node "$HEAVY"
 
 CASE="C1"
 receipt socket "$FP" "$OK_SOCKET"; receipt service "$FP" "$OK_SERVICE"
 run_case "C1 CONTROL: both receipts at THIS tree state, green" PASS \
   'GATE PASS  gate:heavy' 'the socket segment was carried by a receipt' \
-  '3 BLOCKING, 0 BLOCKED, 0 SERVICE, 3 PENDING' \
+  '3 BLOCKING, 0 BLOCKED, 0 SERVICE, 4 PENDING' \
   'PASS (206s)              gate:db-introspect-suite   [BLOCKING]' \
   '3/3 sub-gate(s) whose outcome must match their class, matched' \
-  '3 rostered sub-gate(s) are NOT GREEN' -- node "$HEAVY"
+  '4 rostered sub-gate(s) are NOT GREEN' -- node "$HEAVY"
 
 # The BLOCKED class's own CONTROL. Without it, C8 and C9 would still pass
 # against a judge that refused EVERY BLOCKED observation — the class's
@@ -367,10 +367,10 @@ plant_blocked pinned && planted_fp &&
   receipt socket "$FPM" "$OK_SOCKET" &&
   receipt service "$FPM" "[$OBS_DRIZZLE,$OBS_SUITE,$OBS_FIX_PINNED]" &&
   run_case "C1b CONTROL: a BLOCKED fixture red exactly as pinned is accepted" PASS \
-    'GATE PASS  gate:heavy' '3 BLOCKING, 1 BLOCKED, 0 SERVICE, 3 PENDING' \
+    'GATE PASS  gate:heavy' '3 BLOCKING, 1 BLOCKED, 0 SERVICE, 4 PENDING' \
     'RED AS PINNED (1s)       gate:fixture-blocked       [BLOCKED]' \
     '4/4 sub-gate(s) whose outcome must match their class, matched' \
-    '4 rostered sub-gate(s) are NOT GREEN' -- node "$HEAVY"
+    '5 rostered sub-gate(s) are NOT GREEN' -- node "$HEAVY"
 
 CASE="C2"
 receipt socket "deadbeefdeadbeef" "$OK_SOCKET"; receipt service "$FP" "$OK_SERVICE"
@@ -582,8 +582,8 @@ wf() { node scripts/gates/workflow.ts; }
 CASE="W0"
 run_case "W0 CONTROL: heavy.yml is structurally valid and mirrors the heavy roster" PASS \
   'GATE PASS' 'heavy.yml: heavy blocking gates: 3 gate(s), identical to the roster' \
-  'heavy.yml: heavy not-yet-supplied gates: 3 gate(s), identical to the roster' \
-  'W7: 36 concrete' -- wf
+  'heavy.yml: heavy not-yet-supplied gates: 4 gate(s), identical to the roster' \
+  'W7: 38 concrete' -- wf
 
 CASE="W1"
 mut "$WF" "          - gate:axe

@@ -119,6 +119,11 @@ jobs:
   # journey to drive. T-050, T-051 and T-120 are themselves blocked. W8
   # compares both matrices against the roster's classes, so supplying one of
   # them is two edits or gate:workflow reds.
+  #
+  #   gate:safety-copy-render    T-265 — frontend-developer. Added by T-262:
+  #                              OE-82's automated 360 px in-context render
+  #                              check (SA §TS-12.4), a PROGRAMME gate SD's
+  #                              heavy row does not name. It waits on T-265.
   advisory:
     name: heavy gate (not yet supplied)
     runs-on: ubuntu-latest
@@ -130,6 +135,7 @@ jobs:
           - gate:lighthouse
           - gate:axe
           - gate:playwright-journeys
+          - gate:safety-copy-render
     steps:
       - uses: actions/checkout@v4
         with:
