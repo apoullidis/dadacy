@@ -335,8 +335,9 @@ const ALLOWED_TOKEN_RE = new RegExp(
 
 /**
  * OD-356 (ruled 2026-10-16T08:48:17Z; stated in tools/automated-checks.ts): a U+002D is speakable
- * only between two letters of the same script. Inert tokens and allowed tokens
- * have already become spaces, so a hyphen next to `{param}` or `#` is refused.
+ * only between two letters of the same script. Inert tokens have already become
+ * spaces, so a hyphen next to `{param}` or `#` is refused; allowed tokens are
+ * read on their original letters, so `SOS-ready` is admitted.
  */
 function wordInternalHyphen(prev: string | undefined, next: string | undefined): boolean {
   if (prev === undefined || next === undefined) return false;
