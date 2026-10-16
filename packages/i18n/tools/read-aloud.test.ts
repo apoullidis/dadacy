@@ -1,0 +1,550 @@
+/**
+ * `gate:read-aloud` — T-263, attacked rather than observed passing.
+ *
+ * Every NEGATIVE case starts from a BASELINE root: a temporary copy of this
+ * package's real inputs (`catalogues/`, `locale-registry.json`, `review.json`)
+ * with ONE stated repair — OD-356, the en `session.checkins_missed` hyphen,
+ * which R1 refuses on the real tree — and a record generated there by the real
+ * gate with `--write`, asserted `GATE PASS`. A case then PLANTS one defect,
+ * ASSERTS THE PLANT LANDED by reading it back, runs the gate as a subprocess
+ * with `--root`, and judges it on readings a gate that did nothing could not
+ * all produce: the exit status, exactly one `GATE PASS` / `GATE FAIL` banner
+ * (a crash is a third outcome, printed `CRASH`, and never counts as a
+ * refusal — PROTOCOL §5.1), and the problem lines themselves, compared as a
+ * SET with what the case expects to be added.
+ *
+ * Mutations of the gate's CODE or PINS (a dropped plural category, an emptied
+ * pin, a removed fixture) run a COPY of `tools/read-aloud.ts` and
+ * `tools/automated-checks.ts` in the temporary root, edited by an exact,
+ * single-occurrence replacement that is asserted to have landed. Mutations of
+ * the SYNTHESISER run the real gate with a wrapper named `espeak-ng` first on
+ * PATH that execs `/usr/bin/espeak-ng` with a copied, edited data directory.
+ *
+ * T-132 § Published contract (rework 2) §2's convention holds in this file:
+ * every title is a string literal and every `test(` starts its own line.
+ */
+import { test } from 'vitest';
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import {
+  chmodSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { dirname, join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
+import { enabledLocales } from '../src/registry.ts';
+import { CHECK_TOOLS, READ_ALOUD_KEYS_PINNED } from './automated-checks.ts';
+
+const PKG = join(dirname(fileURLToPath(import.meta.url)), '..');
+const REPO = join(PKG, '..', '..');
+const GATE_SCRIPT = join(PKG, 'tools', 'read-aloud.ts');
+const T = 240_000;
+const ESPEAK = '/usr/bin/espeak-ng';
+const ESPEAK_DATA = '/usr/lib/x86_64-linux-gnu/espeak-ng-data';
+
+interface GateRun {
+  readonly code: number;
+  readonly out: string;
+  readonly banner: 'PASS' | 'FAIL' | 'NONE' | 'BOTH';
+  readonly problems: readonly string[];
+}
+
+function runScript(script: string, args: readonly string[], env?: NodeJS.ProcessEnv): GateRun {
+  const r = spawnSync(process.execPath, [script, ...args], {
+    encoding: 'utf8',
+    maxBuffer: 32 * 1024 * 1024,
+    env: env ?? process.env,
+  });
+  const out = `${r.stdout ?? ''}${r.stderr ?? ''}`;
+  const pass = (out.match(/^GATE PASS {2}gate:read-aloud/gm) ?? []).length;
+  const fail = (out.match(/^GATE FAIL {2}gate:read-aloud/gm) ?? []).length;
+  let banner: GateRun['banner'] = 'NONE';
+  if (pass + fail > 1) banner = 'BOTH';
+  else if (pass === 1) banner = 'PASS';
+  else if (fail === 1) banner = 'FAIL';
+  const tail = out.split(/^GATE FAIL {2}gate:read-aloud.*$/m)[1] ?? '';
+  const problems = tail
+    .split('\n')
+    .filter((l) => l.startsWith('  - '))
+    .map((l) => l.slice(4));
+  return { code: r.status ?? -1, out, banner, problems };
+}
+
+function runGate(root: string, extra: readonly string[] = [], env?: NodeJS.ProcessEnv): GateRun {
+  return runScript(GATE_SCRIPT, ['--root', root, ...extra], env);
+}
+
+/** Problem lines with the temporary root's path removed, so two roots compare. */
+function norm(lines: readonly string[]): string[] {
+  return lines.map((l) => l.replace(/\/tmp\/t263-[^\s/]+/g, '<root>')).sort();
+}
+
+function readDoc(path: string): Record<string, unknown> {
+  return JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
+}
+
+/** Writes a JSON edit and asserts it landed by reading it back. */
+function plantJson(path: string, mutate: (d: Record<string, unknown>) => void): void {
+  const doc = readDoc(path);
+  mutate(doc);
+  const text = `${JSON.stringify(doc, null, 2)}\n`;
+  writeFileSync(path, text);
+  assert.equal(readFileSync(path, 'utf8'), text, `plant did not land in ${path}`);
+}
+
+/** Replaces exactly one occurrence of `from` in a text file, and asserts it landed. */
+function plantText(path: string, from: string, to: string): void {
+  const before = readFileSync(path, 'utf8');
+  assert.equal(before.split(from).length - 1, 1, `expected exactly one ${JSON.stringify(from)} in ${path}`);
+  writeFileSync(path, before.replace(from, to));
+  const after = readFileSync(path, 'utf8');
+  assert.ok(after.includes(to) && after !== before, `plant did not land in ${path}`);
+}
+
+const OD356_FROM = '{count, plural, one {# check-in} other {# check-ins}}';
+const OD356_TO = '{count, plural, one {# check in} other {# check ins}}';
+
+let BASELINE: string | undefined;
+
+/**
+ * The baseline root, built once: the real inputs, the OD-356 repair, and a
+ * record generated by the real gate. Asserted to pass in verify mode.
+ */
+function baseline(): string {
+  if (BASELINE !== undefined) return BASELINE;
+  const root = mkdtempSync(join(tmpdir(), 't263-base-'));
+  cpSync(join(PKG, 'catalogues'), join(root, 'catalogues'), { recursive: true });
+  cpSync(join(PKG, 'locale-registry.json'), join(root, 'locale-registry.json'));
+  cpSync(join(PKG, 'review.json'), join(root, 'review.json'));
+  mkdirSync(join(root, 'checks'));
+  plantText(join(root, 'catalogues', 'en', 'session.json'), OD356_FROM, OD356_TO);
+  const w = runGate(root, ['--write']);
+  assert.equal(w.banner, 'PASS', `baseline --write did not pass:\n${w.out}`);
+  assert.ok(existsSync(join(root, 'checks', 'read-aloud.json')));
+  const v = runGate(root);
+  assert.equal(v.banner, 'PASS', `baseline verify did not pass:\n${v.out}`);
+  assert.equal(v.code, 0);
+  BASELINE = root;
+  return root;
+}
+
+/** A fresh copy of the baseline root. */
+function freshRoot(): string {
+  const root = mkdtempSync(join(tmpdir(), 't263-case-'));
+  cpSync(baseline(), root, { recursive: true });
+  return root;
+}
+
+/** Copies the gate and its pins into `root/tools`, with node_modules resolvable. */
+function copyTool(root: string): string {
+  mkdirSync(join(root, 'tools'));
+  cpSync(GATE_SCRIPT, join(root, 'tools', 'read-aloud.ts'));
+  cpSync(join(PKG, 'tools', 'automated-checks.ts'), join(root, 'tools', 'automated-checks.ts'));
+  symlinkSync(join(PKG, 'node_modules'), join(root, 'node_modules'));
+  return join(root, 'tools', 'read-aloud.ts');
+}
+
+/** A directory holding an `espeak-ng` wrapper with the given sh body. */
+function wrapperPath(body: string): string {
+  const bin = mkdtempSync(join(tmpdir(), 't263-bin-'));
+  const p = join(bin, 'espeak-ng');
+  writeFileSync(p, `#!/bin/sh\n${body}\n`);
+  chmodSync(p, 0o755);
+  return bin;
+}
+
+/** A copy of espeak-ng's data directory, edited by `edit(<dir>/espeak-ng-data)`. */
+function editedData(edit: (data: string) => void): string {
+  const d = mkdtempSync(join(tmpdir(), 't263-data-'));
+  cpSync(ESPEAK_DATA, join(d, 'espeak-ng-data'), { recursive: true });
+  edit(join(d, 'espeak-ng-data'));
+  return d;
+}
+
+/** The base run's problems, and the problems a case added to them. */
+function added(base: GateRun, run: GateRun): string[] {
+  const b = new Set(norm(base.problems));
+  return norm(run.problems).filter((p) => !b.has(p));
+}
+
+function assertFail(run: GateRun): void {
+  assert.equal(run.banner, 'FAIL', run.out);
+  assert.equal(run.code, 1, run.out);
+  assert.ok(!run.problems.some((p) => p.startsWith('CRASH')), `crashed, not refused:\n${run.out}`);
+}
+
+/* ---------------------------------------------------------------- CONTROL */
+
+test('CONTROL — the baseline root passes, and prints |READ_ALOUD_KEYS_PINNED| x enabled locales pairs', { timeout: T }, () => {
+  const run = runGate(freshRoot());
+  assert.equal(run.banner, 'PASS', run.out);
+  assert.equal(run.code, 0);
+  const pairs = Object.keys(READ_ALOUD_KEYS_PINNED).length * enabledLocales().length;
+  assert.equal(pairs, 9);
+  assert.match(run.out, new RegExp(`^read-aloud: ${String(pairs)} pairs, 14 forms, automated \\(espeak-ng ${CHECK_TOOLS['espeak-ng'].replace('.', '\\.')}\\), reviewed by nobody \\(OE-5, OE-82\\)$`, 'm'));
+});
+
+test('CONTROL — the REAL tree is refused on exactly the OD-356 hyphen, and has no record yet', { timeout: T }, () => {
+  const run = runScript(GATE_SCRIPT, []);
+  assertFail(run);
+  assert.match(run.out, /^read-aloud: 9 pairs, 14 forms, automated \(espeak-ng 1\.51\)/m);
+  assert.deepEqual(norm(run.problems), [
+    'MISSING-RECORD checks/read-aloud.json does not exist (generate it with --write)',
+    'UNSPEAKABLE-CHAR en session.checkins_missed [count=one]: U+002D "-" in the spoken text "We have not received 1 check-in from Maria."',
+    'UNSPEAKABLE-CHAR en session.checkins_missed [count=one]: U+002D "-" in the template text',
+    'UNSPEAKABLE-CHAR en session.checkins_missed [count=other]: U+002D "-" in the spoken text "We have not received 3 check-ins from Maria."',
+    'UNSPEAKABLE-CHAR en session.checkins_missed [count=other]: U+002D "-" in the template text',
+  ]);
+});
+
+test('CHECK_TOOLS equals the espeak-ng line of .tool-versions', () => {
+  const line = readFileSync(join(REPO, '.tool-versions'), 'utf8')
+    .split('\n')
+    .find((l) => /^espeak-ng\s/.test(l));
+  assert.ok(line !== undefined);
+  assert.equal(line.split(/\s+/)[1], CHECK_TOOLS['espeak-ng']);
+});
+
+test('the pins module is not reachable from the package exports', () => {
+  const exportsField = (readDoc(join(PKG, 'package.json')).exports ?? {}) as Record<string, string>;
+  for (const target of Object.values(exportsField)) assert.ok(!target.includes('tools/'), target);
+});
+
+/* ------------------------------------------------------------ R1 to R5 */
+
+test('UNSPEAKABLE-CHAR — a slash planted in el address_prompt is refused', { timeout: T }, () => {
+  const root = freshRoot();
+  const base = runGate(root);
+  plantJson(join(root, 'catalogues', 'el', 'safety.json'), (d) => {
+    d['emergency.address_prompt'] = 'Διαβάστε στο 112 αυτή/τη διεύθυνση: {address}';
+  });
+  const run = runGate(root);
+  assertFail(run);
+  const a = added(base, run);
+  assert.ok(a.includes('UNSPEAKABLE-CHAR el safety.emergency.address_prompt [base]: U+002F "/" in the template text'), run.out);
+  assert.ok(a.some((p) => p.startsWith('RECORD-DRIFT el.safety.emergency.address_prompt')), run.out);
+  assert.ok(a.every((p) => /^(UNSPEAKABLE-CHAR|RECORD-DRIFT) el safety\.emergency\.address_prompt|^RECORD-DRIFT el\.safety\.emergency\.address_prompt/.test(p)), run.out);
+});
+
+test('MIXED-SCRIPT-WORD — a Latin o (U+006F) inside a Greek word is refused', { timeout: T }, () => {
+  const root = freshRoot();
+  plantJson(join(root, 'catalogues', 'el', 'safety.json'), (d) => {
+    d['emergency.call_112.script'] = String(d['emergency.call_112.script']).replace('τηλέφωνο', 'τηλέφωνo');
+  });
+  assert.ok(readFileSync(join(root, 'catalogues', 'el', 'safety.json'), 'utf8').includes('τηλέφωνo'));
+  const run = runGate(root);
+  assertFail(run);
+  assert.ok(run.problems.includes('MIXED-SCRIPT-WORD el safety.emergency.call_112.script [base]: "τηλέφωνo" mixes Greek + Latin'), run.out);
+});
+
+test('UNLISTED-NUMBER — 911 in en call_112.script is refused', { timeout: T }, () => {
+  const root = freshRoot();
+  plantJson(join(root, 'catalogues', 'en', 'safety.json'), (d) => {
+    d['emergency.call_112.script'] = String(d['emergency.call_112.script']).replace('Do not hang up.', 'Do not call 911.');
+  });
+  const run = runGate(root);
+  assertFail(run);
+  assert.ok(run.problems.some((p) => p.startsWith('UNLISTED-NUMBER en safety.emergency.call_112.script [base]: "911" is not one of 112, 199, 1466, 116 111')), run.out);
+});
+
+test('UNLISTED-ACRONYM — ASAP in en call_112.script is refused, and SOS is not', { timeout: T }, () => {
+  const root = freshRoot();
+  plantJson(join(root, 'catalogues', 'en', 'safety.json'), (d) => {
+    d['emergency.call_112.script'] = String(d['emergency.call_112.script']).replace('Do not hang up.', 'Say SOS. Do not hang up ASAP.');
+  });
+  const run = runGate(root);
+  assertFail(run);
+  const acr = run.problems.filter((p) => p.startsWith('UNLISTED-ACRONYM'));
+  assert.deepEqual(acr, ['UNLISTED-ACRONYM en safety.emergency.call_112.script [base]: "ASAP"'], run.out);
+});
+
+test('SENTENCE-TOO-LONG — a 40-word sentence is refused with its word count', { timeout: T }, () => {
+  const root = freshRoot();
+  const forty = Array.from({ length: 39 }, (_, i) => ['read', 'the', 'address', 'slowly'][i % 4]).join(' ');
+  plantJson(join(root, 'catalogues', 'en', 'safety.json'), (d) => {
+    d['emergency.address_prompt'] = `${forty} {address}`;
+  });
+  const run = runGate(root);
+  assertFail(run);
+  assert.ok(run.problems.some((p) => p.startsWith('SENTENCE-TOO-LONG en safety.emergency.address_prompt [base]: 40 words > 20')), run.out);
+});
+
+/* --------------------------------------------------------------- R6 TTS */
+
+test('TOO-LONG-SPOKEN — a form padded past 20 000 ms is refused, printing the measured ms', { timeout: T }, () => {
+  const root = freshRoot();
+  plantJson(join(root, 'catalogues', 'en', 'safety.json'), (d) => {
+    d['emergency.call_112.script'] = `${String(d['emergency.call_112.script'])}${' Do not hang up.'.repeat(30)}`;
+  });
+  const run = runGate(root);
+  assertFail(run);
+  const line = run.problems.find((p) => p.startsWith('TOO-LONG-SPOKEN en safety.emergency.call_112.script [base]: '));
+  assert.ok(line !== undefined, run.out);
+  const ms = Number(/: (\d+) ms > 20000 ms \(spoken_by_user\)$/.exec(line)?.[1]);
+  assert.ok(ms > 20_000, line);
+  assert.match(run.out, new RegExp(`^ {2}!! en safety\\.emergency\\.call_112\\.script \\[base\\] ${String(ms)} ms of 20000 ms`, 'm'));
+});
+
+test('TTS-UNAVAILABLE — with no espeak-ng on PATH the gate FAILS, says nothing was synthesised, and does not crash', { timeout: T }, () => {
+  const root = freshRoot();
+  const empty = mkdtempSync(join(tmpdir(), 't263-path-'));
+  assert.notEqual(spawnSync('/bin/sh', ['-c', 'command -v espeak-ng'], { env: { PATH: empty } }).status, 0, 'espeak-ng still resolvable');
+  const run = runGate(root, [], { ...process.env, PATH: empty });
+  assertFail(run);
+  assert.ok(!/^GATE PASS/m.test(run.out));
+  assert.ok(run.problems.some((p) => p.startsWith('TTS-UNAVAILABLE espeak-ng is not on PATH') && p.endsWith('Nothing was synthesised; this is NOT a pass.')), run.out);
+  assert.match(run.out, /^read-aloud: 9 pairs, 14 forms, automated \(espeak-ng UNAVAILABLE\)/m);
+  assert.match(run.out, /record NOT verified against synthesis: TTS unavailable/);
+  assert.ok(!run.problems.some((p) => p.startsWith('RECORD-DRIFT')), run.out);
+});
+
+test('CRASH is a third outcome — malformed review.json prints CRASH, not a refusal and not TTS-UNAVAILABLE', { timeout: T }, () => {
+  const root = freshRoot();
+  writeFileSync(join(root, 'review.json'), '{ not json');
+  const run = runGate(root);
+  assert.equal(run.banner, 'FAIL', run.out);
+  assert.equal(run.code, 1);
+  assert.equal(run.problems.length, 1);
+  assert.ok(run.problems[0]?.startsWith('CRASH '), run.out);
+});
+
+test('TTS-FAILED — espeak-ng exiting 0 with a missing el dictionary is refused from its stderr', { timeout: T }, () => {
+  const root = freshRoot();
+  const data = editedData((d) => {
+    rmSync(join(d, 'el_dict'));
+  });
+  assert.ok(!existsSync(join(data, 'espeak-ng-data', 'el_dict')));
+  const bin = wrapperPath(`exec ${ESPEAK} --path=${data} "$@"`);
+  const probe = spawnSync(join(bin, 'espeak-ng'), ['-v', 'el', '-w', join(data, 'p.wav'), 'Πείτε'], { encoding: 'utf8' });
+  assert.equal(probe.status, 0, 'the hazard T-262 measured: exit 0');
+  assert.match(probe.stderr, /Can't read dictionary file/);
+  const run = runGate(root, [], { ...process.env, PATH: `${bin}:${process.env.PATH ?? ''}` });
+  assertFail(run);
+  const tts = run.problems.filter((p) => p.startsWith('TTS-FAILED'));
+  assert.equal(tts.length, 4, run.out); // el: address_prompt 1 + call_112.script 1 + checkins_missed 2 forms
+  assert.ok(tts.every((p) => p.startsWith('TTS-FAILED el ') && p.includes('exited 0 but wrote to stderr')), run.out);
+});
+
+test('BOUND — el_dict replaced by en_dict synthesises with exit 0 and no stderr, and is caught only by the record and the budget', { timeout: T }, () => {
+  const root = freshRoot();
+  const data = editedData((d) => {
+    cpSync(join(d, 'en_dict'), join(d, 'el_dict'));
+  });
+  assert.deepEqual(
+    readFileSync(join(data, 'espeak-ng-data', 'el_dict')),
+    readFileSync(join(data, 'espeak-ng-data', 'en_dict')),
+  );
+  const env = { ...process.env, PATH: `${wrapperPath(`exec ${ESPEAK} --path=${data} "$@"`)}:${process.env.PATH ?? ''}` };
+  const run = runGate(root, [], env);
+  assertFail(run);
+  assert.ok(!run.problems.some((p) => p.startsWith('TTS-FAILED')), run.out);
+  // Every el pair drifts; nothing else in en or ru moves.
+  const drift = run.problems.filter((p) => p.startsWith('RECORD-DRIFT'));
+  assert.deepEqual(drift.map((p) => p.split('.forms')[0]), [
+    'RECORD-DRIFT el.safety.emergency.address_prompt',
+    'RECORD-DRIFT el.safety.emergency.call_112.script',
+    'RECORD-DRIFT el.session.checkins_missed',
+  ], run.out);
+  assert.ok(run.problems.every((p) => p.startsWith('RECORD-DRIFT el.') || p.startsWith('TOO-LONG-SPOKEN el ')), run.out);
+});
+
+test('TTS-FAILED — an espeak-ng reporting a version other than CHECK_TOOLS is refused', { timeout: T }, () => {
+  const root = freshRoot();
+  const bin = wrapperPath(`if [ "$1" = "--version" ]; then echo "eSpeak NG text-to-speech: 1.52  Data at: x"; exit 0; fi\nexec ${ESPEAK} "$@"`);
+  const run = runGate(root, [], { ...process.env, PATH: `${bin}:${process.env.PATH ?? ''}` });
+  assertFail(run);
+  assert.ok(run.problems.includes("TTS-FAILED espeak-ng reports '1.52', CHECK_TOOLS pins '1.51'"), run.out);
+});
+
+/* --------------------------------------------------- forms, fixtures */
+
+test('UNSPEAKABLE-CHAR — a fixture parameter removed so {address} survives into the spoken text is refused', { timeout: T }, () => {
+  const root = freshRoot();
+  const tool = copyTool(root);
+  plantText(join(root, 'tools', 'automated-checks.ts'), "en: { address: '12 Example Street, Nicosia 1065', sitterName: 'Maria' },", "en: { sitterName: 'Maria' },");
+  const run = runScript(tool, ['--root', root]);
+  assertFail(run);
+  for (const key of ['safety.emergency.address_prompt', 'safety.emergency.call_112.script'])
+    for (const ch of ['U+007B "{"', 'U+007D "}"'])
+      assert.ok(run.problems.some((p) => p.startsWith(`UNSPEAKABLE-CHAR en ${key} [base]: ${ch} in the spoken text`)), `${key} ${ch}\n${run.out}`);
+});
+
+test('FORMS-INCOMPLETE — the few category dropped from the expansion code is refused', { timeout: T }, () => {
+  const root = freshRoot();
+  const tool = copyTool(root);
+  plantText(
+    join(root, 'tools', 'read-aloud.ts'),
+    'return [...new Intl.PluralRules(locale).resolvedOptions().pluralCategories];',
+    "return [...new Intl.PluralRules(locale).resolvedOptions().pluralCategories].filter((c) => c !== 'few');",
+  );
+  const run = runScript(tool, ['--root', root]);
+  assertFail(run);
+  assert.ok(run.problems.includes('FORMS-INCOMPLETE ru session.checkins_missed: expanded 3 form(s), Intl.PluralRules and the message require 4; missing count=few'), run.out);
+  assert.match(run.out, /^read-aloud: 9 pairs, 13 forms/m);
+});
+
+test('RENDER-MISMATCH — the walker disagreeing with intl-messageformat on # is refused', { timeout: T }, () => {
+  const root = freshRoot();
+  const tool = copyTool(root);
+  plantText(join(root, 'tools', 'read-aloud.ts'), "s += count === undefined ? '#' : nf.format(count);", "s += count === undefined ? '#' : String(count);");
+  const run = runScript(tool, ['--root', root]);
+  assertFail(run);
+  assert.ok(run.problems.some((p) => p.startsWith('RENDER-MISMATCH ru session.checkins_missed [count=other]: this walker "Мы не получили 1.5 отметки')), run.out);
+});
+
+/* ---------------------------------------------------------- the record */
+
+test('RECORD-DRIFT — a catalogue string edited without --write is refused', { timeout: T }, () => {
+  const root = freshRoot();
+  plantJson(join(root, 'catalogues', 'en', 'safety.json'), (d) => {
+    d['emergency.address_prompt'] = 'Read this address to the 112 operator now: {address}';
+  });
+  const run = runGate(root);
+  assertFail(run);
+  assert.deepEqual(
+    run.problems.map((p) => p.split(':')[0]),
+    ['RECORD-DRIFT en.safety.emergency.address_prompt.forms[0].text_sha256'],
+    run.out,
+  );
+});
+
+test('RECORD-DRIFT — duration_ms hand-edited in the record is refused', { timeout: T }, () => {
+  const root = freshRoot();
+  const rec = join(root, 'checks', 'read-aloud.json');
+  plantJson(rec, (d) => {
+    const f = ((d.records as Record<string, Record<string, { forms: { duration_ms: number }[] }>>).ru?.['safety.emergency.call_112.script']?.forms[0]);
+    assert.ok(f !== undefined);
+    f.duration_ms -= 1;
+  });
+  const run = runGate(root);
+  assertFail(run);
+  assert.equal(run.problems.length, 1, run.out);
+  assert.match(run.problems[0] ?? '', /^RECORD-DRIFT ru\.safety\.emergency\.call_112\.script\.forms\[0\]\.duration_ms: committed \d+, computed \d+$/);
+});
+
+test('RECORD-DRIFT — a record re-serialised with different bytes but equal values is refused', { timeout: T }, () => {
+  const root = freshRoot();
+  const rec = join(root, 'checks', 'read-aloud.json');
+  const doc = readDoc(rec);
+  writeFileSync(rec, JSON.stringify(doc));
+  assert.notEqual(readFileSync(rec, 'utf8'), `${JSON.stringify(doc, null, 2)}\n`);
+  const run = runGate(root);
+  assertFail(run);
+  assert.deepEqual(run.problems, ['RECORD-DRIFT checks/read-aloud.json: its bytes differ from what --write would write'], run.out);
+});
+
+test('CLAIMS-HUMAN-CHECK — checked_by naming a person is refused', { timeout: T }, () => {
+  const root = freshRoot();
+  plantJson(join(root, 'checks', 'read-aloud.json'), (d) => {
+    const r = (d.records as Record<string, Record<string, Record<string, unknown>>>).el?.['safety.emergency.address_prompt'];
+    assert.ok(r !== undefined);
+    r.checked_by = 'A. Person';
+  });
+  const run = runGate(root);
+  assertFail(run);
+  assert.ok(run.problems.some((p) => p.startsWith('CLAIMS-HUMAN-CHECK el safety.emergency.address_prompt: checked_by "A. Person"')), run.out);
+});
+
+test('CLAIMS-HUMAN-CHECK — a reviewed_by field beside the automation literal is refused', { timeout: T }, () => {
+  const root = freshRoot();
+  plantJson(join(root, 'checks', 'read-aloud.json'), (d) => {
+    const r = (d.records as Record<string, Record<string, Record<string, unknown>>>).ru?.['session.checkins_missed'];
+    assert.ok(r !== undefined);
+    r.reviewed_by = 'dsl';
+  });
+  const run = runGate(root);
+  assertFail(run);
+  assert.ok(run.problems.some((p) => p.startsWith('CLAIMS-HUMAN-CHECK ru session.checkins_missed: checked_by "automation:gate:read-aloud", field(s) reviewed_by')), run.out);
+});
+
+test('MISSING-RECORD and EXTRA-RECORD — a pair deleted from the record, and one added for a screen key', { timeout: T }, () => {
+  const root = freshRoot();
+  plantJson(join(root, 'checks', 'read-aloud.json'), (d) => {
+    const recs = d.records as Record<string, Record<string, unknown>>;
+    const en = recs.en;
+    assert.ok(en !== undefined);
+    recs.en = { ...en, 'safety.sos.confirm': en['safety.emergency.address_prompt'] };
+    delete (recs.en as Record<string, unknown>)['safety.emergency.address_prompt'];
+  });
+  const run = runGate(root);
+  assertFail(run);
+  assert.ok(run.problems.includes('MISSING-RECORD en safety.emergency.address_prompt: no entry in checks/read-aloud.json'), run.out);
+  assert.ok(run.problems.includes('EXTRA-RECORD en safety.sos.confirm: a record for a pair this gate does not check'), run.out);
+});
+
+test('--write refuses while any check fails, and leaves the record byte-identical', { timeout: T }, () => {
+  const root = freshRoot();
+  const rec = join(root, 'checks', 'read-aloud.json');
+  const before = readFileSync(rec, 'utf8');
+  plantJson(join(root, 'catalogues', 'ru', 'safety.json'), (d) => {
+    d['emergency.address_prompt'] = 'Прочитайте этот адрес вслух оператору 112 / {address}';
+  });
+  const run = runGate(root, ['--write']);
+  assertFail(run);
+  assert.match(run.out, /checks\/read-aloud\.json NOT written: the checks above did not all pass/);
+  assert.equal(readFileSync(rec, 'utf8'), before);
+});
+
+/* --------------------------------------------------------- scope pins */
+
+test('CHANNEL-DRIFT — address_prompt flipped to screen in review.json is refused', { timeout: T }, () => {
+  const root = freshRoot();
+  plantJson(join(root, 'review.json'), (d) => {
+    const a = (d.pipeline as { assignments: Record<string, { channel: string }> }).assignments['safety.emergency.address_prompt'];
+    assert.ok(a !== undefined);
+    a.channel = 'screen';
+  });
+  const run = runGate(root);
+  assertFail(run);
+  assert.deepEqual(run.problems, ["CHANNEL-DRIFT safety.emergency.address_prompt: pinned as spoken, but review.json's channel is 'screen' or the key is absent"], run.out);
+});
+
+test('CHANNEL-DRIFT — a screen key moved to voice in review.json is refused, so a budget cannot widen from there', { timeout: T }, () => {
+  const root = freshRoot();
+  plantJson(join(root, 'review.json'), (d) => {
+    const as = (d.pipeline as { assignments: Record<string, { channel: string }> }).assignments;
+    const label = as['safety.sos.confirm'];
+    const missed = as['session.checkins_missed'];
+    assert.ok(label !== undefined && missed !== undefined);
+    label.channel = 'voice';
+    missed.channel = 'voice';
+  });
+  const run = runGate(root);
+  assertFail(run);
+  assert.deepEqual(norm(run.problems), [
+    "CHANNEL-DRIFT safety.sos.confirm: channel 'voice' in review.json, but not in READ_ALOUD_KEYS_PINNED",
+    "CHANNEL-DRIFT session.checkins_missed: channel 'voice' in review.json, pinned 'undetermined'",
+  ], run.out);
+});
+
+test('CHANNEL-DRIFT — READ_ALOUD_KEYS_PINNED emptied fails closed, and NOTHING-CHECKED is printed', { timeout: T }, () => {
+  const root = freshRoot();
+  const tool = copyTool(root);
+  const pins = join(root, 'tools', 'automated-checks.ts');
+  plantText(pins, "  'safety.emergency.address_prompt': 'spoken_by_user',\n  'safety.emergency.call_112.script': 'spoken_by_user',\n  'session.checkins_missed': 'undetermined',\n", '');
+  const run = runScript(tool, ['--root', root]);
+  assertFail(run);
+  assert.ok(run.problems.includes('CHANNEL-DRIFT READ_ALOUD_KEYS_PINNED is empty: nothing would be checked (fails closed)'), run.out);
+  assert.equal(run.problems.filter((p) => p.startsWith('CHANNEL-DRIFT') && p.includes('but not in READ_ALOUD_KEYS_PINNED')).length, 3, run.out);
+  assert.ok(run.problems.includes('NOTHING-CHECKED zero (locale, key) pairs were examined'), run.out);
+  assert.match(run.out, /^read-aloud: 0 pairs, 0 forms/m);
+});
+
+test('NOTHING-CHECKED — every locale disabled in the registry is refused, not passed over an empty set', { timeout: T }, () => {
+  const root = freshRoot();
+  plantJson(join(root, 'locale-registry.json'), (d) => {
+    for (const l of d.locales as { enabled: boolean }[]) l.enabled = false;
+  });
+  const run = runGate(root);
+  assertFail(run);
+  assert.ok(run.problems.includes('NOTHING-CHECKED zero (locale, key) pairs were examined'), run.out);
+  assert.equal(run.problems.filter((p) => p.startsWith('EXTRA-RECORD')).length, 9, run.out);
+});
