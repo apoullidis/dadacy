@@ -35,7 +35,9 @@
 -- tier: 'sitter' when COMPLETE, else NULL. tier_rank: sitter 1, childcare_professional 2,
 -- infant_qualified 3, NULL 0 (E-1). The two higher tiers have no input on main (no qualifying scheme
 -- designation, no reference_check table), so the derivation never produces them.
--- Only status columns are read: no date column, no attestation instant, no reference column.
+-- Columns read: account.id, status, jurisdiction; credential_scheme.id, jurisdiction,
+-- mandatory_rules; sitter_credential.sitter_id, scheme_id, status. No date column, no attestation
+-- instant, no reference column (the suite pins the helper's alias-qualified column references).
 --
 -- public.i1_rederive_sitter(id) is THE writer (G-3 (c)): SECURITY DEFINER, owner app_ddl. It locks
 -- the sitter_profile row, compares it with i1_derived_bookable(id) and, only when they differ,
@@ -62,21 +64,37 @@
 -- 0, and the queue's retry_limit, retry_delay, retry_backoff, retry_delay_max, expire_seconds,
 -- deletion_seconds, keep_until (now() + retention_seconds), policy, dead_letter and
 -- heartbeat_seconds read from pgboss.queue; ON CONFLICT DO NOTHING as pg-boss's. No NOTIFY.
--- IF THE QUEUE ROW IS ABSENT (it exists only once a worker has booted, T-089 §7 T-266 (a)) the
--- function RAISES KV081 and the write that changed bookable_state is refused: nothing is dropped
--- silently. The job is in the writer's transaction: it commits or rolls back with the change.
+-- It first reads the sitter's sitter_profile row: an id that names no sitter_profile is REFUSED
+-- KV082 (I1_SLOT_MATERIALISE_NO_SITTER) and no job is inserted.
+-- IF THE QUEUE ROW IS ABSENT (it exists only once a worker has booted, T-089 §7 T-266 (a)):
+--   the new bookable_state is 'bookable'  -> RAISES KV081 and the write that made the sitter
+--                                            bookable is refused (fail closed: the sitter stays
+--                                            non-bookable until a worker has booted);
+--   any other new state                   -> no job is inserted, a WARNING 01K81
+--                                            (I1_SLOT_MATERIALISE_SKIPPED) is raised, and the
+--                                            write COMMITS. A suspension, a review_hold and every
+--                                            other transition out of 'bookable' is therefore never
+--                                            refused for want of the queue (T-028 rework 1,
+--                                            QA-F3 option (a)); the slot set it would have
+--                                            re-materialised is left stale (layer 2, T-091, reads
+--                                            bookable_state itself).
+-- The job is in the writer's transaction: it commits or rolls back with the change.
 -- Owner: the bootstrap superuser, because the definer runs as app_ddl and app_ddl holds no
--- privilege in schema pgboss (0006 grants app_rw only); no role gains a privilege or membership
--- for it. EXECUTE: app_ddl only (the only role, with the superuser, that can change bookable_state).
+-- privilege in schema pgboss (0006 grants app_rw only). This is EV-57 (OE-91 (a), an accepted
+-- exception to T-020 §3): EXECUTE is granted to app_ddl only, so app_ddl gains exactly one write in
+-- schema pgboss: a job on search.slot_materialise with payload {"sitterId": <an existing
+-- sitter_profile id>} and the queue's own settings. No other role, membership or grant changes.
 --
 -- THE READ PATH (OD-325). Every sitter_credential policy is TO app_rw and the table is FORCEd, so
 -- app_ddl, the definer's owner, read 0 rows. Added: sitter_credential_i1_derivation_select,
 -- PERMISSIVE, FOR SELECT, TO app_ddl, USING app.i1_derivation = 'on' (read through NULLIF, as
 -- 0026's are). i1_rederive_sitter and i1_reconcile_bookable_state pin app.i1_derivation = 'on' in
 -- their own SET clause, restored on exit. app_rw cannot reach the policy: it is not TO app_rw, and
--- app_rw is not a member of app_ddl. A break-glass app_ddl session can set the GUC itself and read
--- every row (it could already ALTER TABLE ... NO FORCE, T-252 §4); so can any FUTURE app_ddl-owned
--- SECURITY DEFINER function reading this table, if its caller has set the GUC.
+-- app_rw is not a member of app_ddl. NOT HELD: app.i1_derivation is a placeholder setting that any
+-- role may SET, so ANY session acting as app_ddl (break-glass, or a migration the runner executes
+-- as app_ddl) that sets it reads every row (it could already ALTER TABLE ... NO FORCE, T-252 §4);
+-- so can any FUTURE app_ddl-owned SECURITY DEFINER function reading this table, if its caller has
+-- set the GUC.
 --
 -- THE RECONCILER (layer 3). public.i1_reconcile_bookable_state() — SECURITY DEFINER, owner app_ddl,
 -- EXECUTE app_rw — computes i1_derived_bookable for EVERY sitter_profile row and compares
@@ -94,7 +112,7 @@
 -- packages/db-testkit/suites/i1-bookable-state.test.ts against this call graph.
 --
 -- WHO RUNS THIS FILE. The bootstrap superuser (@run-as above), for the one superuser-owned
--- function. Every other function is handed to app_ddl with ALTER FUNCTION ... OWNER TO app_ddl;
+-- function (EV-57). Every other function is handed to app_ddl with ALTER FUNCTION ... OWNER TO app_ddl;
 -- the triggers and the policy belong to their tables (owner app_ddl). Transactional. The SA §INT-10
 -- guard's event trigger fires on CREATE FUNCTION, ALTER FUNCTION and GRANT here.
 --
@@ -178,12 +196,25 @@ CREATE FUNCTION public.i1_enqueue_slot_materialise(p_sitter_id pg_catalog.bpchar
   SECURITY INVOKER
   SET search_path = pg_catalog, pg_temp
 AS $fn$
+DECLARE
+  v_state public.bookable_state;
 BEGIN
+  SELECT p.bookable_state INTO v_state FROM public.sitter_profile AS p WHERE p.id = p_sitter_id;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'I1_SLOT_MATERIALISE_NO_SITTER: the id names no sitter_profile row, so no search.slot_materialise job is enqueued'
+      USING ERRCODE = 'KV082';
+  END IF;
+
   PERFORM 1 FROM pgboss.queue AS q WHERE q.name = 'search.slot_materialise'::pg_catalog.text;
   IF NOT FOUND THEN
-    RAISE EXCEPTION 'I1_SLOT_MATERIALISE_QUEUE_ABSENT: bookable_state changed, and the pg-boss queue search.slot_materialise does not exist, so the change cannot be enqueued'
-      USING ERRCODE = 'KV081',
-            HINT = 'The queue row is created when a worker boots (AvailabilityHandler). Boot a worker against this database, then retry the write.';
+    IF v_state = 'bookable'::public.bookable_state THEN
+      RAISE EXCEPTION 'I1_SLOT_MATERIALISE_QUEUE_ABSENT: bookable_state changed to bookable, and the pg-boss queue search.slot_materialise does not exist, so the change cannot be enqueued'
+        USING ERRCODE = 'KV081',
+              HINT = 'The queue row is created when a worker boots (AvailabilityHandler). Boot a worker against this database, then retry the write.';
+    END IF;
+    RAISE WARNING 'I1_SLOT_MATERIALISE_SKIPPED: bookable_state changed to a non-bookable state and the pg-boss queue search.slot_materialise does not exist; the change commits without a job'
+      USING ERRCODE = '01K81';
+    RETURN;
   END IF;
 
   INSERT INTO pgboss.job (
@@ -224,7 +255,7 @@ ALTER FUNCTION public.i1_enqueue_slot_materialise(pg_catalog.bpchar) SECURITY DE
 GRANT EXECUTE ON FUNCTION public.i1_enqueue_slot_materialise(pg_catalog.bpchar) TO app_ddl;
 
 COMMENT ON FUNCTION public.i1_enqueue_slot_materialise(pg_catalog.bpchar) IS
-  'Inserts one pgboss.job row on queue search.slot_materialise with data {"sitterId": <id>}, copying the queue''s retry, expiry, retention, policy, dead-letter and heartbeat settings from pgboss.queue as pg-boss 12.26.4''s send does (T-028; E.3 U-12; T-089 contract section 7). Raises KV081 when the queue row is absent. SECURITY DEFINER, owner the bootstrap superuser; EXECUTE app_ddl only. Called by trg_sitter_profile_i1_enqueue.';
+  'Inserts one pgboss.job row on queue search.slot_materialise with data {"sitterId": <id>}, copying the queue''s retry, expiry, retention, policy, dead-letter and heartbeat settings from pgboss.queue as pg-boss 12.26.4''s send does (T-028; E.3 U-12; T-089 contract section 7). Refuses an id with no sitter_profile (KV082). Queue row absent: refuses a change to bookable (KV081); any other new state commits without a job (WARNING 01K81). SECURITY DEFINER, owner the bootstrap superuser (EV-57); EXECUTE app_ddl only. Called by trg_sitter_profile_i1_enqueue.';
 
 -- ---------------------------------------------------------------------------------------------
 -- The writer (G-3 (c)): the one SECURITY DEFINER function that writes the protected four
@@ -316,7 +347,7 @@ BEGIN
     RAISE EXCEPTION 'I1_BOOKABLE_STATE_DIVERGENCE: % of % sitter_profile rows disagree with the I-1 derivation', n_diverged, n_checked
       USING ERRCODE = 'KV080',
             DETAIL = 'sitter_profile ids: ' || diverged,
-            HINT = 'Page (SA SA-4 I-1 layer 3; SD 1364); do not repair from here. SD RB-2: a manual review_hold that the derivation does not produce is itself reported here.';
+            HINT = 'Page (SA SA-4 I-1 layer 3; SD 1364); do not repair from here. SD RB-2: a manual review_hold that the derivation does not produce is reported here until the next re-derive of that sitter overwrites it.';
   END IF;
 
   RETURN n_checked;

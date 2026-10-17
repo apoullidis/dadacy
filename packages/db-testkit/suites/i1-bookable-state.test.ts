@@ -207,7 +207,17 @@ const expectedAll = (overrides: Partial<Record<keyof typeof S, string>> = {}): s
 const KV080 = (n: number, of: number): string =>
   `ERROR:  KV080: I1_BOOKABLE_STATE_DIVERGENCE: ${String(n)} of ${String(of)} sitter_profile rows disagree with the I-1 derivation`;
 const KV081 =
-  'ERROR:  KV081: I1_SLOT_MATERIALISE_QUEUE_ABSENT: bookable_state changed, and the pg-boss queue search.slot_materialise does not exist, so the change cannot be enqueued';
+  'ERROR:  KV081: I1_SLOT_MATERIALISE_QUEUE_ABSENT: bookable_state changed to bookable, and the pg-boss queue search.slot_materialise does not exist, so the change cannot be enqueued';
+const KV082 =
+  'ERROR:  KV082: I1_SLOT_MATERIALISE_NO_SITTER: the id names no sitter_profile row, so no search.slot_materialise job is enqueued';
+const SKIPPED =
+  'WARNING:  01K81: I1_SLOT_MATERIALISE_SKIPPED: bookable_state changed to a non-bookable state and the pg-boss queue search.slot_materialise does not exist; the change commits without a job';
+/** Delete the queue (and, first, its jobs: q_fkey is ON DELETE RESTRICT, deferred). Superuser only. */
+const DROP_QUEUE = [
+  `DELETE FROM pgboss.job WHERE name = '${QUEUE}'`,
+  `DELETE FROM pgboss.queue WHERE name = '${QUEUE}'`,
+  `SELECT 'queue=' || count(*) FROM pgboss.queue WHERE name = '${QUEUE}'`,
+];
 const N_SITTERS = Object.keys(S).length;
 const N_CREDS = Object.values(FIXTURE).reduce((n, f) => n + Object.keys(f.creds).length, 0);
 
@@ -278,12 +288,24 @@ describe('0030 — the catalogue: functions, triggers, policy', () => {
       ),
       'none',
     );
-    // anti-vacuity: the search reads the bodies it claims to (each body names its own inputs).
+    // anti-vacuity: the search reads the bodies it claims to (each body names its own inputs; since
+    // rework 1 the enqueue too, which reads public.sitter_profile).
     assert.equal(
       await db.value(
         `SELECT count(*) FROM pg_proc WHERE pronamespace = 'public'::regnamespace AND proname LIKE 'i1\\_%' AND prosrc ~ 'public\\.'`,
       ),
-      '7',
+      '8',
+    );
+  });
+
+  test('QA-F5 (rework 1): the columns the derivation helper reads, as alias-qualified references in its body, are exactly account id/status/jurisdiction, credential_scheme id/jurisdiction/mandatory_rules and sitter_credential sitter_id/scheme_id/status', async () => {
+    assert.equal(
+      await db.value(
+        `SELECT string_agg(DISTINCT m[1] || '.' || m[2], ',' ORDER BY m[1] || '.' || m[2])
+           FROM pg_proc, regexp_matches(prosrc, '\\m(a|cs|sc)\\.([a-z_]+)', 'g') AS m
+          WHERE oid = 'public.i1_derived_bookable(bpchar)'::regprocedure`,
+      ),
+      'a.id,a.jurisdiction,a.status,cs.id,cs.jurisdiction,cs.mandatory_rules,sc.scheme_id,sc.sitter_id,sc.status',
     );
   });
 
@@ -534,14 +556,21 @@ describe('the enqueue — search.slot_materialise on every bookable_state change
     assert.match(S.FULL, CANONICAL_ULID);
   });
 
-  test("COPIED from pgboss.queue, not defaulted: with the queue's retry_limit set to 5 and expire_seconds to 77, the next job carries 5 and 77", async () => {
+  test("COPIED from pgboss.queue, not defaulted (QA-F4, rework 1): with every copied setting of the queue moved off pg-boss's and the column default (retry_limit 5, retry_delay 7, retry_backoff true, retry_delay_max 33, expire_seconds 77, deletion_seconds 4444, retention_seconds 5555, policy short, dead_letter t028.dlq, heartbeat_seconds 66), the next job carries each value, and keep_until - start_after = 5555 s", async () => {
     const r = await asSuperuser(
-      `UPDATE pgboss.queue SET retry_limit = 5, expire_seconds = 77 WHERE name = '${QUEUE}'`,
+      `SELECT pgboss.create_queue('t028.dlq', '{"policy": "standard"}'::jsonb)`,
+      `UPDATE pgboss.queue SET retry_limit = 5, retry_delay = 7, retry_backoff = true, retry_delay_max = 33,
+              expire_seconds = 77, deletion_seconds = 4444, retention_seconds = 5555, policy = 'short',
+              dead_letter = 't028.dlq', heartbeat_seconds = 66 WHERE name = '${QUEUE}'`,
       `UPDATE public.account SET status = 'suspended' WHERE id = '${S.FULL}'`,
-      `SELECT 'job=' || retry_limit || '|' || expire_seconds FROM pgboss.job WHERE name = '${QUEUE}' AND data->>'sitterId' = '${S.FULL}' ORDER BY created_on DESC, retry_limit DESC LIMIT 1`,
+      `SELECT 'job=' || retry_limit || '|' || retry_delay || '|' || retry_backoff || '|' || retry_delay_max || '|' ||
+              expire_seconds || '|' || deletion_seconds || '|' || extract(epoch FROM keep_until - start_after) || '|' ||
+              policy || '|' || dead_letter || '|' || heartbeat_seconds
+         FROM pgboss.job WHERE name = '${QUEUE}' AND data->>'sitterId' = '${S.FULL}' AND created_on = now()`,
+      `SET CONSTRAINTS ALL IMMEDIATE`,
     );
     assertPermitted('copy', r);
-    has('copy', r, 'job=5|77');
+    has('copy', r, 'job=5|7|true|33|77|4444|5555.000000|short|t028.dlq|66', 'SET CONSTRAINTS');
   });
 
   test('NO change, NO job: a credential write that leaves bookable_state as it was (tier/rank too) enqueues nothing', async () => {
@@ -565,20 +594,66 @@ describe('the enqueue — search.slot_materialise on every bookable_state change
     assert.equal(await db.value(JOBS(S.FULL)), before);
   });
 
-  test('QUEUE ABSENT (no worker has booted): the write that changes bookable_state is REFUSED KV081 and nothing lands — not dropped silently; a write that changes no state is still accepted', async () => {
+  test('QUEUE ABSENT (no worker has booted), INTO bookable: a write that would make a sitter bookable is REFUSED KV081 and nothing lands (fail closed); a write that changes no state is accepted', async () => {
     const r = await asSuperuser(
-      `DELETE FROM pgboss.job WHERE name = '${QUEUE}'`,
-      `DELETE FROM pgboss.queue WHERE name = '${QUEUE}'`,
-      `SELECT 'queue=' || count(*) FROM pgboss.queue WHERE name = '${QUEUE}'`,
+      ...DROP_QUEUE,
       `UPDATE public.sitter_credential SET issued_on = DATE '2026-03-03' WHERE sitter_id = '${S.FULL}'`,
-      `UPDATE public.account SET status = 'suspended' WHERE id = '${S.FULL}'`,
+      `INSERT INTO public.sitter_credential (id, sitter_id, scheme_id, status) VALUES ('${cid('ABS1')}', '${S.HALF}', ${ART22}, 'valid')`,
     );
     has('absent', r, 'queue=0', 'UPDATE 2');
     refusedWith('absent', r, KV081);
-    assert.equal(await db.value(STATE(S.FULL)), `state=${EXPECTED.FULL}`);
+    assert.equal(await db.value(STATE(S.HALF)), `state=${EXPECTED.HALF}`);
   });
 
-  test('item 7 (RB-2 under OE-90), committed in sequence: (1) a break-glass app_ddl UPDATE of bookable_state to review_hold ENQUEUES (the sitter_profile trigger covers every writer); (2) the reconciler then PAGES (KV080) naming that sitter alone, because the manual hold is not what the derivation gives; (3) the app_ddl suspension (E-4 (b)) re-derives suspended and enqueues; (4) the reconciler is clean; (5) a later credential write does NOT undo the hold', async () => {
+  test('QUEUE ABSENT, OUT of bookable (QA-F3 option (a), rework 1): the E-4 (b) suspension (app_rw, account trigger) and an OD-351 review_hold (system actor, credential trigger) of two bookable sitters are ACCEPTED: each sitter leaves bookable, no job is inserted, each write raises WARNING 01K81, and the deferred pg-boss foreign keys are satisfied (SET CONSTRAINTS ALL IMMEDIATE)', async () => {
+    const r = await asSuperuser(
+      ...DROP_QUEUE,
+      `SET LOCAL ROLE app_rw`,
+      ...SYSTEM,
+      `UPDATE public.account SET status = 'suspended' WHERE id = '${S.FULL}'`,
+      `UPDATE public.sitter_credential SET status = 'review_hold' WHERE id = '${credId('RB2', 'A')}'`,
+      `RESET ROLE`,
+      STATE(S.FULL, 'full'),
+      STATE(S.RB2, 'rb2'),
+      `SELECT 'alljobs=' || count(*) FROM pgboss.job WHERE name = '${QUEUE}'`,
+      `SET CONSTRAINTS ALL IMMEDIATE`,
+    );
+    assertPermitted('out of bookable', r);
+    has(
+      'out of bookable',
+      r,
+      'queue=0',
+      'full=suspended|sitter|1|f',
+      'rb2=review_hold|NULL|0|f',
+      'alljobs=0',
+      'SET CONSTRAINTS',
+    );
+    assert.equal(r.output.split(SKIPPED).length - 1, 2, `expected two ${SKIPPED}\n${r.output}`);
+  });
+
+  test('EV-57 (rework 1): app_ddl, the only role holding EXECUTE on the superuser-owned enqueue, inserts one job for an existing sitter_profile id; an id that names no sitter_profile (QA-A4\'s "this is not a sitter id") is REFUSED KV082 and no job lands', async () => {
+    const ok = await asLogin(
+      LOGINS.app_ddl,
+      `SELECT public.i1_enqueue_slot_materialise('${S.HALF}')`,
+    );
+    assertPermitted('existing id', ok);
+    const bad = await asLogin(
+      LOGINS.app_ddl,
+      `SELECT public.i1_enqueue_slot_materialise('this is not a sitter id')`,
+    );
+    refusedWith('no sitter', bad, KV082);
+    const r = await asSuperuser(
+      `SET LOCAL ROLE app_ddl`,
+      `SELECT public.i1_enqueue_slot_materialise('${S.HALF}')`,
+      `RESET ROLE`,
+      JOBS(S.HALF, 'half'),
+      `SELECT 'forged=' || count(*) FROM pgboss.job WHERE name = '${QUEUE}' AND data->>'sitterId' = 'this is not a sitter id'`,
+    );
+    assertPermitted('count', r);
+    has('count', r, 'half=1', 'forged=0');
+  });
+
+  test('item 7 (RB-2 under OE-90), committed in sequence: (1) a break-glass app_ddl UPDATE of bookable_state to review_hold ENQUEUES (the sitter_profile trigger covers every writer); (2) the reconciler then PAGES (KV080) naming that sitter alone, because the manual hold is not what the derivation gives; (3) the app_ddl suspension (E-4 (b)) re-derives suspended and enqueues; (4) the reconciler is clean; (5) a later credential write does NOT undo the suspension', async () => {
     assertPermitted(
       '(1)',
       await asLoginCommitted(
@@ -612,6 +687,36 @@ describe('the enqueue — search.slot_materialise on every bookable_state change
     assertPermitted('(5)', later);
     has('(5)', later, 'UPDATE 2', 'state=suspended|sitter|1|f', 'jobs=3');
   });
+
+  test('QA-F2 (rework 1): a manual review_hold is NOT a hold. Committed in sequence on a sitter the derivation calls bookable (ADMIN): (1) a break-glass app_ddl UPDATE to review_hold enqueues; (2) the reconciler pages (KV080) naming that sitter; (3) ONE routine system attestation write on a valid credential (last_attestation_at = now()) re-derives it to bookable, with a new bookable_since, and enqueues; (4) the reconciler is then CLEAN — the hold is gone and nothing pages', async () => {
+    const jobs0 = Number((await db.value(JOBS(S.ADMIN))).slice('jobs='.length));
+    assertPermitted(
+      '(1)',
+      await asLoginCommitted(
+        LOGINS.app_ddl,
+        `UPDATE public.sitter_profile SET bookable_state = 'review_hold' WHERE id = '${S.ADMIN}'`,
+      ),
+    );
+    assert.equal(await db.value(STATE(S.ADMIN)), 'state=review_hold|sitter|1|t');
+    assert.equal(await db.value(JOBS(S.ADMIN)), `jobs=${String(jobs0 + 1)}`);
+    const page = await asRw('SELECT public.i1_reconcile_bookable_state()');
+    refusedWith('(2)', page, KV080(1, N_SITTERS));
+    has('(2)', page, `DETAIL:  sitter_profile ids: ${S.ADMIN}\n`);
+    assertPermitted(
+      '(3)',
+      await asRw(
+        ...SYSTEM,
+        `UPDATE public.sitter_credential SET last_attestation_at = now() WHERE id = '${credId('ADMIN', 'W')}'`,
+        'COMMIT',
+      ),
+    );
+    assert.equal(await db.value(STATE(S.ADMIN)), `state=${EXPECTED.ADMIN}`);
+    assert.equal(await db.value(`SELECT status FROM public.account WHERE id = '${S.ADMIN}'`), 'active');
+    assert.equal(await db.value(JOBS(S.ADMIN)), `jobs=${String(jobs0 + 2)}`);
+    const clean = await asRw(`SELECT 'checked=' || public.i1_reconcile_bookable_state()`);
+    assertPermitted('(4)', clean);
+    has('(4)', clean, `checked=${String(N_SITTERS)}`);
+  });
 });
 
 // =================================================================================================
@@ -637,7 +742,7 @@ describe('OD-325 — the read path: the definer reads every sitter_credential ro
     has('policy dropped', blind, `DETAIL:  sitter_profile ids: ${needRows.join(',')}\n`);
   });
 
-  test('app_rw cannot reach the policy: setting app.i1_derivation = on itself, it still sees 0 rows (the policy is TO app_ddl), and SET ROLE app_ddl is refused (42501)', async () => {
+  test('app_rw cannot reach the policy: setting app.i1_derivation = on itself (the placeholder is settable by a role outside app_ddl), it still sees 0 rows (the policy is TO app_ddl), and SET ROLE app_ddl is refused (42501)', async () => {
     const r = await asRw(
       `SET LOCAL app.i1_derivation = 'on'`,
       `SELECT 'guc=' || current_setting('app.i1_derivation')`,
@@ -652,7 +757,7 @@ describe('OD-325 — the read path: the definer reads every sitter_credential ro
     );
   });
 
-  test("a real app_ddl login: 0 rows without the GUC (T-252's measured fact still holds); NOT HELD — with app.i1_derivation = on it reads every row (break-glass can set it; it could already NO FORCE); the policy is SELECT only: its UPDATE reaches 0 rows and its INSERT is refused 42501 (RLS)", async () => {
+  test("a real app_ddl login: 0 rows without the GUC (T-252's measured fact still holds); NOT HELD — with app.i1_derivation = on it reads every row (any session acting as app_ddl, break-glass or a migration run as app_ddl, can set the placeholder; it could already NO FORCE); the policy is SELECT only: its UPDATE reaches 0 rows and its INSERT is refused 42501 (RLS)", async () => {
     const r = await asLogin(
       LOGINS.app_ddl,
       `SELECT 'nogucs=' || count(*) FROM public.sitter_credential`,
@@ -793,7 +898,7 @@ describe('OD-317 / OD-318 — the shadow attack against the real call graph (PRO
   const forgedRows = (s: string): string[] => [
     // relations
     'CREATE TEMP TABLE sitter_profile (id char(26), bookable_state text, tier text, tier_rank int2, bookable_since timestamptz)',
-    `INSERT INTO sitter_profile VALUES ('${S.FULL}', 'onboarding', NULL, 0, NULL)`,
+    `INSERT INTO sitter_profile VALUES ('${sid('ZZ')}', 'onboarding', NULL, 0, NULL)`,
     'CREATE TEMP TABLE sitter_credential (sitter_id char(26), scheme_id int, status text)',
     `INSERT INTO sitter_credential SELECT x, s.id, 'valid' FROM unnest(ARRAY['${S.HALF}', '${S.PHALF}']) x, public.credential_scheme s`,
     `INSERT INTO sitter_credential SELECT '${S.PEND}', ${WHITE}, 'review_hold'`,

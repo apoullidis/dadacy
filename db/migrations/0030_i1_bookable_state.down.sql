@@ -1,7 +1,7 @@
 -- 0030_i1_bookable_state.down.sql
 --
 -- Ticket: T-028 (tech-lead). The inverse of the up file. After this file the database is the 0029
--- state: the four triggers, the seven functions and the policy are gone, and sitter_credential's
+-- state: the four triggers, the eight functions and the policy are gone, and sitter_credential's
 -- table comment is 0026's text again, byte for byte.
 --
 -- ORDER. Triggers, then the policy, then the functions (callers before callees). No CASCADE
