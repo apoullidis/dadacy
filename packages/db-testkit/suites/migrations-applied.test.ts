@@ -1234,7 +1234,8 @@ const CREATED_BY: Readonly<
         sql: `SELECT coalesce((SELECT string_agg(conname || '=' || contype::text, ' ' ORDER BY conname) FROM pg_constraint
                                 WHERE conrelid IN (to_regclass('public.decision_record'), to_regclass('public.statement_of_reasons'))
                                   AND contype <> 'n'), '(absent)')`,
-        holds: 'decision_record_pkey=p statement_of_reasons_decision_record_id_fkey=f statement_of_reasons_pkey=p',
+        holds:
+          'decision_record_pkey=p statement_of_reasons_decision_record_id_fkey=f statement_of_reasons_pkey=p',
       },
     ],
   },

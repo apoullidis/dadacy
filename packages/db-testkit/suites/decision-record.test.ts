@@ -73,12 +73,23 @@ const SOR_INSERT = (id: string, decisionRecordId: string): string =>
              'synthetic facts', true, 'appeal', 'v1')`;
 
 /** An UPDATE and a DELETE per table, each naming the seeded row, each RETURNING its id. */
-const MUTATIONS: ReadonlyArray<readonly [table: string, verb: string, sql: string, seed: string]> = [
-  [DR, 'UPDATE', `UPDATE ${DR} SET output = 'tampered' WHERE id = '${SEED_DR_LONE}' RETURNING id`, SEED_DR_LONE],
-  [DR, 'DELETE', `DELETE FROM ${DR} WHERE id = '${SEED_DR_LONE}' RETURNING id`, SEED_DR_LONE],
-  [SOR, 'UPDATE', `UPDATE ${SOR} SET ground = 'tampered' WHERE id = '${SEED_SOR}' RETURNING id`, SEED_SOR],
-  [SOR, 'DELETE', `DELETE FROM ${SOR} WHERE id = '${SEED_SOR}' RETURNING id`, SEED_SOR],
-];
+const MUTATIONS: ReadonlyArray<readonly [table: string, verb: string, sql: string, seed: string]> =
+  [
+    [
+      DR,
+      'UPDATE',
+      `UPDATE ${DR} SET output = 'tampered' WHERE id = '${SEED_DR_LONE}' RETURNING id`,
+      SEED_DR_LONE,
+    ],
+    [DR, 'DELETE', `DELETE FROM ${DR} WHERE id = '${SEED_DR_LONE}' RETURNING id`, SEED_DR_LONE],
+    [
+      SOR,
+      'UPDATE',
+      `UPDATE ${SOR} SET ground = 'tampered' WHERE id = '${SEED_SOR}' RETURNING id`,
+      SEED_SOR,
+    ],
+    [SOR, 'DELETE', `DELETE FROM ${SOR} WHERE id = '${SEED_SOR}' RETURNING id`, SEED_SOR],
+  ];
 
 const bare = (table: string): string => table.replace('public.', '');
 
@@ -89,7 +100,8 @@ beforeAll(async () => {
   await db.sql({
     commands: [
       ...Object.entries(LOGINS).map(
-        ([role, login]) => `CREATE ROLE ${login} LOGIN PASSWORD '${PROBE_PASSWORD}' IN ROLE ${role}`,
+        ([role, login]) =>
+          `CREATE ROLE ${login} LOGIN PASSWORD '${PROBE_PASSWORD}' IN ROLE ${role}`,
       ),
       DR_INSERT(SEED_DR),
       DR_INSERT(SEED_DR_LONE),
@@ -327,9 +339,13 @@ describe('0031 — grants, over real logins', () => {
   for (const role of OUTSIDERS) {
     test(`${role} INSERT into decision_record is REFUSED (42501), and nothing lands`, async () => {
       const before = await rowCount(DR);
-      assertRefused(`${role} INSERT decision_record`, await asLogin(role, DR_INSERT('01T268OUTSIDERDR0000000000')), {
-        message: 'ERROR:  42501: permission denied for table decision_record',
-      });
+      assertRefused(
+        `${role} INSERT decision_record`,
+        await asLogin(role, DR_INSERT('01T268OUTSIDERDR0000000000')),
+        {
+          message: 'ERROR:  42501: permission denied for table decision_record',
+        },
+      );
       assert.equal(await rowCount(DR), before);
     });
     test(`${role} INSERT into statement_of_reasons is REFUSED (42501), and nothing lands`, async () => {
@@ -343,9 +359,13 @@ describe('0031 — grants, over real logins', () => {
     });
     for (const table of TABLES) {
       test(`${role} SELECT on ${bare(table)} is REFUSED (42501)`, async () => {
-        assertRefused(`${role} SELECT ${bare(table)}`, await asLogin(role, `SELECT id FROM ${table}`), {
-          message: `ERROR:  42501: permission denied for table ${bare(table)}`,
-        });
+        assertRefused(
+          `${role} SELECT ${bare(table)}`,
+          await asLogin(role, `SELECT id FROM ${table}`),
+          {
+            message: `ERROR:  42501: permission denied for table ${bare(table)}`,
+          },
+        );
       });
     }
   }
@@ -356,7 +376,12 @@ describe('0031 — grants, over real logins', () => {
     let r: PsqlResult;
     try {
       assert.equal(await hasPriv('app_safety_rw', DR, 'INSERT'), 'true', 'the GRANT did not land');
-      r = await asLogin('app_safety_rw', 'BEGIN', DR_INSERT('01T268SAFETYCONTROL0000000'), 'ROLLBACK');
+      r = await asLogin(
+        'app_safety_rw',
+        'BEGIN',
+        DR_INSERT('01T268SAFETYCONTROL0000000'),
+        'ROLLBACK',
+      );
     } finally {
       assertPermitted('revoke', await asSuperuser(`REVOKE INSERT ON ${DR} FROM app_safety_rw`));
     }
@@ -388,7 +413,10 @@ describe('0031 — the foreign key', () => {
     );
     assertPermitted('drop the FK and insert', r);
     assert.ok(r.stdout.includes('fk=0'), `the DROP CONSTRAINT did not land.\n${r.output}`);
-    assert.ok(r.stdout.includes('landed=1'), `the orphan did not land without the FK.\n${r.output}`);
+    assert.ok(
+      r.stdout.includes('landed=1'),
+      `the orphan did not land without the FK.\n${r.output}`,
+    );
     assert.equal(
       await db.value(
         `SELECT count(*)::text FROM pg_constraint WHERE conname = 'statement_of_reasons_decision_record_id_fkey'`,
@@ -408,11 +436,22 @@ describe('0031 — the SA §INT-10 guard, called DIRECTLY (OD-76)', () => {
   });
 
   test('the same reading raises on a known-bad state, and is clean again once it is removed', async () => {
-    assertPermitted('plant', await asSuperuser('GRANT TEMPORARY ON DATABASE kinvara TO answering_service'));
+    assertPermitted(
+      'plant',
+      await asSuperuser('GRANT TEMPORARY ON DATABASE kinvara TO answering_service'),
+    );
     const bad = await asSuperuser('SELECT kinvara_guard.assert_answering_service_write_only()');
-    assertPermitted('remove', await asSuperuser('REVOKE TEMPORARY ON DATABASE kinvara FROM answering_service'));
-    assertRefused('direct call on the known-bad state', bad, { message: `ERROR:  KV010: ${INT10_RAISE}` });
-    assert.ok(bad.output.includes('answering_service holds TEMPORARY on database kinvara'), bad.output);
+    assertPermitted(
+      'remove',
+      await asSuperuser('REVOKE TEMPORARY ON DATABASE kinvara FROM answering_service'),
+    );
+    assertRefused('direct call on the known-bad state', bad, {
+      message: `ERROR:  KV010: ${INT10_RAISE}`,
+    });
+    assert.ok(
+      bad.output.includes('answering_service holds TEMPORARY on database kinvara'),
+      bad.output,
+    );
     assertPermitted(
       'direct call after removal',
       await asSuperuser('SELECT kinvara_guard.assert_answering_service_write_only()'),
