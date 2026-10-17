@@ -221,7 +221,10 @@ beforeAll(async () => {
   sweeper = bindSystemActor(db, 'credential.sweep_test');
   // 0030 (T-028): a credential write that changes a sitter's bookable_state enqueues
   // search.slot_materialise; while that queue does not exist a change INTO bookable is refused
-  // KV081 (any other change commits without a job, WARNING 01K81). A booted worker creates it;
+  // KV081 (any other change, made in a statement and transaction with no change INTO bookable,
+  // commits without a job, WARNING 01K81; KV081 aborts the whole statement or transaction, so an
+  // out-of-bookable change batched with an into-bookable one is refused with it: 0030 header,
+  // BOUND (T-028 rework 2, QA2-F2)). A booted worker creates it;
   // this spec runs on `db` alone, so it creates it as the worker would (idempotent).
   await su.query(
     `SELECT pgboss.create_queue('search.slot_materialise', '{"policy": "standard", "retryLimit": 2, "retryDelay": 1, "retryBackoff": false, "expireInSeconds": 120}'::jsonb)`,

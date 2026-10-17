@@ -605,7 +605,7 @@ describe('the enqueue — search.slot_materialise on every bookable_state change
     assert.equal(await db.value(STATE(S.HALF)), `state=${EXPECTED.HALF}`);
   });
 
-  test('QUEUE ABSENT, OUT of bookable (QA-F3 option (a), rework 1): the E-4 (b) suspension (app_rw, account trigger) and an OD-351 review_hold (system actor, credential trigger) of two bookable sitters are ACCEPTED: each sitter leaves bookable, no job is inserted, each write raises WARNING 01K81, and the deferred pg-boss foreign keys are satisfied (SET CONSTRAINTS ALL IMMEDIATE)', async () => {
+  test('QUEUE ABSENT, OUT of bookable (QA-F3 option (a), rework 1): the E-4 (b) suspension (app_rw, account trigger) and an OD-351 review_hold (system actor, credential trigger) of two bookable sitters, in a transaction with no change INTO bookable (see QUEUE ABSENT, MIXED), are ACCEPTED: each sitter leaves bookable, no job is inserted, each write raises WARNING 01K81, and the deferred pg-boss foreign keys are satisfied (SET CONSTRAINTS ALL IMMEDIATE)', async () => {
     const r = await asSuperuser(
       ...DROP_QUEUE,
       `SET LOCAL ROLE app_rw`,
@@ -629,6 +629,58 @@ describe('the enqueue — search.slot_materialise on every bookable_state change
       'SET CONSTRAINTS',
     );
     assert.equal(r.output.split(SKIPPED).length - 1, 2, `expected two ${SKIPPED}\n${r.output}`);
+  });
+
+  test('QUEUE ABSENT, MIXED (QA2-F2, rework 2 — the bound on OUT of bookable): a change out of bookable is REFUSED with a change INTO bookable that shares its statement or its transaction (KV081 aborts both), so it does not land: (a) ONE app_rw UPDATE suspending FULL and reactivating SUSP is refused whole; (b) in one transaction, the suspension of FULL raises WARNING 01K81 and is visible inside, then the reactivation of SUSP is refused KV081; after each, FULL is still bookable and SUSP still suspended, and the dropped queue row is back (nothing committed)', async () => {
+    const statuses = `CASE id WHEN '${S.FULL}' THEN 'suspended'::public.account_status ELSE 'active'::public.account_status END`;
+    const after = async (what: string): Promise<void> => {
+      assert.equal(await db.value(STATE(S.FULL)), `state=${EXPECTED.FULL}`, `${what}: FULL`);
+      assert.equal(await db.value(STATE(S.SUSP)), `state=${EXPECTED.SUSP}`, `${what}: SUSP`);
+      assert.equal(
+        await db.value(`SELECT count(*) FROM pgboss.queue WHERE name = '${QUEUE}'`),
+        '1',
+        `${what}: queue restored`,
+      );
+    };
+    // (a) one statement. Which row's trigger runs first is not pinned, so the WARNING may or may not
+    // precede the refusal; the refusal and the end state are what is asserted.
+    const a = await asSuperuser(
+      ...DROP_QUEUE,
+      `SET LOCAL ROLE app_rw`,
+      ...SYSTEM,
+      `UPDATE public.account SET status = ${statuses} WHERE id IN ('${S.FULL}', '${S.SUSP}')`,
+    );
+    has('mixed statement', a, 'queue=0');
+    refusedWith('mixed statement', a, KV081);
+    assert.ok(
+      a.output.split(SKIPPED).length - 1 <= 1,
+      `mixed statement: at most one ${SKIPPED}\n${a.output}`,
+    );
+    await after('mixed statement');
+    // (b) one transaction, two statements, no savepoint.
+    const b = await asSuperuser(
+      ...DROP_QUEUE,
+      `SET LOCAL ROLE app_rw`,
+      ...SYSTEM,
+      `UPDATE public.account SET status = 'suspended' WHERE id = '${S.FULL}'`,
+      `RESET ROLE`,
+      STATE(S.FULL, 'inside'),
+      `SET LOCAL ROLE app_rw`,
+      ...SYSTEM,
+      `UPDATE public.account SET status = 'active' WHERE id = '${S.SUSP}'`,
+    );
+    has('mixed transaction', b, 'queue=0', 'inside=suspended|sitter|1|f');
+    assert.equal(
+      b.output.split(SKIPPED).length - 1,
+      1,
+      `mixed transaction: expected one ${SKIPPED}\n${b.output}`,
+    );
+    assert.ok(
+      b.output.indexOf(SKIPPED) < b.output.indexOf(KV081),
+      `mixed transaction: the WARNING precedes the refusal\n${b.output}`,
+    );
+    refusedWith('mixed transaction', b, KV081);
+    await after('mixed transaction');
   });
 
   test('EV-57 (rework 1): app_ddl, the only role holding EXECUTE on the superuser-owned enqueue, inserts one job for an existing sitter_profile id; an id that names no sitter_profile (QA-A4\'s "this is not a sitter id") is REFUSED KV082 and no job lands', async () => {

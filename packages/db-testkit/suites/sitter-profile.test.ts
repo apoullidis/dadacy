@@ -17,7 +17,9 @@
  * table carries ONE trigger, trg_sitter_profile_i1_enqueue (AFTER UPDATE OF bookable_state, when it
  * changed: enqueue search.slot_materialise); its behaviour is i1-bookable-state.test.ts's. A write here
  * that changes bookable_state TO bookable is refused KV081 while that queue does not exist (any other
- * change commits without a job, WARNING 01K81), so beforeAll creates it as a booted worker would.
+ * change, made with no change TO bookable in its statement or transaction, commits without a job,
+ * WARNING 01K81; batched with one, it is refused with it: 0030 header, BOUND, T-028 rework 2,
+ * QA2-F2), so beforeAll creates it as a booted worker would.
  *
  * Every refusal asserts psql's exit status AND its `ERROR:  <SQLSTATE>: <message>` line AND, where
  * PostgreSQL gives one, the `CONSTRAINT NAME:` or `COLUMN NAME:` field, and exactly one ERROR line, so
