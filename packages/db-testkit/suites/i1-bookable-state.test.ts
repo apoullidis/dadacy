@@ -312,15 +312,17 @@ describe('layer 1 — the derivation as ruled (E-1, E-2, E-4 (b) / OE-90, EV-39,
     has('E-1', r, 'full=true,false', 'half=false,false');
   });
 
-  test('E-1 bound: the derivation never writes childcare_professional or infant_qualified (no input for them on main); a planted infant_qualified/3 is re-derived to sitter/1', async () => {
+  test('E-1 bound: the derivation never writes childcare_professional or infant_qualified (no input for them on main); a planted infant_qualified/3 is re-derived to sitter/1 — and that UPDATE, made while the sitter stays bookable, KEEPS bookable_since', async () => {
     const r = await asSuperuser(
+      `CREATE TEMP TABLE t028_since AS SELECT bookable_since AS s FROM public.sitter_profile WHERE id = '${S.FULL}'`,
       `UPDATE public.sitter_profile SET tier = 'infant_qualified', tier_rank = 3 WHERE id = '${S.FULL}'`,
       STATE(S.FULL, 'planted'),
       `SELECT 'derived=' || public.i1_rederive_sitter('${S.FULL}')`,
       STATE(S.FULL, 'after'),
+      `SELECT 'kept=' || (p.bookable_since = t.s) FROM public.sitter_profile p, t028_since t WHERE p.id = '${S.FULL}'`,
     );
     assertPermitted('E-1 bound', r);
-    has('E-1 bound', r, 'planted=bookable|infant_qualified|3|t', 'derived=bookable', 'after=bookable|sitter|1|t');
+    has('E-1 bound', r, 'planted=bookable|infant_qualified|3|t', 'derived=bookable', 'after=bookable|sitter|1|t', 'kept=true');
   });
 
   test('OD-351: a mandatory credential moved to review_hold (system actor, app_rw) => bookable_state review_hold, tier NULL, bookable_since NULL, one job — in the writer\'s transaction', async () => {
