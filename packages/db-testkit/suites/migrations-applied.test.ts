@@ -40,7 +40,7 @@ import {
 import { assertPermitted, assertRefused, INT10_RAISE } from '../src/expect.ts';
 
 const SUITE = 'migrations-applied';
-const HIGHEST_COMMITTED = '0030';
+const HIGHEST_COMMITTED = '0031';
 const COMMITTED_DIR = path.join(REPO_ROOT, MIGRATIONS_DIR);
 const RECORD_SQL = `SELECT coalesce(shobj_description(oid, 'pg_database'), '(no comment)')
                       FROM pg_database WHERE datname = current_database()`;
@@ -1207,6 +1207,34 @@ const CREATED_BY: Readonly<
                                 WHERE polrelid = to_regclass('public.sitter_credential')
                                   AND polname = 'sitter_credential_i1_derivation_select'), '(absent)')`,
         holds: '{app_ddl}',
+      },
+    ],
+  },
+  '0031': {
+    source: 'T-268',
+    // Each probe names an object 0031 creates (decision_record, statement_of_reasons, their keys) and
+    // returns a value rather than raising once it is gone: to_regclass returns NULL for a missing name,
+    // and every read is coalesced. The refusals are asserted by suites/decision-record.test.ts, not
+    // here (T-137 TV2-A1: a probe names an object).
+    probes: [
+      {
+        title:
+          'tables decision_record and statement_of_reasons exist, owned by app_ddl, table ACLs app_rw and app_admin_rw SELECT+INSERT only, no row-level security (SD 2735-2752; SA SEC-8)',
+        sql: `SELECT coalesce((SELECT string_agg(relname || ' ' || pg_get_userbyid(relowner) || ' ' || relacl::text || ' ' ||
+                                             relrowsecurity::text, ' ; ' ORDER BY relname)
+                                 FROM pg_class WHERE oid IN (to_regclass('public.decision_record'),
+                                                             to_regclass('public.statement_of_reasons'))), '(absent)')`,
+        holds:
+          'decision_record app_ddl {app_ddl=arwdDxtm/app_ddl,app_rw=ar/app_ddl,app_admin_rw=ar/app_ddl} false ; ' +
+          'statement_of_reasons app_ddl {app_ddl=arwdDxtm/app_ddl,app_rw=ar/app_ddl,app_admin_rw=ar/app_ddl} false',
+      },
+      {
+        title:
+          'constraints decision_record_pkey, statement_of_reasons_pkey and statement_of_reasons_decision_record_id_fkey exist (SD 2736, 2747)',
+        sql: `SELECT coalesce((SELECT string_agg(conname || '=' || contype::text, ' ' ORDER BY conname) FROM pg_constraint
+                                WHERE conrelid IN (to_regclass('public.decision_record'), to_regclass('public.statement_of_reasons'))
+                                  AND contype <> 'n'), '(absent)')`,
+        holds: 'decision_record_pkey=p statement_of_reasons_decision_record_id_fkey=f statement_of_reasons_pkey=p',
       },
     ],
   },
