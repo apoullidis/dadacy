@@ -19,6 +19,7 @@ export {
 } from './ids.ts';
 export { minorUnits, parseMinorUnits, type MinorUnits } from './money.ts';
 export { isE164, e164, type E164 } from './phone.ts';
+export { SITTER_TIERS, tierRank, requiredTierRank, type SitterTier } from './tier.ts';
 export {
   ianaZone,
   resolveLocal,
