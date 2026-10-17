@@ -69,19 +69,20 @@ const WHITE = `(SELECT id FROM public.credential_scheme WHERE jurisdiction = 'CY
 const ART22 = `(SELECT id FROM public.credential_scheme WHERE jurisdiction = 'CY' AND scheme_name = 'Certificate under Art. 22(6), Law 91(I)/2014')`;
 
 /** account status per sitter, and which credentials it holds (scheme -> status). */
-const FIXTURE: Readonly<Record<keyof typeof S, { status: string; creds: Record<string, string> }>> = {
-  FULL: { status: 'active', creds: { W: 'valid', A: 'valid' } },
-  READY: { status: 'active', creds: {} },
-  HALF: { status: 'active', creds: { W: 'valid' } },
-  PHALF: { status: 'pending', creds: { W: 'valid' } },
-  PEND: { status: 'pending', creds: { W: 'valid', A: 'valid' } },
-  SUSP: { status: 'suspended', creds: { W: 'valid', A: 'valid' } },
-  REM: { status: 'removed', creds: { W: 'valid', A: 'valid' } },
-  ERASED: { status: 'erased', creds: { W: 'valid', A: 'valid' } },
-  HOLD: { status: 'active', creds: { W: 'valid', A: 'review_hold' } },
-  RB2: { status: 'active', creds: { W: 'valid', A: 'valid' } },
-  ADMIN: { status: 'active', creds: { W: 'valid', A: 'valid' } },
-};
+const FIXTURE: Readonly<Record<keyof typeof S, { status: string; creds: Record<string, string> }>> =
+  {
+    FULL: { status: 'active', creds: { W: 'valid', A: 'valid' } },
+    READY: { status: 'active', creds: {} },
+    HALF: { status: 'active', creds: { W: 'valid' } },
+    PHALF: { status: 'pending', creds: { W: 'valid' } },
+    PEND: { status: 'pending', creds: { W: 'valid', A: 'valid' } },
+    SUSP: { status: 'suspended', creds: { W: 'valid', A: 'valid' } },
+    REM: { status: 'removed', creds: { W: 'valid', A: 'valid' } },
+    ERASED: { status: 'erased', creds: { W: 'valid', A: 'valid' } },
+    HOLD: { status: 'active', creds: { W: 'valid', A: 'review_hold' } },
+    RB2: { status: 'active', creds: { W: 'valid', A: 'valid' } },
+    ADMIN: { status: 'active', creds: { W: 'valid', A: 'valid' } },
+  };
 
 /** state|tier|tier_rank|bookable_since-set, written from the rule and E-1, not from 0030. */
 const EXPECTED: Readonly<Record<keyof typeof S, string>> = {
@@ -113,7 +114,8 @@ beforeAll(async () => {
   await db.sql({
     commands: [
       ...Object.entries(LOGINS).map(
-        ([role, login]) => `CREATE ROLE ${login} LOGIN PASSWORD '${PROBE_PASSWORD}' IN ROLE ${role}`,
+        ([role, login]) =>
+          `CREATE ROLE ${login} LOGIN PASSWORD '${PROBE_PASSWORD}' IN ROLE ${role}`,
       ),
       `SELECT pgboss.create_queue('${QUEUE}', '${QUEUE_OPTIONS}'::jsonb)`,
       ...keys.map(
@@ -155,7 +157,13 @@ function asLogin(login: string, ...commands: string[]): Promise<PsqlResult> {
 
 /** The same, committed (each command its own transaction). */
 function asLoginCommitted(login: string, ...commands: string[]): Promise<PsqlResult> {
-  return db.psql({ user: login, password: PROBE_PASSWORD, commands, verbose: true, stopOnError: true });
+  return db.psql({
+    user: login,
+    password: PROBE_PASSWORD,
+    commands,
+    verbose: true,
+    stopOnError: true,
+  });
 }
 
 const asRw = (...c: string[]): Promise<PsqlResult> => asLogin(LOGINS.app_rw, ...c);
@@ -171,7 +179,10 @@ const JOBS = (id: string, label = 'jobs'): string =>
 
 const has = (what: string, r: PsqlResult, ...markers: string[]): void => {
   for (const m of markers) {
-    assert.ok(r.output.includes(m), `${what}: expected ${JSON.stringify(m)} in the output.\n${r.output}`);
+    assert.ok(
+      r.output.includes(m),
+      `${what}: expected ${JSON.stringify(m)} in the output.\n${r.output}`,
+    );
   }
 };
 
@@ -303,7 +314,7 @@ describe('layer 1 — the derivation as ruled (E-1, E-2, E-4 (b) / OE-90, EV-39,
     );
   });
 
-  test('E-1: the derived rank of tier sitter is 1, and under SD 3029 (tier_rank >= required) with E-1\'s required ranks (0–2 → 3, 3+ → 1) a bookable sitter meets a 3+ band and does not meet a 0–2 band; a sitter with no tier (rank 0) meets neither', async () => {
+  test("E-1: the derived rank of tier sitter is 1, and under SD 3029 (tier_rank >= required) with E-1's required ranks (0–2 → 3, 3+ → 1) a bookable sitter meets a 3+ band and does not meet a 0–2 band; a sitter with no tier (rank 0) meets neither", async () => {
     const r = await asSuperuser(
       `SELECT 'full=' || (tier_rank >= 1) || ',' || (tier_rank >= 3) FROM public.sitter_profile WHERE id = '${S.FULL}'`,
       `SELECT 'half=' || (tier_rank >= 1) || ',' || (tier_rank >= 3) FROM public.sitter_profile WHERE id = '${S.HALF}'`,
@@ -322,10 +333,17 @@ describe('layer 1 — the derivation as ruled (E-1, E-2, E-4 (b) / OE-90, EV-39,
       `SELECT 'kept=' || (p.bookable_since = t.s) FROM public.sitter_profile p, t028_since t WHERE p.id = '${S.FULL}'`,
     );
     assertPermitted('E-1 bound', r);
-    has('E-1 bound', r, 'planted=bookable|infant_qualified|3|t', 'derived=bookable', 'after=bookable|sitter|1|t', 'kept=true');
+    has(
+      'E-1 bound',
+      r,
+      'planted=bookable|infant_qualified|3|t',
+      'derived=bookable',
+      'after=bookable|sitter|1|t',
+      'kept=true',
+    );
   });
 
-  test('OD-351: a mandatory credential moved to review_hold (system actor, app_rw) => bookable_state review_hold, tier NULL, bookable_since NULL, one job — in the writer\'s transaction', async () => {
+  test("OD-351: a mandatory credential moved to review_hold (system actor, app_rw) => bookable_state review_hold, tier NULL, bookable_since NULL, one job — in the writer's transaction", async () => {
     const r = await asRw(
       ...SYSTEM,
       JOBS(S.FULL, 'before'),
@@ -338,7 +356,12 @@ describe('layer 1 — the derivation as ruled (E-1, E-2, E-4 (b) / OE-90, EV-39,
   });
 
   test('mandatory_rules v1 is met; with the v1 CHECK dropped, each other value ({}, "mandatory": "none", "v": 2, JSON null) on ONE scheme makes that scheme unmet: the sitter is not bookable (onboarding, tier NULL), never optional', async () => {
-    for (const value of ['{}', '{"v": 1, "mandatory": "none"}', '{"v": 2, "mandatory": "all_tiers"}', 'null']) {
+    for (const value of [
+      '{}',
+      '{"v": 1, "mandatory": "none"}',
+      '{"v": 2, "mandatory": "all_tiers"}',
+      'null',
+    ]) {
       const r = await asSuperuser(
         STATE(S.FULL, 'v1'),
         'ALTER TABLE public.credential_scheme DROP CONSTRAINT credential_scheme_mandatory_rules_v1',
@@ -348,11 +371,18 @@ describe('layer 1 — the derivation as ruled (E-1, E-2, E-4 (b) / OE-90, EV-39,
         STATE(S.FULL, 'after'),
       );
       assertPermitted(value, r);
-      has(value, r, 'v1=bookable|sitter|1|t', 'planted=true', 'derived=onboarding', 'after=onboarding|NULL|0|f');
+      has(
+        value,
+        r,
+        'v1=bookable|sitter|1|t',
+        'planted=true',
+        'derived=onboarding',
+        'after=onboarding|NULL|0|f',
+      );
     }
   });
 
-  test('a jurisdiction with no credential_scheme is not COMPLETE (fail closed): moving an active, fully credentialed sitter\'s account to GR re-derives (account trigger, jurisdiction) to onboarding', async () => {
+  test("a jurisdiction with no credential_scheme is not COMPLETE (fail closed): moving an active, fully credentialed sitter's account to GR re-derives (account trigger, jurisdiction) to onboarding", async () => {
     const r = await asSuperuser(
       `UPDATE public.account SET jurisdiction = 'GR' WHERE id = '${S.FULL}'`,
       `SELECT 'schemes=' || count(*) FROM public.credential_scheme WHERE jurisdiction = 'GR'`,
@@ -375,7 +405,11 @@ describe('layer 1 — the derivation as ruled (E-1, E-2, E-4 (b) / OE-90, EV-39,
     const since0 = /since0=([^|\n]+)\|v=1/.exec(r.output)?.[1];
     const since1 = /since1=([^|\n]+)\|v=1/.exec(r.output)?.[1];
     assert.ok(since0 !== undefined && since1 !== undefined, r.output);
-    assert.equal(since1, since0, 'bookable_since moved on a re-derive that kept the sitter bookable');
+    assert.equal(
+      since1,
+      since0,
+      'bookable_since moved on a re-derive that kept the sitter bookable',
+    );
     has('since', r, 'exit=NULL|v=1');
   });
 });
@@ -444,7 +478,14 @@ describe('layer 1 — what re-runs it: each trigger path, each writer', () => {
       JOBS(S.FULL, 'jobs2'),
     );
     assertPermitted('EV-39', r);
-    has('EV-39', r, 'susp=suspended|sitter|1|f', 'jobs1=2', 'lifted=bookable|sitter|1|t', 'jobs2=3');
+    has(
+      'EV-39',
+      r,
+      'susp=suspended|sitter|1|f',
+      'jobs1=2',
+      'lifted=bookable|sitter|1|t',
+      'jobs2=3',
+    );
   });
 
   test('E-2: app_rw moving an account to erased => removed; to removed => removed; to pending => onboarding (never bookable)', async () => {
@@ -453,20 +494,28 @@ describe('layer 1 — what re-runs it: each trigger path, each writer', () => {
       ['removed', 'removed|sitter|1|f'],
       ['pending', 'onboarding|sitter|1|f'],
     ] as const) {
-      const r = await asRw(`UPDATE public.account SET status = '${status}' WHERE id = '${S.FULL}'`, STATE(S.FULL));
+      const r = await asRw(
+        `UPDATE public.account SET status = '${status}' WHERE id = '${S.FULL}'`,
+        STATE(S.FULL),
+      );
       assertPermitted(status, r);
       has(status, r, `state=${want}`);
     }
   });
 
-  test('app_admin_rw (UPDATE (status) on account, 0011) suspending a bookable sitter COMMITS: the trigger runs under app_admin_rw\'s EXECUTE grant and enqueues; restored by the superuser (re-derived bookable)', async () => {
+  test("app_admin_rw (UPDATE (status) on account, 0011) suspending a bookable sitter COMMITS: the trigger runs under app_admin_rw's EXECUTE grant and enqueues; restored by the superuser (re-derived bookable)", async () => {
     assertPermitted(
       'admin suspend',
-      await asLoginCommitted(LOGINS.app_admin_rw, `UPDATE public.account SET status = 'suspended' WHERE id = '${S.ADMIN}'`),
+      await asLoginCommitted(
+        LOGINS.app_admin_rw,
+        `UPDATE public.account SET status = 'suspended' WHERE id = '${S.ADMIN}'`,
+      ),
     );
     assert.equal(await db.value(STATE(S.ADMIN)), 'state=suspended|sitter|1|f');
     assert.equal(await db.value(JOBS(S.ADMIN)), 'jobs=2');
-    await db.sql({ commands: [`UPDATE public.account SET status = 'active' WHERE id = '${S.ADMIN}'`] });
+    await db.sql({
+      commands: [`UPDATE public.account SET status = 'active' WHERE id = '${S.ADMIN}'`],
+    });
     assert.equal(await db.value(STATE(S.ADMIN)), 'state=bookable|sitter|1|t');
   });
 });
@@ -481,14 +530,11 @@ describe('the enqueue — search.slot_materialise on every bookable_state change
               policy || '|' || (keep_until - start_after = (SELECT retention_seconds * interval '1 second' FROM pgboss.queue WHERE name = '${QUEUE}'))
          FROM pgboss.job WHERE name = '${QUEUE}' AND data->>'sitterId' = '${S.FULL}'`,
     );
-    assert.equal(
-      out,
-      `{"sitterId": "${S.FULL}"}|true|1|created|0|2|1|false|120|standard|true`,
-    );
+    assert.equal(out, `{"sitterId": "${S.FULL}"}|true|1|created|0|2|1|false|120|standard|true`);
     assert.match(S.FULL, CANONICAL_ULID);
   });
 
-  test('COPIED from pgboss.queue, not defaulted: with the queue\'s retry_limit set to 5 and expire_seconds to 77, the next job carries 5 and 77', async () => {
+  test("COPIED from pgboss.queue, not defaulted: with the queue's retry_limit set to 5 and expire_seconds to 77, the next job carries 5 and 77", async () => {
     const r = await asSuperuser(
       `UPDATE pgboss.queue SET retry_limit = 5, expire_seconds = 77 WHERE name = '${QUEUE}'`,
       `UPDATE public.account SET status = 'suspended' WHERE id = '${S.FULL}'`,
@@ -508,9 +554,12 @@ describe('the enqueue — search.slot_materialise on every bookable_state change
     has('no change', r, 'UPDATE 2', 'jobs=1');
   });
 
-  test('the job is in the writer\'s transaction: a change rolled back leaves no job', async () => {
+  test("the job is in the writer's transaction: a change rolled back leaves no job", async () => {
     const before = await db.value(JOBS(S.FULL));
-    const r = await asRw(`UPDATE public.account SET status = 'suspended' WHERE id = '${S.FULL}'`, JOBS(S.FULL, 'inside'));
+    const r = await asRw(
+      `UPDATE public.account SET status = 'suspended' WHERE id = '${S.FULL}'`,
+      JOBS(S.FULL, 'inside'),
+    );
     assertPermitted('rollback', r);
     has('rollback', r, 'inside=2');
     assert.equal(await db.value(JOBS(S.FULL)), before);
@@ -532,7 +581,10 @@ describe('the enqueue — search.slot_materialise on every bookable_state change
   test('item 7 (RB-2 under OE-90), committed in sequence: (1) a break-glass app_ddl UPDATE of bookable_state to review_hold ENQUEUES (the sitter_profile trigger covers every writer); (2) the reconciler then PAGES (KV080) naming that sitter alone, because the manual hold is not what the derivation gives; (3) the app_ddl suspension (E-4 (b)) re-derives suspended and enqueues; (4) the reconciler is clean; (5) a later credential write does NOT undo the hold', async () => {
     assertPermitted(
       '(1)',
-      await asLoginCommitted(LOGINS.app_ddl, `UPDATE public.sitter_profile SET bookable_state = 'review_hold' WHERE id = '${S.RB2}'`),
+      await asLoginCommitted(
+        LOGINS.app_ddl,
+        `UPDATE public.sitter_profile SET bookable_state = 'review_hold' WHERE id = '${S.RB2}'`,
+      ),
     );
     assert.equal(await db.value(STATE(S.RB2)), 'state=review_hold|sitter|1|t');
     assert.equal(await db.value(JOBS(S.RB2)), 'jobs=2');
@@ -541,7 +593,10 @@ describe('the enqueue — search.slot_materialise on every bookable_state change
     has('(2)', page, `DETAIL:  sitter_profile ids: ${S.RB2}\n`);
     assertPermitted(
       '(3)',
-      await asLoginCommitted(LOGINS.app_ddl, `UPDATE public.account SET status = 'suspended' WHERE id = '${S.RB2}'`),
+      await asLoginCommitted(
+        LOGINS.app_ddl,
+        `UPDATE public.account SET status = 'suspended' WHERE id = '${S.RB2}'`,
+      ),
     );
     assert.equal(await db.value(STATE(S.RB2)), 'state=suspended|sitter|1|f');
     assert.equal(await db.value(JOBS(S.RB2)), 'jobs=3');
@@ -597,7 +652,7 @@ describe('OD-325 — the read path: the definer reads every sitter_credential ro
     );
   });
 
-  test('a real app_ddl login: 0 rows without the GUC (T-252\'s measured fact still holds); NOT HELD — with app.i1_derivation = on it reads every row (break-glass can set it; it could already NO FORCE); the policy is SELECT only: its UPDATE reaches 0 rows and its INSERT is refused 42501 (RLS)', async () => {
+  test("a real app_ddl login: 0 rows without the GUC (T-252's measured fact still holds); NOT HELD — with app.i1_derivation = on it reads every row (break-glass can set it; it could already NO FORCE); the policy is SELECT only: its UPDATE reaches 0 rows and its INSERT is refused 42501 (RLS)", async () => {
     const r = await asLogin(
       LOGINS.app_ddl,
       `SELECT 'nogucs=' || count(*) FROM public.sitter_credential`,
@@ -625,7 +680,11 @@ describe('layer 3 — the reconciler: compares, writes nothing, raises KV080 (th
     const HASH = `SELECT 'hash=' || md5((SELECT string_agg(t::text, ',' ORDER BY t::text) FROM public.sitter_profile t) ||
                                        (SELECT string_agg(t::text, ',' ORDER BY t::text) FROM public.sitter_credential t) ||
                                        (SELECT string_agg(t::text, ',' ORDER BY t::text) FROM pgboss.job t))`;
-    const r = await asSuperuser(HASH, `SELECT 'checked=' || public.i1_reconcile_bookable_state()`, HASH);
+    const r = await asSuperuser(
+      HASH,
+      `SELECT 'checked=' || public.i1_reconcile_bookable_state()`,
+      HASH,
+    );
     assertPermitted('clean', r);
     has('clean', r, `checked=${String(N_SITTERS)}`);
     const hashes = r.output.match(/hash=[0-9a-f]{32}/g) ?? [];
@@ -633,7 +692,7 @@ describe('layer 3 — the reconciler: compares, writes nothing, raises KV080 (th
     assert.equal(hashes[0], hashes[1]);
   });
 
-  test('a non-bookable sitter discovered bookable (RB-2\'s trigger, planted by the superuser): KV080, 1 of N, DETAIL naming that sitter', async () => {
+  test("a non-bookable sitter discovered bookable (RB-2's trigger, planted by the superuser): KV080, 1 of N, DETAIL naming that sitter", async () => {
     const r = await asSuperuser(
       `UPDATE public.sitter_profile SET bookable_state = 'bookable', bookable_since = now() WHERE id = '${S.HALF}'`,
       'SELECT public.i1_reconcile_bookable_state()',
@@ -703,7 +762,9 @@ describe('the definer — G-3 (c) hygiene: id only, recompute only, EXECUTE wher
   test('app_rw still cannot write the protected four itself (42501), and app_safety_rw / answering_service cannot EXECUTE the definer (42501)', async () => {
     refusedWith(
       'direct write',
-      await asRw(`UPDATE public.sitter_profile SET bookable_state = 'bookable' WHERE id = '${S.HALF}'`),
+      await asRw(
+        `UPDATE public.sitter_profile SET bookable_state = 'bookable' WHERE id = '${S.HALF}'`,
+      ),
       'ERROR:  42501: permission denied for table sitter_profile',
     );
     for (const login of [LOGINS.app_safety_rw, LOGINS.answering_service]) {
@@ -764,7 +825,7 @@ describe('OD-317 / OD-318 — the shadow attack against the real call graph (PRO
   ];
   // The forged sitter_credential holds 5 rows: HALF and PHALF valid for both schemes, PEND review_hold.
 
-  test('an app_rw-only login with every relation and type of the call graph shadowed in pg_temp: direct calls, the credential trigger, the account trigger, a state change and its enqueue, and the reconciler all read the REAL rows; the victim is untouched; the job lands in pgboss.job with the real queue\'s retry_limit; nothing was written to the shadows', async () => {
+  test("an app_rw-only login with every relation and type of the call graph shadowed in pg_temp: direct calls, the credential trigger, the account trigger, a state change and its enqueue, and the reconciler all read the REAL rows; the victim is untouched; the job lands in pgboss.job with the real queue's retry_limit; nothing was written to the shadows", async () => {
     const r = await asRw(
       `SELECT 'temp:' || has_database_privilege(current_database(), 'TEMP')`,
       ...forgedRows(S.READY),
@@ -813,9 +874,13 @@ describe('OD-317 / OD-318 — the shadow attack against the real call graph (PRO
     );
   });
 
-  test('CONTROL: the forge is live — called by app_rw itself it is refused 42501 (the write needs the owner\'s privilege), and evaluated by a real app_ddl login (the role every owner-run function in the graph but the enqueue runs as) it writes the victim: so a type resolved through search_path in owner-run code WOULD move the protected four', async () => {
+  test("CONTROL: the forge is live — called by app_rw itself it is refused 42501 (the write needs the owner's privilege), and evaluated by a real app_ddl login (the role every owner-run function in the graph but the enqueue runs as) it writes the victim: so a type resolved through search_path in owner-run code WOULD move the protected four", async () => {
     const self = await asRw(...forgedRows(S.READY), `SELECT 'x'::pg_temp.bookable_state`);
-    refusedWith('forge as app_rw', self, 'ERROR:  42501: permission denied for table sitter_profile');
+    refusedWith(
+      'forge as app_rw',
+      self,
+      'ERROR:  42501: permission denied for table sitter_profile',
+    );
     const owner = await asLogin(
       LOGINS.app_ddl,
       `CREATE FUNCTION pg_temp.t028_forge() RETURNS boolean LANGUAGE plpgsql AS $f$ BEGIN

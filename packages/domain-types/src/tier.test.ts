@@ -10,7 +10,7 @@ const E1_RANKS: ReadonlyArray<readonly [string | null, number]> = [
   ['infant_qualified', 3],
 ];
 
-test('the tier enum is exactly SD 2003\'s three values, in SD\'s order', () => {
+test("the tier enum is exactly SD 2003's three values, in SD's order", () => {
   assert.deepEqual([...SITTER_TIERS], ['sitter', 'childcare_professional', 'infant_qualified']);
 });
 

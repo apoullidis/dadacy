@@ -1201,7 +1201,8 @@ const CREATED_BY: Readonly<
           'sitter_credential:trg_sitter_credential_i1_truncate:O sitter_profile:trg_sitter_profile_i1_enqueue:O',
       },
       {
-        title: 'policy sitter_credential_i1_derivation_select exists on sitter_credential, TO app_ddl (OD-325)',
+        title:
+          'policy sitter_credential_i1_derivation_select exists on sitter_credential, TO app_ddl (OD-325)',
         sql: `SELECT coalesce((SELECT polroles::regrole[]::text FROM pg_policy
                                 WHERE polrelid = to_regclass('public.sitter_credential')
                                   AND polname = 'sitter_credential_i1_derivation_select'), '(absent)')`,
