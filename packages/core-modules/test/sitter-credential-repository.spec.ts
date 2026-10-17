@@ -219,6 +219,12 @@ beforeAll(async () => {
     logLine,
   );
   sweeper = bindSystemActor(db, 'credential.sweep_test');
+  // 0030 (T-028): a credential write that changes a sitter's bookable_state enqueues
+  // search.slot_materialise and is refused KV081 while that queue does not exist. A booted worker
+  // creates it; this spec runs on `db` alone, so it creates it as the worker would (idempotent).
+  await su.query(
+    `SELECT pgboss.create_queue('search.slot_materialise', '{"policy": "standard", "retryLimit": 2, "retryDelay": 1, "retryBackoff": false, "expireInSeconds": 120}'::jsonb)`,
+  );
   const schemes = await su.query<{ id: number; scheme_name: string }>(
     `SELECT id, scheme_name FROM public.credential_scheme WHERE jurisdiction = 'CY'`,
   );
