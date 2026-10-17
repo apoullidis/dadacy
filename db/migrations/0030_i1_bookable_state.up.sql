@@ -72,12 +72,25 @@
 --                                            non-bookable until a worker has booted);
 --   any other new state                   -> no job is inserted, a WARNING 01K81
 --                                            (I1_SLOT_MATERIALISE_SKIPPED) is raised, and the
---                                            write COMMITS. A suspension, a review_hold and every
---                                            other transition out of 'bookable' is therefore never
---                                            refused for want of the queue (T-028 rework 1,
---                                            QA-F3 option (a)); the slot set it would have
---                                            re-materialised is left stale (layer 2, T-091, reads
---                                            bookable_state itself).
+--                                            enqueue returns (T-028 rework 1, QA-F3 option (a)).
+--                                            A suspension, a review_hold or another transition out
+--                                            of 'bookable' made ON ITS OWN therefore commits; the
+--                                            slot set it would have re-materialised is left stale
+--                                            (layer 2, T-091, reads bookable_state itself).
+--   BOUND (T-028 rework 2, QA2-F2): KV081 is an ERROR, so it aborts the whole statement, and the
+--   transaction unless a savepoint catches it. A transition out of 'bookable' that shares a
+--   statement or a transaction with a change INTO 'bookable' is refused with it and does not land:
+--   one UPDATE suspending one sitter and reactivating another is refused whole, and the sitter
+--   stays 'bookable'. A batch writer (a sweep that expires some credentials and validates others,
+--   a bulk account change) must, while the queue is absent, write its out-of-bookable changes in a
+--   statement and transaction of their own, or lose them with the batch. The WARNING 01K81 an
+--   out-change raised before the abort is not evidence that it committed; nor is its line in the
+--   server log, which (at PostgreSQL's default log_min_messages = warning) records the WARNING for a
+--   write that later rolls back too (QA2-F1). Pinned by the suite case "QUEUE ABSENT, MIXED".
+--   The enqueue's COMMENT ON FUNCTION ("any other new state commits without a job") and the
+--   WARNING's own text ("the change commits without a job") describe one change on its own, and
+--   are subject to this bound; rework 2 left both unchanged, because each ships (pg_description,
+--   prosrc) and changing either is a new migration, not a comment edit (PROTOCOL §3).
 -- The job is in the writer's transaction: it commits or rolls back with the change.
 -- Owner: the bootstrap superuser, because the definer runs as app_ddl and app_ddl holds no
 -- privilege in schema pgboss (0006 grants app_rw only). This is EV-57 (OE-91 (a), an accepted
