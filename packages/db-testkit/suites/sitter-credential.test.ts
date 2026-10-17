@@ -173,8 +173,9 @@ beforeAll(async () => {
         ([role, login]) =>
           `CREATE ROLE ${login} LOGIN PASSWORD '${PROBE_PASSWORD}' IN ROLE ${role}`,
       ),
-      // 0030 (T-028): a write that changes a sitter's bookable_state enqueues search.slot_materialise
-      // and is refused KV081 while that queue does not exist; a booted worker creates it.
+      // 0030 (T-028): a write that changes a sitter's bookable_state enqueues search.slot_materialise;
+      // while that queue does not exist a change INTO bookable is refused KV081 (any other change
+      // commits without a job, WARNING 01K81); a booted worker creates it.
       `SELECT pgboss.create_queue('search.slot_materialise', '{"policy": "standard", "retryLimit": 2, "retryDelay": 1, "retryBackoff": false, "expireInSeconds": 120}'::jsonb)`,
       `INSERT INTO public.account (id, pseudonym, tos_version) VALUES
          ('${SITTER_A}', '01T252PSEUDO00000000000001', 't252'),
