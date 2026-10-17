@@ -13,7 +13,11 @@
  * So a constraint, grant (table or column), index, trigger, rule or policy added to or removed from the
  * table turns a case red. A grant that widens app_rw, or any grant to app_admin_rw, passes
  * gate:migration-lint (T-251 § contract §5): the ACL pin is the guard. What is not in those catalogues
- * is not pinned (an event trigger; a function no trigger on this table calls).
+ * is not pinned (an event trigger; a function no trigger on this table calls). Since 0030 (T-028) the
+ * table carries ONE trigger, trg_sitter_profile_i1_enqueue (AFTER UPDATE OF bookable_state, when it
+ * changed: enqueue search.slot_materialise); its behaviour is i1-bookable-state.test.ts's. A write here
+ * that changes bookable_state is refused KV081 while that queue does not exist, so beforeAll creates it
+ * as a booted worker would.
  *
  * Every refusal asserts psql's exit status AND its `ERROR:  <SQLSTATE>: <message>` line AND, where
  * PostgreSQL gives one, the `CONSTRAINT NAME:` or `COLUMN NAME:` field, and exactly one ERROR line, so
@@ -182,6 +186,7 @@ beforeAll(async () => {
         ([role, login]) =>
           `CREATE ROLE ${login} LOGIN PASSWORD '${PROBE_PASSWORD}' IN ROLE ${role}`,
       ),
+      `SELECT pgboss.create_queue('search.slot_materialise', '{"policy": "standard", "retryLimit": 2, "retryDelay": 1, "retryBackoff": false, "expireInSeconds": 120}'::jsonb)`,
       `INSERT INTO public.account (id, pseudonym, tos_version) VALUES
          ('${SITTER}', '01T158PSEUDO00000000000001', 't158'),
          ('${FRESH}', '01T158PSEUDO00000000000002', 't158')`,
@@ -392,7 +397,7 @@ describe('0025 — the table, its types, owner, columns, ACLs, constraints, inde
     );
   });
 
-  test("0 non-internal triggers, 0 rewrite rules, no row-level security, 0 policies (U-9 (a); sitter_profile is not on SD 1309/3906's RLS list, OD-223)", async () => {
+  test("1 non-internal trigger (0030's trg_sitter_profile_i1_enqueue, T-028), 0 rewrite rules, no row-level security, 0 policies (U-9 (a); sitter_profile is not on SD 1309/3906's RLS list, OD-223)", async () => {
     assert.equal(
       await db.value(
         `SELECT (SELECT count(*) FROM pg_trigger WHERE tgrelid = c.oid AND NOT tgisinternal) || ' triggers, ' ||
@@ -401,7 +406,7 @@ describe('0025 — the table, its types, owner, columns, ACLs, constraints, inde
                 (SELECT count(*) FROM pg_policy WHERE polrelid = c.oid) || ' policies'
            FROM pg_class c WHERE c.oid = '${TABLE}'::regclass`,
       ),
-      '0 triggers, 0 rules, rls=false, force=false, 0 policies',
+      '1 triggers, 0 rules, rls=false, force=false, 0 policies',
     );
   });
 

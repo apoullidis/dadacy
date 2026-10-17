@@ -8,12 +8,17 @@
  *
  * The table's catalogue is pinned: its twenty columns (type, nullability, default) with the owner, the
  * table ACL and every column ACL; its whole constraint set by name and definition (NOT NULL constraints
- * included, contype 'n' on PostgreSQL 18); its indexes; its seven policies (name, command, permissive,
+ * included, contype 'n' on PostgreSQL 18); its indexes; its eight policies (name, command, permissive,
  * roles, USING and WITH CHECK as PostgreSQL deparses them); its comment; and in ONE assertion the counts
  * of its non-internal triggers, rewrite rules and policies with both row-level security flags:
- * '0 triggers, 0 rules, rls=true, force=true, 7 policies' (tech-lead.md failure mode 5). Seven is R-2 as
- * written in 0026: one policy per command per actor class, sitter SELECT/INSERT/UPDATE, system
- * SELECT/INSERT/UPDATE, break-glass SELECT. So a constraint, grant, index, trigger, rule or policy added
+ * '2 triggers, 0 rules, rls=true, force=true, 8 policies' (tech-lead.md failure mode 5). Seven policies
+ * are R-2 as written in 0026: one per command per actor class, sitter SELECT/INSERT/UPDATE, system
+ * SELECT/INSERT/UPDATE, break-glass SELECT, all TO app_rw. The eighth and the two triggers are 0030's
+ * (T-028, I-1): sitter_credential_i1_derivation_select (SELECT, TO app_ddl, while app.i1_derivation is
+ * on: OD-325's read path for the I-1 derivation), trg_sitter_credential_i1_rederive (row) and
+ * trg_sitter_credential_i1_truncate (statement); their behaviour is i1-bookable-state.test.ts's. A write
+ * here that changes a sitter's bookable_state enqueues search.slot_materialise, so beforeAll creates that
+ * queue as a booted worker would. So a constraint, grant, index, trigger, rule or policy added
  * to or removed from the table turns a case red. What is not in those catalogues is not pinned (an event
  * trigger; a function no trigger on this table calls).
  *
@@ -26,8 +31,8 @@
  * expressions or predicate mention it; or a generated column's expression mentions it. "Mentions" is a
  * case-insensitive substring match of the name in the catalogue's own text. BOUND: it keys on the column
  * NAME (CUT-T-060 R-7). A format on a differently named column of the same meaning, a function called by
- * a trigger function, a CHECK passing the whole row to a function, a view, and any other table are not
- * read. Each branch has a red case below with its plant asserted landed before the probe is judged.
+ * a trigger function, a CHECK, policy or index expression passing the whole row to a function, a view,
+ * and any other table are not read. Each branch has a red case below with its plant asserted landed before the probe is judged.
  *
  * Every refusal asserts psql's exit status AND its `ERROR:  <SQLSTATE>: <message>` line AND, where
  * PostgreSQL gives one, the `CONSTRAINT NAME:` field, and exactly one ERROR line. Every RLS case asserts
@@ -79,14 +84,15 @@ const S1_NAME = 'sitter_credential_reference_number_bounds';
 const S1_DEPARSE =
   "CHECK ((((char_length(reference_number) >= 1) AND (char_length(reference_number) <= 64)) AND (reference_number !~ '[[:cntrl:]]'::text)))";
 
-/** The text 0026 installs, verbatim: a change to the comment must change this suite too. */
+/** The text 0030 installs (0026's, restated with 0030's policy), verbatim: a change to the comment must change this suite too. */
 const TABLE_COMMENT =
   "A sitter's credential per scheme (SD §DB-4, SA §DA-4r). No certificate content, no free text, no notes. " +
   'reference_number is plain text; its format is credential_scheme.reference_format_regex, applied by the ' +
-  'application, never DDL. Row-level security is FORCEd; policies are TO app_rw and read app.actor_id, ' +
+  'application, never DDL. Row-level security is FORCEd; seven policies are TO app_rw and read app.actor_id, ' +
   'app.actor_role and app.break_glass, an empty value counting as unset. A sitter sees and writes only their ' +
   'own rows, can write only status not_started or submitted, and cannot update a row in review_hold; the system actor sees and writes every row; ' +
-  'break-glass reads every row. app_rw holds no DELETE.';
+  'break-glass reads every row. app_rw holds no DELETE. One SELECT policy is TO app_ddl: it reads every row while ' +
+  'app.i1_derivation is on, which the I-1 derivation and reconciler set (0030).';
 
 /** The 16 columns app_rw may UPDATE (CUT-T-060 R-9), in attnum order. Literal, not a reading. */
 const APP_RW_UPDATE = [
@@ -167,6 +173,9 @@ beforeAll(async () => {
         ([role, login]) =>
           `CREATE ROLE ${login} LOGIN PASSWORD '${PROBE_PASSWORD}' IN ROLE ${role}`,
       ),
+      // 0030 (T-028): a write that changes a sitter's bookable_state enqueues search.slot_materialise
+      // and is refused KV081 while that queue does not exist; a booted worker creates it.
+      `SELECT pgboss.create_queue('search.slot_materialise', '{"policy": "standard", "retryLimit": 2, "retryDelay": 1, "retryBackoff": false, "expireInSeconds": 120}'::jsonb)`,
       `INSERT INTO public.account (id, pseudonym, tos_version) VALUES
          ('${SITTER_A}', '01T252PSEUDO00000000000001', 't252'),
          ('${SITTER_B}', '01T252PSEUDO00000000000002', 't252')`,
@@ -378,7 +387,7 @@ describe('0026 — the table, its owner, columns, ACL, constraints, indexes, pol
     );
   });
 
-  test('ONE-LINE PIN: 0 triggers, 0 rules, rls=true, force=true, 7 policies (R-2: one per command per actor class)', async () => {
+  test('ONE-LINE PIN: 2 triggers, 0 rules, rls=true, force=true, 8 policies (R-2: one per command per actor class; plus 0030: the I-1 row and TRUNCATE triggers and the app_ddl read policy)', async () => {
     assert.equal(
       await db.value(
         `SELECT (SELECT count(*) FROM pg_trigger WHERE tgrelid = c.oid AND NOT tgisinternal) || ' triggers, ' ||
@@ -387,7 +396,7 @@ describe('0026 — the table, its owner, columns, ACL, constraints, indexes, pol
                 (SELECT count(*) FROM pg_policy WHERE polrelid = c.oid) || ' policies'
            FROM pg_class c WHERE c.oid = '${TABLE}'::regclass`,
       ),
-      '0 triggers, 0 rules, rls=true, force=true, 7 policies',
+      '2 triggers, 0 rules, rls=true, force=true, 8 policies',
     );
   });
 
@@ -400,7 +409,7 @@ describe('0026 — the table, its owner, columns, ACL, constraints, indexes, pol
     );
   });
 
-  test("the seven policies are exactly these: permissive, TO app_rw, each GUC read through NULLIF(current_setting(…, true), ''); no operator policy (S-2 → T-070); no DELETE policy", async () => {
+  test("the eight policies are exactly these: permissive; seven TO app_rw and 0030's one TO app_ddl (SELECT only); each GUC read through NULLIF(current_setting(…, true), ''); no operator policy (S-2 → T-070); no DELETE policy", async () => {
     const SITTER_P =
       "(NULLIF(current_setting('app.actor_role'::text, true), ''::text) = 'sitter'::text) AND " +
       "((sitter_id)::text = NULLIF(current_setting('app.actor_id'::text, true), ''::text))";
@@ -418,6 +427,7 @@ describe('0026 — the table, its owner, columns, ACL, constraints, indexes, pol
       ),
       [
         "sitter_credential_break_glass_select|r|true|{app_rw}|(NULLIF(current_setting('app.break_glass'::text, true), ''::text) = 'on'::text)|-",
+        "sitter_credential_i1_derivation_select|r|true|{app_ddl}|(NULLIF(current_setting('app.i1_derivation'::text, true), ''::text) = 'on'::text)|-",
         `sitter_credential_sitter_insert|a|true|{app_rw}|-|(${SITTER_P} AND ${SITTER_STATUS})`,
         `sitter_credential_sitter_select|r|true|{app_rw}|(${SITTER_P})|-`,
         `sitter_credential_sitter_update|w|true|{app_rw}|(${SITTER_P} AND (status <> 'review_hold'::text))|(${SITTER_P} AND ${SITTER_STATUS})`,

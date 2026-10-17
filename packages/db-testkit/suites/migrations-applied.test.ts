@@ -40,7 +40,7 @@ import {
 import { assertPermitted, assertRefused, INT10_RAISE } from '../src/expect.ts';
 
 const SUITE = 'migrations-applied';
-const HIGHEST_COMMITTED = '0029';
+const HIGHEST_COMMITTED = '0030';
 const COMMITTED_DIR = path.join(REPO_ROOT, MIGRATIONS_DIR);
 const RECORD_SQL = `SELECT coalesce(shobj_description(oid, 'pg_database'), '(no comment)')
                       FROM pg_database WHERE datname = current_database()`;
@@ -1169,6 +1169,43 @@ const CREATED_BY: Readonly<
           'availability_exception app_ddl {app_ddl=arwdDxtm/app_ddl,app_rw=ar/app_ddl} false ; ' +
           'availability_slot app_ddl {app_ddl=arwdDxtm/app_ddl,app_rw=ard/app_ddl} false ; ' +
           'availability_template app_ddl {app_ddl=arwdDxtm/app_ddl,app_rw=ar/app_ddl} false',
+      },
+    ],
+  },
+  '0030': {
+    source: 'T-028',
+    // Each probe names an object 0030 creates (the I-1 functions, the four triggers, the app_ddl read
+    // policy on sitter_credential) and returns a value rather than raising once it is gone:
+    // to_regprocedure returns NULL for a missing function, and every read is coalesced. The behaviour
+    // is asserted by suites/i1-bookable-state.test.ts, not here (T-137 TV2-A1: a probe names an object).
+    probes: [
+      {
+        title:
+          'the I-1 writer public.i1_rederive_sitter(bpchar) and reconciler public.i1_reconcile_bookable_state() exist: SECURITY DEFINER, owner app_ddl, search_path pinned (SA §SA-4 I-1; T-158 G-3 (c))',
+        sql: `SELECT coalesce((SELECT string_agg(proname || ' ' || pg_get_userbyid(proowner) || ' ' || prosecdef::text || ' ' ||
+                                               array_to_string(proconfig, ';'), ' ; ' ORDER BY proname)
+                                 FROM pg_proc WHERE oid IN (to_regprocedure('public.i1_rederive_sitter(bpchar)'),
+                                                            to_regprocedure('public.i1_reconcile_bookable_state()'))), '(absent)')`,
+        holds:
+          'i1_reconcile_bookable_state app_ddl true search_path=pg_catalog, pg_temp;app.i1_derivation=on ; ' +
+          'i1_rederive_sitter app_ddl true search_path=pg_catalog, pg_temp;app.i1_derivation=on',
+      },
+      {
+        title:
+          'the four I-1 triggers exist on sitter_credential (row, TRUNCATE), account and sitter_profile, enabled (EV-39; E.3 U-12)',
+        sql: `SELECT coalesce((SELECT string_agg(tgrelid::regclass::text || ':' || tgname || ':' || tgenabled::text, ' ' ORDER BY tgname)
+                                 FROM pg_trigger WHERE NOT tgisinternal AND tgname IN ('trg_sitter_credential_i1_rederive',
+                                   'trg_sitter_credential_i1_truncate', 'trg_account_i1_rederive', 'trg_sitter_profile_i1_enqueue')), '(absent)')`,
+        holds:
+          'account:trg_account_i1_rederive:O sitter_credential:trg_sitter_credential_i1_rederive:O ' +
+          'sitter_credential:trg_sitter_credential_i1_truncate:O sitter_profile:trg_sitter_profile_i1_enqueue:O',
+      },
+      {
+        title: 'policy sitter_credential_i1_derivation_select exists on sitter_credential, TO app_ddl (OD-325)',
+        sql: `SELECT coalesce((SELECT polroles::regrole[]::text FROM pg_policy
+                                WHERE polrelid = to_regclass('public.sitter_credential')
+                                  AND polname = 'sitter_credential_i1_derivation_select'), '(absent)')`,
+        holds: '{app_ddl}',
       },
     ],
   },
