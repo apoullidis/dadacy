@@ -711,7 +711,10 @@ describe('the enqueue — search.slot_materialise on every bookable_state change
       ),
     );
     assert.equal(await db.value(STATE(S.ADMIN)), `state=${EXPECTED.ADMIN}`);
-    assert.equal(await db.value(`SELECT status FROM public.account WHERE id = '${S.ADMIN}'`), 'active');
+    assert.equal(
+      await db.value(`SELECT status FROM public.account WHERE id = '${S.ADMIN}'`),
+      'active',
+    );
     assert.equal(await db.value(JOBS(S.ADMIN)), `jobs=${String(jobs0 + 2)}`);
     const clean = await asRw(`SELECT 'checked=' || public.i1_reconcile_bookable_state()`);
     assertPermitted('(4)', clean);
