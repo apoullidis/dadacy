@@ -733,6 +733,7 @@ describe('OD-317 / OD-318 — the shadow attack against the real call graph (PRO
     `INSERT INTO sitter_profile VALUES ('${S.FULL}', 'onboarding', NULL, 0, NULL)`,
     'CREATE TEMP TABLE sitter_credential (sitter_id char(26), scheme_id int, status text)',
     `INSERT INTO sitter_credential SELECT x, s.id, 'valid' FROM unnest(ARRAY['${S.HALF}', '${S.PHALF}']) x, public.credential_scheme s`,
+    `INSERT INTO sitter_credential SELECT '${S.PEND}', ${WHITE}, 'review_hold'`,
     'CREATE TEMP TABLE credential_scheme (id int, jurisdiction text, mandatory_rules jsonb)',
     `INSERT INTO credential_scheme SELECT id, 'CY', mandatory_rules FROM public.credential_scheme WHERE id = ${WHITE}`,
     'CREATE TEMP TABLE account (id char(26), status text, jurisdiction text)',
@@ -759,8 +760,9 @@ describe('OD-317 / OD-318 — the shadow attack against the real call graph (PRO
     `SELECT 'forged=' || (SELECT count(*) FROM pg_temp.sitter_credential) || ',' || (SELECT count(*) FROM pg_temp.account) || ',' ||
             (SELECT retry_limit FROM pg_temp.queue)`,
   ];
+  // The forged sitter_credential holds 5 rows: HALF and PHALF valid for both schemes, PEND review_hold.
 
-  test('an app_rw-only login with every relation and type of the call graph shadowed in pg_temp: direct calls, the credential trigger, the account trigger, a state change and its enqueue all derive from the REAL rows; the victim is untouched; the job lands in pgboss.job with the real queue\'s retry_limit; nothing was written to the shadows', async () => {
+  test('an app_rw-only login with every relation and type of the call graph shadowed in pg_temp: direct calls, the credential trigger, the account trigger, a state change and its enqueue, and the reconciler all read the REAL rows; the victim is untouched; the job lands in pgboss.job with the real queue\'s retry_limit; nothing was written to the shadows', async () => {
     const r = await asRw(
       `SELECT 'temp:' || has_database_privilege(current_database(), 'TEMP')`,
       ...forgedRows(S.READY),
@@ -784,6 +786,8 @@ describe('OD-317 / OD-318 — the shadow attack against the real call graph (PRO
         WHERE name = '${QUEUE}' AND data->>'sitterId' = '${S.FULL}' AND created_on = now()`,
       `SELECT 'shadow-job=' || count(*) FROM pg_temp.job`,
       `SELECT 'shadow-profile=' || bookable_state FROM pg_temp.sitter_profile`,
+      // the reconciler shares the helper and reads sitter_profile: it compares every REAL row, clean
+      `SELECT 'recon=' || public.i1_reconcile_bookable_state()`,
     );
     assertPermitted('shadow', r);
     has(
@@ -792,7 +796,7 @@ describe('OD-317 / OD-318 — the shadow attack against the real call graph (PRO
       'temp:true',
       'temp-relations=6',
       'temp-domains=4',
-      'forged=4,4,99',
+      'forged=5,4,99',
       'd-half=onboarding',
       'd-pend=onboarding',
       'half=onboarding|NULL|0|f',
@@ -803,6 +807,7 @@ describe('OD-317 / OD-318 — the shadow attack against the real call graph (PRO
       'job=1|2|120',
       'shadow-job=0',
       'shadow-profile=onboarding',
+      `recon=${String(N_SITTERS)}`,
     );
   });
 
