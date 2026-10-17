@@ -365,8 +365,12 @@ GRANT  EXECUTE ON FUNCTION public.pg_stat_statements(boolean),
 --   session_event, checkin,
 --   sos_event, ladder_run      (EP-12, safety) :  GRANT INSERT ON ... TO app_safety_rw;
 --   audit_log, case_note,
---   decision_record            (T-035/EP-1)    :  GRANT INSERT ON ... TO app_rw, app_admin_rw;
+--   decision_record            (see owners)    :  GRANT INSERT ON ... TO app_rw, app_admin_rw;
 --                                                 no UPDATE, no DELETE, to any role but app_ddl.
+--                                                 Owners: audit_log T-214 (0020); decision_record
+--                                                 T-268 (0031); case_note EP-13, not yet cut.
+--                                                 This line read "T-035/EP-1", a stale id: T-035
+--                                                 is gate:app-images (corrected by T-268).
 
 
 -- ===========================================================================
