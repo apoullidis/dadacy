@@ -20,6 +20,15 @@
  * changed, and the last case re-checks that the reconciler is clean). Every refusal asserts psql's
  * exit status AND its `ERROR:  <SQLSTATE>: <message>` line.
  *
+ * T-274 (0032; T-028 approval 2 TL-A, TL-C, TL-D). (1) The QUEUE ABSENT, MIXED cases and the READ
+ * COMMITTED guard cases run through `committing()`: BEGIN, the commands, then COMMIT, WITHOUT
+ * ON_ERROR_STOP, so the COMMIT is always sent and a write that is not refused really commits. Their
+ * end-state checks therefore read committed state and can fail (TL-C: under `asSuperuser`, which never
+ * commits, they could not). A refusal there is asserted as exactly one `ERROR:  <SQLSTATE>:` line, the
+ * expected one, and the COMMIT answered `ROLLBACK`. (2) The guard cases create their own sitters
+ * (ids 01K8T274S…), commit, and the block's last case deletes them, so the end-state case sees the
+ * fixture only. (3) SKIPPED follows 0032's reworded WARNING text.
+ *
  * WHAT IS PINNED in one assertion each: the eight 0030 functions (owner, SECURITY DEFINER, ACL,
  * volatility, proconfig — the OD-318 path pin for every function in the call graph); the four
  * triggers (definition, enabled); the added policy (definition). sitter_credential's and
@@ -195,6 +204,47 @@ function refusedWith(what: string, r: PsqlResult, errorLine: string): void {
   );
 }
 
+/**
+ * T-274 (T-028 TL-C): BEGIN [ISOLATION LEVEL <level>], the commands, COMMIT, with ON_ERROR_STOP off, so
+ * the COMMIT is sent whatever happens: a refused transaction answers ROLLBACK, and a write that is NOT
+ * refused commits. `user` null is the bootstrap superuser.
+ */
+function committing(
+  user: string | null,
+  level: 'READ COMMITTED' | 'REPEATABLE READ' | 'SERIALIZABLE' | null,
+  ...commands: string[]
+): Promise<PsqlResult> {
+  return db.psql({
+    ...(user === null ? {} : { user, password: PROBE_PASSWORD }),
+    commands: [level === null ? 'BEGIN' : `BEGIN ISOLATION LEVEL ${level}`, ...commands, 'COMMIT'],
+    verbose: true,
+    stopOnError: false,
+  });
+}
+
+/** A `committing()` run refused once: exactly one ERROR line, the expected one, and the COMMIT answered ROLLBACK. */
+function refusedAtCommit(what: string, r: PsqlResult, errorLine: string): void {
+  has(what, r, errorLine);
+  assert.equal(
+    (r.output.match(/ERROR: {2}[0-9A-Z]{5}:/g) ?? []).length,
+    1,
+    `${what}: expected exactly one ERROR line.\n${r.output}`,
+  );
+  assert.match(r.output, /^ROLLBACK$/m, `${what}: the COMMIT must answer ROLLBACK.\n${r.output}`);
+  assert.doesNotMatch(r.output, /^COMMIT$/m, `${what}: nothing may commit.\n${r.output}`);
+}
+
+/** A `committing()` run that committed: no ERROR line, and the COMMIT answered COMMIT. */
+function committed(what: string, r: PsqlResult): void {
+  assert.doesNotMatch(r.output, /ERROR: {2}/, `${what}: expected no ERROR.\n${r.output}`);
+  assert.match(r.output, /^COMMIT$/m, `${what}: the COMMIT must answer COMMIT.\n${r.output}`);
+}
+
+const sleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+
 const ALL_STATES_SQL = `SELECT string_agg(id || '=' || bookable_state || '|' || coalesce(tier::text, 'NULL') || '|' || tier_rank || '|' ||
                                   CASE WHEN bookable_since IS NULL THEN 'f' ELSE 't' END, ',' ORDER BY id) FROM public.sitter_profile`;
 const expectedAll = (overrides: Partial<Record<keyof typeof S, string>> = {}): string =>
@@ -210,8 +260,10 @@ const KV081 =
   'ERROR:  KV081: I1_SLOT_MATERIALISE_QUEUE_ABSENT: bookable_state changed to bookable, and the pg-boss queue search.slot_materialise does not exist, so the change cannot be enqueued';
 const KV082 =
   'ERROR:  KV082: I1_SLOT_MATERIALISE_NO_SITTER: the id names no sitter_profile row, so no search.slot_materialise job is enqueued';
+const KV083 =
+  'ERROR:  KV083: I1_DERIVATION_ISOLATION: bookable_state is derived only under READ COMMITTED';
 const SKIPPED =
-  'WARNING:  01K81: I1_SLOT_MATERIALISE_SKIPPED: bookable_state changed to a non-bookable state and the pg-boss queue search.slot_materialise does not exist; the change commits without a job';
+  'WARNING:  01K81: I1_SLOT_MATERIALISE_SKIPPED: bookable_state changed to a non-bookable state and the pg-boss queue search.slot_materialise does not exist; if this transaction commits, the change has no job';
 /** Delete the queue (and, first, its jobs: q_fkey is ON DELETE RESTRICT, deferred). Superuser only. */
 const DROP_QUEUE = [
   `DELETE FROM pgboss.job WHERE name = '${QUEUE}'`,
@@ -631,34 +683,51 @@ describe('the enqueue — search.slot_materialise on every bookable_state change
     assert.equal(r.output.split(SKIPPED).length - 1, 2, `expected two ${SKIPPED}\n${r.output}`);
   });
 
-  test('QUEUE ABSENT, MIXED (QA2-F2, rework 2 — the bound on OUT of bookable): a change out of bookable is REFUSED with a change INTO bookable that shares its statement or its transaction (KV081 aborts both), so it does not land: (a) ONE app_rw UPDATE suspending FULL and reactivating SUSP is refused whole; (b) in one transaction, the suspension of FULL raises WARNING 01K81 and is visible inside, then the reactivation of SUSP is refused KV081; after each, FULL is still bookable and SUSP still suspended, and the dropped queue row is back (nothing committed)', async () => {
-    const statuses = `CASE id WHEN '${S.FULL}' THEN 'suspended'::public.account_status ELSE 'active'::public.account_status END`;
-    const after = async (what: string): Promise<void> => {
-      assert.equal(await db.value(STATE(S.FULL)), `state=${EXPECTED.FULL}`, `${what}: FULL`);
-      assert.equal(await db.value(STATE(S.SUSP)), `state=${EXPECTED.SUSP}`, `${what}: SUSP`);
-      assert.equal(
-        await db.value(`SELECT count(*) FROM pgboss.queue WHERE name = '${QUEUE}'`),
-        '1',
-        `${what}: queue restored`,
-      );
-    };
-    // (a) one statement. Which row's trigger runs first is not pinned, so the WARNING may or may not
-    // precede the refusal; the refusal and the end state are what is asserted.
-    const a = await asSuperuser(
+  // QUEUE ABSENT, MIXED (QA2-F2, rework 2; split and made committing by T-274, T-028 TL-C). Each part sends
+  // COMMIT (committing()), so if KV081 did not abort the transaction the changes WOULD commit, and the
+  // end-state checks, asserted first, would fail; under the old never-committing harness they could not.
+  const mixedAfter = async (what: string): Promise<void> => {
+    assert.equal(
+      await db.value(STATE(S.FULL)),
+      `state=${EXPECTED.FULL}`,
+      `${what}: FULL (committed state)`,
+    );
+    assert.equal(
+      await db.value(STATE(S.SUSP)),
+      `state=${EXPECTED.SUSP}`,
+      `${what}: SUSP (committed state)`,
+    );
+    assert.equal(
+      await db.value(`SELECT count(*) FROM pgboss.queue WHERE name = '${QUEUE}'`),
+      '1',
+      `${what}: the dropped queue row is back (committed state)`,
+    );
+  };
+  const mixedStatuses = `CASE id WHEN '${S.FULL}' THEN 'suspended'::public.account_status ELSE 'active'::public.account_status END`;
+
+  test('QUEUE ABSENT, MIXED (a) (QA2-F2, rework 2; T-274 TL-C — the bound on OUT of bookable): ONE app_rw UPDATE suspending FULL and reactivating SUSP, in a transaction that then sends COMMIT, is REFUSED KV081 whole and the COMMIT answers ROLLBACK, so it does not land: in committed state FULL is still bookable, SUSP still suspended and the dropped queue row is back', async () => {
+    // Which row's trigger runs first is not pinned, so the WARNING may or may not precede the refusal.
+    const a = await committing(
+      null,
+      null,
       ...DROP_QUEUE,
       `SET LOCAL ROLE app_rw`,
       ...SYSTEM,
-      `UPDATE public.account SET status = ${statuses} WHERE id IN ('${S.FULL}', '${S.SUSP}')`,
+      `UPDATE public.account SET status = ${mixedStatuses} WHERE id IN ('${S.FULL}', '${S.SUSP}')`,
     );
+    await mixedAfter('mixed statement');
     has('mixed statement', a, 'queue=0');
-    refusedWith('mixed statement', a, KV081);
+    refusedAtCommit('mixed statement', a, KV081);
     assert.ok(
       a.output.split(SKIPPED).length - 1 <= 1,
       `mixed statement: at most one ${SKIPPED}\n${a.output}`,
     );
-    await after('mixed statement');
-    // (b) one transaction, two statements, no savepoint.
-    const b = await asSuperuser(
+  });
+
+  test('QUEUE ABSENT, MIXED (b) (QA2-F2, rework 2; T-274 TL-C): in ONE transaction that then sends COMMIT, the app_rw suspension of FULL raises WARNING 01K81 and is visible inside, then the reactivation of SUSP is refused KV081 and the COMMIT answers ROLLBACK, so the suspension does not land: in committed state FULL is still bookable, SUSP still suspended and the dropped queue row is back', async () => {
+    const b = await committing(
+      null,
+      null,
       ...DROP_QUEUE,
       `SET LOCAL ROLE app_rw`,
       ...SYSTEM,
@@ -669,6 +738,7 @@ describe('the enqueue — search.slot_materialise on every bookable_state change
       ...SYSTEM,
       `UPDATE public.account SET status = 'active' WHERE id = '${S.SUSP}'`,
     );
+    await mixedAfter('mixed transaction');
     has('mixed transaction', b, 'queue=0', 'inside=suspended|sitter|1|f');
     assert.equal(
       b.output.split(SKIPPED).length - 1,
@@ -679,8 +749,7 @@ describe('the enqueue — search.slot_materialise on every bookable_state change
       b.output.indexOf(SKIPPED) < b.output.indexOf(KV081),
       `mixed transaction: the WARNING precedes the refusal\n${b.output}`,
     );
-    refusedWith('mixed transaction', b, KV081);
-    await after('mixed transaction');
+    refusedAtCommit('mixed transaction', b, KV081);
   });
 
   test('EV-57 (rework 1): app_ddl, the only role holding EXECUTE on the superuser-owned enqueue, inserts one job for an existing sitter_profile id; an id that names no sitter_profile (QA-A4\'s "this is not a sitter id") is REFUSED KV082 and no job lands', async () => {
@@ -1063,6 +1132,180 @@ describe('OD-317 / OD-318 — the shadow attack against the real call graph (PRO
     );
     assertPermitted('temp control', r);
     has('temp control', r, 'unqualified=2');
+  });
+});
+
+// =================================================================================================
+describe('layer 1 — the READ COMMITTED guard (T-274, 0032; T-028 approval 2 TL-A, TL-6): i1_rederive_sitter refuses any other isolation level, before its row lock, for a sitter it can see', () => {
+  const T274 = (tag: string): string => `01K8T274S${tag}`.padEnd(26, '0');
+  const cred = (tag: string, scheme: 'W' | 'A'): string =>
+    `01K8T274C${tag}${scheme}`.padEnd(26, '0');
+  /** A committed sitter of its own: account `status`, White and Art.22 credentials as given (null: none), profile unless `profile` is false. */
+  const freshSitter = async (
+    tag: string,
+    w: string | null,
+    a: string | null,
+    profile = true,
+  ): Promise<string> => {
+    const id = T274(tag);
+    assert.match(id, CANONICAL_ULID, id);
+    await db.sql({
+      commands: [
+        `INSERT INTO public.account (id, pseudonym, tos_version, status, dob_verified_18)
+           VALUES ('${id}', '${`01K8T274P${tag}`.padEnd(26, '0')}', 't274', 'active', true)`,
+        ...(profile ? [`INSERT INTO public.sitter_profile (id) VALUES ('${id}')`] : []),
+        ...(w === null
+          ? []
+          : [
+              `INSERT INTO public.sitter_credential (id, sitter_id, scheme_id, status) VALUES ('${cred(tag, 'W')}', '${id}', ${WHITE}, '${w}')`,
+            ]),
+        ...(a === null
+          ? []
+          : [
+              `INSERT INTO public.sitter_credential (id, sitter_id, scheme_id, status) VALUES ('${cred(tag, 'A')}', '${id}', ${ART22}, '${a}')`,
+            ]),
+      ],
+    });
+    return id;
+  };
+  /** Stored vs derived for one sitter, and both credentials' committed status, read by the superuser. */
+  const storedDerived = (tag: string): Promise<string> =>
+    db.value(
+      `SELECT 'stored=' || p.bookable_state || ' derived=' || d.o_bookable_state ||
+              ' W=' || (SELECT status FROM public.sitter_credential WHERE id = '${cred(tag, 'W')}') ||
+              ' A=' || (SELECT status FROM public.sitter_credential WHERE id = '${cred(tag, 'A')}')
+         FROM public.sitter_profile AS p CROSS JOIN LATERAL public.i1_derived_bookable(p.id) AS d
+        WHERE p.id = '${T274(tag)}'`,
+    );
+
+  for (const level of ['REPEATABLE READ', 'SERIALIZABLE'] as const) {
+    const tag = level === 'SERIALIZABLE' ? 'GSR' : 'GRR';
+    test(`${level}: an app_rw (system actor) credential write that would complete a sitter is REFUSED KV083 and the COMMIT answers ROLLBACK: in committed state the sitter is still onboarding and the credential still submitted`, async () => {
+      await freshSitter(tag, 'valid', 'submitted');
+      assert.equal(
+        await storedDerived(tag),
+        'stored=onboarding derived=onboarding W=valid A=submitted',
+      );
+      const r = await committing(
+        LOGINS.app_rw,
+        level,
+        ...SYSTEM,
+        `UPDATE public.sitter_credential SET status = 'valid' WHERE id = '${cred(tag, 'A')}'`,
+      );
+      assert.equal(
+        await storedDerived(tag),
+        'stored=onboarding derived=onboarding W=valid A=submitted',
+        `${level}: committed state`,
+      );
+      refusedAtCommit(level, r, KV083);
+    });
+  }
+
+  test('READ COMMITTED (explicit): the same write by app_rw (system actor) COMMITS and the sitter is bookable, tier sitter, bookable_since set', async () => {
+    await freshSitter('GRC', 'valid', 'submitted');
+    const r = await committing(
+      LOGINS.app_rw,
+      'READ COMMITTED',
+      `SELECT 'level=' || current_setting('transaction_isolation')`,
+      ...SYSTEM,
+      `UPDATE public.sitter_credential SET status = 'valid' WHERE id = '${cred('GRC', 'A')}'`,
+    );
+    committed('READ COMMITTED', r);
+    has('READ COMMITTED', r, 'level=read committed', 'UPDATE 1');
+    assert.equal(await db.value(STATE(T274('GRC'))), 'state=bookable|sitter|1|t');
+    assert.equal(await storedDerived('GRC'), 'stored=bookable derived=bookable W=valid A=valid');
+  });
+
+  test('the account path: an app_rw suspension of a bookable sitter at REPEATABLE READ is REFUSED KV083 (the account trigger calls the same writer) and the sitter stays bookable; the same suspension at the default level (READ COMMITTED) commits', async () => {
+    const id = await freshSitter('GAC', 'valid', 'valid');
+    assert.equal(await db.value(STATE(id)), 'state=bookable|sitter|1|t');
+    const rr = await committing(
+      LOGINS.app_rw,
+      'REPEATABLE READ',
+      `UPDATE public.account SET status = 'suspended' WHERE id = '${id}'`,
+    );
+    assert.equal(await db.value(STATE(id)), 'state=bookable|sitter|1|t', 'RR: committed state');
+    refusedAtCommit('RR suspension', rr, KV083);
+    const rc = await committing(
+      LOGINS.app_rw,
+      null,
+      `SELECT 'level=' || current_setting('transaction_isolation')`,
+      `UPDATE public.account SET status = 'suspended' WHERE id = '${id}'`,
+    );
+    committed('default-level suspension', rc);
+    has('default-level suspension', rc, 'level=read committed');
+    assert.equal(await db.value(STATE(id)), 'state=suspended|sitter|1|f');
+  });
+
+  test('BOUND (the guard reads a visible sitter_profile first): an account with NO sitter_profile changes status at REPEATABLE READ and SERIALIZABLE and COMMITS (I-5 drives such changes, four-eyes.test.ts), and a direct app_rw call of the writer for it returns NULL at REPEATABLE READ', async () => {
+    const id = await freshSitter('GNP', null, null, false);
+    for (const [level, status] of [
+      ['REPEATABLE READ', 'suspended'],
+      ['SERIALIZABLE', 'active'],
+    ] as const) {
+      const r = await committing(
+        LOGINS.app_rw,
+        level,
+        `UPDATE public.account SET status = '${status}' WHERE id = '${id}'`,
+      );
+      committed(`no profile, ${level}`, r);
+      assert.equal(await db.value(`SELECT status FROM public.account WHERE id = '${id}'`), status);
+    }
+    const call = await committing(
+      LOGINS.app_rw,
+      'REPEATABLE READ',
+      `SELECT 'writer=' || coalesce(public.i1_rederive_sitter('${id}')::text, 'NULL')`,
+    );
+    committed('direct call, no profile', call);
+    has('direct call, no profile', call, 'writer=NULL');
+  });
+
+  // TL-6 replayed. T1 (READ COMMITTED) withdraws the sitter's White credential: its re-derive locks the
+  // profile row and changes nothing (Art.22 is still submitted). It holds the lock for 4 s. T2 starts
+  // 1.5 s later, takes its snapshot (White still valid: T1 has not committed), and validates Art.22.
+  for (const level of ['READ COMMITTED', 'REPEATABLE READ', 'SERIALIZABLE'] as const) {
+    const tag = { 'READ COMMITTED': 'XRC', 'REPEATABLE READ': 'XRR', SERIALIZABLE: 'XSR' }[level];
+    const rc = level === 'READ COMMITTED';
+    test(`TL-6 replayed, second writer at ${level}: T1 (READ COMMITTED) withdraws White and holds the profile lock; T2, whose snapshot still sees White valid, validates Art.22 — ${rc ? 'T2 waits for the lock, re-derives from a fresh snapshot and COMMITS: the sitter stays onboarding, stored = derived' : 'T2 is REFUSED KV083 before the lock: the sitter stays onboarding, stored = derived, Art.22 still submitted (without the guard it was committed bookable, TL-6)'}`, async () => {
+      await freshSitter(tag, 'valid', 'submitted');
+      const t1 = committing(
+        LOGINS.app_rw,
+        null,
+        ...SYSTEM,
+        `UPDATE public.sitter_credential SET status = 'withdrawn' WHERE id = '${cred(tag, 'W')}'`,
+        `SELECT pg_sleep(4)`,
+      );
+      await sleep(1500);
+      const t2 = await committing(
+        LOGINS.app_rw,
+        level,
+        ...SYSTEM,
+        `SELECT 'snapshot W=' || status FROM public.sitter_credential WHERE id = '${cred(tag, 'W')}'`,
+        `UPDATE public.sitter_credential SET status = 'valid' WHERE id = '${cred(tag, 'A')}'`,
+      );
+      const one = await t1;
+      committed('T1', one);
+      has('T2', t2, 'snapshot W=valid');
+      assert.equal(
+        await storedDerived(tag),
+        `stored=onboarding derived=onboarding W=withdrawn A=${rc ? 'valid' : 'submitted'}`,
+        `${level}: committed state`,
+      );
+      if (rc) committed('T2', t2);
+      else refusedAtCommit(`T2 ${level}`, t2, KV083);
+    });
+  }
+
+  test("cleanup: the guard cases' own sitters (01K8T274S…) are deleted by the superuser; the fixture is what remains and the reconciler is clean over it", async () => {
+    await db.sql({
+      commands: [
+        `DELETE FROM public.sitter_credential WHERE sitter_id LIKE '01K8T274S%'`,
+        `DELETE FROM public.sitter_profile WHERE id LIKE '01K8T274S%'`,
+        `DELETE FROM public.account WHERE id LIKE '01K8T274S%'`,
+      ],
+    });
+    assert.equal(await db.value(`SELECT count(*) FROM public.sitter_profile`), String(N_SITTERS));
+    assert.equal(await db.value(`SELECT public.i1_reconcile_bookable_state()`), String(N_SITTERS));
   });
 });
 
