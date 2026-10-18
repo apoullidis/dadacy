@@ -19,6 +19,13 @@
 # reported FAIL-OTHER and counted as misbehaving, because RULED_GRID and
 # matrix.ts have one author. Anything else — no banner, another exit — is CRASH.
 #
+# THE K CASES (rework 1, QA-M1) plant a CONDITIONAL grant (own, own+step-up,
+# window, break_glass, capability, four_eyes, art10, locale) on a deny cell in
+# matrix.ts AND the same spelling in RULED_GRID, so the one-author
+# transcription agrees with the mutation and only a check that does not read
+# RULED_GRID can go red. A `T-208:` case in can.test.ts must go red. QA's A8a
+# (`dsl` -> own on the staffed-hours read) is K01.
+#
 # THE MUTATION IS ASSERTED LANDED BEFORE THE VERDICT IS READ: the anchor must
 # be present (mutate.mjs refuses a no-op), the replacement text must then be
 # in the file, and the file must differ from its backup.
@@ -31,10 +38,11 @@
 # row is deleted, and the step-up flag is dropped from the write and added to
 # each read.
 #
-# THIS SUITE MUTATES ONE TRACKED FILE, packages/policy/src/matrix.ts, AND
-# DELETES NONE. It is copied to a temp directory first and restored after every
-# case and by an EXIT / INT / TERM trap. A dirty matrix.ts is refused at
-# startup, because the restore would overwrite the edit.
+# THIS SUITE MUTATES TWO TRACKED FILES, packages/policy/src/matrix.ts and (K
+# cases only) packages/policy/src/matrix.test.ts, AND DELETES NONE. Both are
+# copied to a temp directory first and restored after every case and by an
+# EXIT / INT / TERM trap. A dirty copy of either is refused at startup, because
+# the restore would overwrite the edit.
 #
 # NOT IN gate:negative-suites' SUITES roster (that list is hand-maintained;
 # T-208 did not add to it). It is run by hand, and its output is pasted in
@@ -43,7 +51,8 @@ set -uo pipefail
 cd "$(dirname "$0")/../.."
 
 MATRIX_TS=packages/policy/src/matrix.ts
-TRACKED=("$MATRIX_TS")
+MATRIX_TEST=packages/policy/src/matrix.test.ts
+TRACKED=("$MATRIX_TS" "$MATRIX_TEST")
 
 if [[ -n "$(git status --porcelain -- "${TRACKED[@]}" 2>/dev/null)" ]]; then
   echo "HARNESS ERROR: the working tree is not clean for the file this suite mutates."
@@ -53,9 +62,10 @@ fi
 
 BK="$(mktemp -d)"
 cp "$MATRIX_TS" "$BK/matrix.ts"
+cp "$MATRIX_TEST" "$BK/matrix.test.ts"
 echo "backed up ${#TRACKED[@]} tracked file(s) to a temp dir; none is deleted by any case"
 
-restore() { cp "$BK/matrix.ts" "$MATRIX_TS"; return 0; }
+restore() { cp "$BK/matrix.ts" "$MATRIX_TS"; cp "$BK/matrix.test.ts" "$MATRIX_TEST"; return 0; }
 cleanup() {
   [[ -d "$BK" ]] || return 0
   restore
@@ -67,19 +77,22 @@ trap 'cleanup; echo; echo "TERMINATED — tree restored"; exit 143' TERM
 
 ran=0; bad=0; harness=0
 
-# mut <from> <to>: plant, then assert it landed.
-mut() {
-  local from="$1" to="$2"
-  node scripts/negative-tests/mutate.mjs "$MATRIX_TS" "$from" "$to" || {
-    echo "   HARNESS ERROR (anchor not found)"; harness=$((harness + 1)); return 1; }
-  if [[ -n "$to" ]] && ! grep -qF -- "$to" "$MATRIX_TS"; then
-    echo "   HARNESS ERROR (mutation did not land: replacement absent)"; harness=$((harness + 1)); restore; return 1
+# mutf <file> <backup> <from> <to>: plant, then assert it landed.
+mutf() {
+  local file="$1" backup="$2" from="$3" to="$4"
+  node scripts/negative-tests/mutate.mjs "$file" "$from" "$to" || {
+    echo "   HARNESS ERROR (anchor not found in $file)"; harness=$((harness + 1)); restore; return 1; }
+  if [[ -n "$to" ]] && ! grep -qF -- "$to" "$file"; then
+    echo "   HARNESS ERROR (mutation did not land in $file: replacement absent)"; harness=$((harness + 1)); restore; return 1
   fi
-  if cmp -s "$MATRIX_TS" "$BK/matrix.ts"; then
-    echo "   HARNESS ERROR (mutation did not land: file unchanged)"; harness=$((harness + 1)); restore; return 1
+  if cmp -s "$file" "$backup"; then
+    echo "   HARNESS ERROR (mutation did not land in $file: file unchanged)"; harness=$((harness + 1)); restore; return 1
   fi
   return 0
 }
+# mut <from> <to>: matrix.ts.  mut_grid <from> <to>: matrix.test.ts (RULED_GRID).
+mut() { mutf "$MATRIX_TS" "$BK/matrix.ts" "$1" "$2"; }
+mut_grid() { mutf "$MATRIX_TEST" "$BK/matrix.test.ts" "$1" "$2"; }
 
 ANCHOR='× src/can.test.ts > T-208:'
 
@@ -158,6 +171,41 @@ mut "  ['staffed_hours_version#read', row(D, D, D, D, D, A, D, D, A, D)]," \
 mut "  ['staffed_hours_version#read', row(D, D, D, D, D, A, D, D, A, D)]," \
     "  ['staffed_hours_version#read', row(D, D, D, D, D, AS, D, D, A, D)]," \
   && run_case "S5 staffed_hours_version#read / ts_senior step-up ADDED" FAIL
+
+echo
+echo "=== K — a CONDITIONAL grant planted on a deny cell in matrix.ts AND RULED_GRID together (QA-M1) ==="
+# RULED_GRID rows as committed (legend: - allow own window bg cap 4eyes modelA locale, ! = step-up).
+GRID_KEYS=("staffed_hours_version#read" "cluster#read" "cluster#write")
+GRID_CELLS=("- - - - - allow - - allow -" "- - - - - allow - - allow -" "- - - - - - - - allow! -")
+grid_line() { # <key> <cells...>
+  local key="$1"; shift
+  printf "  ['%s', '%s'],"  "$key" "$*"
+}
+# <row index> <role index> <matrix constant> <RULED_GRID spelling> <label>
+k=0
+while read -r -u 3 r i mconst gspell what; do
+  read -r -a cells <<< "${ROW_CELLS[$r]}"
+  read -r -a gcells <<< "${GRID_CELLS[$r]}"
+  morig="$(line_of "${ROW_KEYS[$r]}" "${cells[@]}")"
+  gorig="$(grid_line "${GRID_KEYS[$r]}" "${gcells[@]}")"
+  [[ "${cells[$i]}" == D && "${gcells[$i]}" == - ]] || { echo "   HARNESS ERROR (K: not a deny cell)"; harness=$((harness + 1)); continue; }
+  cells[$i]="$mconst"; gcells[$i]="$gspell"
+  k=$((k + 1))
+  mut "$morig" "$(line_of "${ROW_KEYS[$r]}" "${cells[@]}")" \
+    && mut_grid "$gorig" "$(grid_line "${GRID_KEYS[$r]}" "${gcells[@]}")" \
+    && run_case "K$(printf '%02d' $k) ${ROW_KEYS[$r]} / ${ROLES[$i]} -> $what (both)" FAIL
+done 3<<'KCASES'
+0 6 O own own
+0 0 W window window
+0 3 LOC locale! locale
+1 7 BG bg break_glass
+1 9 CAP cap capability
+1 2 W window window
+2 5 F4 4eyes! four_eyes
+2 6 OS own! own+step-up
+2 1 ART modelA! art10
+2 4 BG bg break_glass
+KCASES
 
 echo
 echo "=== N — a mutation that changes no decision must stay green (the harness does not read 'mutated' as 'red') ==="
