@@ -40,7 +40,7 @@ import {
 import { assertPermitted, assertRefused, INT10_RAISE } from '../src/expect.ts';
 
 const SUITE = 'migrations-applied';
-const HIGHEST_COMMITTED = '0031';
+const HIGHEST_COMMITTED = '0032';
 const COMMITTED_DIR = path.join(REPO_ROOT, MIGRATIONS_DIR);
 const RECORD_SQL = `SELECT coalesce(shobj_description(oid, 'pg_database'), '(no comment)')
                       FROM pg_database WHERE datname = current_database()`;
@@ -1236,6 +1236,31 @@ const CREATED_BY: Readonly<
                                   AND contype <> 'n'), '(absent)')`,
         holds:
           'decision_record_pkey=p statement_of_reasons_decision_record_id_fkey=f statement_of_reasons_pkey=p',
+      },
+    ],
+  },
+  '0032': {
+    source: 'T-274',
+    // 0032 creates no object: it replaces two of 0030's functions. Each probe names one of them and
+    // reads what 0032 changes in it (the writer's body carries the KV083 guard; the enqueue's body and
+    // COMMENT carry the reworded strings), so it returns 'false' after a down to 0031 restores 0030's
+    // text, and '(absent)' if the function is gone. Owner, SECURITY DEFINER and proconfig are 0030's
+    // probes above, which must still hold. The behaviour is asserted by suites/i1-bookable-state.test.ts.
+    probes: [
+      {
+        title:
+          'public.i1_rederive_sitter(bpchar) carries the READ COMMITTED guard: its body raises KV083 I1_DERIVATION_ISOLATION (T-028 TL-A; T-274)',
+        sql: `SELECT coalesce((SELECT (prosrc LIKE '%KV083%' AND prosrc LIKE '%I1_DERIVATION_ISOLATION%')::text FROM pg_proc
+                                WHERE oid = to_regprocedure('public.i1_rederive_sitter(bpchar)')), '(absent)')`,
+        holds: 'true',
+      },
+      {
+        title:
+          'public.i1_enqueue_slot_materialise(bpchar): the WARNING 01K81 text and the COMMENT carry the mixed-statement bound (T-028 TL-D; T-274)',
+        sql: `SELECT coalesce((SELECT (prosrc LIKE '%if this transaction commits, the change has no job%')::text || ' ' ||
+                                      (obj_description(oid, 'pg_proc') LIKE '%the write commits only if nothing in its statement or transaction raises KV081%')::text
+                                 FROM pg_proc WHERE oid = to_regprocedure('public.i1_enqueue_slot_materialise(bpchar)')), '(absent)')`,
+        holds: 'true true',
       },
     ],
   },
