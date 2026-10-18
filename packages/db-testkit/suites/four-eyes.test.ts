@@ -192,6 +192,9 @@ const ERR_CHECK =
   'ERROR:  23514: new row for relation "approval" violates check constraint "approval_distinct_actors"';
 const ERR_NOT_DIFFERENT =
   'ERROR:  KV051: I5_SECOND_ACTOR_NOT_DIFFERENT: public.approval requires approver_id to be a different actor from submitter_id';
+/** T-274 (0032): I-1's writer, reached through account's status trigger, refuses outside READ COMMITTED. */
+const ERR_I1_ISOLATION =
+  'ERROR:  KV083: I1_DERIVATION_ISOLATION: bookable_state is derived only under READ COMMITTED';
 const ERR_NOT_TS_SENIOR =
   'ERROR:  KV052: I5_APPROVER_LACKS_TS_SENIOR: public.approval.approver_id holds no unrevoked ts_senior role';
 /** T-186, OE-45: a live ts_senior on an account whose status is not active. */
@@ -1262,10 +1265,16 @@ describe('I-5 clause (b), OE-48 — the guard reads the account’s ts_senior ro
       `SELECT status::text || '|' || (${liveTsSenior(acc)}) FROM public.account WHERE id = '${acc}'`,
     );
 
+  // T-274 (0032, I-1's READ COMMITTED guard): an account STATUS change fires trg_account_i1_rederive,
+  // which sorts before this guard and, outside READ COMMITTED, refuses KV083 for every account. So the
+  // activation at REPEATABLE READ / SERIALIZABLE no longer reaches the OE-48 guard and is refused
+  // KV083; the account still stays suspended. This guard's own RR/SR property (its FOR SHARE read makes
+  // a stale snapshot fail 40001) is carried by the dob_verified_18 cases below, which change a column
+  // the I-1 trigger does not watch.
   for (const [level, expected] of [
     ['READ COMMITTED', errAccountWrite('status', LOGINS.app_rw)],
-    ['REPEATABLE READ', 'ERROR:  40001: could not serialize access due to concurrent update'],
-    ['SERIALIZABLE', 'ERROR:  40001: could not serialize access due to concurrent update'],
+    ['REPEATABLE READ', ERR_I1_ISOLATION],
+    ['SERIALIZABLE', ERR_I1_ISOLATION],
   ] as const) {
     test(`${level}: an app_rw activation whose transaction began before an app_admin_rw un-revoke COMMITTED is REFUSED (${expected.slice(8, 13)}), and the account stays suspended`, async () => {
       await suspendFirst();
@@ -1288,6 +1297,49 @@ describe('I-5 clause (b), OE-48 — the guard reads the account’s ts_senior ro
         state,
         'suspended|1',
         'the account stayed suspended while its ts_senior went live',
+      );
+      assert.equal(await readState(), 'active|0', 'restored');
+    });
+  }
+
+  // T-274: the same race on a guarded move that does not fire I-1's account trigger. dob_verified_18
+  // false -> true is refused to app_rw for a live holder (OE-48), so the guard reads the account's
+  // ts_senior rows FOR SHARE; with the un-revoke committed after the snapshot that read fails 40001.
+  for (const level of ['REPEATABLE READ', 'SERIALIZABLE'] as const) {
+    test(`${level}: an app_rw dob_verified_18 false -> true whose transaction began before an app_admin_rw un-revoke COMMITTED is REFUSED (40001) by the OE-48 guard's FOR SHARE read, and dob_verified_18 stays false (T-274: carries this guard's RR/SR property, the status route now meeting I-1's KV083 first)`, async () => {
+      await suspendFirst();
+      assertPermitted(
+        'app_rw clears dob_verified_18 (true -> false is admitted)',
+        await asApp(`UPDATE public.account SET dob_verified_18 = false WHERE id = '${acc}'`),
+      );
+      const verifying = asApp(
+        `BEGIN ISOLATION LEVEL ${level}`,
+        // Takes the snapshot, which sees the ts_senior revoked.
+        `SELECT count(*) FROM public.account_role WHERE account_id = '${acc}' AND revoked_at IS NULL`,
+        'SELECT pg_sleep(3)',
+        `UPDATE public.account SET dob_verified_18 = true WHERE id = '${acc}'`,
+        'COMMIT',
+      );
+      await sleep(1500);
+      const unrevoke = await asAdmin(UNREVOKE_TS(acc));
+      const ver = await verifying;
+      const state = await db.value(
+        `SELECT status::text || '|' || (${liveTsSenior(acc)}) || '|' || dob_verified_18::text FROM public.account WHERE id = '${acc}'`,
+      );
+      await asFixtureAdmin(
+        REVOKE_TS(acc),
+        `UPDATE public.account SET dob_verified_18 = true, status = 'active' WHERE id = '${acc}'`,
+      );
+      assertPermitted('the committed un-revoke', unrevoke);
+      assertRefusedWith(
+        `${level} dob_verified_18`,
+        ver,
+        'ERROR:  40001: could not serialize access due to concurrent update',
+      );
+      assert.equal(
+        state,
+        'suspended|1|false',
+        'dob_verified_18 stayed false while the ts_senior went live',
       );
       assert.equal(await readState(), 'active|0', 'restored');
     });
@@ -1480,7 +1532,12 @@ describe('I-5 clause (b), OE-59 — a ts_senior row becoming live locks its acco
     });
   }
 
-  test('CONTROL (QA NG-RRC) — a REPEATABLE READ app_rw transaction whose snapshot predates a committed grant activates the account and is REFUSED at its countersignature (KV052): the grant is outside its snapshot', async () => {
+  // T-274 (0032): the activation inside a REPEATABLE READ transaction now meets I-1's KV083 (the account
+  // trigger's writer refuses every non-READ COMMITTED call), so NG-RRC is split. (1) the RR activation is
+  // refused KV083 and nothing is stored; (2) what NG-RRC controlled, a countersignature whose snapshot
+  // predates a committed grant being refused KV052, is run on an account that is already active, so it
+  // needs no activation.
+  test('CONTROL (QA NG-RRC, rebased by T-274) — (1) a REPEATABLE READ app_rw transaction whose snapshot predates a committed grant tries to activate the account: REFUSED KV083 by I-1 (0032), nothing stored', async () => {
     const acc = await freshAccount('NGRRC', 'suspended');
     const a = nextApprovalId();
     assertPermitted(
@@ -1492,6 +1549,28 @@ describe('I-5 clause (b), OE-59 — a ts_senior row becoming live locks its acco
       `SELECT count(*) FROM public.account_role WHERE account_id = '${acc}'`,
       'SELECT pg_sleep(3)',
       ACTIVATE(acc),
+      countersign(a, acc),
+      'COMMIT',
+    );
+    await sleep(1500);
+    const grant = await asAdmin(GRANT_TS(acc));
+    const t1 = await flip;
+    assertPermitted('the grant (committed after the snapshot)', grant);
+    assertRefusedWith('the activation', t1, ERR_I1_ISOLATION);
+    assert.equal(await db.value(storedRow(a)), '-|-|-|-', 'nothing stored');
+  });
+
+  test('CONTROL (QA NG-RRC, rebased by T-274) — (2) a REPEATABLE READ app_rw transaction whose snapshot predates a committed grant to an ALREADY ACTIVE account countersigns as it and is REFUSED (KV052): the grant is outside its snapshot', async () => {
+    const acc = await freshAccount('NGRRCA', 'active');
+    const a = nextApprovalId();
+    assertPermitted(
+      'pending approval',
+      await asSuperuser(insertPending(a, 'safeguarding_referral#make', ACC.dsl)),
+    );
+    const flip = asApp(
+      'BEGIN ISOLATION LEVEL REPEATABLE READ',
+      `SELECT count(*) FROM public.account_role WHERE account_id = '${acc}'`,
+      'SELECT pg_sleep(3)',
       countersign(a, acc),
       'COMMIT',
     );

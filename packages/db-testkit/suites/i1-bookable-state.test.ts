@@ -1136,7 +1136,7 @@ describe('OD-317 / OD-318 — the shadow attack against the real call graph (PRO
 });
 
 // =================================================================================================
-describe('layer 1 — the READ COMMITTED guard (T-274, 0032; T-028 approval 2 TL-A, TL-6): i1_rederive_sitter refuses any other isolation level, before its row lock, for a sitter it can see', () => {
+describe('layer 1 — the READ COMMITTED guard (T-274, 0032; T-028 approval 2 TL-A, TL-6): i1_rederive_sitter refuses every call at any other isolation level, before any lock, and locks the account row (rework 1: QA-1, QA-3)', () => {
   const T274 = (tag: string): string => `01K8T274S${tag}`.padEnd(26, '0');
   const cred = (tag: string, scheme: 'W' | 'A'): string =>
     `01K8T274C${tag}${scheme}`.padEnd(26, '0');
@@ -1237,27 +1237,112 @@ describe('layer 1 — the READ COMMITTED guard (T-274, 0032; T-028 approval 2 TL
     assert.equal(await db.value(STATE(id)), 'state=suspended|sitter|1|f');
   });
 
-  test('BOUND (the guard reads a visible sitter_profile first): an account with NO sitter_profile changes status at REPEATABLE READ and SERIALIZABLE and COMMITS (I-5 drives such changes, four-eyes.test.ts), and a direct app_rw call of the writer for it returns NULL at REPEATABLE READ', async () => {
+  test('NO VISIBILITY CONDITION (T-274 rework 1, QA-1): an account with NO sitter_profile is refused KV083 too at REPEATABLE READ and SERIALIZABLE (the account trigger calls the writer, which refuses every non-READ COMMITTED call), as is a direct app_rw call of the writer for it; at READ COMMITTED its status change commits and the direct call returns NULL', async () => {
     const id = await freshSitter('GNP', null, null, false);
-    for (const [level, status] of [
-      ['REPEATABLE READ', 'suspended'],
-      ['SERIALIZABLE', 'active'],
-    ] as const) {
+    for (const level of ['REPEATABLE READ', 'SERIALIZABLE'] as const) {
       const r = await committing(
         LOGINS.app_rw,
         level,
-        `UPDATE public.account SET status = '${status}' WHERE id = '${id}'`,
+        `UPDATE public.account SET status = 'suspended' WHERE id = '${id}'`,
       );
-      committed(`no profile, ${level}`, r);
-      assert.equal(await db.value(`SELECT status FROM public.account WHERE id = '${id}'`), status);
+      assert.equal(
+        await db.value(`SELECT status FROM public.account WHERE id = '${id}'`),
+        'active',
+        `no profile, ${level}: committed state`,
+      );
+      refusedAtCommit(`no profile, ${level}`, r, KV083);
     }
-    const call = await committing(
+    const rrCall = await committing(
       LOGINS.app_rw,
       'REPEATABLE READ',
       `SELECT 'writer=' || coalesce(public.i1_rederive_sitter('${id}')::text, 'NULL')`,
     );
-    committed('direct call, no profile', call);
-    has('direct call, no profile', call, 'writer=NULL');
+    refusedAtCommit('direct call, no profile, RR', rrCall, KV083);
+    const rc = await committing(
+      LOGINS.app_rw,
+      null,
+      `UPDATE public.account SET status = 'suspended' WHERE id = '${id}'`,
+      `SELECT 'writer=' || coalesce(public.i1_rederive_sitter('${id}')::text, 'NULL')`,
+    );
+    committed('no profile, READ COMMITTED', rc);
+    has('no profile, READ COMMITTED', rc, 'writer=NULL');
+    assert.equal(
+      await db.value(`SELECT status FROM public.account WHERE id = '${id}'`),
+      'suspended',
+    );
+  });
+
+  // QA Q-3a/Q-3b, committed (T-274 rework 1, QA-1). T2 (app_rw, RR or SR) takes its snapshot while
+  // account X has no profile and waits 4 s. Meanwhile T1 (superuser, READ COMMITTED) inserts X's profile
+  // and both credentials and commits: X is bookable. T2 then suspends X and sends COMMIT. Under the
+  // draft's visibility-conditioned guard T2 committed and left `account=suspended stored=bookable`.
+  for (const level of ['REPEATABLE READ', 'SERIALIZABLE'] as const) {
+    const tag = level === 'SERIALIZABLE' ? 'QSR' : 'QRR';
+    test(`QA-1 repro, ${level}: a suspension from a transaction whose snapshot predates a concurrent READ COMMITTED transaction creating and completing the sitter's profile is REFUSED KV083 and the COMMIT answers ROLLBACK: in committed state the account is active and the sitter bookable, stored = derived (it was committed suspended with the sitter stored bookable under a guard conditioned on a visible profile)`, async () => {
+      const id = await freshSitter(tag, null, null, false);
+      const t2 = committing(
+        LOGINS.app_rw,
+        level,
+        `SELECT 'snapshot profiles=' || count(*) FROM public.sitter_profile WHERE id = '${id}'`,
+        'SELECT pg_sleep(4)',
+        `UPDATE public.account SET status = 'suspended' WHERE id = '${id}'`,
+      );
+      await sleep(1500);
+      await db.sql({
+        commands: [
+          'BEGIN',
+          `INSERT INTO public.sitter_profile (id) VALUES ('${id}')`,
+          `INSERT INTO public.sitter_credential (id, sitter_id, scheme_id, status) VALUES ('${cred(tag, 'W')}', '${id}', ${WHITE}, 'valid')`,
+          `INSERT INTO public.sitter_credential (id, sitter_id, scheme_id, status) VALUES ('${cred(tag, 'A')}', '${id}', ${ART22}, 'valid')`,
+          'COMMIT',
+        ],
+      });
+      assert.equal(await db.value(STATE(id)), 'state=bookable|sitter|1|t', 'T1 committed bookable');
+      const two = await t2;
+      has('T2', two, 'snapshot profiles=0');
+      assert.equal(
+        (await db.value(`SELECT status FROM public.account WHERE id = '${id}'`)) +
+          ' ' +
+          (await storedDerived(tag)),
+        'active stored=bookable derived=bookable W=valid A=valid',
+        `${level}: committed state`,
+      );
+      refusedAtCommit(`T2 ${level}`, two, KV083);
+    });
+  }
+
+  // QA Q-3c / OD-362, committed (T-274 rework 1, QA-3; pre-existing in 0030). READ COMMITTED write skew:
+  // T2 (app_rw) suspends account X, which has no profile yet (its writer call derives nothing), and holds
+  // its transaction 4 s. T1 (superuser), 1.5 s later, creates X's profile and both credentials in ONE
+  // transaction and commits. Before 0032's account row lock, T1 derived from the account as it was and
+  // committed bookable: `account=suspended stored=bookable`. Now T1's writer waits for T2's account row
+  // lock and re-derives from a fresh snapshot.
+  test("QA-3 / OD-362, READ COMMITTED write skew: a suspension racing a transaction that creates and completes the sitter's profile — both COMMIT, and the sitter is stored suspended, stored = derived (T1's writer waits on the account row lock and re-derives after the suspension committed)", async () => {
+    const id = await freshSitter('QSK', null, null, false);
+    const t2 = committing(
+      LOGINS.app_rw,
+      null,
+      `UPDATE public.account SET status = 'suspended' WHERE id = '${id}'`,
+      'SELECT pg_sleep(4)',
+    );
+    await sleep(1500);
+    const t1 = await committing(
+      null,
+      null,
+      `INSERT INTO public.sitter_profile (id) VALUES ('${id}')`,
+      `INSERT INTO public.sitter_credential (id, sitter_id, scheme_id, status) VALUES ('${cred('QSK', 'W')}', '${id}', ${WHITE}, 'valid')`,
+      `INSERT INTO public.sitter_credential (id, sitter_id, scheme_id, status) VALUES ('${cred('QSK', 'A')}', '${id}', ${ART22}, 'valid')`,
+    );
+    const two = await t2;
+    committed('T2 suspension', two);
+    committed('T1 profile + credentials', t1);
+    assert.equal(
+      (await db.value(`SELECT status FROM public.account WHERE id = '${id}'`)) +
+        ' ' +
+        (await storedDerived('QSK')),
+      'suspended stored=suspended derived=suspended W=valid A=valid',
+      'committed state',
+    );
   });
 
   // TL-6 replayed. T1 (READ COMMITTED) withdraws the sitter's White credential: its re-derive locks the
