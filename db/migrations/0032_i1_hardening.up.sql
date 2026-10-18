@@ -33,19 +33,28 @@
 -- committed after the snapshot is invisible to every read, locking or not), so the check has no
 -- condition. CONSEQUENCE: an account status or jurisdiction change at REPEATABLE READ or
 -- SERIALIZABLE is refused KV083 for EVERY account, sitter or not, because the account trigger
--- calls this writer. I-5's RR/SR cases are rebased onto routes that do not fire that trigger
--- (four-eyes.test.ts; state/EP-5/T-274.md § Rework 1).
+-- calls this writer. I-5's RR/SR cases are rebased (four-eyes.test.ts; state/EP-5/T-274.md
+-- § Rework 1): the OE-48 guard's RR/SR property moves to dob_verified_18 cases, which do not fire
+-- that trigger; the RR/SR activation rows and NG-RRC (1) still fire it and now expect KV083.
 -- (i-b) THE ACCOUNT ROW LOCK (T-274 rework 1, QA-3 / OD-362, pre-existing in 0030). Under READ
 -- COMMITTED, an account change whose writer call ran before a concurrent transaction had inserted the
 -- sitter's profile derives nothing (the profile is not there yet), while that transaction, creating
 -- and completing the profile, derived from the account as it was and committed 'bookable': neither
 -- lock covered the other's read (the profile INSERT's foreign key takes FOR KEY SHARE on the account,
 -- which does not conflict with the UPDATE's FOR NO KEY UPDATE). The writer therefore locks the
--- sitter's account row FOR SHARE, after the isolation check and before the profile row lock (one
--- order: account, then profile). FOR SHARE conflicts with an open UPDATE of the account and is
--- compatible with FOR KEY SHARE and with another FOR SHARE, so an account change and a credential
--- write on the same sitter now serialise, and the later one re-derives from a fresh READ COMMITTED
--- snapshot. For an id that names no account the lock takes nothing.
+-- sitter's account row FOR SHARE, after the isolation check and before the profile row lock (inside
+-- the writer: account, then profile). FOR SHARE conflicts with an open UPDATE of the account and is
+-- compatible with FOR KEY SHARE and with another FOR SHARE. So an account change and a credential or
+-- profile write on the same sitter EITHER serialise (the later one re-derives from a fresh READ
+-- COMMITTED snapshot) OR one of them is aborted 40P01 (deadlock); I-1 stays consistent either way.
+-- Measured (QA delta review of rework 1, DQ-2b): D1, a transaction that writes a credential and then
+-- updates the same sitter's account (a FOR SHARE -> FOR NO KEY UPDATE upgrade) racing another
+-- credential write; D2, a transaction that updates the sitter_profile row and then writes a
+-- credential (profile, then account) racing a suspension. Both give 40P01 here and none at 0031;
+-- no single lock order removes both. WRITERS: retry on 40P01, and do not write a credential and then
+-- change the same sitter's account in one transaction. BOUND (DQ-2c): an open UPDATE of a sitter's
+-- account row, on any column, makes that sitter's credential writes wait until it ends, and vice
+-- versa. For an id that names no account the lock takes nothing.
 -- Every path to the derivation goes through this function: the credential row and TRUNCATE
 -- triggers, the account trigger, and a direct call by app_rw or app_admin_rw.
 --
