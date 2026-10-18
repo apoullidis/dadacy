@@ -1387,13 +1387,13 @@ describe('layer 1 — the READ COMMITTED guard (T-274, 0032; T-028 approval 2 TL
   // T1's uncommitted profile, and both committed: suspended / bookable. Now T2 waits for T1's FOR SHARE
   // and its writer, after T1 committed, sees the profile and derives suspended.
   test("QA-3 / OD-362, the other order: a transaction that creates and completes the sitter's profile and holds open, raced by a suspension — both COMMIT, and the sitter is stored suspended, stored = derived (the suspension waits on the account row lock)", async () => {
-    const id = await freshSitter('QSO', null, null, false);
+    const id = await freshSitter('QSV', null, null, false);
     const t1 = committing(
       null,
       null,
       `INSERT INTO public.sitter_profile (id) VALUES ('${id}')`,
-      `INSERT INTO public.sitter_credential (id, sitter_id, scheme_id, status) VALUES ('${cred('QSO', 'W')}', '${id}', ${WHITE}, 'valid')`,
-      `INSERT INTO public.sitter_credential (id, sitter_id, scheme_id, status) VALUES ('${cred('QSO', 'A')}', '${id}', ${ART22}, 'valid')`,
+      `INSERT INTO public.sitter_credential (id, sitter_id, scheme_id, status) VALUES ('${cred('QSV', 'W')}', '${id}', ${WHITE}, 'valid')`,
+      `INSERT INTO public.sitter_credential (id, sitter_id, scheme_id, status) VALUES ('${cred('QSV', 'A')}', '${id}', ${ART22}, 'valid')`,
       'SELECT pg_sleep(4)',
     );
     await sleep(1500);
@@ -1408,7 +1408,7 @@ describe('layer 1 — the READ COMMITTED guard (T-274, 0032; T-028 approval 2 TL
     assert.equal(
       (await db.value(`SELECT status FROM public.account WHERE id = '${id}'`)) +
         ' ' +
-        (await storedDerived('QSO')),
+        (await storedDerived('QSV')),
       'suspended stored=suspended derived=suspended W=valid A=valid',
       'committed state',
     );
