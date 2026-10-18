@@ -1249,8 +1249,9 @@ const CREATED_BY: Readonly<
     probes: [
       {
         title:
-          'public.i1_rederive_sitter(bpchar) carries the READ COMMITTED guard: its body raises KV083 I1_DERIVATION_ISOLATION (T-028 TL-A; T-274)',
-        sql: `SELECT coalesce((SELECT (prosrc LIKE '%KV083%' AND prosrc LIKE '%I1_DERIVATION_ISOLATION%')::text FROM pg_proc
+          'public.i1_rederive_sitter(bpchar) carries the READ COMMITTED guard (KV083 I1_DERIVATION_ISOLATION) and the account row lock (T-028 TL-A; T-274, rework 1 QA-1, QA-3)',
+        sql: `SELECT coalesce((SELECT (prosrc LIKE '%KV083%' AND prosrc LIKE '%I1_DERIVATION_ISOLATION%'
+                                       AND prosrc LIKE '%FROM public.account AS a WHERE a.id = p_sitter_id FOR SHARE%')::text FROM pg_proc
                                 WHERE oid = to_regprocedure('public.i1_rederive_sitter(bpchar)')), '(absent)')`,
         holds: 'true',
       },

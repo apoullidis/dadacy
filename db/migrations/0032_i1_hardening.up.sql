@@ -23,17 +23,29 @@
 -- the lock-then-read class 0021 guards with KV072 AUDIT_CHAIN_ISOLATION, and the guard has 0021's
 -- form: current_setting('transaction_isolation') <> 'read committed' raises SQLSTATE KV083
 -- (I1_DERIVATION_ISOLATION; the message carries no value), checked BEFORE the row lock, so a
--- refused call neither waits for nor takes it.
--- WHICH CALLS IT REFUSES. A call whose id names a sitter_profile row the call can see. The writer
--- first reads, without a lock, whether that row exists; when it does not, it returns NULL at any
--- isolation level, as 0030's writer did, and writes nothing. That is what keeps an account
--- status or jurisdiction change of an account that is not a sitter (account trigger -> this writer)
--- working at REPEATABLE READ and SERIALIZABLE: I-5's suites drive exactly such changes at those
--- levels (four-eyes.test.ts; measured, state/EP-5/T-274.md). BOUND: under REPEATABLE READ or
--- SERIALIZABLE, a sitter_profile row committed after the transaction's snapshot is not seen, so the
--- call returns NULL and derives nothing for it. A new row is inserted with the derived columns at
--- their defaults ('onboarding', NULL, 0, NULL; app_rw may INSERT only id, 0025), so what that leaves is
--- a stored non-bookable state, which the reconciler pages if the derivation disagrees.
+-- refused call neither waits for nor takes any lock.
+-- WHICH CALLS IT REFUSES. Every call made in a transaction that is not READ COMMITTED, whatever
+-- the id names (T-274 rework 1, QA-1). An earlier draft skipped the check when the id named no
+-- sitter_profile row visible to the call, and that visibility is itself read from the stale snapshot:
+-- an RR/SR transaction that took its snapshot before a concurrent READ COMMITTED transaction
+-- inserted and completed the profile suspended the account and left the sitter stored 'bookable'
+-- (QA Q-3a/Q-3b). No snapshot-independent "is this a sitter" test exists under RR/SR (a row
+-- committed after the snapshot is invisible to every read, locking or not), so the check has no
+-- condition. CONSEQUENCE: an account status or jurisdiction change at REPEATABLE READ or
+-- SERIALIZABLE is refused KV083 for EVERY account, sitter or not, because the account trigger
+-- calls this writer. I-5's RR/SR cases are rebased onto routes that do not fire that trigger
+-- (four-eyes.test.ts; state/EP-5/T-274.md § Rework 1).
+-- (i-b) THE ACCOUNT ROW LOCK (T-274 rework 1, QA-3 / OD-362, pre-existing in 0030). Under READ
+-- COMMITTED, an account change whose writer call ran before a concurrent transaction had inserted the
+-- sitter's profile derives nothing (the profile is not there yet), while that transaction, creating
+-- and completing the profile, derived from the account as it was and committed 'bookable': neither
+-- lock covered the other's read (the profile INSERT's foreign key takes FOR KEY SHARE on the account,
+-- which does not conflict with the UPDATE's FOR NO KEY UPDATE). The writer therefore locks the
+-- sitter's account row FOR SHARE, after the isolation check and before the profile row lock (one
+-- order: account, then profile). FOR SHARE conflicts with an open UPDATE of the account and is
+-- compatible with FOR KEY SHARE and with another FOR SHARE, so an account change and a credential
+-- write on the same sitter now serialise, and the later one re-derives from a fresh READ COMMITTED
+-- snapshot. For an id that names no account the lock takes nothing.
 -- Every path to the derivation goes through this function: the credential row and TRUNCATE
 -- triggers, the account trigger, and a direct call by app_rw or app_admin_rw.
 --
@@ -71,16 +83,13 @@ DECLARE
   cur record;
   der record;
 BEGIN
-  PERFORM 1 FROM public.sitter_profile AS p WHERE p.id = p_sitter_id;
-  IF NOT FOUND THEN
-    RETURN NULL;
-  END IF;
-
   IF pg_catalog.current_setting('transaction_isolation') <> 'read committed' THEN
     RAISE EXCEPTION 'I1_DERIVATION_ISOLATION: bookable_state is derived only under READ COMMITTED'
       USING ERRCODE = 'KV083',
             HINT = 'Under REPEATABLE READ or SERIALIZABLE the derivation would read a snapshot older than the sitter_profile row lock and miss a credential or account change committed while it waited; write credentials and account status in a READ COMMITTED transaction.';
   END IF;
+
+  PERFORM 1 FROM public.account AS a WHERE a.id = p_sitter_id FOR SHARE;
 
   SELECT p.bookable_state, p.tier, p.tier_rank, p.bookable_since
     INTO cur
@@ -117,7 +126,7 @@ END
 $fn$;
 
 COMMENT ON FUNCTION public.i1_rederive_sitter(pg_catalog.bpchar) IS
-  'I-1 layer 1, the only writer of the derived columns (T-028; T-158 G-3 option (c); T-274). For an id with no visible sitter_profile row returns NULL and writes nothing. Otherwise refuses any transaction isolation but READ COMMITTED (KV083 I1_DERIVATION_ISOLATION), before the row lock; then locks the sitter_profile row, compares it with i1_derived_bookable and, when they differ, writes bookable_state, tier, tier_rank and bookable_since (now() on entry to bookable, kept while bookable, NULL otherwise); never version. Returns the derived state. SECURITY DEFINER, owner app_ddl, search_path pg_catalog, pg_temp, app.i1_derivation on; EXECUTE app_rw and app_admin_rw (the account.status writers). Takes only the id.';
+  'I-1 layer 1, the only writer of the derived columns (T-028; T-158 G-3 option (c); T-274). Refuses every call in a transaction that is not READ COMMITTED (KV083 I1_DERIVATION_ISOLATION), before any lock; then locks the account row FOR SHARE (so it serialises with an open account change) and the sitter_profile row FOR UPDATE; returns NULL for an id with no profile; otherwise compares the profile with i1_derived_bookable and, when they differ, writes bookable_state, tier, tier_rank and bookable_since (now() on entry to bookable, kept while bookable, NULL otherwise); never version. Returns the derived state. SECURITY DEFINER, owner app_ddl, search_path pg_catalog, pg_temp, app.i1_derivation on; EXECUTE app_rw and app_admin_rw (the account.status writers). Takes only the id.';
 
 -- ---------------------------------------------------------------------------------------------
 -- (iii) The enqueue (owned by the bootstrap superuser, EV-57): the WARNING text and the COMMENT
