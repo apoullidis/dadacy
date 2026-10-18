@@ -1,5 +1,18 @@
 -- 0030_i1_bookable_state.down.sql
 --
+-- @compliance-review: trg_sitter_credential_i1_rederive — T-028, two-approval path (PROTOCOL §3); dropped here; protected from T-274 (T-028 approval 2 TL-B)
+-- @compliance-review: trg_sitter_credential_i1_truncate — T-028, two-approval path (PROTOCOL §3); dropped here; protected from T-274 (T-028 approval 2 TL-B)
+-- @compliance-review: trg_account_i1_rederive — T-028, two-approval path (PROTOCOL §3); dropped here; protected from T-274 (T-028 approval 2 TL-B)
+-- @compliance-review: trg_sitter_profile_i1_enqueue — T-028, two-approval path (PROTOCOL §3); dropped here; protected from T-274 (T-028 approval 2 TL-B)
+-- @compliance-review: i1_derived_bookable — T-028, two-approval path (PROTOCOL §3); dropped here; protected from T-274 (T-028 approval 2 TL-B)
+-- @compliance-review: i1_rederive_sitter — T-028, two-approval path (PROTOCOL §3); dropped here; protected from T-274 (T-028 approval 2 TL-B)
+-- @compliance-review: i1_reconcile_bookable_state — T-028, two-approval path (PROTOCOL §3); dropped here; protected from T-274 (T-028 approval 2 TL-B)
+-- @compliance-review: i1_enqueue_slot_materialise — T-028, two-approval path (PROTOCOL §3); dropped here; protected from T-274 (T-028 approval 2 TL-B)
+-- @compliance-review: i1_sitter_credential_rederive — T-028, two-approval path (PROTOCOL §3); dropped here; protected from T-274 (T-028 approval 2 TL-B)
+-- @compliance-review: i1_sitter_credential_truncate_rederive — T-028, two-approval path (PROTOCOL §3); dropped here; protected from T-274 (T-028 approval 2 TL-B)
+-- @compliance-review: i1_account_rederive — T-028, two-approval path (PROTOCOL §3); dropped here; protected from T-274 (T-028 approval 2 TL-B)
+-- @compliance-review: i1_sitter_profile_enqueue — T-028, two-approval path (PROTOCOL §3); dropped here; protected from T-274 (T-028 approval 2 TL-B)
+--
 -- Ticket: T-028 (tech-lead). The inverse of the up file. After this file the database is the 0029
 -- state: the four triggers, the eight functions and the policy are gone, and sitter_credential's
 -- table comment is 0026's text again, byte for byte.

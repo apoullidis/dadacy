@@ -2,6 +2,18 @@
 --
 -- @phase: expand
 -- @run-as: bootstrap-superuser — T-028 (public.i1_enqueue_slot_materialise is owned by the bootstrap superuser: it inserts into pgboss.job, which only app_rw and the superuser may write, OD-90/T-146)
+-- @compliance-review: trg_sitter_credential_i1_rederive — T-028, two-approval path (PROTOCOL §3); created here; protected from T-274 (T-028 approval 2 TL-B)
+-- @compliance-review: trg_sitter_credential_i1_truncate — T-028, two-approval path (PROTOCOL §3); created here; protected from T-274 (T-028 approval 2 TL-B)
+-- @compliance-review: trg_account_i1_rederive — T-028, two-approval path (PROTOCOL §3); created here; protected from T-274 (T-028 approval 2 TL-B)
+-- @compliance-review: trg_sitter_profile_i1_enqueue — T-028, two-approval path (PROTOCOL §3); created here; protected from T-274 (T-028 approval 2 TL-B)
+-- @compliance-review: i1_derived_bookable — T-028, two-approval path (PROTOCOL §3); created here; protected from T-274 (T-028 approval 2 TL-B)
+-- @compliance-review: i1_rederive_sitter — T-028, two-approval path (PROTOCOL §3); created here; protected from T-274 (T-028 approval 2 TL-B)
+-- @compliance-review: i1_reconcile_bookable_state — T-028, two-approval path (PROTOCOL §3); created here; protected from T-274 (T-028 approval 2 TL-B)
+-- @compliance-review: i1_enqueue_slot_materialise — T-028, two-approval path (PROTOCOL §3); created here; protected from T-274 (T-028 approval 2 TL-B)
+-- @compliance-review: i1_sitter_credential_rederive — T-028, two-approval path (PROTOCOL §3); created here; protected from T-274 (T-028 approval 2 TL-B)
+-- @compliance-review: i1_sitter_credential_truncate_rederive — T-028, two-approval path (PROTOCOL §3); created here; protected from T-274 (T-028 approval 2 TL-B)
+-- @compliance-review: i1_account_rederive — T-028, two-approval path (PROTOCOL §3); created here; protected from T-274 (T-028 approval 2 TL-B)
+-- @compliance-review: i1_sitter_profile_enqueue — T-028, two-approval path (PROTOCOL §3); created here; protected from T-274 (T-028 approval 2 TL-B)
 --
 -- Ticket:  T-028 (tech-lead). SA §SA-4 I-1, layers 1 and 3. Layer 2 (assert_sitter_bookable() on
 --          booking, SITTER_NOT_BOOKABLE) is T-091's (OD-351): no booking table exists.
@@ -90,7 +102,9 @@
 --   The enqueue's COMMENT ON FUNCTION ("any other new state commits without a job") and the
 --   WARNING's own text ("the change commits without a job") describe one change on its own, and
 --   are subject to this bound; rework 2 left both unchanged, because each ships (pg_description,
---   prosrc) and changing either is a new migration, not a comment edit (PROTOCOL §3).
+--   prosrc) and changing either is a new migration, not a comment edit (PROTOCOL §3). 0032 (T-274)
+--   is that migration: it rewords both to carry this bound, and adds the writer's READ COMMITTED
+--   guard (KV083).
 -- The job is in the writer's transaction: it commits or rolls back with the change.
 -- Owner: the bootstrap superuser, because the definer runs as app_ddl and app_ddl holds no
 -- privilege in schema pgboss (0006 grants app_rw only). This is EV-57 (OE-91 (a), an accepted
