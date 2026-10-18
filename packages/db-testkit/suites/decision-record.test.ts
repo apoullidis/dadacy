@@ -23,10 +23,20 @@
  *   - a statement_of_reasons row naming an absent decision_record_id -> 23503.
  * "THE MUTATION LANDED". Every UPDATE/DELETE refusal targets a row asserted present beforehand, and
  * the row's text is compared before and after, so the refusal is not a statement that matched
- * nothing. Every INSERT refusal compares the table's row count before and after. And each refusal
- * has a CONTROL that changes exactly the one thing the claim rests on (the grant, or the foreign
- * key), asserts that change landed in the catalogue, and shows the same statement then succeeding
- * (inside a rolled-back transaction), so the refusal is attributable to that one thing.
+ * nothing. Every INSERT refusal compares the table's row count before and after.
+ * CONTROLS, AND WHICH REFUSALS HAVE NONE (narrowed in T-268 rework 1, QA-F1):
+ *   - each UPDATE and DELETE refusal of app_rw and app_admin_rw has a CONTROL that grants exactly
+ *     that privilege to that role (asserted landed), runs the same statement inside a rolled-back
+ *     transaction and sees it succeed, then revokes it (asserted gone);
+ *   - one outsider INSERT refusal has a CONTROL of the same form (app_safety_rw into decision_record);
+ *     answering_service has none, because the guard refuses the GRANT (tested below);
+ *   - the foreign-key refusal's CONTROL drops the foreign key (asserted gone) and runs the same INSERT
+ *     as the bootstrap superuser, not as app_rw, so it changes the principal as well as the key; the
+ *     refusal's attribution to the key rests on the asserted message naming the constraint;
+ *   - the TRUNCATE refusals, the outsider SELECT refusals and the other three outsider INSERT
+ *     refusals have NO CONTROL: their attribution rests on the asserted
+ *     '42501: permission denied for table <t>' line alone. (TRUNCATE decision_record CASCADE also
+ *     needs TRUNCATE on statement_of_reasons: measured by QA, T-268 evidence QA-E6 QA-T1.)
  * The SA §INT-10 guard is called DIRECTLY (OD-76), clean after up and raising on a planted state.
  */
 import { afterAll, beforeAll, describe, test } from 'vitest';
@@ -312,10 +322,11 @@ describe('0031 — grants, over real logins', () => {
     }
   }
 
-  // CONTROL for the refusals above: the grant is the only thing refusing them. For each writer, table
-  // and verb, the superuser grants the one privilege (asserted landed), the login runs the same
-  // statement inside a transaction it rolls back and it RETURNS the seeded id, then the privilege is
-  // revoked (asserted gone). If the refusal had any other cause, the statement would fail here too.
+  // CONTROL for the UPDATE and DELETE refusals above (the TRUNCATE refusals have none): the grant is
+  // the only thing refusing them. For each writer, table and verb, the superuser grants the one
+  // privilege (asserted landed), the login runs the same statement inside a transaction it rolls back
+  // and it RETURNS the seeded id, then the privilege is revoked (asserted gone). If the refusal had
+  // any other cause, the statement would fail here too.
   for (const role of WRITERS) {
     for (const [table, verb, sql, seed] of MUTATIONS) {
       test(`CONTROL — with ${verb} granted to ${role} on ${bare(table)}, the same statement succeeds; revoked, it is gone again`, async () => {
