@@ -42,6 +42,10 @@
 # T-227 adds three sections: R-PROTECTED-TABLE (CX*), R-PROTECTED-EXTENSION (CE*) and U&"…" decoding
 # (CU*); CNA is re-classed from a CONTROL to R-PROTECTED-TABLE.
 #
+# T-274 adds one section (CI*): 0030's four I-1 triggers and eight functions on PROTECTED (T-028 approval 2
+# TL-B): TL-9's L1-L3 plants verbatim, the same routes with a marker, the other objects, a call needing a
+# marker (CIB), and five over-refusal controls (CIC1-CIC5).
+#
 # T-167 adds one section (CV*): R-VENDOR-SQL, the reviewed `-- @vendor-sql` marker (OD-150).
 #
 # T-241 adds one section (CQ*): R-RESTORE-PUBLIC, the reviewed `-- @restore-public` marker that lets a
@@ -515,6 +519,62 @@ check CP4 "T-192: DROP TRIGGER trg_account_role_ts_senior_no_truncate (OD-224 A4
 pair expand "-- @compliance-review: trg_account_role_ts_senior_no_truncate — T-192, OD-224
 ALTER TABLE public.account_role DISABLE TRIGGER trg_account_role_ts_senior_no_truncate;"
 check CP5 "T-192: DISABLE TRIGGER trg_account_role_ts_senior_no_truncate, with a marker" R-TRIGGER-BYPASS
+
+echo "== T-274 (T-028 approval 2 TL-B): 0030's I-1 triggers and functions are protected"
+# TL-9's three plants (state/EP-5/T-028.md § Tech-lead review (approval 2) TL-9), verbatim: each was
+# GATE PASS before T-274 put 0030's objects on PROTECTED.
+pair expand "ALTER TABLE public.sitter_credential DISABLE TRIGGER trg_sitter_credential_i1_rederive;"
+check CI1 "T-274 / TL-9 L1: DISABLE 0030's credential re-derive trigger by name" "R-PROTECTED R-TRIGGER-BYPASS"
+pair expand "ALTER TABLE public.sitter_profile DISABLE TRIGGER trg_sitter_profile_i1_enqueue;"
+check CI2 "T-274 / TL-9 L2: DISABLE 0030's enqueue trigger by name" "R-PROTECTED R-TRIGGER-BYPASS"
+pair expand "CREATE OR REPLACE FUNCTION public.i1_derived_bookable(
+    p_sitter_id pg_catalog.bpchar,
+    OUT o_bookable_state public.bookable_state,
+    OUT o_tier public.sitter_tier,
+    OUT o_tier_rank pg_catalog.int2)
+  LANGUAGE sql STABLE SECURITY INVOKER SET search_path = pg_catalog, pg_temp
+AS \$fn\$ SELECT 'bookable'::public.bookable_state, 'sitter'::public.sitter_tier, 1::pg_catalog.int2 \$fn\$;"
+check CI3 "T-274 / TL-9 L3: replace the shared derivation helper i1_derived_bookable with one that calls every sitter bookable (layers 1 and 3 together)" R-PROTECTED
+# The same routes with a marker, and the other objects.
+pair expand "-- @compliance-review: trg_sitter_credential_i1_rederive — T-274, T-028
+ALTER TABLE public.sitter_credential DISABLE TRIGGER trg_sitter_credential_i1_rederive;"
+check CI4 "T-274: L1 WITH a marker is still refused (no marker permits switching a protected trigger off)" R-TRIGGER-BYPASS
+pair expand "-- @compliance-review: trg_sitter_credential_i1_truncate — T-274, T-028
+ALTER TABLE public.sitter_credential ENABLE REPLICA TRIGGER trg_sitter_credential_i1_truncate;"
+check CI5 "T-274: ENABLE REPLICA TRIGGER trg_sitter_credential_i1_truncate, with a marker" R-TRIGGER-BYPASS
+pair expand "DROP TRIGGER trg_account_i1_rederive ON public.account;"
+check CI6 "T-274: DROP TRIGGER trg_account_i1_rederive, no marker" R-PROTECTED
+pair expand "CREATE OR REPLACE FUNCTION public.i1_rederive_sitter(p_sitter_id pg_catalog.bpchar) RETURNS public.bookable_state LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS \$fn\$ BEGIN RETURN NULL; END \$fn\$;"
+check CI7 "T-274: the writer i1_rederive_sitter replaced with a no-op (the KV083 guard gone with it), no marker" R-PROTECTED
+pair expand "CREATE OR REPLACE FUNCTION public.i1_sitter_credential_rederive() RETURNS trigger LANGUAGE plpgsql AS \$fn\$ BEGIN RETURN NULL; END \$fn\$;"
+check CI8 "T-274: the credential trigger's function replaced with a no-op, no marker" R-PROTECTED
+pair expand "CREATE OR REPLACE FUNCTION public.i1_enqueue_slot_materialise(p_sitter_id pg_catalog.bpchar) RETURNS void LANGUAGE plpgsql AS \$fn\$ BEGIN RETURN; END \$fn\$;"
+check CI9 "T-274: the EV-57 enqueue replaced with a no-op (KV081 gone with it), no marker" R-PROTECTED
+pair contract "-- @compliance-review: i1_reconcile_bookable_state — T-274, T-028
+ALTER FUNCTION public.i1_reconcile_bookable_state() RENAME TO t274_recon;"
+check CIA "T-274: the reconciler renamed, with a marker" R-PROTECTED-RENAME
+pair data "SELECT public.i1_rederive_sitter(id) FROM public.sitter_profile;"
+check CIB "T-274: a data migration re-deriving every sitter (T-028 contract §8's instruction) without a marker: a call names the object too" R-PROTECTED
+# Over-refusal controls: what must still pass.
+pair expand "-- @compliance-review: i1_derived_bookable — T-274, T-028 (a reviewed replacement)
+CREATE OR REPLACE FUNCTION public.i1_derived_bookable(
+    p_sitter_id pg_catalog.bpchar,
+    OUT o_bookable_state public.bookable_state,
+    OUT o_tier public.sitter_tier,
+    OUT o_tier_rank pg_catalog.int2)
+  LANGUAGE sql STABLE SECURITY INVOKER SET search_path = pg_catalog, pg_temp
+AS \$fn\$ SELECT 'bookable'::public.bookable_state, 'sitter'::public.sitter_tier, 1::pg_catalog.int2 \$fn\$;"
+check CIC1 "CONTROL T-274: L3's replacement WITH a marker passes (the marker declares it; two-approval review is the control)" PASS
+pair data "-- @compliance-review: i1_rederive_sitter — T-274, T-028 contract §8
+SELECT public.i1_rederive_sitter(id) FROM public.sitter_profile;"
+check CIC2 "CONTROL T-274: the §8 re-derive WITH a marker passes" PASS
+pair expand "ALTER TABLE public.sitter_credential DISABLE TRIGGER trg_sitter_credential_i1_rederive_audit;"
+check CIC3 "CONTROL T-274: DISABLE TRIGGER naming a longer identifier that contains a protected I-1 name" PASS
+pair expand "CREATE FUNCTION public.i1_derived_bookable_v2() RETURNS int LANGUAGE sql AS \$fn\$ SELECT 1 \$fn\$;
+REVOKE ALL ON FUNCTION public.i1_derived_bookable_v2() FROM PUBLIC;"
+check CIC4 "CONTROL T-274: a new function whose name only starts with a protected I-1 name" PASS
+pair expand "UPDATE public.sitter_credential SET status = 'expired' WHERE status = 'valid' AND false;"
+check CIC5 "CONTROL T-274: DML on sitter_credential that fires the protected trigger names no protected object" PASS
 
 echo "== R-PROTECTED-RENAME (T-192, OD-224 A2): a protected trigger or function is never renamed; no marker permits it"
 pair contract "-- @compliance-review: trg_approval_four_eyes — T-192, OD-224
