@@ -136,7 +136,9 @@ export const cell = (resource: Resource, action: Action): Cell => `${resource}#$
  * grant, the answer is the owning ticket, never a bypass and never a table
  * edit.**
  *
- * Every (resource, action) pair SD §BE-10 names. The matrix's 38 printed rows
+ * 49 rows: every (resource, action) pair SD §BE-10 names (46), then the three
+ * rows SD §BE-10 does not print and the stakeholder ruled (`T-208`, at the
+ * end of the table). The matrix's 38 printed rows
  * decompose into these 46 by three routes, and SEVEN rows take one of them:
  *
  *   - three rows name more than one action in the row header itself:
@@ -153,7 +155,7 @@ export const cell = (resource: Resource, action: Action): Cell => `${resource}#$
  * seven: the three words are one action here, `refund#issue`.
  *
  * Held by matrix.test.ts › *the 38 printed rows of SD §BE-10 decompose into
- * exactly the 46 rows matrix.ts names* and › *exactly seven printed rows
+ * exactly the 46 SD rows matrix.ts names* and › *exactly seven printed rows
  * become more than one row, and refunds / credits / compensation is not one of
  * them*, which drive a second transcription of the printed row list.
  */
@@ -207,4 +209,24 @@ export const MATRIX: ReadonlyMap<Cell, Row> = new Map<Cell, Row>([
   ['feature_flag#toggle', row(D, D, D, D, D, AS, AS, D, D, AS)],
   ['feature_flag.compliance#toggle', row(D, D, D, D, D, F4, F4, D, F4, D)],
   ['production_data#read', row(D, D, D, D, D, D, D, D, D, BG)],
+
+  // ---------------------------------------------------------------------------
+  // ROWS SD §BE-10 DOES NOT PRINT — stakeholder rulings, `T-208`.
+  //
+  // SD §BE-10 (1246-1289) has no row for reading a staffed-hours version or for
+  // clusters (`state/EP-8b/OD-226-cut.md` § P-POLICY-ADMIN). These three rows
+  // are therefore NOT a transcription of the specification. They transcribe
+  // `decisions.md` OE-51 (2026-09-25), as re-ruled 2026-10-17 (OE-84 further,
+  // `dsl` dropped from the staffed-hours read), and the OD-231 cut
+  // (`cluster#write` is step-up: SD 1242, "every admin action beyond read").
+  // matrix.test.ts checks them against a SECOND transcription of those rulings
+  // (RULED_GRID), kept apart from SPEC_GRID so the SD transcription stays 46 rows.
+  //
+  // The `dsl` column says `—` on all three because the ruling says so, not
+  // because this ticket removes anything: every other `dsl` cell is untouched
+  // (EV-40's successor ticket owns that column).
+  //                                    parent sitter t_c  supp ts_op ts_sen dsl  fin  comp eng
+  ['staffed_hours_version#read', row(D, D, D, D, D, A, D, D, A, D)],
+  ['cluster#read', row(D, D, D, D, D, A, D, D, A, D)],
+  ['cluster#write', row(D, D, D, D, D, D, D, D, AS, D)],
 ]);

@@ -260,7 +260,7 @@ test('every step-up cell refuses with step_up_required when the actor has not st
   assert.equal(checked > 0, true);
 });
 
-test('the sweep covered all 460 (role, resource, action) combinations exactly once', () => {
+test('the sweep covered all 490 (role, resource, action) combinations exactly once', () => {
   const seen = new Set<string>();
   for (const [key, row] of MATRIX) {
     for (const role of ROLES) {
@@ -270,7 +270,8 @@ test('the sweep covered all 460 (role, resource, action) combinations exactly on
       assert.notEqual((row as Row)[role], undefined, id);
     }
   }
-  assert.equal(seen.size, 460);
+  // 49 rows x 10 roles: SD §BE-10's 46 rows and the 3 ruled by T-208.
+  assert.equal(seen.size, 490);
 });
 
 test('a (resource, action) pair the matrix does not name fails closed with role_missing', () => {
@@ -1650,4 +1651,153 @@ test('T-030 LIMITATION (QA-A1): a hostile array-shaped object holding no ts_seni
   }
   // CONTROL: the same data as a plain array is refused.
   expectDeny(by(['parent']), 'four_eyes_required', 'plain [parent]');
+});
+
+/*
+ * T-208 — the three rows SD §BE-10 does not print: `staffed_hours_version#read`,
+ * `cluster#read`, `cluster#write`.
+ *
+ * The whole-table sweeps above are driven by MATRIX, so on their own they would
+ * agree with any cell this ticket wrote, right or wrong. These cases instead
+ * name the ruled roles as LITERALS, taken from the rulings and not from MATRIX
+ * or ROLES:
+ *   - `decisions.md` OE-51 (2026-09-25), as re-ruled 2026-10-17T06:37:24Z
+ *     (OE-84 further): staffed-hours read -> compliance, ts_senior (`dsl`
+ *     DROPPED); cluster read -> compliance, ts_senior; cluster write ->
+ *     compliance;
+ *   - `state/EP-2/OD-231-cut.md`: cluster write is step-up (SD 1242); the two
+ *     reads are not.
+ * Each cell is asked of every one of the ten roles, one role at a time, so
+ * each role is tested in the direction the ruling gives it: allow or deny.
+ */
+const T208_ALL_ROLES: readonly Role[] = [
+  'parent',
+  'sitter',
+  'trusted_contact',
+  'support',
+  'ts_operator',
+  'ts_senior',
+  'dsl',
+  'finance',
+  'compliance',
+  'engineer',
+];
+const T208_RULED: readonly (readonly [Resource, Action, readonly Role[]])[] = [
+  ['staffed_hours_version', 'read', ['compliance', 'ts_senior']],
+  ['cluster', 'read', ['compliance', 'ts_senior']],
+  ['cluster', 'write', ['compliance']],
+];
+
+test('T-208: each new cell allows exactly its ruled roles and denies every other role with role_missing', () => {
+  // Precondition: the literal role list is the matrix's role set, so no role is skipped.
+  assert.deepEqual([...T208_ALL_ROLES].sort(), [...ROLES].sort());
+  let allowed = 0;
+  let denied = 0;
+  for (const [type, action, ruled] of T208_RULED) {
+    for (const role of T208_ALL_ROLES) {
+      // A fresh step-up on every actor, so a deny below can only be the role.
+      const decision = can(
+        { accountId: SELF, roles: [role], stepUpUntil: FRESH_STEP_UP },
+        action,
+        { type },
+        CTX,
+      );
+      if (ruled.includes(role)) {
+        expectAllow(decision, 'role_grant', `${type}#${action} / ${role}`);
+        allowed++;
+      } else {
+        expectDeny(decision, 'role_missing', `${type}#${action} / ${role}`);
+        denied++;
+      }
+    }
+  }
+  // 2 + 2 + 1 ruled cells allow; the other 25 of the 30 deny.
+  assert.equal(allowed, 5);
+  assert.equal(denied, 25);
+});
+
+test('T-208: dsl is refused staffed_hours_version#read (OE-51 re-ruled 2026-10-17) and keeps its publish cell untouched', () => {
+  expectDeny(
+    can(
+      { accountId: SELF, roles: ['dsl'], stepUpUntil: FRESH_STEP_UP },
+      'read',
+      { type: 'staffed_hours_version' },
+      CTX,
+    ),
+    'role_missing',
+    'dsl on staffed_hours_version#read',
+  );
+  // Not this ticket's to remove (EV-40 successor): SD 1275's dsl four-eyes publish cell stands.
+  const publish = MATRIX.get('staffed_hours_version#publish');
+  assert.ok(publish !== undefined, 'the publish row exists');
+  assert.deepEqual(publish.dsl, { kind: 'four_eyes', stepUp: true }, 'dsl publish cell');
+});
+
+test('T-208: cluster#write requires a fresh step-up for compliance; neither read requires one', () => {
+  const ask = (
+    roles: Role[],
+    stepUpUntil: Date | undefined,
+    type: Resource,
+    action: Action,
+  ): Decision =>
+    can(
+      stepUpUntil === undefined
+        ? { accountId: SELF, roles }
+        : { accountId: SELF, roles, stepUpUntil },
+      action,
+      { type },
+      CTX,
+    );
+  // cluster#write, compliance: allowed only inside the ten-minute window.
+  expectAllow(
+    ask(['compliance'], FRESH_STEP_UP, 'cluster', 'write'),
+    'role_grant',
+    'fresh step-up',
+  );
+  expectDeny(ask(['compliance'], undefined, 'cluster', 'write'), 'step_up_required', 'no step-up');
+  expectDeny(
+    ask(['compliance'], at(STEP_UP_MAX_AGE_MS + 1), 'cluster', 'write'),
+    'step_up_required',
+    'step-up more than ten minutes ahead',
+  );
+  expectDeny(
+    ask(['compliance'], at(-1), 'cluster', 'write'),
+    'step_up_required',
+    'step-up expired',
+  );
+  // The two reads: allowed with NO step-up for both ruled roles.
+  for (const [type, role] of [
+    ['cluster', 'compliance'],
+    ['cluster', 'ts_senior'],
+    ['staffed_hours_version', 'compliance'],
+    ['staffed_hours_version', 'ts_senior'],
+  ] as const) {
+    expectAllow(
+      ask([role], undefined, type, 'read'),
+      'role_grant',
+      `${type}#read / ${role}, no step-up`,
+    );
+  }
+  // The matrix flag itself, so the decision above is the cell and not an accident.
+  assert.equal(MATRIX.get('cluster#write')?.compliance.stepUp, true);
+  assert.equal(MATRIX.get('cluster#read')?.compliance.stepUp, undefined);
+  assert.equal(MATRIX.get('staffed_hours_version#read')?.ts_senior.stepUp, undefined);
+});
+
+test('T-208: ts_senior holds cluster#read but not cluster#write, even stepped up and alongside another role', () => {
+  expectDeny(
+    can(
+      { accountId: SELF, roles: ['ts_senior', 'dsl'], stepUpUntil: FRESH_STEP_UP },
+      'write',
+      { type: 'cluster' },
+      CTX,
+    ),
+    'role_missing',
+    'ts_senior + dsl on cluster#write',
+  );
+  expectAllow(
+    can({ accountId: SELF, roles: ['dsl', 'ts_senior'] }, 'read', { type: 'cluster' }, CTX),
+    'role_grant',
+    'dsl + ts_senior on cluster#read',
+  );
 });

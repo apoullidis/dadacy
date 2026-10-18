@@ -16,6 +16,11 @@
  *
  * The `!` suffix marks a cell requiring step-up, per SD §BE-10's sentence
  * "…and every admin action beyond read".
+ *
+ * Since `T-208` matrix.ts also carries three rows SD §BE-10 does not print
+ * (`staffed_hours_version#read`, `cluster#read`, `cluster#write`). They are
+ * checked against RULED_GRID, a transcription of the stakeholder rulings that
+ * create them, never against SPEC_GRID, which stays the specification's 46.
  */
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
@@ -92,6 +97,29 @@ const SPEC_GRID: readonly (readonly [Cell, string])[] = [
 ];
 
 /**
+ * THE ROWS SD §BE-10 DOES NOT PRINT, transcribed from the RULINGS that create
+ * them (`T-208`), in the same legend and column order as SPEC_GRID. Kept apart
+ * from SPEC_GRID on purpose: SPEC_GRID is a transcription of the specification
+ * and stays exactly SD §BE-10's 46 rows; these are not in it.
+ *
+ *   - `decisions.md` OE-51 (2026-09-25, N-3 of `state/EP-8b/OD-226-cut.md`):
+ *     staffed-hours read -> dsl, compliance, ts_senior; cluster write ->
+ *     compliance; cluster read -> compliance, ts_senior.
+ *   - OE-84 further, 2026-10-17T06:37:24Z (OE-51 re-confirmed): `dsl` DROPPED
+ *     from the staffed-hours read; compliance and ts_senior keep it.
+ *   - `state/EP-2/OD-231-cut.md` (T-208 brief addendum): cluster write is
+ *     step-up (SD 1242, "every admin action beyond read"); the two reads are
+ *     not.
+ *
+ * Read the ten cells against the column order in this file's header comment.
+ */
+const RULED_GRID: readonly (readonly [Cell, string])[] = [
+  ['staffed_hours_version#read', '- - - - - allow - - allow -'],
+  ['cluster#read', '- - - - - allow - - allow -'],
+  ['cluster#write', '- - - - - - - - allow! -'],
+];
+
+/**
  * SD §BE-10's PRINTED rows, transcribed in the specification's own row order
  * and labels (lines 1248-1285), each against the (resource, action) rows
  * `matrix.ts` turns it into. This is the second reading that makes the "38
@@ -159,10 +187,16 @@ test('the transcription of SD §BE-10 is itself well formed: 46 rows of 10 cells
   }
 });
 
-test('matrix.ts and the SD §BE-10 transcription name exactly the same (resource, action) rows', () => {
+test('matrix.ts names exactly the SD §BE-10 rows plus the ruled rows, and no row is both', () => {
+  // Was 'matrix.ts and the SD §BE-10 transcription name exactly the same
+  // (resource, action) rows' until T-208 added three rows SD §BE-10 does not
+  // print. A row in matrix.ts that is in NEITHER transcription still fails here.
   const inCode = [...MATRIX.keys()].sort();
-  const inSpec = SPEC_GRID.map(([k]) => k).sort();
-  assert.deepEqual(inCode, inSpec);
+  const inSpec = SPEC_GRID.map(([k]) => k);
+  const inRuling = RULED_GRID.map(([k]) => k);
+  for (const key of inRuling) assert.equal(inSpec.includes(key), false, `${key} is in both`);
+  assert.deepEqual(inCode, [...inSpec, ...inRuling].sort());
+  assert.equal(inCode.length, 49);
 });
 
 test('every one of the 460 cells in matrix.ts equals the SD §BE-10 transcription', () => {
@@ -183,6 +217,34 @@ test('every one of the 460 cells in matrix.ts equals the SD §BE-10 transcriptio
     }
   }
   assert.equal(compared, 460);
+});
+
+test('T-208: the transcription of the rulings is well formed: 3 rows of 10 cells, no duplicates', () => {
+  assert.equal(RULED_GRID.length, 3);
+  assert.equal(new Set(RULED_GRID.map(([k]) => k)).size, 3);
+  for (const [key, spelling] of RULED_GRID) {
+    assert.equal(spelling.trim().split(/\s+/).length, ROLES.length, `row ${key} is not 10 cells`);
+  }
+});
+
+test('T-208: every one of the 30 ruled cells in matrix.ts equals the transcription of the rulings', () => {
+  let compared = 0;
+  for (const [key, spelling] of RULED_GRID) {
+    const row = MATRIX.get(key);
+    assert.notEqual(row, undefined, `matrix.ts has no row ${key}`);
+    const cells = spelling.trim().split(/\s+/);
+    for (const [i, role] of ROLES.entries()) {
+      const expected = parseCell(cells[i] ?? '');
+      const actual = (row as Record<Role, Grant>)[role];
+      assert.deepEqual(
+        { kind: actual.kind, stepUp: actual.stepUp === true },
+        { kind: expected.kind, stepUp: expected.stepUp === true },
+        `${key} / ${role}`,
+      );
+      compared++;
+    }
+  }
+  assert.equal(compared, 30);
 });
 
 test('the ten roles are SA §TS-7 and SD §BE-10 column order, with no duplicates', () => {
@@ -280,7 +342,7 @@ test('every back-office action that mutates requires step-up, and no read or sea
   assert.equal(checked > 0, true);
 });
 
-test('the 38 printed rows of SD §BE-10 decompose into exactly the 46 rows matrix.ts names', () => {
+test('the 38 printed rows of SD §BE-10 decompose into exactly the 46 SD rows matrix.ts names', () => {
   assert.equal(PRINTED_ROWS.length, 38);
   const produced: Cell[] = [];
   for (const [label, cells] of PRINTED_ROWS) {
@@ -289,7 +351,10 @@ test('the 38 printed rows of SD §BE-10 decompose into exactly the 46 rows matri
   }
   assert.equal(produced.length, 46);
   assert.equal(new Set(produced).size, 46, 'a printed row may not produce a row twice');
-  assert.deepEqual([...produced].sort(), [...MATRIX.keys()].sort());
+  // T-208: matrix.ts also carries the ruled rows, which no printed row produces.
+  const ruled = new Set<Cell>(RULED_GRID.map(([k]) => k));
+  const sdRows = [...MATRIX.keys()].filter((k) => !ruled.has(k));
+  assert.deepEqual([...produced].sort(), sdRows.sort());
 });
 
 test('exactly seven printed rows become more than one row, and refunds is not one of them', () => {

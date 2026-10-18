@@ -120,7 +120,8 @@ export type Action =
   | 'toggle';
 
 /**
- * Every resource naming a row of SD §BE-10's matrix.
+ * Every resource naming a row of SD §BE-10's matrix, plus `cluster`, which
+ * no printed row names (`T-208`; see its own comment below).
  *
  * Where the matrix narrows a cell to a sub-view rather than denying it —
  * "metadata only" for `support` on messages and on the payout ledger — the
@@ -161,7 +162,14 @@ export type Resource =
   | 'dsar'
   | 'feature_flag'
   | 'feature_flag.compliance'
-  | 'production_data';
+  | 'production_data'
+  /**
+   * NOT a row of SD §BE-10. A discovery cluster (SD 1216, `GET/PUT
+   * /v1/admin/clusters`: polygons and open/waitlist gating). Its two rows,
+   * `cluster#read` and `cluster#write`, are stakeholder rulings (`decisions.md`
+   * OE-51), added by `T-208`; see matrix.ts § rows SD §BE-10 does not print.
+   */
+  | 'cluster';
 
 /**
  * SD §DB-2's `account_status` enum, verbatim (migration `0005`). Only

@@ -54,9 +54,9 @@ test('cell() composes the matrix key the evaluator looks a decision up by', () =
   assert.equal(policy.MATRIX.has(policy.cell('child.health', 'read')), true);
 });
 
-test('the barrel re-exports the matrix itself, not a copy, and it has all 46 rows', () => {
+test('the barrel re-exports the matrix itself, not a copy, and it has all 49 rows (46 SD §BE-10, 3 ruled by T-208)', () => {
   assert.equal(policy.MATRIX, matrixDirect);
-  assert.equal(policy.MATRIX.size, 46);
+  assert.equal(policy.MATRIX.size, 49);
 });
 
 test('can() reached through the barrel decides identically to the module itself', () => {
