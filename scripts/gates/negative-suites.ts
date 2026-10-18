@@ -176,7 +176,7 @@ const SUITES: readonly Suite[] = [
     // T-274.md § Evidence.
     cases: 574,
     state: 'GREEN',
-    why: 'gate:migration-lint: expand/contract, protected objects (the I-5 objects since T-186, 0011\'s since T-192, 0030\'s I-1 objects since T-274; read through PostgreSQL\'s parser since T-229), R-TRIGGER-BYPASS by name, R-PROTECTED-RENAME, R-ADMIN-MEMBERSHIP, R-PROTECTED-TABLE, R-PROTECTED-EXTENSION, R-PARSE, U&"…" decoding, R-ROLE-SWITCH, R-RUN-AS, R-MERGED, R-TRAILER, R-VENDOR-SQL, R-RESTORE-PUBLIC, R-RULE, R-MONEY-TYPE, R-CRED-REF (T-021, T-031, T-167, T-186, T-192, T-227, T-241, T-237, T-229, T-173, T-253, T-274)',
+    why: "gate:migration-lint: expand/contract, protected objects (the I-5 objects since T-186, 0011's since T-192, 0030's I-1 objects since T-274; read through PostgreSQL's parser since T-229), R-TRIGGER-BYPASS by name, R-PROTECTED-RENAME, R-ADMIN-MEMBERSHIP, R-PROTECTED-TABLE, R-PROTECTED-EXTENSION, R-PARSE, U&\"…\" decoding, R-ROLE-SWITCH, R-RUN-AS, R-MERGED, R-TRAILER, R-VENDOR-SQL, R-RESTORE-PUBLIC, R-RULE, R-MONEY-TYPE, R-CRED-REF (T-021, T-031, T-167, T-186, T-192, T-227, T-241, T-237, T-229, T-173, T-253, T-274)",
   },
   {
     id: 'semgrep',
