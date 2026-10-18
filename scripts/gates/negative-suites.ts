@@ -169,9 +169,14 @@ const SUITES: readonly Suite[] = [
     // CK0W (RENAME ATTRIBUTE), CK0X/CK0Y (an accepted -- @vendor-sql and a -- @compliance-review marker
     // exempt nothing), CK37-CK39 (three bounds, PASS). No older case touched. CK0U-CK0Y BAD against
     // ba0f33a's lint (`!! 47 of 70` over the CK section at 50ffb31); green: T-253.md § Rework 1.
-    cases: 558,
+    // 558 -> 574, 2026-10-18, T-274 (T-028 approval 2 TL-B): sixteen cases CI* for 0030's four I-1 triggers
+    // and eight functions on PROTECTED: TL-9's L1-L3 verbatim, the same routes with a marker, the other
+    // objects, a call naming an object (CIB), five over-refusal controls (CIC1-CIC5). No older case touched.
+    // CI1-CIB BAD against the previous lint (`!! 11 of 574` at the cases' own commit); green footer:
+    // T-274.md § Evidence.
+    cases: 574,
     state: 'GREEN',
-    why: 'gate:migration-lint: expand/contract, protected objects (the I-5 objects since T-186, 0011\'s since T-192; read through PostgreSQL\'s parser since T-229), R-TRIGGER-BYPASS by name, R-PROTECTED-RENAME, R-ADMIN-MEMBERSHIP, R-PROTECTED-TABLE, R-PROTECTED-EXTENSION, R-PARSE, U&"…" decoding, R-ROLE-SWITCH, R-RUN-AS, R-MERGED, R-TRAILER, R-VENDOR-SQL, R-RESTORE-PUBLIC, R-RULE, R-MONEY-TYPE, R-CRED-REF (T-021, T-031, T-167, T-186, T-192, T-227, T-241, T-237, T-229, T-173, T-253)',
+    why: 'gate:migration-lint: expand/contract, protected objects (the I-5 objects since T-186, 0011\'s since T-192, 0030\'s I-1 objects since T-274; read through PostgreSQL\'s parser since T-229), R-TRIGGER-BYPASS by name, R-PROTECTED-RENAME, R-ADMIN-MEMBERSHIP, R-PROTECTED-TABLE, R-PROTECTED-EXTENSION, R-PARSE, U&"…" decoding, R-ROLE-SWITCH, R-RUN-AS, R-MERGED, R-TRAILER, R-VENDOR-SQL, R-RESTORE-PUBLIC, R-RULE, R-MONEY-TYPE, R-CRED-REF (T-021, T-031, T-167, T-186, T-192, T-227, T-241, T-237, T-229, T-173, T-253, T-274)',
   },
   {
     id: 'semgrep',

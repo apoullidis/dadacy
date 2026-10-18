@@ -56,7 +56,8 @@
  *                        `-- @compliance-review: <object> — <reference>`, where the reference
  *                        cites a ticket or a decision. SD §DB-13 rule 7 and §UC-4 part 1
  *                        protect the booking triggers; `T-020` contract §6 adds the INT-10
- *                        guard. "Names" is: an identifier in any parsed statement equal to the
+ *                        guard; T-186/T-192 add I-5's objects; T-274 adds 0030's four I-1
+ *                        triggers and eight functions (T-028 TL-B). "Names" is: an identifier in any parsed statement equal to the
  *                        object's name, or the name as a word inside any string in the parse (a
  *                        constant, so a `format()` argument or a concatenated piece counts; a
  *                        `COMMENT ON` text). THIS GATE CANNOT
@@ -463,6 +464,60 @@ const PROTECTED: readonly Protected[] = [
   {
     id: 'assert_ts_senior_account_written_by_admin',
     why: 'decisions.md OE-48, the function trg_account_ts_senior_status_admin_only calls (T-192)',
+  },
+  // T-274 (T-028 approval 2 TL-B, measured as TL-9): 0030's I-1 layer-1/3 objects. Layers 1 and 3
+  // share i1_derived_bookable, so a no-op or always-bookable replacement of it defeats both at once.
+  {
+    id: 'trg_sitter_credential_i1_rederive',
+    why: 'SA §SA-4 I-1 layer 1: re-derives bookable_state on every sitter_credential row write (T-028, 0030)',
+    trigger: true,
+  },
+  {
+    id: 'trg_sitter_credential_i1_truncate',
+    why: 'SA §SA-4 I-1 layer 1: re-derives every sitter on TRUNCATE sitter_credential (T-028, 0030)',
+    trigger: true,
+  },
+  {
+    id: 'trg_account_i1_rederive',
+    why: 'SA §SA-4 I-1 layer 1 / EV-39: re-derives on an account status or jurisdiction change (T-028, 0030)',
+    trigger: true,
+  },
+  {
+    id: 'trg_sitter_profile_i1_enqueue',
+    why: 'E.3 U-12: every bookable_state change enqueues search.slot_materialise; with the queue absent a change into bookable is refused KV081 (T-028, 0030)',
+    trigger: true,
+  },
+  {
+    id: 'i1_derived_bookable',
+    why: 'SA §SA-4 I-1: the derivation layers 1 and 3 share; replacing it moves the writer and the reconciler together, so layer 3 never pages (T-028, 0030; T-274)',
+  },
+  {
+    id: 'i1_rederive_sitter',
+    why: 'SA §SA-4 I-1 layer 1: the only writer of the derived columns, with the READ COMMITTED guard (KV083) since 0032 (T-028, T-274)',
+  },
+  {
+    id: 'i1_reconcile_bookable_state',
+    why: 'SA §SA-4 I-1 layer 3: the reconciler that pages on any divergence (KV080) (T-028, 0030)',
+  },
+  {
+    id: 'i1_enqueue_slot_materialise',
+    why: 'E.3 U-12 and EV-57: the superuser-owned enqueue definer, KV081 and KV082 (T-028, 0030; T-274)',
+  },
+  {
+    id: 'i1_sitter_credential_rederive',
+    why: 'the function trg_sitter_credential_i1_rederive calls; a no-op replacement silences layer 1 on credential writes (T-028, 0030)',
+  },
+  {
+    id: 'i1_sitter_credential_truncate_rederive',
+    why: 'the function trg_sitter_credential_i1_truncate calls (T-028, 0030)',
+  },
+  {
+    id: 'i1_account_rederive',
+    why: 'the function trg_account_i1_rederive calls; a no-op replacement silences layer 1 on account changes (T-028, 0030)',
+  },
+  {
+    id: 'i1_sitter_profile_enqueue',
+    why: 'the function trg_sitter_profile_i1_enqueue calls; a no-op replacement silences the enqueue and KV081 (T-028, 0030)',
   },
 ];
 
