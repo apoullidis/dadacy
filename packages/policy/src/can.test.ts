@@ -18,7 +18,7 @@ import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { accountId } from '@kinvara/domain-types';
 import { can, STEP_UP_MAX_AGE_MS, WINDOW_TAIL_MS } from './can.ts';
-import { MATRIX } from './matrix.ts';
+import { MATRIX, cell } from './matrix.ts';
 import { ROLES, isRole } from './types.ts';
 import type {
   Action,
@@ -1659,8 +1659,8 @@ test('T-030 LIMITATION (QA-A1): a hostile array-shaped object holding no ts_seni
  *
  * The whole-table sweeps above are driven by MATRIX, so on their own they would
  * agree with any cell this ticket wrote, right or wrong. These cases instead
- * name the ruled roles as LITERALS, taken from the rulings and not from MATRIX
- * or ROLES:
+ * name the ruled roles as LITERALS, taken from the rulings and not from MATRIX,
+ * ROLES or matrix.test.ts's RULED_GRID:
  *   - `decisions.md` OE-51 (2026-09-25), as re-ruled 2026-10-17T06:37:24Z
  *     (OE-84 further): staffed-hours read -> compliance, ts_senior (`dsl`
  *     DROPPED); cluster read -> compliance, ts_senior; cluster write ->
@@ -1669,6 +1669,18 @@ test('T-030 LIMITATION (QA-A1): a hostile array-shaped object holding no ts_seni
  *     reads are not.
  * Each cell is asked of every one of the ten roles, one role at a time, so
  * each role is tested in the direction the ruling gives it: allow or deny.
+ *
+ * T-208 rework 1 (QA-M1). Asked with a bare `{ type }` resource, a deny cell
+ * rewritten as a CONDITIONAL grant (`own`, `window`, `break_glass`,
+ * `capability`) still denies with `role_missing`, so the bare-resource case
+ * alone cannot tell a deny cell from a conditional grant. Two cases close that:
+ *   - the KIND case compares each of the 30 cells' grant kind and step-up flag
+ *     with the literal table below (deny cells must be `deny`, granted cells
+ *     plain `allow`, step-up only on `cluster#write`);
+ *   - the EVERY-FACT case asks each of the 30 cells with every fact a
+ *     conditional grant reads supplied and satisfied, so that only a `deny`
+ *     (or a `capability`, which never allows; the KIND case holds that one)
+ *     still answers `role_missing`.
  */
 const T208_ALL_ROLES: readonly Role[] = [
   'parent',
@@ -1682,20 +1694,57 @@ const T208_ALL_ROLES: readonly Role[] = [
   'compliance',
   'engineer',
 ];
-const T208_RULED: readonly (readonly [Resource, Action, readonly Role[]])[] = [
-  ['staffed_hours_version', 'read', ['compliance', 'ts_senior']],
-  ['cluster', 'read', ['compliance', 'ts_senior']],
-  ['cluster', 'write', ['compliance']],
+/** [resource, action, the roles the ruling grants, whether the grant is step-up]. */
+const T208_RULED: readonly (readonly [Resource, Action, readonly Role[], boolean])[] = [
+  ['staffed_hours_version', 'read', ['compliance', 'ts_senior'], false],
+  ['cluster', 'read', ['compliance', 'ts_senior'], false],
+  ['cluster', 'write', ['compliance'], true],
 ];
 
-test('T-208: each new cell allows exactly its ruled roles and denies every other role with role_missing', () => {
+/**
+ * Every fact any conditional grant kind reads, each one SATISFIED for the
+ * actor: the actor owns the record; a confirmed booking names the actor as
+ * sitter and the record's owner as family (both ends agree, TL-F1); an active
+ * break-glass with a purpose; a live capability token; a different, active
+ * `ts_senior` countersigner; a locale the actor covers; Art. 10 model
+ * `platform_sights`; a fresh step-up. With these, `own`, `window`,
+ * `break_glass`, `four_eyes`, `art10`, `locale` and `allow` all ALLOW, so a
+ * `role_missing` answer can only come from `deny` (or `capability`).
+ */
+function t208EveryFact(role: Role, type: Resource): Probe {
+  return {
+    actor: {
+      accountId: SELF,
+      roles: [role],
+      stepUpUntil: FRESH_STEP_UP,
+      breakGlass: { purpose: 'safeguarding case 42', expiresAt: at(HOUR) },
+      capability: { expiresAt: at(HOUR) },
+      operatorLocales: ['el'],
+    },
+    resource: {
+      type,
+      ownerAccountId: SELF,
+      booking: { state: 'confirmed', sitterAccountId: SELF, parentAccountId: SELF },
+      art10Model: 'platform_sights',
+      locale: 'el',
+      countersignedBy: OTHER,
+      countersignerRoles: ['ts_senior'],
+      countersignerStatus: 'active',
+    },
+  };
+}
+
+test('T-208: each new cell allows exactly its ruled roles and denies every other role with role_missing, asked with a bare resource', () => {
   // Precondition: the literal role list is the matrix's role set, so no role is skipped.
   assert.deepEqual([...T208_ALL_ROLES].sort(), [...ROLES].sort());
   let allowed = 0;
   let denied = 0;
   for (const [type, action, ruled] of T208_RULED) {
     for (const role of T208_ALL_ROLES) {
-      // A fresh step-up on every actor, so a deny below can only be the role.
+      // A fresh step-up on every actor, so a step-up flag cannot be why a cell
+      // denies. A bare `{ type }` names no owner, booking or break-glass, so a
+      // conditional grant would ALSO deny with role_missing here: the KIND and
+      // EVERY-FACT cases below are what tell those apart (QA-M1).
       const decision = can(
         { accountId: SELF, roles: [role], stepUpUntil: FRESH_STEP_UP },
         action,
@@ -1712,6 +1761,77 @@ test('T-208: each new cell allows exactly its ruled roles and denies every other
     }
   }
   // 2 + 2 + 1 ruled cells allow; the other 25 of the 30 deny.
+  assert.equal(allowed, 5);
+  assert.equal(denied, 25);
+});
+
+test('T-208: each of the 30 new cells has the grant kind and step-up flag the rulings give, read against a literal table in this file, not RULED_GRID', () => {
+  let compared = 0;
+  for (const [type, action, ruled, stepUp] of T208_RULED) {
+    const row = MATRIX.get(cell(type, action));
+    assert.ok(row !== undefined, `matrix.ts has no row ${type}#${action}`);
+    for (const role of T208_ALL_ROLES) {
+      const grant: Grant = (row as Row)[role];
+      const expected = ruled.includes(role)
+        ? { kind: 'allow', stepUp }
+        : { kind: 'deny', stepUp: false };
+      assert.deepEqual(
+        { kind: grant.kind, stepUp: grant.stepUp === true },
+        expected,
+        `${type}#${action} / ${role}`,
+      );
+      compared++;
+    }
+  }
+  assert.equal(compared, 30);
+});
+
+test('T-208: with every fact a conditional grant reads supplied and satisfied, each new cell still allows only its ruled roles (role_grant) and denies every other role with role_missing', () => {
+  // ANTI-VACUITY: the fixture really does open every conditional grant kind.
+  // For each kind, the first SD §BE-10 cell carrying it must ALLOW under the
+  // same fixture. If the fixture missed a fact, that kind would deny here too
+  // and the case below could not see it planted on a T-208 deny cell.
+  const opened = new Set<GrantKind>();
+  for (const [key, row] of MATRIX) {
+    for (const role of T208_ALL_ROLES) {
+      const kind = (row as Row)[role].kind;
+      if (kind === 'deny' || kind === 'capability' || opened.has(kind)) continue;
+      const { actor, resource } = t208EveryFact(role, resourceOf(key));
+      expectAllow(
+        can(actor, actionOf(key), resource, CTX),
+        BASIS_OF[kind],
+        `${key} / ${role} (${kind})`,
+      );
+      opened.add(kind);
+    }
+  }
+  assert.deepEqual([...opened].sort(), [
+    'allow',
+    'art10',
+    'break_glass',
+    'four_eyes',
+    'locale',
+    'own',
+    'window',
+  ]);
+
+  let allowed = 0;
+  let denied = 0;
+  for (const [type, action, ruled] of T208_RULED) {
+    for (const role of T208_ALL_ROLES) {
+      const { actor, resource } = t208EveryFact(role, type);
+      const decision = can(actor, action, resource, CTX);
+      if (ruled.includes(role)) {
+        // `role_grant`, not `own_record` / `confirmed_booking_window` /
+        // `break_glass`: the granted cells are plain grants.
+        expectAllow(decision, 'role_grant', `${type}#${action} / ${role}, every fact`);
+        allowed++;
+      } else {
+        expectDeny(decision, 'role_missing', `${type}#${action} / ${role}, every fact`);
+        denied++;
+      }
+    }
+  }
   assert.equal(allowed, 5);
   assert.equal(denied, 25);
 });
@@ -1784,20 +1904,39 @@ test('T-208: cluster#write requires a fresh step-up for compliance; neither read
   assert.equal(MATRIX.get('staffed_hours_version#read')?.ts_senior.stepUp, undefined);
 });
 
-test('T-208: ts_senior holds cluster#read but not cluster#write, even stepped up and alongside another role', () => {
-  expectDeny(
+test('T-208: ts_senior holds cluster#read but not cluster#write, even stepped up and alongside any second role except compliance, which holds cluster#write itself', () => {
+  // Every second role the ruling does not grant cluster#write (all but compliance).
+  let paired = 0;
+  for (const second of T208_ALL_ROLES) {
+    if (second === 'ts_senior' || second === 'compliance') continue;
+    expectDeny(
+      can(
+        { accountId: SELF, roles: ['ts_senior', second], stepUpUntil: FRESH_STEP_UP },
+        'write',
+        { type: 'cluster' },
+        CTX,
+      ),
+      'role_missing',
+      `ts_senior + ${second} on cluster#write`,
+    );
+    expectAllow(
+      can({ accountId: SELF, roles: [second, 'ts_senior'] }, 'read', { type: 'cluster' }, CTX),
+      'role_grant',
+      `${second} + ts_senior on cluster#read`,
+    );
+    paired++;
+  }
+  assert.equal(paired, 8);
+  // CONTROL, and the bound on the title: with compliance as the second role the
+  // write IS allowed (compliance's own grant), so "any second role" excludes it.
+  expectAllow(
     can(
-      { accountId: SELF, roles: ['ts_senior', 'dsl'], stepUpUntil: FRESH_STEP_UP },
+      { accountId: SELF, roles: ['ts_senior', 'compliance'], stepUpUntil: FRESH_STEP_UP },
       'write',
       { type: 'cluster' },
       CTX,
     ),
-    'role_missing',
-    'ts_senior + dsl on cluster#write',
-  );
-  expectAllow(
-    can({ accountId: SELF, roles: ['dsl', 'ts_senior'] }, 'read', { type: 'cluster' }, CTX),
     'role_grant',
-    'dsl + ts_senior on cluster#read',
+    'ts_senior + compliance on cluster#write',
   );
 });
