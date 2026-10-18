@@ -1381,6 +1381,39 @@ describe('layer 1 — the READ COMMITTED guard (T-274, 0032; T-028 approval 2 TL
     });
   }
 
+  // The other order (T-274 rework 1): T1 creates and completes the profile FIRST and holds its
+  // transaction 4 s; T2 (app_rw) suspends the account 1.5 s later. Before 0032's lock, T2's UPDATE
+  // (FOR NO KEY UPDATE) did not conflict with T1's foreign-key FOR KEY SHARE, its writer could not see
+  // T1's uncommitted profile, and both committed: suspended / bookable. Now T2 waits for T1's FOR SHARE
+  // and its writer, after T1 committed, sees the profile and derives suspended.
+  test("QA-3 / OD-362, the other order: a transaction that creates and completes the sitter's profile and holds open, raced by a suspension — both COMMIT, and the sitter is stored suspended, stored = derived (the suspension waits on the account row lock)", async () => {
+    const id = await freshSitter('QSO', null, null, false);
+    const t1 = committing(
+      null,
+      null,
+      `INSERT INTO public.sitter_profile (id) VALUES ('${id}')`,
+      `INSERT INTO public.sitter_credential (id, sitter_id, scheme_id, status) VALUES ('${cred('QSO', 'W')}', '${id}', ${WHITE}, 'valid')`,
+      `INSERT INTO public.sitter_credential (id, sitter_id, scheme_id, status) VALUES ('${cred('QSO', 'A')}', '${id}', ${ART22}, 'valid')`,
+      'SELECT pg_sleep(4)',
+    );
+    await sleep(1500);
+    const two = await committing(
+      LOGINS.app_rw,
+      null,
+      `UPDATE public.account SET status = 'suspended' WHERE id = '${id}'`,
+    );
+    const one = await t1;
+    committed('T1 profile + credentials', one);
+    committed('T2 suspension', two);
+    assert.equal(
+      (await db.value(`SELECT status FROM public.account WHERE id = '${id}'`)) +
+        ' ' +
+        (await storedDerived('QSO')),
+      'suspended stored=suspended derived=suspended W=valid A=valid',
+      'committed state',
+    );
+  });
+
   test("cleanup: the guard cases' own sitters (01K8T274S…) are deleted by the superuser; the fixture is what remains and the reconciler is clean over it", async () => {
     await db.sql({
       commands: [
